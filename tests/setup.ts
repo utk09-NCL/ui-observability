@@ -1,4 +1,8 @@
-// tests/setup.ts   (M0 version, replaced at the end of section 9)
+// tests/setup.ts
+//
+// Grows alongside the library. Today it installs the IndexedDB shim and resets
+// the two synchronous storages between tests, which is everything the suite
+// needs while src/ is still empty.
 import "fake-indexeddb/auto";
 import { afterEach, vi } from "vitest";
 

@@ -1,25 +1,82 @@
-// eslint.config.js
 import js from "@eslint/js";
 import { defineConfig, globalIgnores } from "eslint/config";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
   globalIgnores(["dist", "coverage", "**/node_modules", "**/dist", "playground/**/.angular"]),
-  js.configs.recommended,
-  tseslint.configs.recommended,
+
   {
     files: ["**/*.ts", "**/*.tsx"],
-    languageOptions: { ecmaVersion: "latest", sourceType: "module" },
+    extends: [
+      js.configs.recommended,
+      tseslint.configs.strictTypeChecked,
+      tseslint.configs.stylisticTypeChecked,
+    ],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
-      "@typescript-eslint/no-explicit-any": "warn",
-      "@typescript-eslint/explicit-module-boundary-types": "off",
+      "@typescript-eslint/consistent-type-imports": [
+        "error",
+        { prefer: "type-imports", fixStyle: "inline-type-imports" },
+      ],
+      "@typescript-eslint/no-import-type-side-effects": "error",
+      "prefer-template": "error",
+      "prefer-const": ["error", { destructuring: "all" }],
+      "no-var": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
+      curly: ["error", "all"],
+      "object-shorthand": ["error", "always"],
+      "no-param-reassign": ["error", { props: false }],
+      "@typescript-eslint/switch-exhaustiveness-check": "error",
+      "no-empty": ["error", { allowEmptyCatch: false }],
       "@typescript-eslint/no-unused-vars": [
         "error",
-        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "all", caughtErrorsIgnorePattern: "^_" },
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrors: "all",
+          caughtErrorsIgnorePattern: "^_",
+        },
       ],
+    },
+  },
+
+  {
+    files: ["**/*.js", "**/*.mjs", "**/*.cjs"],
+    extends: [js.configs.recommended],
+    languageOptions: { ecmaVersion: "latest", sourceType: "module" },
+    rules: {
+      "prefer-template": "error",
+      "prefer-const": ["error", { destructuring: "all" }],
+      "no-var": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
+      curly: ["error", "all"],
       "no-empty": ["error", { allowEmptyCatch: false }],
     },
   },
+
+  {
+    files: ["tools/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        Buffer: "readonly",
+        process: "readonly",
+        URL: "readonly",
+        setTimeout: "readonly",
+        setInterval: "readonly",
+        clearTimeout: "readonly",
+        clearInterval: "readonly",
+      },
+    },
+  },
+
   {
     files: ["src/**/*.ts"],
     rules: {
@@ -35,8 +92,28 @@ export default defineConfig(
           ],
         },
       ],
+      "@typescript-eslint/explicit-module-boundary-types": "error",
+      "no-console": "error",
     },
   },
+
+  {
+    files: ["tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unnecessary-condition": "off",
+      "@typescript-eslint/no-confusing-void-expression": "off",
+      "@typescript-eslint/no-empty-function": "off",
+      "@typescript-eslint/unbound-method": "off",
+    },
+  },
+
   {
     files: [
       "playground/react/**/*",

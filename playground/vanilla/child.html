@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>child frame</title>
+  <style>
+    body {
+      font: 13px/1.4 system-ui, sans-serif;
+      margin: 0.5rem;
+    }
+
+    code {
+      background: #eee;
+      padding: 0 0.2rem;
+    }
+  </style>
+</head>
+
+<body>
+  <strong>child frame</strong>
+  <div>role: <code id="role">resolving…</code></div>
+  <button type="button" id="child-log">log from the child</button>
+  <button type="button" id="child-journey">startJourney in the child</button>
+  <script type="module" src="./child.ts"></script>
+</body>
+
+</html>

@@ -21,6 +21,7 @@
     "dev": "concurrently -k \"npm:dev:*\"",
     "dev:vanilla": "vite",
     "dev:ingest": "node tools/mock-ingest-server.mjs",
+    "dev:cross-origin": "vite --config vite.cross-origin.config.ts",
     "build": "rimraf dist && tsc --project tsconfig.build.json && vite build",
     "build:watch": "vite build --watch",
     "lint": "eslint .",

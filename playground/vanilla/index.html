@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>ui-observability playground</title>
+  <style>
+    body {
+      font: 14px/1.5 system-ui, sans-serif;
+      margin: 2rem;
+      max-width: 60rem;
+    }
+
+    button {
+      margin: 0.25rem;
+      padding: 0.5rem 0.75rem;
+    }
+
+    iframe {
+      width: 100%;
+      height: 8rem;
+      border: 1px solid #ccc;
+      margin-top: 1rem;
+    }
+
+    pre {
+      background: #f4f4f4;
+      padding: 0.75rem;
+      overflow: auto;
+      max-height: 20rem;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>ui-observability playground</h1>
+  <p>Watch the terminal running <code>tools/mock-ingest-server.mjs</code>.</p>
+
+  <h2>Manual</h2>
+  <button type="button" id="info">info</button>
+  <button type="button" id="action">logAction</button>
+  <button type="button" id="metric">logMetric</button>
+  <button type="button" id="error">logger.error</button>
+
+  <h2>Journeys</h2>
+  <button type="button" id="journey-start">startJourney</button>
+  <button type="button" id="journey-end">endJourney</button>
+  <button type="button" id="open-window">open a second window carrying the journey token</button>
+
+  <h2>Auto-capture</h2>
+  <button type="button" id="throw">throw an uncaught error</button>
+  <button type="button" id="reject">unhandled rejection</button>
+  <button type="button" id="fetch-500">fetch a 404</button>
+  <button type="button" id="circular">log a circular object</button>
+
+  <h2>Durability</h2>
+  <button type="button" id="burst">250 logs in a burst</button>
+  <button type="button" id="offline">toggle forced 503 on the server</button>
+
+  <h2>Diagnostics</h2>
+  <pre id="diagnostics"></pre>
+
+  <h2>Child iframe (forwarder)</h2>
+  <iframe title="Child iframe (forwarder)" src="/playground/vanilla/child.html"></iframe>
+
+  <h2>Cross-origin child (forwarder over postMessage)</h2>
+  <iframe title="Cross-origin child (forwarder over postMessage)"
+    src="http://127.0.0.1:5174/playground/vanilla/child.html"></iframe>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+
+</html>
