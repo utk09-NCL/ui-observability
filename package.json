@@ -2,6 +2,7 @@
   "name": "ui-observability",
   "version": "1.0.0",
   "description": "UI observability and logging for browser, OpenFin and webview applications",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "engines": { "node": ">=20.19.0" },
