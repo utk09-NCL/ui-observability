@@ -4,32 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <title>ui-observability playground</title>
-  <style>
-    body {
-      font: 14px/1.5 system-ui, sans-serif;
-      margin: 2rem;
-      max-width: 60rem;
-    }
-
-    button {
-      margin: 0.25rem;
-      padding: 0.5rem 0.75rem;
-    }
-
-    iframe {
-      width: 100%;
-      height: 8rem;
-      border: 1px solid #ccc;
-      margin-top: 1rem;
-    }
-
-    pre {
-      background: #f4f4f4;
-      padding: 0.75rem;
-      overflow: auto;
-      max-height: 20rem;
-    }
-  </style>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 
 <body>
@@ -64,8 +39,15 @@
   <iframe title="Child iframe (forwarder)" src="/playground/vanilla/child.html"></iframe>
 
   <h2>Cross-origin child (forwarder over postMessage)</h2>
+  <!--
+    A different PORT is what makes this cross-origin, not a different host
+    name. Do not "fix" this back to 127.0.0.1: Vite binds the IPv6 loopback
+    [::1] by default, so the IPv4 spelling refuses the connection and the frame
+    fails to load at all, which looks like a bus failure and is not one.
+    This frame cannot read window.parent, so it must forward over postMessage.
+  -->
   <iframe title="Cross-origin child (forwarder over postMessage)"
-    src="http://127.0.0.1:5174/playground/vanilla/child.html"></iframe>
+    src="http://localhost:5174/playground/vanilla/child.html"></iframe>
 
   <script type="module" src="./main.ts"></script>
 </body>
