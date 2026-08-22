@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+.serena
+.claude
+.github/copilot-instructions.md
+.github/agents
+.venv
+
+# Build outputs
+dist
+build
+storybook-static
+
+# Testing
+coverage
+*.lcov
+PLAN.md
+TASKS.md
+TASK.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+musings
+
+# Turbo
+.turbo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log
+storybook-debug.log*
+pytest-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
