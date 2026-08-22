@@ -30,7 +30,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run lint && npm run build && npm test"
+    "verify": "npm run typecheck && npm run lint && npm run build && npm run test:coverage"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
