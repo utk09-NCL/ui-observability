@@ -15,92 +15,17 @@
 // diagnostics and falls back to a default, because a logger that throws while
 // being set up takes the application down with it.
 
+import {
+  CONFIG_SECTIONS,
+  DEFAULT_CONFIG,
+  SAMPLING_RATE_FALLBACK,
+  SAMPLING_RATE_MAX,
+  SAMPLING_RATE_MIN,
+  UNDEFAULTED_CONFIG_KEYS,
+  UNKNOWN_SERVICE_NAME,
+} from "../constants";
 import type { ObservabilityConfig, ResolvedConfig } from "../models/config";
 import type { Diagnostics } from "./diagnostics";
-
-const DEFAULTS: ResolvedConfig = {
-  endpoint: "",
-  serviceName: "",
-  serviceVersion: "",
-  environment: "",
-  enabled: true,
-  minLevel: "INFO",
-  streams: {
-    logs: { flushIntervalMs: 2000, batchSize: 100 },
-    // Metrics arrive from timers and web vitals at a steady trickle, and nobody
-    // is waiting for one. Batching them harder is most of the point of
-    // splitting the streams at all.
-    metrics: { flushIntervalMs: 10_000, batchSize: 500 },
-  },
-  maxConcurrentRequests: 2,
-  requestTimeoutMs: 15000,
-  compression: "gzip",
-  compressionThresholdBytes: 1024,
-  credentials: "include",
-  storage: {
-    strategy: "auto",
-    dbName: "UiObservability",
-    maxBatches: 500,
-    maxAgeMs: 24 * 60 * 60 * 1000,
-    maxAttempts: 5,
-  },
-  retry: { baseDelayMs: 2000, maxDelayMs: 60000, idleDelayMs: 30000 },
-  sampling: { defaultRate: 1, rates: {}, alwaysSampleTypes: ["action"] },
-  journey: { maxAgeMs: 30 * 60 * 1000, endOnOwnerClose: false, urlParam: "__uiobs_journey" },
-  bus: {
-    mode: "auto",
-    channelName: "ui_observability_control",
-    trustedOrigins: [],
-    handshakeTimeoutMs: 1500,
-    openFinHost: "provider",
-    openFinRole: "auto",
-    maxBootBufferRecords: 500,
-    orphanPolicy: "auto",
-    maxHandshakeAttempts: 3,
-  },
-  capture: {
-    errors: true,
-    rejections: true,
-    resourceErrors: false,
-    fetch: false,
-    xhr: false,
-    interactions: false,
-    navigation: false,
-    webVitals: false,
-    maxBreadcrumbs: 50,
-    ignoreUrls: [],
-    propagateTraceHeaderTo: [],
-    errorDedupeMs: 5000,
-  },
-  limits: {
-    maxBodyChars: 4096,
-    maxAttributeChars: 8192,
-    maxAttributeCount: 128,
-    maxStackChars: 8192,
-    maxDepth: 6,
-    maxArrayLength: 100,
-    maxRecordBytes: 32768,
-  },
-  console: { enabled: false, level: "DEBUG" },
-  // There is no default serializer because there is no serializer: the wire
-  // format lives at the transport boundary, which does not exist yet. Nothing
-  // reads this field, so a placeholder would only be a value no code can use.
-  // Final form:
-  //   serializer: otlpSerializer,
-};
-
-/** Merged rather than replaced, and identity-preserving on a reconfigure. */
-const SECTIONS = [
-  "streams",
-  "storage",
-  "retry",
-  "sampling",
-  "journey",
-  "bus",
-  "capture",
-  "limits",
-  "console",
-] as const;
 
 /**
  * Resolve a partial config into a fully populated one, reporting anything
@@ -121,7 +46,7 @@ export function resolveConfig(
   diagnostics: Diagnostics,
   previous?: ResolvedConfig,
 ): ResolvedConfig {
-  const base = previous ?? DEFAULTS;
+  const base = previous ?? DEFAULT_CONFIG;
 
   const merged: ResolvedConfig = {
     ...base,
@@ -167,9 +92,9 @@ export function resolveConfig(
   if (!merged.serviceName) {
     diagnostics.report(
       "config.invalid",
-      "serviceName is missing. Every record will report service.name as 'unknown-service'.",
+      `serviceName is missing. Every record will report service.name as '${UNKNOWN_SERVICE_NAME}'.`,
     );
-    merged.serviceName = "unknown-service";
+    merged.serviceName = UNKNOWN_SERVICE_NAME;
   }
 
   // Read as `unknown` on purpose. The declared type says these are numbers, and
@@ -177,16 +102,16 @@ export function resolveConfig(
   // or a null and this is the only place that will ever notice. Widening the
   // read is what keeps the guard a real check instead of dead code.
   const rate: unknown = merged.sampling.defaultRate;
-  if (typeof rate !== "number" || rate < 0 || rate > 1) {
+  if (typeof rate !== "number" || rate < SAMPLING_RATE_MIN || rate > SAMPLING_RATE_MAX) {
     diagnostics.report("config.invalid", `sampling.defaultRate must be 0..1, got ${String(rate)}`);
-    merged.sampling.defaultRate = 1;
+    merged.sampling.defaultRate = SAMPLING_RATE_FALLBACK;
   }
 
   const rates: [string, unknown][] = Object.entries(merged.sampling.rates);
   for (const [ns, r] of rates) {
-    if (typeof r !== "number" || r < 0 || r > 1) {
+    if (typeof r !== "number" || r < SAMPLING_RATE_MIN || r > SAMPLING_RATE_MAX) {
       diagnostics.report("config.invalid", `sampling.rates["${ns}"] must be 0..1, got ${String(r)}`);
-      merged.sampling.rates[ns] = 1;
+      merged.sampling.rates[ns] = SAMPLING_RATE_FALLBACK;
     }
   }
 
@@ -209,7 +134,7 @@ export function resolveConfig(
   // The failure this catches is otherwise impossible to debug: you write
   // `remoteUrl` instead of `endpoint`, every type checks out because the
   // argument is a `Partial`, and nothing is ever sent.
-  const known = new Set([...Object.keys(DEFAULTS), "redact", "onDiagnostic", "headers"]);
+  const known = new Set<string>([...Object.keys(DEFAULT_CONFIG), ...UNDEFAULTED_CONFIG_KEYS]);
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
       diagnostics.report("config.invalid", `unknown config key "${key}", ignored. Typo?`);
@@ -239,14 +164,17 @@ export function resolveConfig(
  */
 export function applyResolvedConfig(target: ResolvedConfig, next: ResolvedConfig): void {
   for (const key of Object.keys(next) as (keyof ResolvedConfig)[]) {
-    if ((SECTIONS as readonly string[]).includes(key)) {
+    // `as`, not `satisfies`. This has to widen the tuple so `includes` accepts
+    // any key; `satisfies` only checks the type and leaves it narrow, and then
+    // every non-section key is a type error at the call.
+    if ((CONFIG_SECTIONS as readonly string[]).includes(key)) {
       continue;
     }
     Object.assign(target, { [key]: next[key] });
   }
   // Sections are merged into the objects that are already there, so anything
   // holding a reference to one of them sees the new values.
-  for (const section of SECTIONS) {
+  for (const section of CONFIG_SECTIONS) {
     Object.assign(target[section] as object, next[section] as object);
   }
 }

@@ -1,6 +1,21 @@
 // src/utils/platform.ts
+import {
+  ANDROID_WEBVIEW_UA_PATTERN,
+  IOS_DEVICE_UA_PATTERN,
+  MACINTOSH_UA_PATTERN,
+  MOBILE_UA_PATTERN,
+  OPENFIN_UA_PATTERN,
+  SAFARI_UA_TOKEN,
+  WEBKIT_UA_TOKEN,
+} from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 
+/**
+ * Which kind of host this code is running in.
+ *
+ * Every record carries one of these, and dashboards split on it, so a wrong
+ * answer here is wrong data everywhere rather than a broken feature.
+ */
 export type PlatformType =
   | "openfin"
   | "openfin_web"
@@ -12,15 +27,29 @@ export type PlatformType =
   | "service_worker"
   | "node";
 
+/**
+ * What detection found out about this realm. Fixed for the realm's lifetime, which is why it is
+ * cached.
+ */
 export interface PlatformMetadata {
+  /** The host kind, decided once at first detection. */
   platform: PlatformType;
+  /** OpenFin application uuid, where there is one. */
   openfinUuid?: string;
+  /** OpenFin window or view name, where there is one. Unique within the application. */
   openfinName?: string;
+  /** Raw user agent, or an empty string in a host that has no navigator. */
   userAgent: string;
+  /** Whether this realm is a worker of any kind, and therefore has no DOM. */
   isWorker: boolean;
+  /** Whether this document is the top-level one rather than a frame. */
   isTopLevelDocument: boolean;
 }
 
+/**
+ * The global object as something indexable, since half of what detection looks for is not in any
+ * type definition.
+ */
 type Global = typeof globalThis & Record<string, unknown>;
 
 /**
@@ -56,6 +85,13 @@ interface FinLike {
   me?: { identity?: { uuid?: string; name?: string } };
 }
 
+/**
+ * Work out what this realm is, once, and remember the answer.
+ *
+ * Order matters in the chain below. Workers are tested first because a worker
+ * inside an OpenFin application is still a worker, and the OpenFin check is
+ * tested before the webview and Node ones for the same reason.
+ */
 export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
   if (cached) {
     return cached;
@@ -84,7 +120,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
   } else if (finMe !== undefined) {
     // Both the desktop runtime and the Core Web adapter expose `fin`. Only the
     // desktop runtime additionally stamps its user agent.
-    platform = /OpenFin/i.test(ua) ? "openfin" : "openfin_web";
+    platform = OPENFIN_UA_PATTERN.test(ua) ? "openfin" : "openfin_web";
     diagnostics.guard("capture.install_failed", "reading fin.me.identity", () => {
       const identity = finMe.identity;
       openfinUuid = identity?.uuid;
@@ -125,12 +161,12 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
  * dashboard split by platform is wrong for all iOS traffic.
  */
 function isWebView(ua: string): boolean {
-  if (/\bwv\b/.test(ua)) {
+  if (ANDROID_WEBVIEW_UA_PATTERN.test(ua)) {
     return true;
   }
   const ios =
-    /\b(iPhone|iPad|iPod)\b/.test(ua) || (/\bMacintosh\b/.test(ua) && /\bMobile\b/.test(ua));
-  return ios && ua.includes('AppleWebKit') && !ua.includes('Safari/');
+    IOS_DEVICE_UA_PATTERN.test(ua) || (MACINTOSH_UA_PATTERN.test(ua) && MOBILE_UA_PATTERN.test(ua));
+  return ios && ua.includes(WEBKIT_UA_TOKEN) && !ua.includes(SAFARI_UA_TOKEN);
 }
 
 /** Cross-origin access to window.top throws, and that itself proves we are framed. */
@@ -154,6 +190,7 @@ export function currentUrl(): string {
   }
 }
 
+/** Test seam. The cache is what makes a platform detected in one test file leak into the next. */
 export function resetPlatformCache(): void {
   cached = null;
 }

@@ -12,14 +12,44 @@
 // that is the most expensive line in the library, and it does nothing but
 // arithmetic.
 
+import {
+  BYTES_PER_BOOLEAN,
+  BYTES_PER_CONTAINER,
+  BYTES_PER_KEY_OVERHEAD,
+  BYTES_PER_NULL,
+  BYTES_PER_NUMBER,
+  BYTES_PER_QUOTED_STRING,
+  HIGH_SURROGATE_MAX,
+  HIGH_SURROGATE_MIN,
+  MAX_NODE_CLASS_NAMES,
+  UTF8_ONE_BYTE_CEILING,
+  UTF8_TWO_BYTE_CEILING,
+} from "../constants";
+
+/**
+ * The subset of the configured limits this module enforces, so a caller need not pass the whole
+ * config.
+ */
 export interface SanitizeLimits {
+  /** How far down to walk before returning a marker instead of recursing. */
   maxDepth: number;
+  /** How many items of an array, set or map to keep. The rest become a count. */
   maxArrayLength: number;
+  /** Longest a single string attribute may be. */
   maxAttributeChars: number;
+  /** How many keys of one object to keep. The rest become a count. */
   maxAttributeCount: number;
+  /**
+   * Longest a stack trace may be. Separate from `maxAttributeChars`, since a useful stack is longer
+   * than a useful string.
+   */
   maxStackChars: number;
 }
 
+/**
+ * Shorten a string to `max` characters, saying how much was dropped. Safe to hand any string,
+ * including one holding emoji.
+ */
 export function truncate(value: string, max: number): string {
   if (value.length <= max) {
     return value;
@@ -31,8 +61,12 @@ export function truncate(value: string, max: number): string {
   return `${value.slice(0, end)}… [truncated ${String(value.length - end)} chars]`;
 }
 
+/**
+ * Whether a UTF-16 code unit is the leading half of a surrogate pair, and therefore must not be the
+ * last one kept.
+ */
 function isHighSurrogate(code: number): boolean {
-  return code >= 0xd800 && code <= 0xdbff;
+  return code >= HIGH_SURROGATE_MIN && code <= HIGH_SURROGATE_MAX;
 }
 
 /**
@@ -45,17 +79,23 @@ interface NodeLike {
   className?: unknown;
 }
 
+/**
+ * A DOM node as a short CSS-like selector, which is what someone reading the log actually wants.
+ * Never serialize the node itself.
+ */
 function describeNode(node: NodeLike): string {
   const tag = (node.nodeName ?? "NODE").toLowerCase();
   const id = node.id ? `#${node.id}` : "";
   const cls =
     typeof node.className === "string" && node.className
-      ? `.${node.className.trim().split(/\s+/).slice(0, 3).join(".")}`
+      ? `.${node.className.trim().split(/\s+/).slice(0, MAX_NODE_CLASS_NAMES).join(".")}`
       : "";
   return `[Element ${tag}${id}${cls}]`;
 }
 
+/** A sanitized value and what it is expected to cost on the wire. */
 export interface SanitizeResult {
+  /** The JSON-safe value. Guaranteed to survive `JSON.stringify` without throwing. */
   value: unknown;
   /**
    * Roughly how many bytes the result will serialize to.
@@ -67,6 +107,9 @@ export interface SanitizeResult {
   bytes: number;
 }
 
+/**
+ * The running byte total, carried through the walk by reference so a recursive call can add to it.
+ */
 interface SizeState {
   bytes: number;
 }
@@ -88,10 +131,18 @@ export function sanitizeWithSize(value: unknown, limits: SanitizeLimits): Saniti
 
 /** Count a value that is already in its final form, and hand it back. */
 function counted(text: string, state: SizeState): string {
-  state.bytes += estimateBytes(text) + 2;
+  state.bytes += estimateBytes(text) + BYTES_PER_QUOTED_STRING;
   return text;
 }
 
+/**
+ * The recursive worker: one value in, one JSON-safe value out, with its size
+ * added to `state` on the way.
+ *
+ * `seen` holds the current ancestor chain rather than everything visited, which
+ * is what makes a genuine cycle a `[Circular]` marker while the same object
+ * appearing twice as a sibling is serialized twice, as it should be.
+ */
 function walk(
   value: unknown,
   limits: SanitizeLimits,
@@ -100,7 +151,7 @@ function walk(
   state: SizeState,
 ): unknown {
   if (value === null || value === undefined) {
-    state.bytes += 4;
+    state.bytes += BYTES_PER_NULL;
     return value;
   }
 
@@ -111,12 +162,12 @@ function walk(
     return counted(truncate(value, limits.maxAttributeChars), state);
   }
   if (typeof value === "number") {
-    state.bytes += 8;
+    state.bytes += BYTES_PER_NUMBER;
     // NaN and the infinities are not representable in JSON.
     return Number.isFinite(value) ? value : String(value);
   }
   if (typeof value === "boolean") {
-    state.bytes += 5;
+    state.bytes += BYTES_PER_BOOLEAN;
     return value;
   }
   if (typeof value === "bigint") {
@@ -137,7 +188,7 @@ function walk(
     return counted("[Circular]", state);
   }
   seen.add(value);
-  state.bytes += 2;
+  state.bytes += BYTES_PER_CONTAINER;
 
   try {
     if (value instanceof Error) {
@@ -168,7 +219,7 @@ function walk(
         }
         shown++;
         const name = String(key);
-        state.bytes += estimateBytes(name) + 4;
+        state.bytes += estimateBytes(name) + BYTES_PER_KEY_OVERHEAD;
         out[name] = walk(entry, limits, seen, depth + 1, state);
       }
       return out;
@@ -226,7 +277,7 @@ function walk(
         break;
       }
       count++;
-      state.bytes += estimateBytes(key) + 4;
+      state.bytes += estimateBytes(key) + BYTES_PER_KEY_OVERHEAD;
       out[key] = walk(record[key], limits, seen, depth + 1, state);
     }
     return out;
@@ -248,11 +299,11 @@ export function estimateBytes(value: string): number {
   let bytes = 0;
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
-    if (code < 0x80) {
+    if (code < UTF8_ONE_BYTE_CEILING) {
       bytes += 1;
-    } else if (code < 0x800) {
+    } else if (code < UTF8_TWO_BYTE_CEILING) {
       bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff) {
+    } else if (code >= HIGH_SURROGATE_MIN && code <= HIGH_SURROGATE_MAX) {
       // A surrogate pair is four bytes in UTF-8, and its low half must not be
       // counted again on the next iteration.
       bytes += 4;

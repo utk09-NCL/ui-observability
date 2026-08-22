@@ -10,9 +10,16 @@
 // statements in front of a coverage gate that admits no exceptions. Types alone
 // compile to an empty module, so this file costs nothing in the meantime.
 //
-// Final form: adds `LogType`, `MetricType`, `SEVERITY_NUMBER`, `LEVEL_ORDER`,
-// `nowUnixNano()` and `isLogRecord()` beside the declarations below.
+// Final form: adds `LogType`, `MetricType`, `nowUnixNano()` and `isLogRecord()`
+// beside the declarations below. The two tables that go with them,
+// `SEVERITY_NUMBER` and `LEVEL_ORDER`, are constants and belong in
+// `src/constants.ts` with everything else of that kind.
 
+/**
+ * Severity, from the OpenTelemetry set.
+ * Ordered, so a configured minimum can be a comparison rather
+ * than a lookup.
+ */
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
 
 /**
@@ -22,14 +29,26 @@ export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
  * changing the wire format never touches the pipeline.
  */
 export interface LogRecord {
+  /**
+   * When the event happened, in nanoseconds since the epoch. A string, because the number exceeds
+   * what a double holds exactly.
+   */
   timeUnixNano: string;
+  /** When this library saw the event, where that differs from when it happened. */
   observedTimeUnixNano?: string;
+  /** Correlates this record with the rest of one distributed operation. */
   traceId: string;
+  /** The span within that trace this record belongs to. */
   spanId: string;
+  /** OpenTelemetry trace flags, of which only the sampled bit is in use. */
   traceFlags: number;
+  /** `severityText` as its OpenTelemetry number, which is what backends sort and filter on. */
   severityNumber: number;
+  /** The level this record was logged at. */
   severityText: LogLevel;
+  /** The message. */
   body: string;
+  /** Everything structured about this one record. Sanitized and size-capped before it gets here. */
   attributes: Record<string, unknown>;
   /** identical for every record from one context, hoisted by the serializer */
   resource: Record<string, unknown>;

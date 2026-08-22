@@ -12,6 +12,15 @@
 // window, while counting is never throttled, so a throttled code still reports
 // its true total on the next event that gets through and in `snapshot()`.
 
+import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
+
+/**
+ * Every fault this library can report, as a closed set.
+ *
+ * A closed set rather than free-form strings, because these codes are what a
+ * consumer alerts and dashboards on. A typo in a string would be an alert that
+ * silently never fires.
+ */
 export type DiagnosticCode =
   | "config.invalid"
   | "config.reconfigured"
@@ -48,10 +57,15 @@ export type DiagnosticCode =
   | "capture.rate_limited"
   | "handler.threw";
 
+/** One fault, as it reaches the consumer's handler. */
 export interface DiagnosticEvent {
+  /** Which fault, from the closed set above. Alert on this, not on the message. */
   code: DiagnosticCode;
+  /** Human-readable detail. Free-form, and it may change between versions. */
   message: string;
+  /** Structured context, where there is any worth attaching. */
   detail?: Record<string, unknown>;
+  /** The error or rejected value behind this, when one exists. */
   cause?: unknown;
   /** epoch ms */
   at: number;
@@ -59,6 +73,10 @@ export interface DiagnosticEvent {
   count: number;
 }
 
+/**
+ * What a consumer passes as `onDiagnostic`. It must not throw, and it is not trusted to keep that
+ * promise.
+ */
 export type DiagnosticHandler = (event: DiagnosticEvent) => void;
 
 /**
@@ -70,12 +88,17 @@ export class Diagnostics {
   private readonly counters = new Map<DiagnosticCode, number>();
   private readonly lastEmitted = new Map<DiagnosticCode, number>();
 
+  /**
+   * Usable with no handler at all, which is what makes the counters work before a consumer
+   * configures anything.
+   */
   constructor(
     private handler?: DiagnosticHandler,
     /** per code, at most one emission in this window. Counting is never throttled. */
-    private readonly throttleMs = 1000,
+    private readonly throttleMs = DIAGNOSTIC_THROTTLE_MS,
   ) {}
 
+  /** Swap the consumer's handler, or drop it by passing nothing. Called on every reconfigure. */
   setHandler(handler?: DiagnosticHandler): void {
     this.handler = handler;
   }
@@ -91,6 +114,13 @@ export class Diagnostics {
     return total;
   }
 
+  /**
+   * Count this fault and, unless the code is inside its throttle window, hand
+   * it to the consumer's handler.
+   *
+   * This is the one method every catch block in the library calls. It never
+   * throws, including when the handler does.
+   */
   report(
     code: DiagnosticCode,
     message: string,
@@ -129,7 +159,7 @@ export class Diagnostics {
       // rather than assumed.
       if (typeof console !== "undefined") {
         // eslint-disable-next-line no-console -- last-resort sink for a consumer diagnostic handler that itself threw, since reporting it would call that same handler again and recurse
-        console.warn("[ui-observability] onDiagnostic handler threw", handlerError);
+        console.warn(`${LIBRARY_LOG_PREFIX} onDiagnostic handler threw`, handlerError);
       }
     }
   }
@@ -147,6 +177,10 @@ export class Diagnostics {
     }
   }
 
+  /**
+   * As `guard`, for a boundary that returns a promise. A rejection reports rather than escaping as
+   * an unhandled one.
+   */
   async guardAsync<T>(
     code: DiagnosticCode,
     message: string,
@@ -165,6 +199,10 @@ export class Diagnostics {
     return Object.fromEntries(this.counters);
   }
 
+  /**
+   * Forget every count and every throttle window, so the next report emits immediately. Mostly a
+   * test seam.
+   */
   reset(): void {
     this.counters.clear();
     this.lastEmitted.clear();
