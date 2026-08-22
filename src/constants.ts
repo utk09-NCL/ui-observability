@@ -227,6 +227,251 @@ export const SEVERITY_NUMBER: Record<LogLevel, number> = {
 export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 
 // ----------------------------------
+// Attribute and resource keys
+// ----------------------------------
+//
+// The names records carry on the wire. They are constants because the record
+// builder writes them and the serializers read them back by name, so a typo in
+// either place is a field that silently stops arriving rather than a build
+// error. Dotted names follow the OpenTelemetry semantic conventions wherever
+// one exists, and the `uiobs.` prefix marks the few that are this library
+// talking about its own behaviour.
+
+/** What kind of thing the record describes. Dashboards split on it and sampling rates are keyed by it. */
+export const ATTR_LOG_TYPE = "log.type";
+
+/**
+ * Position of this record in its context's own stream.
+ *
+ * Monotonic within one `context.id` and meaningless across two, which is the
+ * strongest ordering a browser can offer: timestamps are client clocks and can
+ * be skewed or move backwards.
+ */
+export const ATTR_LOG_SEQ = "log.seq";
+
+/** Which logger, and therefore which part of a composed application, emitted the record. */
+export const ATTR_APP_NAMESPACE = "app.namespace";
+
+/**
+ * The document URL at the moment the record was built.
+ *
+ * An attribute rather than a resource field, because it changes on every route
+ * change in a single-page application, and a resource field is by definition
+ * identical for every record from one context.
+ */
+export const ATTR_PAGE_URL = "page.url";
+
+/**
+ * The target of the HTTP request a record is about, owned by the network capture.
+ *
+ * Deliberately distinct from `ATTR_PAGE_URL`. This is the OpenTelemetry name
+ * for the request being described, so stamping the page URL over it rewrites
+ * every captured request to the page it was made from and leaves the real
+ * target only inside the body string.
+ */
+export const ATTR_URL_FULL = "url.full";
+
+/** The journey this record belongs to, which is what correlates records across windows. */
+export const ATTR_JOURNEY_ID = "journey.id";
+
+/** The journey's human-readable name, carried so a backend query does not need a second lookup. */
+export const ATTR_JOURNEY_NAME = "journey.name";
+
+/** The journey this one branched from, present only on a journey started as a child. */
+export const ATTR_JOURNEY_PARENT_ID = "journey.parent_id";
+
+/** Marks a record whose attributes could not be sanitized, so the gap is visible rather than silent. */
+export const ATTR_SANITIZE_FAILED = "uiobs.sanitize_failed";
+
+/** Marks a record whose attributes were dropped for exceeding the per-record byte budget. */
+export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
+
+/** How many bytes those dropped attributes measured, which is what makes the budget tunable with evidence. */
+export const ATTR_ATTRIBUTES_BYTES = "uiobs.attributes_bytes";
+
+/** The application these records come from. Every backend groups on it first. */
+export const RESOURCE_SERVICE_NAME = "service.name";
+
+/** The build of that application, which is what makes a spike in errors attributable to a release. */
+export const RESOURCE_SERVICE_VERSION = "service.version";
+
+/** Which deployment the records come from, so production and staging do not share a dashboard. */
+export const RESOURCE_DEPLOYMENT_ENVIRONMENT = "deployment.environment";
+
+/** Identifies this library as the producer, which is how a collector tells our records from a backend agent's. */
+export const RESOURCE_TELEMETRY_SDK_NAME = "telemetry.sdk.name";
+
+/** The version of this library that produced the record, which is what makes a client-side regression datable. */
+export const RESOURCE_TELEMETRY_SDK_VERSION = "telemetry.sdk.version";
+
+/** The language the producing SDK is written in, fixed by the OpenTelemetry conventions rather than chosen. */
+export const RESOURCE_TELEMETRY_SDK_LANGUAGE = "telemetry.sdk.language";
+
+/** Which kind of host the records came from: a browser, a webview, or an OpenFin runtime. */
+export const RESOURCE_HOST_PLATFORM = "host.platform";
+
+/** One visit to this origin, shared by every tab in it. */
+export const RESOURCE_SESSION_ID = "session.id";
+
+/** One tab, OpenFin window or OpenFin view, surviving a reload. */
+export const RESOURCE_TAB_ID = "tab.id";
+
+/** One realm. Two iframes of the same tab differ here and nowhere else. */
+export const RESOURCE_CONTEXT_ID = "context.id";
+
+/** The raw user agent, kept so a platform detection this library got wrong stays diagnosable after the fact. */
+export const RESOURCE_BROWSER_USER_AGENT = "browser.user_agent";
+
+/** The OpenFin application uuid, present only on a desktop runtime. */
+export const RESOURCE_OPENFIN_UUID = "openfin.uuid";
+
+/** The OpenFin window or view name, present only on a desktop runtime. */
+export const RESOURCE_OPENFIN_NAME = "openfin.name";
+
+/** The value of `telemetry.sdk.name`: this package, as a collector sees it. */
+export const TELEMETRY_SDK_NAME = "ui-observability";
+
+/**
+ * The value of `telemetry.sdk.version`.
+ *
+ * A literal rather than a read of package.json, which cannot be imported
+ * without pulling a JSON module into the bundle and pinning the published
+ * package's shape. It therefore has to be bumped by hand alongside the version
+ * in package.json, and this is the note saying so.
+ */
+export const TELEMETRY_SDK_VERSION = "1.0.0";
+
+/** The value of `telemetry.sdk.language`, fixed by the OpenTelemetry conventions as the name for browser JavaScript. */
+export const TELEMETRY_SDK_LANGUAGE = "webjs";
+
+// ----------------------------------
+// Journey
+// ----------------------------------
+
+/**
+ * sessionStorage key holding the journey this context is in.
+ *
+ * sessionStorage rather than localStorage, and the choice is load bearing: a
+ * journey belongs to one tab, so a localStorage key would hand one tab's
+ * finished journey to every other tab on the origin. Compare `SESSION_ID_KEY`,
+ * which is localStorage for exactly the opposite reason.
+ */
+export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
+
+/**
+ * Longest journey name a token carries.
+ *
+ * A token rides in a query string, which is the one channel with a hard length
+ * limit, proxy truncation and access-log noise. The name is the only free-form
+ * field in it and therefore the only one that needs a cap. The untruncated name
+ * survives in what is persisted and on every record, so this costs nothing
+ * outside the token.
+ */
+export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
+
+/**
+ * Cap on a whole token, past which no token is issued at all.
+ *
+ * Three fields and a capped name cannot reach this, so this firing means the
+ * encoder grew a field rather than that a caller did anything wrong. It is a
+ * tripwire on the query-string budget, not input validation.
+ */
+export const JOURNEY_TOKEN_MAX_CHARS = 256;
+
+/**
+ * Key under an OpenFin window's `customData` that carries a seeded journey token.
+ *
+ * A window a platform provider creates has no URL of its own to read a token
+ * from, so `customData` is the seeding channel there. The consumer code that
+ * writes it when creating the window and the code that reads it here have to
+ * agree on this spelling, and nothing else checks that they do.
+ */
+export const OPENFIN_JOURNEY_CUSTOM_DATA_KEY = "uiObsJourney";
+
+/**
+ * The `+` of standard base64, which is `-` in the URL-safe alphabet.
+ *
+ * These five patterns are module-level despite the `g` flag, which is safe:
+ * `String.prototype.replace` resets `lastIndex` on a global regex before it
+ * runs, so a shared instance carries no state between calls. That is not true
+ * of `test` and `exec`, which is why nothing here is used with them.
+ */
+export const BASE64_PLUS_PATTERN = /\+/g;
+
+/** The `/` of standard base64, which is `_` in the URL-safe alphabet. */
+export const BASE64_SLASH_PATTERN = /\//g;
+
+/** Trailing `=` padding, dropped from a URL-safe token and recomputed on the way back. */
+export const BASE64_PADDING_PATTERN = /=+$/;
+
+/** The `-` of the URL-safe alphabet, which is `+` in standard base64. */
+export const BASE64URL_DASH_PATTERN = /-/g;
+
+/** The `_` of the URL-safe alphabet, which is `/` in standard base64. */
+export const BASE64URL_UNDERSCORE_PATTERN = /_/g;
+
+/** Base64 spends four characters on every three bytes, so a short final group is padded back to four. */
+export const BASE64_GROUP_CHARS = 4;
+
+// ----------------------------------
+// Tracing
+// ----------------------------------
+
+/** Width of a W3C trace id: sixteen bytes, thirty-two hex characters. */
+export const TRACE_ID_BYTES = 16;
+
+/** Width of a W3C span id: eight bytes, sixteen hex characters. */
+export const SPAN_ID_BYTES = 8;
+
+/**
+ * How long one ambient trace lives before it rotates on its own.
+ *
+ * A trace id is not minted per record. Records that share one hold together as
+ * a single trace in the backend, which is the entire value of the field, so the
+ * id rotates on meaningful boundaries: a click, a route change, an explicit
+ * call, and failing all of those, this age. The cap exists because a tab left
+ * open all day would otherwise pile a week of records into one trace.
+ */
+export const TRACE_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * trace-flags with the sampled bit set.
+ *
+ * Every record this library emits has already survived sampling by the time it
+ * is built, so an unsampled flag would tell the backend to discard something
+ * this library deliberately kept.
+ */
+export const TRACE_FLAGS_SAMPLED = 1;
+
+/**
+ * trace-flags is one byte on the wire, so the field is masked to eight bits before it is printed.
+ *
+ * The mask matters rather than being decoration: the field is a bitfield whose
+ * further bits are already defined, and collapsing it to sampled or not
+ * silently discards every other flag an upstream tracer set.
+ */
+export const TRACE_FLAGS_MASK = 0xff;
+
+/** The only `traceparent` version defined so far, and the prefix of every header this library writes. */
+export const TRACEPARENT_VERSION = "00";
+
+// ----------------------------------
+// Breadcrumbs
+// ----------------------------------
+
+/**
+ * Smallest breadcrumb buffer that still functions.
+ *
+ * The buffer is a ring whose write pointer advances modulo the capacity, and
+ * modulo zero is NaN, so a capacity of zero does not store nothing, it writes
+ * every crumb to index NaN and reads none of them back. A consumer asking for
+ * zero breadcrumbs is asking to turn a feature off, which is what the capture
+ * flags are for, so the capacity clamps to this rather than throwing out of a
+ * constructor that runs inside `configure()`.
+ */
+export const BREADCRUMB_MIN_CAPACITY = 1;
+
+// ----------------------------------
 // Configuration
 // ----------------------------------
 

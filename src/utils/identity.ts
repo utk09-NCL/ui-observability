@@ -20,11 +20,40 @@ export interface Identity {
 }
 
 /**
+ * Random bytes as a lower-case hex string, from the strongest source this
+ * context actually offers.
+ *
+ * Two sources, because `crypto.getRandomValues` is absent often enough to
+ * matter: ids are needed in sandboxes and insecure contexts too, and there is
+ * nothing to fall back to after `Math.random`. The fallback is genuinely weaker
+ * and that is accepted deliberately. These ids identify a session, a tab and a
+ * trace so that records can be grouped; none of them is a secret, and an id
+ * that is merely unlikely to collide beats no logging at all.
+ *
+ * Shared with tracing, which needs the same bytes at two other widths. One
+ * implementation means one place where the source of randomness is chosen, so
+ * a context that has to take the fallback takes it for every id alike.
+ *
+ * @param byteLength How many random bytes to draw. The result is twice this many characters.
+ */
+export function randomHex(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < byteLength; i++) {
+      bytes[i] = Math.floor(Math.random() * BYTE_VALUE_COUNT);
+    }
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
  * A random id, from the strongest source this context actually offers.
  *
- * Three sources in descending order, because the first two are absent or
- * blocked often enough to matter: an id is needed in sandboxes and insecure
- * contexts too, and there is nothing to fall back to after this.
+ * Prefers `crypto.randomUUID` and falls back to hex bytes, because
+ * `randomUUID` is absent or blocked often enough to matter and a UUID is the
+ * form a consumer correlating these ids by hand expects to see.
  */
 export function newId(): string {
   try {
@@ -35,15 +64,7 @@ export function newId(): string {
     // Some sandboxed contexts expose crypto but forbid randomUUID, and they
     // throw on the call rather than leaving the method absent.
   }
-  const bytes = new Uint8Array(ID_BYTE_LENGTH);
-  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < ID_BYTE_LENGTH; i++) {
-      bytes[i] = Math.floor(Math.random() * BYTE_VALUE_COUNT);
-    }
-  }
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return randomHex(ID_BYTE_LENGTH);
 }
 
 /**
