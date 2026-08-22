@@ -1,5 +1,6 @@
 import js from "@eslint/js";
 import { defineConfig, globalIgnores } from "eslint/config";
+import eslintConfigPrettier from "eslint-config-prettier";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
@@ -85,7 +86,16 @@ export default defineConfig(
         {
           patterns: [
             {
-              group: ["react", "react-dom", "react/*", "@angular/*", "vue", "svelte", "preact", "preact/*"],
+              group: [
+                "react",
+                "react-dom",
+                "react/*",
+                "@angular/*",
+                "vue",
+                "svelte",
+                "preact",
+                "preact/*",
+              ],
               message:
                 "src/ is framework-agnostic. Framework code belongs in a playground example, which consumes the public API.",
             },
@@ -128,11 +138,14 @@ export default defineConfig(
           patterns: [
             {
               group: ["**/src/*", "**/../src", "ui-observability/dist/*"],
-              message: "Examples import the package by name. Deep imports prove nothing about the published API.",
+              message:
+                "Examples import the package by name. Deep imports prove nothing about the published API.",
             },
           ],
         },
       ],
     },
   },
+
+  eslintConfigPrettier,
 );

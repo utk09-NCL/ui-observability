@@ -35,38 +35,36 @@
 // away. The two files share no module, so this helper is duplicated rather
 // than pulling a third file into a two-file harness for four lines.
 const el = (selector: string): Element => {
-	const found = document.querySelector(selector);
-	if (!found) {
-		throw new Error(`playground child: no element matches ${selector}`);
-	}
-	return found;
+  const found = document.querySelector(selector);
+  if (!found) {
+    throw new Error(`playground child: no element matches ${selector}`);
+  }
+  return found;
 };
 
 const roleEl = el("#role");
 const baseRole = "unresolved, the bus does not exist yet";
 
 const showChildState = (detail: string) => {
-	roleEl.textContent = detail ? `${baseRole} (${detail})` : baseRole;
+  roleEl.textContent = detail ? `${baseRole} (${detail})` : baseRole;
 };
 
 showChildState("");
 
 el("#child-log").addEventListener("click", () => {
-	// Final form: log.logAction("CHILD_CLICK", { at: Date.now() })
-	// The bus is what carries that record into the parent's request, where it
-	// should arrive tagged with this frame's own context id but the parent's
-	// tab id. That pairing is the evidence forwarding actually happened.
-	showChildState(
-		`CHILD_CLICK at ${String(Date.now())}, waiting on the bus to forward it`,
-	);
+  // Final form: log.logAction("CHILD_CLICK", { at: Date.now() })
+  // The bus is what carries that record into the parent's request, where it
+  // should arrive tagged with this frame's own context id but the parent's
+  // tab id. That pairing is the evidence forwarding actually happened.
+  showChildState(`CHILD_CLICK at ${String(Date.now())}, waiting on the bus to forward it`);
 });
 el("#child-journey").addEventListener("click", () => {
-	// Final form: startJourney("started-in-the-child")
-	// A same-origin child shares sessionStorage with its parent, so starting a
-	// journey here overwrites the parent's. That is intended: a journey is a
-	// property of the user's task, not of the document that happened to start
-	// it, and every window on the origin should adopt it.
-	showChildState("startJourney: waiting on the journey engine and the bus");
+  // Final form: startJourney("started-in-the-child")
+  // A same-origin child shares sessionStorage with its parent, so starting a
+  // journey here overwrites the parent's. That is intended: a journey is a
+  // property of the user's task, not of the document that happened to start
+  // it, and every window on the origin should adopt it.
+  showChildState("startJourney: waiting on the journey engine and the bus");
 });
 
 // Once forwarding works, a heartbeat here lets you watch records arrive in the

@@ -1,55 +1,55 @@
 <!doctype html>
 <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ui-observability playground</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
 
-<head>
-  <meta charset="utf-8" />
-  <title>ui-observability playground</title>
-  <link rel="stylesheet" href="./style.css" />
-</head>
+  <body>
+    <h1>ui-observability playground</h1>
+    <p>Watch the terminal running <code>tools/mock-ingest-server.mjs</code>.</p>
 
-<body>
-  <h1>ui-observability playground</h1>
-  <p>Watch the terminal running <code>tools/mock-ingest-server.mjs</code>.</p>
+    <h2>Manual</h2>
+    <button type="button" id="info">info</button>
+    <button type="button" id="action">logAction</button>
+    <button type="button" id="metric">logMetric</button>
+    <button type="button" id="error">logger.error</button>
 
-  <h2>Manual</h2>
-  <button type="button" id="info">info</button>
-  <button type="button" id="action">logAction</button>
-  <button type="button" id="metric">logMetric</button>
-  <button type="button" id="error">logger.error</button>
+    <h2>Journeys</h2>
+    <button type="button" id="journey-start">startJourney</button>
+    <button type="button" id="journey-end">endJourney</button>
+    <button type="button" id="open-window">open a second window carrying the journey token</button>
 
-  <h2>Journeys</h2>
-  <button type="button" id="journey-start">startJourney</button>
-  <button type="button" id="journey-end">endJourney</button>
-  <button type="button" id="open-window">open a second window carrying the journey token</button>
+    <h2>Auto-capture</h2>
+    <button type="button" id="throw">throw an uncaught error</button>
+    <button type="button" id="reject">unhandled rejection</button>
+    <button type="button" id="fetch-500">fetch a 404</button>
+    <button type="button" id="circular">log a circular object</button>
 
-  <h2>Auto-capture</h2>
-  <button type="button" id="throw">throw an uncaught error</button>
-  <button type="button" id="reject">unhandled rejection</button>
-  <button type="button" id="fetch-500">fetch a 404</button>
-  <button type="button" id="circular">log a circular object</button>
+    <h2>Durability</h2>
+    <button type="button" id="burst">250 logs in a burst</button>
+    <button type="button" id="offline">toggle forced 503 on the server</button>
 
-  <h2>Durability</h2>
-  <button type="button" id="burst">250 logs in a burst</button>
-  <button type="button" id="offline">toggle forced 503 on the server</button>
+    <h2>Diagnostics</h2>
+    <pre id="diagnostics"></pre>
 
-  <h2>Diagnostics</h2>
-  <pre id="diagnostics"></pre>
+    <h2>Child iframe (forwarder)</h2>
+    <iframe title="Child iframe (forwarder)" src="/playground/vanilla/child.html"></iframe>
 
-  <h2>Child iframe (forwarder)</h2>
-  <iframe title="Child iframe (forwarder)" src="/playground/vanilla/child.html"></iframe>
-
-  <h2>Cross-origin child (forwarder over postMessage)</h2>
-  <!--
+    <h2>Cross-origin child (forwarder over postMessage)</h2>
+    <!--
     A different PORT is what makes this cross-origin, not a different host
     name. Do not "fix" this back to 127.0.0.1: Vite binds the IPv6 loopback
     [::1] by default, so the IPv4 spelling refuses the connection and the frame
     fails to load at all, which looks like a bus failure and is not one.
     This frame cannot read window.parent, so it must forward over postMessage.
   -->
-  <iframe title="Cross-origin child (forwarder over postMessage)"
-    src="http://localhost:5174/playground/vanilla/child.html"></iframe>
+    <iframe
+      title="Cross-origin child (forwarder over postMessage)"
+      src="http://localhost:5174/playground/vanilla/child.html"
+    ></iframe>
 
-  <script type="module" src="./main.ts"></script>
-</body>
-
+    <script type="module" src="./main.ts"></script>
+  </body>
 </html>

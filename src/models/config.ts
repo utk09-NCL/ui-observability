@@ -305,7 +305,8 @@ export interface ObservabilityConfig {
    * Extra request headers, or a function returning them. Use the function form for anything that
    * expires, such as a token.
    */
-  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  headers?:
+    Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
 
   /** Where undelivered records wait. */
   storage?: Partial<StorageOptions>;

@@ -16,8 +16,7 @@ const limits: SanitizeLimits = {
   maxStackChars: 100,
 };
 
-const asRecord = (value: unknown): Record<string, unknown> =>
-  value as Record<string, unknown>;
+const asRecord = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 
 describe("truncate", () => {
   it("returns a string that is already within the limit untouched", () => {
@@ -172,9 +171,7 @@ describe("sanitize structures", () => {
   });
 
   it("formats a Date as an ISO string and a RegExp as its source", () => {
-    expect(sanitize(new Date("2026-08-22T00:00:00.000Z"), limits)).toBe(
-      "2026-08-22T00:00:00.000Z",
-    );
+    expect(sanitize(new Date("2026-08-22T00:00:00.000Z"), limits)).toBe("2026-08-22T00:00:00.000Z");
     expect(sanitize(/ab+c/gi, limits)).toBe("/ab+c/gi");
   });
 
@@ -281,7 +278,6 @@ describe("sanitize DOM nodes", () => {
     // rather than throwing on `instanceof undefined`.
     expect(sanitize({ a: 1 }, limits)).toEqual({ a: 1 });
   });
-
 });
 
 describe("sanitizeWithSize", () => {

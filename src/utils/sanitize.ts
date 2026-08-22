@@ -195,7 +195,9 @@ function walk(
       return {
         name: counted(value.name, state),
         message: counted(truncate(value.message, limits.maxAttributeChars), state),
-        stack: value.stack ? counted(truncate(value.stack, limits.maxStackChars), state) : undefined,
+        stack: value.stack
+          ? counted(truncate(value.stack, limits.maxStackChars), state)
+          : undefined,
         cause: value.cause ? walk(value.cause, limits, seen, depth + 1, state) : undefined,
       };
     }

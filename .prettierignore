@@ -1,0 +1,10 @@
+# Generated or installed. Nothing here is hand-edited, and package-lock.json is rewritten by npm on every install
+
+dist
+build
+coverage
+node_modules
+**/node_modules
+package-lock.json
+playground/**/.angular
+storybook-static

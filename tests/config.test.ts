@@ -22,8 +22,7 @@ function collect(): { events: DiagnosticEvent[]; diagnostics: Diagnostics } {
   return { events, diagnostics };
 }
 
-const messages = (events: DiagnosticEvent[]): string[] =>
-  events.map((event) => event.message);
+const messages = (events: DiagnosticEvent[]): string[] => events.map((event) => event.message);
 
 /** A config that resolves cleanly, so a test can assert on silence. */
 const valid = (): Partial<ObservabilityConfig> => ({
@@ -74,10 +73,7 @@ describe("resolveConfig", () => {
   it("reports an endpoint that is not an absolute URL, and passes the parse error as the cause", () => {
     const { events, diagnostics } = collect();
 
-    const resolved = resolveConfig(
-      { endpoint: "/v1/logs", serviceName: "checkout" },
-      diagnostics,
-    );
+    const resolved = resolveConfig({ endpoint: "/v1/logs", serviceName: "checkout" }, diagnostics);
 
     expect(messages(events)[0]).toContain("not a valid absolute URL");
     expect(events[0].cause).toBeInstanceOf(Error);
@@ -131,10 +127,7 @@ describe("resolveConfig", () => {
     it("accepts a rate inside the range and reports nothing", () => {
       const { events, diagnostics } = collect();
 
-      const resolved = resolveConfig(
-        { ...valid(), sampling: { defaultRate: 0.25 } },
-        diagnostics,
-      );
+      const resolved = resolveConfig({ ...valid(), sampling: { defaultRate: 0.25 } }, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(0.25);
       expect(events).toEqual([]);
@@ -156,10 +149,7 @@ describe("resolveConfig", () => {
     it("falls back to 1 when the rate is below zero", () => {
       const { events, diagnostics } = collect();
 
-      const resolved = resolveConfig(
-        { ...valid(), sampling: { defaultRate: -1 } },
-        diagnostics,
-      );
+      const resolved = resolveConfig({ ...valid(), sampling: { defaultRate: -1 } }, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(1);
       expect(messages(events)[0]).toContain("got -1");
@@ -168,10 +158,7 @@ describe("resolveConfig", () => {
     it("falls back to 1 when the rate is above one", () => {
       const { events, diagnostics } = collect();
 
-      const resolved = resolveConfig(
-        { ...valid(), sampling: { defaultRate: 2 } },
-        diagnostics,
-      );
+      const resolved = resolveConfig({ ...valid(), sampling: { defaultRate: 2 } }, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(1);
       expect(messages(events)[0]).toContain("got 2");
@@ -220,10 +207,7 @@ describe("resolveConfig", () => {
       const { diagnostics } = collect();
       const rates = { "app.blotter": 5 };
 
-      const resolved = resolveConfig(
-        { ...valid(), sampling: { rates } },
-        diagnostics,
-      );
+      const resolved = resolveConfig({ ...valid(), sampling: { rates } }, diagnostics);
 
       expect(rates["app.blotter"]).toBe(5);
       expect(resolved.sampling.rates["app.blotter"]).toBe(1);

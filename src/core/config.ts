@@ -110,7 +110,10 @@ export function resolveConfig(
   const rates: [string, unknown][] = Object.entries(merged.sampling.rates);
   for (const [ns, r] of rates) {
     if (typeof r !== "number" || r < SAMPLING_RATE_MIN || r > SAMPLING_RATE_MAX) {
-      diagnostics.report("config.invalid", `sampling.rates["${ns}"] must be 0..1, got ${String(r)}`);
+      diagnostics.report(
+        "config.invalid",
+        `sampling.rates["${ns}"] must be 0..1, got ${String(r)}`,
+      );
       merged.sampling.rates[ns] = SAMPLING_RATE_FALLBACK;
     }
   }

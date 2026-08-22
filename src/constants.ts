@@ -21,10 +21,11 @@
 // file that no test imports directly.
 
 import type { ResolvedConfig } from "./models/config";
+import type { LogLevel } from "./models/log-record";
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
 // Library-wide
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * Tag on anything this library writes to the host console.
@@ -35,9 +36,9 @@ import type { ResolvedConfig } from "./models/config";
  */
 export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
 // Diagnostics
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * Default window in which one diagnostic code may emit at most one event.
@@ -49,9 +50,9 @@ export const LIBRARY_LOG_PREFIX = "[ui-observability]";
  */
 export const DIAGNOSTIC_THROTTLE_MS = 1000;
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
 // Identity
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * localStorage key holding the session id and the time it was last seen. Shared by every tab on the
@@ -88,9 +89,9 @@ export const ID_BYTE_LENGTH = 16;
  */
 export const BYTE_VALUE_COUNT = 256;
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
 // Platform detection
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * Marks the OpenFin desktop runtime in a user agent.
@@ -133,9 +134,9 @@ export const WEBKIT_UA_TOKEN = "AppleWebKit";
  */
 export const SAFARI_UA_TOKEN = "Safari/";
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
 // Sanitizing and size estimation
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * First code unit of the UTF-16 high surrogate range. A string must never be cut between this and
@@ -187,9 +188,47 @@ export const BYTES_PER_QUOTED_STRING = 2;
  */
 export const BYTES_PER_KEY_OVERHEAD = 4;
 
-// ---------------------------------------------------------------------------
+// ----------------------------------
+// Record model
+// ----------------------------------
+
+/**
+ * Each level as its OpenTelemetry severity number.
+ *
+ * These numbers are fixed by that specification rather than chosen here. A
+ * backend sorts, filters and colours on them, so inventing values would make
+ * this library's records incomparable with every other source feeding the same
+ * collector. The gaps are part of the standard too, which reserves the space
+ * between named levels for finer grades such as `INFO2`.
+ *
+ * Typed as a total `Record<LogLevel, number>` on purpose: adding a level to
+ * `LogLevel` without numbering it here then fails the build, rather than
+ * shipping an undefined severity to the wire.
+ */
+export const SEVERITY_NUMBER: Record<LogLevel, number> = {
+  TRACE: 1,
+  DEBUG: 5,
+  INFO: 9,
+  WARN: 13,
+  ERROR: 17,
+  FATAL: 21,
+};
+
+/**
+ * The same table, under the name the level filter reads it by.
+ *
+ * Deliberately the identical object and not a copy. Ordering levels and
+ * numbering them for the wire are one fact, so a second table would be a second
+ * thing to keep in step, and the first time the two drifted a record would be
+ * filtered as one level and reported as another. Both names exist because the
+ * call sites read differently: comparing `LEVEL_ORDER` values is a threshold
+ * test, reading `SEVERITY_NUMBER` is an encoding step.
+ */
+export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
+
+// ----------------------------------
 // Configuration
-// ---------------------------------------------------------------------------
+// ----------------------------------
 
 /**
  * What `service.name` becomes when a consumer configures no service name.
@@ -281,7 +320,11 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   },
   retry: { baseDelayMs: 2000, maxDelayMs: 60000, idleDelayMs: 30000 },
   sampling: { defaultRate: 1, rates: {}, alwaysSampleTypes: ["action"] },
-  journey: { maxAgeMs: 30 * 60 * 1000, endOnOwnerClose: false, urlParam: "__uiobs_journey" },
+  journey: {
+    maxAgeMs: 30 * 60 * 1000,
+    endOnOwnerClose: false,
+    urlParam: "__uiobs_journey",
+  },
   bus: {
     mode: "auto",
     channelName: "ui_observability_control",
