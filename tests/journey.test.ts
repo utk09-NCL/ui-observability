@@ -52,6 +52,43 @@ const atUrl = (href: string): void => {
   vi.stubGlobal("location", { href });
 };
 
+/**
+ * A sessionStorage whose one named method throws, and whose others work.
+ *
+ * The whole global is replaced rather than spied on, because happy-dom's
+ * Storage is a Proxy whose `deleteProperty` trap refuses anything that is not a
+ * stored item: a spy installed on it survives `restoreMocks` and stays wrapped
+ * around the real method for every test that follows.
+ */
+function storageThatThrowsOn(
+  method: "getItem" | "setItem" | "removeItem",
+): Pick<Storage, "getItem" | "setItem" | "removeItem" | "clear"> {
+  const store = new Map<string, string>();
+  return {
+    getItem(key: string): string | null {
+      if (method === "getItem") {
+        throw new Error("storage is blocked");
+      }
+      return store.get(key) ?? null;
+    },
+    setItem(key: string, value: string): void {
+      if (method === "setItem") {
+        throw new Error("quota exceeded");
+      }
+      store.set(key, value);
+    },
+    removeItem(key: string): void {
+      if (method === "removeItem") {
+        throw new Error("blocked");
+      }
+      store.delete(key);
+    },
+    clear(): void {
+      store.clear();
+    },
+  };
+}
+
 const stored = (): unknown => {
   const raw = sessionStorage.getItem(STORAGE_KEY);
   return raw === null ? null : JSON.parse(raw);
@@ -185,7 +222,12 @@ describe("applyRemote", () => {
   it("takes a journey when this context is in none", () => {
     const { engine } = makeEngine();
 
-    engine.applyRemote({ id: "j-1", name: "n", startedAt: Date.now(), ownerContextId: "ctx-2" });
+    engine.applyRemote({
+      id: "j-1",
+      name: "n",
+      startedAt: Date.now(),
+      ownerContextId: "ctx-2",
+    });
 
     expect(engine.current()?.id).toBe("j-1");
   });
@@ -377,7 +419,11 @@ describe("bootstrap", () => {
   it("discards and clears a persisted journey that is too old", async () => {
     sessionStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ id: "j-stored", name: "stored", startedAt: Date.now() - 50_000 }),
+      JSON.stringify({
+        id: "j-stored",
+        name: "stored",
+        startedAt: Date.now() - 50_000,
+      }),
     );
     const { diagnostics, engine } = makeEngine({ maxAgeMs: 10_000 });
 
@@ -420,9 +466,7 @@ describe("bootstrap", () => {
   });
 
   it("reports unreadable storage rather than failing to boot", async () => {
-    vi.spyOn(sessionStorage, "getItem").mockImplementation(() => {
-      throw new Error("storage is blocked");
-    });
+    vi.stubGlobal("sessionStorage", storageThatThrowsOn("getItem"));
     const { diagnostics, engine } = makeEngine();
 
     await engine.bootstrap();
@@ -481,7 +525,9 @@ describe("reading OpenFin customData", () => {
     // A window a provider creates has no URL of its own to carry a token.
     const token = tokenAged(1000);
     vi.stubGlobal("fin", {
-      me: { getOptions: () => Promise.resolve({ customData: { uiObsJourney: token } }) },
+      me: {
+        getOptions: () => Promise.resolve({ customData: { uiObsJourney: token } }),
+      },
     });
     const { engine } = makeEngine();
 
@@ -536,7 +582,9 @@ describe("reading OpenFin customData", () => {
     ["customData carries no token", { customData: {} }],
     ["the token is not a string", { customData: { uiObsJourney: 42 } }],
   ])("finds nothing when %s", async (_label, options) => {
-    vi.stubGlobal("fin", { me: { getOptions: () => Promise.resolve(options) } });
+    vi.stubGlobal("fin", {
+      me: { getOptions: () => Promise.resolve(options) },
+    });
     const { engine } = makeEngine();
 
     await engine.bootstrap();
@@ -705,9 +753,7 @@ describe("ownerClosed", () => {
 describe("storage that cannot be written", () => {
   it("keeps the journey in memory when persisting it fails", () => {
     // Storage costs continuity across a reload, never logging.
-    vi.spyOn(sessionStorage, "setItem").mockImplementation(() => {
-      throw new Error("quota exceeded");
-    });
+    vi.stubGlobal("sessionStorage", storageThatThrowsOn("setItem"));
     const { diagnostics, engine } = makeEngine();
 
     const journey = engine.start("checkout");
@@ -717,9 +763,7 @@ describe("storage that cannot be written", () => {
   });
 
   it("reports storage that cannot be cleared", () => {
-    vi.spyOn(sessionStorage, "removeItem").mockImplementation(() => {
-      throw new Error("blocked");
-    });
+    vi.stubGlobal("sessionStorage", storageThatThrowsOn("removeItem"));
     const { diagnostics, engine } = makeEngine();
     engine.start("checkout");
 
@@ -730,13 +774,11 @@ describe("storage that cannot be written", () => {
   });
 
   it("reports storage it cannot clear after an expired journey is discarded", async () => {
+    vi.stubGlobal("sessionStorage", storageThatThrowsOn("removeItem"));
     sessionStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({ id: "j", name: "n", startedAt: Date.now() - 50_000 }),
     );
-    vi.spyOn(sessionStorage, "removeItem").mockImplementation(() => {
-      throw new Error("blocked");
-    });
     const { diagnostics, engine } = makeEngine({ maxAgeMs: 10_000 });
 
     await engine.bootstrap();
