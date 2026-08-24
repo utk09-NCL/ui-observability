@@ -110,6 +110,7 @@ export default defineConfig(
   {
     files: ["tests/**/*.ts"],
     rules: {
+      "@typescript-eslint/dot-notation": ["error", { allowPrivateClassPropertyAccess: true }],
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-unsafe-assignment": "off",

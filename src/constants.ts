@@ -372,6 +372,43 @@ export const HTTP_SERVICE_UNAVAILABLE = 503;
 export const MILLIS_PER_SECOND = 1000;
 
 // ----------------------------------
+// Storage
+// ----------------------------------
+
+/** Key prefix for a batch parked in localStorage. */
+export const BATCH_STORAGE_KEY_PREFIX = "ui-observability.batch.";
+
+/**
+ * Digits the creation time is padded to inside that key. Fixed width, so
+ * lexicographic order is chronological. Fourteen lasts to the year 5138.
+ */
+export const BATCH_KEY_TIME_WIDTH = 14;
+
+/** Written and deleted to find out whether localStorage accepts writes at all. */
+export const STORAGE_PROBE_KEY = "ui-observability.probe";
+
+/** Share of the store thrown away when a write is refused for space: one in this many. */
+export const QUOTA_EVICTION_DIVISOR = 4;
+
+/** The DOMException name every browser uses when a store is full. */
+export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
+
+/** IndexedDB schema version. Bumping it means writing a Dexie migration. */
+export const INDEXEDDB_SCHEMA_VERSION = 1;
+
+/** Adapter name, and the `storage.strategy` spelling that selects it. */
+export const STORAGE_NAME_INDEXEDDB = "indexeddb";
+
+/** Adapter name, and the `storage.strategy` spelling that selects it. */
+export const STORAGE_NAME_LOCAL = "localstorage";
+
+/** Adapter name, and the `storage.strategy` spelling that selects it. */
+export const STORAGE_NAME_MEMORY = "memory";
+
+/** Adapter name for the store that keeps nothing, and the strategy that selects it. */
+export const STORAGE_NAME_NONE = "none";
+
+// ----------------------------------
 // Journey
 // ----------------------------------
 
