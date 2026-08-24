@@ -17,6 +17,7 @@
 
 import type { DiagnosticHandler } from "../core/diagnostics";
 import type { LogLevel, LogRecord } from "./log-record";
+import type { LogSerializer } from "./serializer";
 
 /** Where undelivered records wait. "auto" picks the best of these that the host actually offers. */
 export type StorageStrategy = "auto" | "indexeddb" | "localstorage" | "memory" | "none";
@@ -286,10 +287,11 @@ export interface ObservabilityConfig {
    * saves.
    */
   compressionThresholdBytes?: number;
-  // Not offered yet: the serializers exist, but nothing reads a resolved one
-  // until the transport lands. Passing this key today reports as unknown.
-  // Final form:
-  //   serializer?: "otlp" | "ecs" | LogSerializer;
+  /**
+   * The wire format: a name, or an implementation of your own. Defaults to
+   * OTLP/JSON. Anything else reports `config.invalid` and falls back to it.
+   */
+  serializer?: "otlp" | "ecs" | LogSerializer;
   /**
    * Passed to `fetch`. "include" is the default, because an ingest endpoint behind a session cookie
    * is the common case.
@@ -359,9 +361,7 @@ export interface ResolvedConfig {
   capture: CaptureOptions;
   limits: LimitOptions;
   console: ConsoleOptions;
-  // The resolved serializer lands here with the transport that reads it.
-  // Final form:
-  //   serializer: LogSerializer;
+  serializer: LogSerializer;
   headers?: ObservabilityConfig["headers"];
   redact?: ObservabilityConfig["redact"];
   onDiagnostic?: DiagnosticHandler;

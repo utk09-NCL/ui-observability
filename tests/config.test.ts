@@ -308,6 +308,61 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
   });
+
+  describe("serializer", () => {
+    it("defaults to OTLP, which is what a collector expects", () => {
+      const { diagnostics } = collect();
+
+      expect(resolveConfig(valid(), diagnostics).serializer.name).toBe("otlp");
+    });
+
+    it("resolves a name to the implementation that ships with it", () => {
+      const { events, diagnostics } = collect();
+      const ecs = resolveConfig({ ...valid(), serializer: "ecs" }, diagnostics);
+      const otlp = resolveConfig({ ...valid(), serializer: "otlp" }, diagnostics);
+
+      expect(ecs.serializer.name).toBe("ecs");
+      expect(otlp.serializer.name).toBe("otlp");
+      expect(events).toEqual([]);
+    });
+
+    it("takes an implementation of the consumer's own", () => {
+      const { diagnostics } = collect();
+      const mine = { name: "mine", serialize: () => ({ body: "", contentType: "text/plain" }) };
+
+      expect(resolveConfig({ ...valid(), serializer: mine }, diagnostics).serializer).toBe(mine);
+    });
+
+    it("keeps the serializer already in force across a reconfigure", () => {
+      const { diagnostics } = collect();
+      const live = resolveConfig({ ...valid(), serializer: "ecs" }, diagnostics);
+
+      expect(resolveConfig({ minLevel: "ERROR" }, diagnostics, live).serializer.name).toBe("ecs");
+    });
+
+    it("reports a name it does not know and falls back, rather than sending nothing", () => {
+      const { events, diagnostics } = collect();
+      const named = "xml" as unknown as ObservabilityConfig["serializer"];
+
+      expect(resolveConfig({ ...valid(), serializer: named }, diagnostics).serializer.name).toBe(
+        "otlp",
+      );
+      expect(messages(events)[0]).toContain("serializer must be");
+    });
+
+    it("rejects a null and an object that cannot serialize", () => {
+      const { events, diagnostics } = collect();
+      const nothing = null as unknown as ObservabilityConfig["serializer"];
+      const halfBuilt = { name: "half-built" } as unknown as ObservabilityConfig["serializer"];
+
+      const fromNull = resolveConfig({ ...valid(), serializer: nothing }, diagnostics);
+      const fromHalfBuilt = resolveConfig({ ...valid(), serializer: halfBuilt }, diagnostics);
+
+      expect(fromNull.serializer.name).toBe("otlp");
+      expect(fromHalfBuilt.serializer.name).toBe("otlp");
+      expect(events).toHaveLength(2);
+    });
+  });
 });
 
 describe("applyResolvedConfig", () => {

@@ -18,11 +18,57 @@ import {
   SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
+  SERIALIZER_NAME_ECS,
+  SERIALIZER_NAME_OTLP,
   UNDEFAULTED_CONFIG_KEYS,
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
 import type { ObservabilityConfig, ResolvedConfig } from "../models/config";
+import type { LogSerializer } from "../models/serializer";
+import { ecsSerializer } from "../transport/serializers/ecs";
+import { otlpSerializer } from "../transport/serializers/otlp";
 import type { Diagnostics } from "./diagnostics";
+
+/** Whether a value a consumer passed can act as a serializer. */
+function isSerializer(value: unknown): value is LogSerializer {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const serialize: unknown = Reflect.get(value, "serialize");
+  return typeof serialize === "function";
+}
+
+/**
+ * The serializer a consumer named, the one already in force, or OTLP.
+ *
+ * `requested` is read as `unknown` for the same reason the sampling rate is:
+ * the declared type says a name or an implementation, and a JavaScript consumer
+ * can pass neither.
+ */
+function resolveSerializer(
+  requested: unknown,
+  previous: LogSerializer | undefined,
+  diagnostics: Diagnostics,
+): LogSerializer {
+  if (requested === undefined) {
+    return previous ?? otlpSerializer;
+  }
+  if (requested === SERIALIZER_NAME_OTLP) {
+    return otlpSerializer;
+  }
+  if (requested === SERIALIZER_NAME_ECS) {
+    return ecsSerializer;
+  }
+  if (isSerializer(requested)) {
+    return requested;
+  }
+
+  diagnostics.report(
+    "config.invalid",
+    `serializer must be "${SERIALIZER_NAME_OTLP}", "${SERIALIZER_NAME_ECS}" or an implementation`,
+  );
+  return otlpSerializer;
+}
 
 /**
  * Resolve a partial config into a fully populated one, reporting anything
@@ -45,6 +91,9 @@ export function resolveConfig(
   const merged: ResolvedConfig = {
     ...base,
     ...input,
+    // After the spreads, so the resolved implementation replaces the name a
+    // consumer passed rather than sitting beside it.
+    serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
     streams: {
       logs: { ...base.streams.logs, ...input.streams?.logs },
       metrics: { ...base.streams.metrics, ...input.streams?.metrics },
@@ -110,13 +159,6 @@ export function resolveConfig(
       merged.sampling.rates[ns] = SAMPLING_RATE_FALLBACK;
     }
   }
-
-  // The serializer is chosen here once the transport reads it. The two
-  // implementations exist; nothing consumes a resolved one yet.
-  // Final form:
-  //   if (typeof input.serializer === "object") { merged.serializer = input.serializer; }
-  //   else if (input.serializer === "ecs") { merged.serializer = ecsSerializer; }
-  //   else if (input.serializer === "otlp") { merged.serializer = otlpSerializer; }
 
   // The endpoint must never be logged by the network capture, or one failed
   // POST produces a log, which produces a POST, which produces a log. On a

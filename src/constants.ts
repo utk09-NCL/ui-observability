@@ -323,6 +323,55 @@ export const CONTENT_TYPE_NDJSON = "application/x-ndjson";
 export const NANOS_PER_MILLI = 1000000n;
 
 // ----------------------------------
+// HTTP transport
+// ----------------------------------
+
+/** Names the payload format. Taken from the serializer, never from a consumer. */
+export const HEADER_CONTENT_TYPE = "Content-Type";
+
+/** Labels a compressed body. Set only when compression actually happened. */
+export const HEADER_CONTENT_ENCODING = "Content-Encoding";
+
+/** Response header asking to be left alone: delta seconds or an HTTP date. */
+export const HEADER_RETRY_AFTER = "Retry-After";
+
+/**
+ * The batch's deduplication key. The exit flush repeats it as a query
+ * parameter, since `sendBeacon` cannot set headers.
+ */
+export const HEADER_BATCH_ID = "X-UiObs-Batch-Id";
+
+/** Which delivery attempt this is, so a server can tell a retry from a first send. */
+export const HEADER_ATTEMPT = "X-UiObs-Attempt";
+
+/** The one compression this library speaks. Both a config value and a Content-Encoding. */
+export const ENCODING_GZIP = "gzip";
+
+/** 401, credentials missing or rejected. */
+export const HTTP_UNAUTHORIZED = 401;
+
+/** 403, credentials understood and refused. */
+export const HTTP_FORBIDDEN = 403;
+
+/** 408, the server gave up waiting. Retryable. */
+export const HTTP_REQUEST_TIMEOUT = 408;
+
+/** 413, the batch has to be split before it can be delivered. */
+export const HTTP_PAYLOAD_TOO_LARGE = 413;
+
+/** 429, explicit backpressure, usually with a Retry-After. */
+export const HTTP_TOO_MANY_REQUESTS = 429;
+
+/** 500, and the floor for treating a status as the server's fault rather than the payload's. */
+export const HTTP_SERVER_ERROR_MIN = 500;
+
+/** 503, temporary unavailability. Treated as backpressure whether or not Retry-After is set. */
+export const HTTP_SERVICE_UNAVAILABLE = 503;
+
+/** Milliseconds in a second, for a Retry-After given in delta seconds. */
+export const MILLIS_PER_SECOND = 1000;
+
+// ----------------------------------
 // Journey
 // ----------------------------------
 
@@ -454,7 +503,7 @@ export const SAMPLING_RATE_FALLBACK = 1;
  * `DEFAULT_CONFIG`. The unknown-key check reads that object's own keys, and
  * without this list would report every callback a consumer passes as a typo.
  */
-export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers"] as const;
+export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers", "serializer"] as const;
 
 /**
  * The nested config sections, merged into the objects already in place rather
@@ -480,8 +529,12 @@ export const CONFIG_SECTIONS = [
  *
  * The base of a first `configure()` only. A later call merges onto the config
  * in force, never back onto this.
+ *
+ * Every default except the serializer, which is an implementation rather than a
+ * value: naming one here would import the transport into this file, and the
+ * serializers import these constants back. `resolveConfig` supplies it.
  */
-export const DEFAULT_CONFIG: ResolvedConfig = {
+export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   endpoint: "",
   serviceName: "",
   serviceVersion: "",
@@ -548,7 +601,4 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     maxRecordBytes: 32768,
   },
   console: { enabled: false, level: "DEBUG" },
-  // No default serializer yet: nothing reads one until the transport lands.
-  // Final form:
-  //   serializer: otlpSerializer,
 };
