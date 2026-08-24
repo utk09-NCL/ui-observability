@@ -617,7 +617,7 @@ export class JourneyEngine {
     // runtime this is a method that reads `this`, and a detached copy of it
     // throws on invocation.
     const options = await this.diagnostics.guardAsync(
-      "capture.install_failed",
+      "openfin.unavailable",
       "reading fin.me.getOptions()",
       () => getOptions.call(me),
     );

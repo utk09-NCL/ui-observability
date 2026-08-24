@@ -114,7 +114,7 @@ describe("TraceEngine.resolve", () => {
     } as unknown as Span);
 
     expect(engine.resolve().traceId).toBe(ambient);
-    expect(reporter.snapshot()["capture.install_failed"]).toBe(1);
+    expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
   });
 
   it("rotates on its own once the ambient trace passes the configured age", () => {
@@ -206,6 +206,6 @@ describe("TraceEngine.headers", () => {
     const engine = new TraceEngine(reporter);
 
     expect(engine.headers().traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
-    expect(reporter.snapshot()["capture.install_failed"]).toBe(1);
+    expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
   });
 });

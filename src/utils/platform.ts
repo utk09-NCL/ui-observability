@@ -121,7 +121,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
     // Both the desktop runtime and the Core Web adapter expose `fin`. Only the
     // desktop runtime additionally stamps its user agent.
     platform = OPENFIN_UA_PATTERN.test(ua) ? "openfin" : "openfin_web";
-    diagnostics.guard("capture.install_failed", "reading fin.me.identity", () => {
+    diagnostics.guard("openfin.unavailable", "reading fin.me.identity", () => {
       const identity = finMe.identity;
       openfinUuid = identity?.uuid;
       openfinName = identity?.name;

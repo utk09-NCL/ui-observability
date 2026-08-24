@@ -35,6 +35,7 @@ export type DiagnosticCode =
   | "journey.expired"
   | "journey.adopted"
   | "journey.token_too_large"
+  | "trace.otel_failed"
   | "bus.role_resolved"
   | "bus.no_owner"
   | "bus.handshake_timeout"
@@ -55,6 +56,7 @@ export type DiagnosticCode =
   | "pipeline.crashed"
   | "capture.install_failed"
   | "capture.rate_limited"
+  | "openfin.unavailable"
   | "handler.threw";
 
 /** One fault, as it reaches the consumer's handler. */

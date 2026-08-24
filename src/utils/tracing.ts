@@ -151,7 +151,7 @@ export class TraceEngine {
    */
   resolve(): TraceContext {
     const fromOtel = this.diagnostics.guard(
-      "capture.install_failed",
+      "trace.otel_failed",
       "reading the active OpenTelemetry span",
       (): TraceContext | undefined => {
         const span = otelTrace.getActiveSpan();
@@ -218,7 +218,7 @@ export class TraceEngine {
    */
   headers(): Record<string, string> {
     const carrier: Record<string, string> = {};
-    this.diagnostics.guard("capture.install_failed", "injecting OpenTelemetry headers", () => {
+    this.diagnostics.guard("trace.otel_failed", "injecting OpenTelemetry headers", () => {
       propagation.inject(otelContext.active(), carrier);
     });
     if (!carrier.traceparent) {

@@ -562,7 +562,7 @@ describe("reading OpenFin customData", () => {
     await engine.bootstrap();
 
     expect(engine.current()).toBeNull();
-    expect(diagnostics.snapshot()["capture.install_failed"]).toBeUndefined();
+    expect(diagnostics.snapshot()["openfin.unavailable"]).toBeUndefined();
   });
 
   it("reports a getOptions that rejects, rather than leaving an unhandled rejection", async () => {
@@ -574,7 +574,7 @@ describe("reading OpenFin customData", () => {
     await engine.bootstrap();
 
     expect(engine.current()).toBeNull();
-    expect(diagnostics.snapshot()["capture.install_failed"]).toBe(1);
+    expect(diagnostics.snapshot()["openfin.unavailable"]).toBe(1);
   });
 
   it.each([

@@ -80,9 +80,7 @@ describe("detectPlatform", () => {
 
     expect(meta.platform).toBe("openfin");
     expect(meta.openfinUuid).toBeUndefined();
-    expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ code: "capture.install_failed" }),
-    );
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "openfin.unavailable" }));
   });
 
   it("copes with an OpenFin context that exposes no identity", () => {
