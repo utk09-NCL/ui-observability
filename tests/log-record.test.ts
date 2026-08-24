@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LEVEL_ORDER, SEVERITY_NUMBER } from "../src/constants";
 import { isLogRecord, type LogRecord, nowUnixNano } from "../src/models/log-record";
 
-// Kept here rather than imported from src, on the same reasoning as the storage
-// keys in the identity tests: a test that reads the table it is checking cannot
+// Kept here rather than imported: a test that reads the table it checks cannot
 // catch a wrong number in that table.
 const LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"] as const;
 const OTEL_NUMBERS = {

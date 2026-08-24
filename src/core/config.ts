@@ -1,19 +1,16 @@
 // src/core/config.ts
 //
 // Turns whatever a consumer passed into something the rest of the library can
-// read without checking. Two rules govern this file, and breaking either one
-// produces silence rather than an error:
+// read without checking. Two rules, each of which fails silently when broken:
 //
-//   1. A reconfigure merges onto the config already in force, never onto the
-//      defaults. Anything else turns a one-key change into a full reset.
+//   1. A reconfigure merges onto the config in force, never onto the defaults.
+//      Anything else turns a one-key change into a full reset.
 //   2. The resolved config object is mutated, never replaced. That is what
 //      `applyResolvedConfig` is for.
 //
-// Configuration never throws into the caller. This library is consumed from
-// plain JavaScript as well as TypeScript, so a value the type system says is a
-// number can be anything at all at runtime. Every bad value reports to
-// diagnostics and falls back to a default, because a logger that throws while
-// being set up takes the application down with it.
+// Nothing here throws into the caller. Consumers write plain JavaScript too, so
+// a field typed as a number can hold anything at runtime. Bad values report to
+// diagnostics and fall back to a default.
 
 import {
   CONFIG_SECTIONS,
@@ -31,15 +28,12 @@ import type { Diagnostics } from "./diagnostics";
  * Resolve a partial config into a fully populated one, reporting anything
  * suspicious.
  *
- * `previous` is the config already in force. A second `configure()` call merges
- * onto it rather than onto the defaults, which is what makes
- * `configure({ enabled: false })` usable as a kill switch. Resolving that
- * against the defaults would throw away the endpoint, the service name and
- * every capture setting, and the only symptom would be silence.
+ * `previous` is the config in force. Merging onto it is what makes
+ * `configure({ enabled: false })` a kill switch rather than a reset that drops
+ * the endpoint, the service name and every capture setting.
  *
- * This function only resolves. It announces nothing, because it cannot know
- * whether its result is ever adopted: the caller that swaps the live config in
- * is the one that knows a reconfigure really happened, and reports it there.
+ * Resolves only, and announces nothing: whether the result is adopted is known
+ * to the caller that swaps the live config in, which reports it there.
  */
 export function resolveConfig(
   input: Partial<ObservabilityConfig>,
@@ -97,10 +91,9 @@ export function resolveConfig(
     merged.serviceName = UNKNOWN_SERVICE_NAME;
   }
 
-  // Read as `unknown` on purpose. The declared type says these are numbers, and
-  // from TypeScript they always are, but a JavaScript consumer can pass a string
-  // or a null and this is the only place that will ever notice. Widening the
-  // read is what keeps the guard a real check instead of dead code.
+  // Read as `unknown` on purpose. The declared type says number, but a
+  // JavaScript consumer can pass a string, and this is the only place that
+  // notices. Without the widening the guard below is dead code.
   const rate: unknown = merged.sampling.defaultRate;
   if (typeof rate !== "number" || rate < SAMPLING_RATE_MIN || rate > SAMPLING_RATE_MAX) {
     diagnostics.report("config.invalid", `sampling.defaultRate must be 0..1, got ${String(rate)}`);
@@ -118,8 +111,8 @@ export function resolveConfig(
     }
   }
 
-  // Which serializer turns records into a wire payload is chosen here, once
-  // concrete serializer implementations exist. Nothing reads this field yet.
+  // The serializer is chosen here once the transport reads it. The two
+  // implementations exist; nothing consumes a resolved one yet.
   // Final form:
   //   if (typeof input.serializer === "object") { merged.serializer = input.serializer; }
   //   else if (input.serializer === "ecs") { merged.serializer = ecsSerializer; }
@@ -134,9 +127,9 @@ export function resolveConfig(
     merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, merged.endpoint];
   }
 
-  // The failure this catches is otherwise impossible to debug: you write
-  // `remoteUrl` instead of `endpoint`, every type checks out because the
-  // argument is a `Partial`, and nothing is ever sent.
+  // Catches a typo that is otherwise undebuggable: `remoteUrl` instead of
+  // `endpoint` type-checks, because the argument is a `Partial`, and nothing
+  // is ever sent.
   const known = new Set<string>([...Object.keys(DEFAULT_CONFIG), ...UNDEFAULTED_CONFIG_KEYS]);
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
@@ -148,28 +141,23 @@ export function resolveConfig(
 }
 
 /**
- * Copy `next` into the live config object, in place, preserving the identity of
+ * Copy `next` into the live config object in place, preserving the identity of
  * that object and of every section inside it.
  *
- * This is the counterpart to the note on `ResolvedConfig`. Half the library
- * captures `config`, or `config.capture`, or `config.journey`, once at
- * construction and never looks it up again. Assigning a new object to the
- * runtime's config updates only the components that are explicitly handed the
- * new one, and leaves every other one reading settings the consumer believes
- * they changed. That failure is silent and it is very hard to see in a debugger,
- * because the runtime's config shows the new values while the component next to
- * it is using the old ones.
+ * Half the library captures `config`, or `config.capture`, once at construction
+ * and never looks it up again. Assigning a new object would leave those
+ * components reading settings the consumer believes they changed, and a
+ * debugger shows the runtime holding the new values while a component beside it
+ * uses the old ones.
  *
- * The scalar copy goes through `Object.assign` with a computed key rather than
- * an indexed write. `ResolvedConfig` is an interface, so TypeScript gives it no
- * implicit index signature and neither direction of a
- * `target as Record<string, unknown>` assertion is legal under `strict`.
+ * Scalars are copied with `Object.assign` and a computed key: `ResolvedConfig`
+ * is an interface, so it has no implicit index signature and neither direction
+ * of a `target as Record<string, unknown>` assertion is legal under `strict`.
  */
 export function applyResolvedConfig(target: ResolvedConfig, next: ResolvedConfig): void {
   for (const key of Object.keys(next) as (keyof ResolvedConfig)[]) {
-    // `as`, not `satisfies`. This has to widen the tuple so `includes` accepts
-    // any key; `satisfies` only checks the type and leaves it narrow, and then
-    // every non-section key is a type error at the call.
+    // `as`, not `satisfies`: the tuple has to widen so `includes` accepts any
+    // key. `satisfies` leaves it narrow and every non-section key fails to compile.
     if ((CONFIG_SECTIONS as readonly string[]).includes(key)) {
       continue;
     }

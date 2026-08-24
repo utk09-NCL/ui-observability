@@ -1,59 +1,36 @@
 // src/utils/sequence.ts
 //
-// The counter that puts records back in the order they happened.
+// Per-context record ordering. Timestamps cannot provide it: wall clocks are
+// skewed between machines and step backwards when NTP corrects them, so two
+// records can reach the backend in the wrong order with nothing in the output
+// to show it.
 //
-// Sorting by timestamp does not do that. Wall clocks are skewed between the
-// machines on one desk, and a single machine's clock steps backwards whenever
-// NTP corrects it, so two records a millisecond apart can reach the backend
-// claiming the wrong order, or the same instant, and neither is visible in the
-// output. A counter has neither problem: it costs one increment, it never goes
-// backwards, and it does not care what the clock is doing.
-//
-// It orders one context and nothing wider. Two contexts count independently, so
-// comparing a number from one against a number from another is meaningless, and
-// what relates their records is the correlation ids instead. Paired with the
-// context id, though, this is a total order over one realm, which is the
-// strongest ordering a browser can offer.
-//
-// Nothing here can throw. An increment has no failure mode, which makes this one
-// of the few files with no diagnostics dependency.
+// Numbers from two contexts are unrelated; what relates those records is the
+// correlation ids. Paired with the context id this is a total order over one
+// realm. An increment has no failure mode, so this file has no diagnostics
+// dependency.
 
-/**
- * A monotonic counter, meaningful only alongside the context id it is paired with.
- *
- * Per instance rather than per module. Two runtimes in one document each need
- * their own run of numbers; sharing one would leave both of their sequences full
- * of holes, and a hole is indistinguishable from a record that was dropped in
- * transit, which is exactly the question this field is meant to answer.
- */
+/** A monotonic counter, meaningful only alongside the context id it is paired with. */
 export class Sequence {
   /**
-   * The last number handed out.
-   *
-   * Starts at zero so that the first `next()` returns one, which keeps zero
-   * available as an obviously-unset value. A record legitimately carrying
-   * sequence zero would be indistinguishable from one whose sequence was lost.
+   * The last number handed out. Per instance, not per module: two runtimes
+   * sharing a counter would each see holes, and a hole reads as a lost record.
    */
   private value = 0;
 
   /**
-   * The next number in the sequence.
+   * The next number. Counts from one, leaving zero as an obviously-unset value.
    *
-   * On the record path, once per record, so it stays an increment and nothing
-   * else. It never repeats within one context and it needs no wrap handling: at
-   * a thousand records a second, reaching the largest safe integer takes longer
-   * than any document has ever been open.
+   * No wrap handling: at a thousand records a second, reaching the largest safe
+   * integer outlasts any document.
    */
   next(): number {
     return ++this.value;
   }
 
   /**
-   * Start counting from one again.
-   *
-   * For when the context this sequence describes stops being the same context:
-   * a runtime torn down and configured afresh, where continuing the old count
-   * would imply a continuity with the previous run that no longer exists.
+   * Start from one again, for a runtime torn down and configured afresh, where
+   * continuing the count would imply a continuity with the previous run.
    */
   reset(): void {
     this.value = 0;

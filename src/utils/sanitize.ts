@@ -1,16 +1,12 @@
 // src/utils/sanitize.ts
 //
-// This module is why one bad payload cannot take down a batch of a hundred
-// unrelated records. Sanitizing happens when a record is built rather than when
-// a batch is sent, so a circular object poisons the single record that carried
-// it instead of the whole request.
+// One bad payload must not take down a batch of a hundred unrelated records, so
+// sanitizing happens when a record is built rather than when a batch is sent: a
+// circular object poisons the record that carried it and nothing else.
 //
-// The size accounting rides along on the same walk because it is free here and
-// expensive anywhere else. The obvious alternative, stringifying the finished
-// attributes and measuring the string, serializes every record twice: once to
-// measure and once to send. On a screen logging a few hundred records a second
-// that is the most expensive line in the library, and it does nothing but
-// arithmetic.
+// Size accounting rides on the same walk. Stringifying the finished attributes
+// to measure them instead serializes every record twice, once to measure and
+// once to send.
 
 import {
   BYTES_PER_BOOLEAN,
@@ -98,11 +94,9 @@ export interface SanitizeResult {
   /** The JSON-safe value. Guaranteed to survive `JSON.stringify` without throwing. */
   value: unknown;
   /**
-   * Roughly how many bytes the result will serialize to.
-   *
-   * Approximate on purpose. It lets the record builder enforce a size budget
-   * without stringifying every record just to measure it. Strings are counted
-   * exactly and everything else gets a small fixed estimate.
+   * Roughly how many bytes the result serializes to. Approximate on purpose, so
+   * the record builder can enforce a budget without stringifying to measure.
+   * Strings are counted exactly, everything else gets a small fixed estimate.
    */
   bytes: number;
 }
@@ -139,9 +133,9 @@ function counted(text: string, state: SizeState): string {
  * The recursive worker: one value in, one JSON-safe value out, with its size
  * added to `state` on the way.
  *
- * `seen` holds the current ancestor chain rather than everything visited, which
- * is what makes a genuine cycle a `[Circular]` marker while the same object
- * appearing twice as a sibling is serialized twice, as it should be.
+ * `seen` holds the current ancestor chain, not everything visited, so a genuine
+ * cycle becomes `[Circular]` while one object appearing twice as a sibling is
+ * serialized twice.
  */
 function walk(
   value: unknown,
@@ -155,9 +149,8 @@ function walk(
     return value;
   }
 
-  // Narrowed with `typeof` rather than read into a variable and asserted back.
-  // Storing `typeof value` first defeats control flow narrowing, and every
-  // branch then needs a cast that the compiler cannot check.
+  // Narrowed with `typeof` inline. Reading `typeof value` into a variable first
+  // defeats control flow narrowing and every branch then needs a cast.
   if (typeof value === "string") {
     return counted(truncate(value, limits.maxAttributeChars), state);
   }
@@ -208,9 +201,8 @@ function walk(
       return counted(value.toString(), state);
     }
     if (value instanceof Map) {
-      // Narrowing an `unknown` with `instanceof` yields `Map<any, any>`, and
-      // reading `any` back out is exactly what the unsafe rules exist to stop.
-      // Widening to `unknown` keys and values costs nothing and restores them.
+      // Narrowing an `unknown` with `instanceof` yields `Map<any, any>`, so the
+      // keys and values are widened back to `unknown` before anything reads them.
       const map: ReadonlyMap<unknown, unknown> = value;
       const out: Record<string, unknown> = {};
       let shown = 0;
@@ -237,11 +229,9 @@ function walk(
       const length = (value as { length?: number }).length ?? 0;
       return counted(`[${value.constructor.name}(${String(length)})]`, state);
     }
-    // No `typeof Promise !== "undefined"` guard, unlike `Node` below. Promise
-    // is ES2015 and exists in every runtime this library targets, workers
-    // included, so the guard could never take its false branch. And if some
-    // exotic host really lacked it, `instanceof undefined` throws a TypeError
-    // that the catch below already turns into an unserializable marker.
+    // No `typeof Promise !== "undefined"` guard, unlike `Node` below: Promise
+    // is ES2015 and present in every targeted host, so the false branch is
+    // unreachable. On an exotic host without it, the catch below covers this.
     if (value instanceof Promise) {
       return counted("[Promise]", state);
     }
@@ -284,14 +274,13 @@ function walk(
     }
     return out;
   } catch (error) {
-    // A getter threw, or a proxy refused. Never let that escape: the whole
-    // point of this module is that one hostile value costs one attribute.
+    // A getter threw, or a proxy refused. One hostile value costs one
+    // attribute, never the record.
     const name = error instanceof Error ? error.name : "error";
     return counted(`[Unserializable: ${name}]`, state);
   } finally {
-    // Dropping it on the way back up is what makes only genuine ancestor cycles
-    // count. Without this, the same object appearing twice as siblings would be
-    // reported as circular, which is wrong.
+    // Dropped on the way back up, so only ancestor cycles count. Without this,
+    // one object appearing twice as siblings reads as circular.
     seen.delete(value);
   }
 }

@@ -1,28 +1,19 @@
 // src/utils/tracing.ts
 //
-// The ambient trace: one trace id, shared by consecutive records, rotated on
+// The ambient trace: one trace id shared by consecutive records, rotated on
 // meaningful boundaries.
 //
-// A trace id is not minted per record. That is the single decision this file
-// exists to enforce, and it is the one that is easiest to undo by accident. Give
-// every record its own id and every trace in the backend holds exactly one span,
-// which answers no question the record had not already answered on its own. The
-// correlation the field advertises then silently does nothing, and nothing about
-// the output looks wrong while it happens.
+// A trace id is never minted per record. Do that and every trace in the backend
+// holds exactly one span, the correlation the field advertises does nothing,
+// and nothing in the output looks wrong. The id rotates on a click, a route
+// change, an explicit call, and failing all three an age cap, so a tab left
+// open all day does not pile a week of records into one trace.
 //
-// So the id is held here and reused, and it rotates when the work genuinely
-// changes: a click, a route change, an explicit call from the consumer, and
-// failing all three, an age cap, because a tab left open all day would otherwise
-// pile a week of records into one trace.
+// An active OpenTelemetry span outranks the ambient trace: where the host
+// application runs an OTel SDK, its span is the real parent of this work.
 //
-// An active OpenTelemetry span outranks all of that. Where the host application
-// already runs an OTel SDK, its span is the real parent of this work and the
-// ambient trace is only a stand-in for it, so joining the host's trace costs the
-// consumer no configuration on either side.
-//
-// Every call into the OTel API goes through diagnostics. It is a global that
-// somebody else's code registered, its propagator is whatever they installed,
-// and neither is ours to trust with the consumer's stack.
+// Every call into the OTel API goes through diagnostics. It is a global
+// somebody else registered, running whatever propagator they installed.
 
 import {
   isSpanContextValid,
@@ -52,12 +43,9 @@ export interface TraceContext {
 }
 
 /**
- * What ended one logical operation and began the next.
- *
- * A closed set rather than free-form text, because these are the boundaries the
- * product treats as meaningful and each one has a call site that has to spell it
- * the same way. `maxAge` is the only one this file raises itself; the rest come
- * from capture and from the consumer.
+ * What ended one logical operation and began the next. Closed, because each
+ * boundary has a call site that has to spell it the same way. `maxAge` is the
+ * only one raised here; the rest come from capture and from the consumer.
  */
 export type RotateReason = "start" | "interaction" | "navigation" | "explicit" | "maxAge";
 
@@ -68,11 +56,9 @@ interface AmbientTrace extends TraceContext {
 }
 
 /**
- * A fresh W3C trace id.
- *
- * Exported because a caller starting a trace of its own needs an id in the same
- * format, and hand-rolling one is how a twenty-eight character id reaches a
- * backend that silently drops the record.
+ * A fresh W3C trace id. Exported because a caller starting its own trace needs
+ * the same format, and a hand-rolled id of the wrong width is dropped by the
+ * backend without a word.
  */
 export function newTraceId(): string {
   return randomHex(TRACE_ID_BYTES);
@@ -84,12 +70,9 @@ export function newSpanId(): string {
 }
 
 /**
- * Begin a trace.
- *
- * The sampled bit is set unconditionally. Sampling in this library happens
- * before a record is built, so anything that reaches a trace has already been
- * kept deliberately, and shipping it unsampled would ask the backend to throw
- * away the records we chose to pay for.
+ * Begin a trace. The sampled bit is set unconditionally: sampling happens before
+ * a record is built, so anything that reaches a trace was kept deliberately and
+ * must not be thrown away by the backend.
  */
 function mintAmbient(): AmbientTrace {
   return {
@@ -101,33 +84,26 @@ function mintAmbient(): AmbientTrace {
 }
 
 /**
- * The wire fields of an ambient trace, without the bookkeeping.
- *
- * A copy rather than the stored object, so that nothing outside can age a trace
- * by writing to `startedAt`, and so a caller holding a returned context still
- * holds the trace it asked for after a rotation has replaced the ambient one.
+ * The wire fields of an ambient trace, as a copy. Nothing outside can age a
+ * trace by writing to `startedAt`, and a caller keeps the trace it asked for
+ * after a rotation replaces the ambient one.
  */
 function toTraceContext(ambient: AmbientTrace): TraceContext {
   return { traceId: ambient.traceId, spanId: ambient.spanId, traceFlags: ambient.traceFlags };
 }
 
-/**
- * Owns the ambient trace and answers the two questions the rest of the library
- * asks about tracing: what goes on this record, and what goes on this request.
- */
+/** Owns the ambient trace: what goes on this record, and what goes on this request. */
 export class TraceEngine {
   /**
-   * The trace every record joins until something rotates it.
-   *
-   * Instance state, never module state. Two runtimes in one document must not
-   * share a trace id, and a suite whose files share one would have each test
-   * depend on the order the files happened to run in.
+   * The trace every record joins until something rotates it. Instance state,
+   * never module state: two runtimes in one document must not share a trace id,
+   * and a shared one makes each test depend on the order the files ran in.
    */
   private ambient: AmbientTrace = mintAmbient();
 
   /**
    * @param diagnostics Where a fault in the OTel API is reported. None of that API is ours, so
-   * every call into it is guarded rather than trusted.
+   * every call into it is guarded.
    * @param maxAgeMs How long one ambient trace lives before `resolve` rotates it unprompted. The
    * default is the tuned value; an explicit one is for a caller that knows its own cadence.
    */
@@ -139,15 +115,12 @@ export class TraceEngine {
   /**
    * The trace to stamp on a record. Called once per record.
    *
-   * An active OpenTelemetry span always wins, so browser records join the host
-   * application's traces the moment it runs an SDK, with no configuration on
-   * either side.
-   *
-   * A span whose context is unusable falls through to the ambient trace instead
-   * of shipping an all-zero id that correlates with nothing. `isSpanContextValid`
-   * makes that judgement rather than a hand-rolled check, because it is OTel's
-   * own definition of unusable and because the SDK types every field of a span
-   * context as present, leaving nothing here to test for by hand.
+   * An active OpenTelemetry span always wins, so records join the host
+   * application's traces with no configuration on either side. A span whose
+   * context is unusable falls through to the ambient trace rather than shipping
+   * an all-zero id. `isSpanContextValid` decides that, being OTel's own
+   * definition, and the SDK types every field as present so there is nothing
+   * left to hand-check.
    */
   resolve(): TraceContext {
     const fromOtel = this.diagnostics.guard(
@@ -173,10 +146,9 @@ export class TraceEngine {
       return fromOtel;
     }
 
-    // Checked on read rather than on a timer. A timer would hold this instance
-    // alive for the life of the document and would rotate traces in a tab
-    // nobody has touched for an hour, which is work and wakeups spent to change
-    // an id that no record was going to carry.
+    // Checked on read, not on a timer. A timer would hold this instance alive
+    // for the life of the document and rotate traces in a tab nobody has
+    // touched, to change an id no record was going to carry.
     if (Date.now() - this.ambient.startedAt > this.maxAgeMs) {
       this.rotate("maxAge");
     }
@@ -186,11 +158,10 @@ export class TraceEngine {
   /**
    * Begin a new logical operation, so that records from here on form a new trace.
    *
-   * @param _reason Why the trace rotated. Deliberately unused today, and kept
-   * anyway: it is the shape every call site already reads by, and it is what a
-   * rotation diagnostic or a rotations-per-reason metric would carry the moment
-   * either is wanted. Dropping it now would mean touching every caller then, to
-   * recover a fact the caller currently knows and this method would not.
+   * @param _reason Why the trace rotated. Unused today, and kept: it is the
+   * shape every call site already reads by, and what a rotation diagnostic or a
+   * rotations-per-reason metric would carry. Dropping it means touching every
+   * caller later to recover a fact the caller already knows.
    * @returns The new trace, for a caller that wants to report the id it just started.
    */
   rotate(_reason: RotateReason): TraceContext {
@@ -202,19 +173,14 @@ export class TraceEngine {
    * W3C headers for one outgoing request.
    *
    * Attach these only to targets the consumer controls. An unexpected
-   * `traceparent` on a third-party request forces a CORS preflight that the
-   * third party will not answer, and their API then stops working inside the
-   * consumer's application, which is the worst place for a fault of ours to
-   * surface.
+   * `traceparent` on a third-party request forces a CORS preflight the third
+   * party will not answer, and their API then fails inside the consumer's
+   * application.
    *
-   * A propagator the host registered gets first refusal, because it knows about
-   * tracestate, baggage and vendor headers this library has never heard of. Only
-   * when it writes nothing is the header built here, and it is built from
-   * `resolve`, which is what keeps the header on a request and the records
-   * describing that same request pointing at one trace. Minting a fresh id here
-   * instead is the bug this arrangement exists to prevent: the header would
-   * match no record ever emitted, and the advertised log-to-backend correlation
-   * would quietly do nothing.
+   * A propagator the host registered gets first refusal, since it knows about
+   * tracestate, baggage and vendor headers this library does not. The fallback
+   * header is built from `resolve`, so a request and the records describing it
+   * name one trace. A fresh id here would match no record ever emitted.
    */
   headers(): Record<string, string> {
     const carrier: Record<string, string> = {};
@@ -224,9 +190,8 @@ export class TraceEngine {
     if (!carrier.traceparent) {
       const ctx = this.resolve();
       // trace-flags is a two-hex-digit bitfield, not a boolean. Bit zero is
-      // sampled, further bits are already defined and more will be added, so the
-      // field is masked to its byte and printed as two digits. Collapsing it to
-      // 00 or 01 instead silently discards every flag an upstream tracer set.
+      // sampled and further bits are already defined, so the field is masked to
+      // its byte; collapsing it to 00 or 01 discards what an upstream tracer set.
       const flags = (ctx.traceFlags & TRACE_FLAGS_MASK).toString(16).padStart(2, "0");
       carrier.traceparent = `${TRACEPARENT_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
     }

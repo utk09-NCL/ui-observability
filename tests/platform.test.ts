@@ -5,9 +5,8 @@ import { currentUrl, detectPlatform, isTopLevel, resetPlatformCache } from "../s
 
 const diag = (): Diagnostics => new Diagnostics(vi.fn(), 0);
 
-// The shared setup file resets the cache after every test, but a stub applied
-// inside one of these must not outlive it either, and the cache has to be cold
-// again the moment a stub is removed.
+// The shared setup resets the cache after every test, but a stub applied inside
+// one must not outlive it, and the cache must be cold when the stub goes.
 afterEach(() => {
   vi.unstubAllGlobals();
   resetPlatformCache();

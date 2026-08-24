@@ -20,19 +20,15 @@ export interface Identity {
 }
 
 /**
- * Random bytes as a lower-case hex string, from the strongest source this
- * context actually offers.
+ * Random bytes as a lower-case hex string.
  *
- * Two sources, because `crypto.getRandomValues` is absent often enough to
- * matter: ids are needed in sandboxes and insecure contexts too, and there is
- * nothing to fall back to after `Math.random`. The fallback is genuinely weaker
- * and that is accepted deliberately. These ids identify a session, a tab and a
- * trace so that records can be grouped; none of them is a secret, and an id
- * that is merely unlikely to collide beats no logging at all.
+ * Falls back to `Math.random` where `crypto.getRandomValues` is absent, which
+ * happens in sandboxes and insecure contexts. The fallback is weaker and that
+ * is accepted: these ids group records, none is a secret, and an id merely
+ * unlikely to collide beats no logging.
  *
- * Shared with tracing, which needs the same bytes at two other widths. One
- * implementation means one place where the source of randomness is chosen, so
- * a context that has to take the fallback takes it for every id alike.
+ * Shared with tracing, which needs the same bytes at 16 and 8 wide, so the
+ * source of randomness is chosen in one place.
  *
  * @param byteLength How many random bytes to draw. The result is twice this many characters.
  */
@@ -49,11 +45,8 @@ export function randomHex(byteLength: number): string {
 }
 
 /**
- * A random id, from the strongest source this context actually offers.
- *
- * Prefers `crypto.randomUUID` and falls back to hex bytes, because
- * `randomUUID` is absent or blocked often enough to matter and a UUID is the
- * form a consumer correlating these ids by hand expects to see.
+ * A random id. Prefers `crypto.randomUUID`, which a consumer correlating ids by
+ * hand expects to see, and falls back to hex bytes where it is absent or blocked.
  */
 export function newId(): string {
   try {
@@ -99,12 +92,11 @@ function safeWrite(
 }
 
 /**
- * Establish this realm's three ids, restoring the session and the tab from
- * storage where they are still valid.
+ * Establish this realm's three ids, restoring the session and tab from storage
+ * where they are still valid. Called once per realm at startup.
  *
- * Called once per realm at startup. Storage that is unreadable is not an error
- * here: it costs continuity, not logging, and every id falls back to a fresh
- * random one.
+ * Unreadable storage costs continuity, not logging: every id falls back to a
+ * fresh random one.
  */
 export function resolveIdentity(diagnostics: Diagnostics): Identity {
   const contextId = newId();
@@ -147,15 +139,12 @@ export function resolveIdentity(diagnostics: Diagnostics): Identity {
 let lastTouchAt = 0;
 
 /**
- * Keep an active session alive.
+ * Keep an active session alive. Called from the record path, the only place
+ * that reliably knows the user is still here, and throttled to one write a
+ * minute so that path costs an integer compare.
  *
- * Called from the record path, because that is the only place that reliably
- * knows the user is still here, and throttled to one write a minute so the cost
- * on that path is a single integer compare.
- *
- * Without it the idle window is measured from the last time a realm booted: a
- * tab left open for 45 minutes, then a second tab opened beside it, produces two
- * session ids for one continuous visit.
+ * Without it the idle window runs from the last realm boot: a tab open for 45
+ * minutes, then a second tab beside it, gives one visit two session ids.
  */
 export function touchSession(sessionId: string, diagnostics: Diagnostics): void {
   const now = Date.now();

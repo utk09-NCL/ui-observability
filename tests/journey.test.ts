@@ -3,9 +3,8 @@ import { Diagnostics } from "../src/core/diagnostics";
 import { JourneyEngine, type Journey } from "../src/core/journey";
 import type { JourneyOptions } from "../src/models/config";
 
-// Own copies of both literals, on the same reasoning as the storage keys in the
-// identity tests: a test that reads the constant it is checking cannot catch a
-// typo in that constant.
+// Own copies of both literals: a test that reads the constant it checks cannot
+// catch a typo in that constant.
 const STORAGE_KEY = "ui-observability.journey";
 const URL_PARAM = "__uiobs_journey";
 

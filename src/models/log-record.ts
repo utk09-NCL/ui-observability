@@ -1,22 +1,17 @@
 // src/models/log-record.ts
 //
-// The shape of one record, plus the small amount of runtime that is a fact
-// about that shape rather than about any component: how a timestamp is spelled,
-// and how to tell a record from anything else that arrives claiming to be one.
+// The shape of one record, plus the runtime that is a fact about that shape
+// rather than about any component: how a timestamp is spelled, and how to tell
+// a record from anything else claiming to be one.
 //
-// The severity tables that go with these types are constants, so they live in
-// `src/constants.ts` with everything else of that kind rather than here.
+// The severity tables live in `src/constants.ts` with every other constant.
 
-/**
- * Severity, from the OpenTelemetry set.
- * Ordered, so a configured minimum can be a comparison rather
- * than a lookup.
- */
+/** Severity, from the OpenTelemetry set. Ordered, so a configured minimum is a comparison. */
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
 
 /**
- * What kind of thing a record describes, which is what sampling rates are keyed
- * by and what dashboards split on.
+ * What kind of thing a record describes. Sampling rates are keyed by it and
+ * dashboards split on it.
  *
  * `action` is something a person did, `event` something the application did,
  * `metric` a measurement, and `system` this library talking about itself.
@@ -27,10 +22,9 @@ export type LogType = "action" | "event" | "metric" | "system";
 export type MetricType = "gauge" | "counter" | "histogram";
 
 /**
- * The internal record. Flat and easy to work with.
- *
- * A serializer converts it to the wire format at the transport boundary, so
- * changing the wire format never touches the pipeline.
+ * The internal record. Flat and easy to work with. A serializer converts it to
+ * the wire format at the transport boundary, so the format never touches the
+ * pipeline.
  */
 export interface LogRecord {
   /**
@@ -42,10 +36,9 @@ export interface LogRecord {
    * When this library saw the event, where that differs from when it happened.
    *
    * Set by whichever context puts the record into its own pipeline, never by
-   * the emitter, and never in the same statement as `timeUnixNano`. On a record
-   * forwarded from a frame or a worker the two genuinely differ, and that
-   * difference is the only measure of forwarding lag there is. Setting both at
-   * once makes the field say nothing.
+   * the emitter, and never in the same statement as `timeUnixNano`. The two
+   * differ on a forwarded record, and that difference is the only measure of
+   * forwarding lag there is.
    */
   observedTimeUnixNano?: string;
   /** Correlates this record with the rest of one distributed operation. */
@@ -67,26 +60,17 @@ export interface LogRecord {
 }
 
 /**
- * The current time in the spelling every record timestamp uses: nanoseconds
- * since the epoch, as a decimal string.
+ * The current time as every record timestamp is spelled: nanoseconds since the
+ * epoch, as a decimal string.
  *
- * Built by concatenation rather than by multiplying. `Date.now() * 1e6` does
- * print the right digits today, but only by accident: it lands around 1.8e18,
- * two hundred times past the largest integer a double holds exactly, and it
- * survives solely because milliseconds leave just 13 significant digits and any
- * decimal of 15 or fewer round-trips through a double. That is a property of
- * the current clock resolution, not of the format. Give this a source with
- * microsecond precision and the same multiplication starts rounding silently,
- * with nothing to notice it by. Concatenation is exact by construction, so it
- * cannot acquire that failure later.
+ * Concatenated, not multiplied. `Date.now() * 1e6` prints the right digits only
+ * because milliseconds leave 13 significant digits, and any decimal of 15 or
+ * fewer round-trips through a double; a source with microsecond precision would
+ * start rounding silently. The same arithmetic is why the field is a string at
+ * every hop: 19 digits cannot survive a `Number`.
  *
- * The same arithmetic is why `timeUnixNano` is a string at every hop rather than
- * a number: a full-precision nanosecond value is 19 digits and cannot survive a
- * `Number` at all.
- *
- * Millisecond precision is all a browser reliably offers, so the six appended
- * zeros are honest: they say the finer digits are unknown rather than measured.
- * Do not fill them with `performance.now()` fractions to look more precise.
+ * The six zeros say the finer digits are unknown. Do not fill them with
+ * `performance.now()` fractions.
  */
 export function nowUnixNano(): string {
   return `${String(Date.now())}000000`;
@@ -95,33 +79,28 @@ export function nowUnixNano(): string {
 /**
  * A cheap shape check for a record that arrived from another realm.
  *
- * Records forwarded from a frame or a worker are structured clones built by
- * code this process does not control, and nothing on the way in inspects the
- * cargo: the bus checks its own envelope and no more. One record missing
- * `attributes` reaching the serializer means `Object.entries(undefined)` throws,
- * the transport classifies the whole batch as unserializable, and a hundred
- * good records from other contexts die with it. So one bad record has to poison
- * exactly one record, which is the same rule payload sanitizing already
- * enforces on the way in.
+ * Forwarded records are structured clones built by code this process does not
+ * control, and the bus checks its own envelope and not the cargo. One record
+ * missing `attributes` makes `Object.entries(undefined)` throw in the
+ * serializer, the transport calls the whole batch unserializable, and a hundred
+ * good records die with it. One bad record must poison one record.
  *
- * This lives in the model rather than in the bus because it is a fact about the
- * type, and both the runtime and its tests want it.
+ * In the model rather than the bus because it is a fact about the type, which
+ * both the runtime and its tests want.
  *
- * Deliberately loose about `severityText`, which is checked as a string and not
- * as a known level. An unrecognised level from a newer version of this library
- * still carries its own `severityNumber` and still serializes, so passing it
- * through costs a slightly optimistic type predicate, while rejecting it would
- * silently drop real records on a version skew.
+ * Loose about `severityText` on purpose: it is checked as a string, not as a
+ * known level. An unrecognised level from a newer version still carries its own
+ * `severityNumber` and still serializes, so rejecting it would drop real
+ * records on a version skew.
  */
 export function isLogRecord(value: unknown): value is LogRecord {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  // Widened to unknown values rather than asserted as a `Partial<LogRecord>`.
-  // That shape would promise the compiler these fields are never null, and the
-  // null checks below would then lint as unnecessary conditions. They are not
-  // unnecessary: this value was built somewhere this code does not control, and
-  // the declared type is exactly the claim being tested.
+  // Widened to unknown values rather than asserted as a `Partial<LogRecord>`,
+  // which would promise the compiler these fields are never null and make the
+  // checks below lint as unnecessary conditions. The declared type is the claim
+  // being tested, and this value was built where this code has no say.
   const record = value as Record<string, unknown>;
   return (
     typeof record.body === "string" &&

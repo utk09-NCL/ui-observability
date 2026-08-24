@@ -1,25 +1,20 @@
 // src/core/diagnostics.ts
 //
-// The internal error channel. Every catch block in this library reports into a
-// Diagnostics instance, which is what keeps a fault inside the logger from
-// turning into silence in the consumer's application. A consumer that never
-// sets a handler still gets working counters, so `snapshot()` can answer the
-// question "what am I not seeing".
+// The internal error channel. Every catch block in this library reports here,
+// so a fault inside the logger does not become silence in the consumer's
+// application. Counters work with no handler set, so `snapshot()` answers
+// "what am I not seeing".
 //
-// Why the throttle exists: a broken render loop can produce ten thousand
-// identical errors a second, and a handler invoked ten thousand times a second
-// is itself the outage. Emission is therefore capped at one event per code per
-// window, while counting is never throttled, so a throttled code still reports
-// its true total on the next event that gets through and in `snapshot()`.
+// Emission is capped at one event per code per window: a broken render loop
+// produces ten thousand identical errors a second, and a handler called that
+// often is itself the outage. Counting is never throttled, so a throttled code
+// still reports its true total on the next event through and in `snapshot()`.
 
 import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
 
 /**
- * Every fault this library can report, as a closed set.
- *
- * A closed set rather than free-form strings, because these codes are what a
- * consumer alerts and dashboards on. A typo in a string would be an alert that
- * silently never fires.
+ * Every fault this library can report. Closed rather than free-form: consumers
+ * alert on these codes, and a typo would be an alert that never fires.
  */
 export type DiagnosticCode =
   | "config.invalid"
@@ -152,15 +147,12 @@ export class Diagnostics {
     try {
       this.handler(event);
     } catch (handlerError) {
-      // The consumer's own handler threw. This is the single catch in the
-      // library that counts instead of calling report(), because report() is
-      // what just called the handler: reporting here would call it again and
-      // recurse until the stack ran out.
+      // The one catch that counts instead of calling report(): report() is what
+      // called the handler, so reporting here would recurse until the stack ran out.
       this.count("handler.threw");
-      // Not every context this library runs in has a console, so it is checked
-      // rather than assumed.
+      // Not every context has a console.
       if (typeof console !== "undefined") {
-        // eslint-disable-next-line no-console -- last-resort sink for a consumer diagnostic handler that itself threw, since reporting it would call that same handler again and recurse
+        // eslint-disable-next-line no-console -- last-resort sink: reporting a throwing diagnostic handler would call it again and recurse
         console.warn(`${LIBRARY_LOG_PREFIX} onDiagnostic handler threw`, handlerError);
       }
     }

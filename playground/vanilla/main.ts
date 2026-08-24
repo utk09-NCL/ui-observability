@@ -1,45 +1,30 @@
 // playground/vanilla/main.ts
 //
-// The development harness for the library in ../../src. It is deliberately the
-// only thing in this repository that imports the source tree directly rather
-// than the built package, which is exactly why the framework examples are
-// barred from doing the same: they exist to prove the published API is usable
-// from outside, and a deep import would prove nothing.
+// The development harness for the library in ../../src, and the only thing here
+// that imports the source tree rather than the built package. The framework
+// examples must not: they exist to prove the published API works from outside.
 //
-// Right now it imports nothing at all, because src/index.ts exports nothing
-// yet. Writing the intended imports ahead of the code fails two ways, and the
-// second is the one that costs an afternoon:
+// It imports nothing yet, because src/index.ts exports nothing. Naming an
+// absent export fails at module link time, before any of this evaluates, and
+// the page then loads dead with an empty diagnostics box: the script that
+// reports failures never ran. So every button is wired, and handlers waiting on
+// library code print what they wait for and carry a `// Final form:` comment.
 //
-//   1. tsc reports TS2305, "has no exported member 'configure'".
-//   2. The browser fails at module link time, before any of this evaluates,
-//      with "does not provide an export named 'configure'". The page then
-//      loads dead and the diagnostics box below is empty for the wrong
-//      reason: not because nothing went wrong, but because the script that
-//      reports what went wrong never ran.
-//
-// So every button is wired and no click is a silent no-op. Handlers that need
-// library code which does not exist yet print what they are waiting for, and
-// carry their intended final form in a comment directly above them.
-//
-// One configuration line belongs with the second iframe in index.html and is
-// easy to lose, so it is recorded here for whoever writes the real configure
-// call:
+// For whoever writes the real configure call, the line that goes with the
+// second iframe in index.html:
 //
 //   bus: { trustedOrigins: [location.origin, "http://localhost:5174", "http://127.0.0.1:5174"] }
 //
 // The receiver decides whose bus messages it believes. The cross-origin child
-// on 127.0.0.1:5174 cannot read window.parent, so it forwards over postMessage
-// instead, and if its origin is missing from that list every record it sends
-// is rejected with a bus.untrusted_origin diagnostic naming the origin.
+// cannot read window.parent, so it forwards over postMessage, and an origin
+// missing from that list is rejected with bus.untrusted_origin.
 //
-// The `export {}` at the bottom is load-bearing. With no import and no export,
-// tsc treats this file and child.ts as global scripts sharing one scope and
-// reports TS2451 on their top level consts.
+// The `export {}` at the bottom is load-bearing: with no import and no export,
+// tsc treats this file and child.ts as one global scope and reports TS2451.
 
-// A missing element means the harness itself is broken, so name the selector
-// and fail loudly. That is worth four lines to avoid a non-null assertion,
-// which would instead surface as "cannot read properties of null" on the first
-// click, pointing at the symptom rather than the cause.
+// A missing element means the harness is broken, so name the selector and fail
+// loudly. A non-null assertion instead surfaces as "cannot read properties of
+// null" on the first click, pointing at the symptom.
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
   if (!found) {
@@ -50,10 +35,9 @@ const el = (selector: string): Element => {
 
 const out = el("#diagnostics");
 
-// The stand-in for the library's own diagnostics callback: same shape, same
-// prepend, so swapping it for a real configure({ onDiagnostic }) is mechanical.
-// Nothing calls it during module evaluation, because an empty diagnostics box
-// on load is the signal that the harness came up clean.
+// Stand-in for the library's diagnostics callback: same shape, so swapping it
+// for a real configure({ onDiagnostic }) is mechanical. Nothing calls it during
+// module evaluation: an empty box on load means the harness came up clean.
 const note = (code: string, message: string) => {
   out.textContent = `${new Date().toISOString()}  ${code}  ${message}\n${out.textContent}`;
 };
@@ -90,31 +74,27 @@ on("journey-end", () => {
   note("playground.deferred", "endJourney: waiting on the journey engine and the public API");
 });
 on("open-window", () => {
-  // Live: opening the window needs nothing from the library. Seeding the
-  // journey is the half that does not exist yet. Once the journey engine and
-  // its token accessor exist, this handler writes the token into an
-  // __uiobs_journey search parameter before opening, and the new window
-  // adopts that journey instead of starting its own.
+  // Live: opening the window needs nothing from the library. Seeding does.
+  // Once the journey engine has a token accessor, this writes the token into
+  // an __uiobs_journey search parameter and the new window adopts it.
   const url = new URL("/playground/vanilla/index.html", location.href);
   window.open(url, "_blank");
 });
 
 on("throw", () => {
-  // Live, and it currently reaches the browser console and stops there.
-  // Automatic error capture is what turns an uncaught throw into a record.
+  // Live. Reaches the browser console and stops there until error capture
+  // turns an uncaught throw into a record.
   setTimeout(() => {
     throw new Error("uncaught from a timeout");
   });
 });
 on("reject", () => {
-  // Live. Same as above: automatic rejection capture is what turns an
-  // unhandled rejection into a record.
+  // Live. Same as above, waiting on rejection capture.
   void Promise.reject(new Error("nobody caught me"));
 });
 on("fetch-500", () => {
-  // Live: it hits the mock server and needs nothing from the library.
-  // Automatic network capture is what wraps window.fetch and turns the
-  // failed response into a record.
+  // Live: hits the mock server directly. Network capture is what wraps
+  // window.fetch and turns the failed response into a record.
   void fetch("http://localhost:8787/does-not-exist")
     .then((res) => {
       note("playground.fetch_done", `mock server answered ${String(res.status)}`);
@@ -125,8 +105,8 @@ on("fetch-500", () => {
 });
 on("circular", () => {
   // Final form: log.info("circular payload", a)
-  // The payload is built for real, so this button is ready to prove the
-  // sanitizer survives a cycle and a DOM node the moment one exists.
+  // The payload is built for real, ready to prove the sanitizer survives a
+  // cycle and a DOM node.
   const a: Record<string, unknown> = { name: "a" };
   a.self = a;
   a.el = document.body;
@@ -138,23 +118,21 @@ on("circular", () => {
 
 on("burst", () => {
   // Final form: for (let i = 0; i < 250; i++) log.debug(`burst ${i}`, { i })
-  // The point of the burst is to prove batching coalesces it and that the
-  // durable queue survives a server that is refusing writes.
+  // Proves batching coalesces the burst and the durable queue survives a
+  // server refusing writes.
   note("playground.deferred", "burst of 250: waiting on batching and the durable queue");
 });
 
-// The most useful live button on the page today. It drives the mock server's
-// control plane end to end, which is the half of the system that already
-// exists, and it is how you make the server refuse writes to test durability.
-// Once the logger exists, the note below becomes a real log.warn.
+// Drives the mock server's control plane end to end. This is how you make the
+// server refuse writes to test durability. The note becomes a real log.warn
+// once the logger exists.
 let failing = false;
 on("offline", () => {
   failing = !failing;
   const control = `http://localhost:8787/__control?status=${failing ? "503&retryAfter=3" : "200"}`;
-  // Not an async handler. addEventListener takes a void-returning listener,
-  // so an async one hands it a floating promise nothing can await, which
-  // no-misused-promises rejects and which swallows rejections at runtime.
-  // The explicit chain is the same behaviour without the trap.
+  // Not an async handler: addEventListener takes a void-returning listener, so
+  // an async one leaves a floating promise that swallows rejections, which
+  // no-misused-promises rejects. The chain is the same behaviour without it.
   void fetch(control, { method: "POST" })
     .then(() => {
       note("playground.server_forced", `server forced failure: ${String(failing)}`);

@@ -10,12 +10,7 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 
-/**
- * Which kind of host this code is running in.
- *
- * Every record carries one of these, and dashboards split on it, so a wrong
- * answer here is wrong data everywhere rather than a broken feature.
- */
+/** Which kind of host this code is running in. Every record carries one, and dashboards split on it. */
 export type PlatformType =
   | "openfin"
   | "openfin_web"
@@ -65,12 +60,12 @@ let cached: PlatformMetadata | null = null;
 type ScopeConstructor = abstract new (...args: never[]) => object;
 
 /**
- * Whether the global object is an instance of a named scope constructor.
+ * Whether the global object is an instance of a named scope constructor. The
+ * constructor is the only reliable difference between a window, a dedicated
+ * worker and a service worker.
  *
- * This is the only reliable way to tell a window from a dedicated worker from a
- * service worker: the constructor of the global object is what differs. The
- * name is looked up dynamically because none of these types exist in a document,
- * and importing the worker lib alongside the DOM lib is not possible.
+ * Looked up by name because none of those types exist in a document, and the
+ * worker lib cannot be imported alongside the DOM lib.
  */
 function isGlobalScope(g: Global, name: string): boolean {
   const scope = g[name];
@@ -131,11 +126,9 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
   } else if (g.cordova !== undefined || isWebView(ua)) {
     platform = "mobile_webview";
   } else if (typeof document === "undefined" && typeof process !== "undefined") {
-    // The absence of a document is what makes this Node, not the presence of
-    // `process`. Bundlers routinely inject a `process` shim into browser
-    // bundles so that `process.env.NODE_ENV` resolves, and testing `process`
-    // alone therefore reports real browsers as Node. Every dashboard split by
-    // platform is then wrong, and nothing about it looks broken.
+    // The absent document is what makes this Node, not `process`. Bundlers
+    // inject a `process` shim so `process.env.NODE_ENV` resolves, so testing
+    // `process` alone reports real browsers as Node.
     platform = "node";
   }
 
@@ -153,12 +146,9 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
 /**
  * An in-app webview, not a mobile browser.
  *
- * Android webviews carry the `wv` token, so that half is easy. iOS has no token
- * of its own and the test has to run the other way round: every real iOS browser
- * sends `Safari/`, and a webview embedded in an application does not. Matching
- * on `Mobile.*Safari` instead, which is the obvious version of this check,
- * classifies every iPhone running ordinary Safari as a webview, and then every
- * dashboard split by platform is wrong for all iOS traffic.
+ * Android webviews carry the `wv` token. iOS has no token, so the test runs the
+ * other way: every real iOS browser sends `Safari/` and an embedded webview does
+ * not. Matching `Mobile.*Safari` instead reports every iPhone as a webview.
  */
 function isWebView(ua: string): boolean {
   if (ANDROID_WEBVIEW_UA_PATTERN.test(ua)) {

@@ -1,24 +1,18 @@
 // src/constants.ts
 //
-// Every constant the library uses, in one file.
+// Every constant the library uses, in one file. A default beside the code that
+// reads it is invisible to everyone else, and two modules needing the same
+// number end up with two copies that drift.
 //
-// One place to look is the whole point. A default that lives beside the code
-// that reads it is invisible to everyone else: whoever wants to tune a batch
-// size first has to know which module owns it, and two modules needing the same
-// number quietly end up with two copies that drift apart.
+// Here: every limit, threshold, timing window, storage key, pattern and
+// default, plus any literal more than one module has to agree on.
 //
-// What lives here: every limit, threshold, timing window, storage key, pattern
-// and default, plus any literal that more than one module has to agree on.
+// Inline instead: arithmetic that explains itself, such as the byte widths in
+// the UTF-8 estimator, and single-use display fallbacks read at the line that
+// produces them.
 //
-// What deliberately stays inline: arithmetic that is its own explanation, such
-// as the one, two, three and four byte widths inside the UTF-8 estimator, and
-// single-use display fallbacks such as the "anonymous" in `[Function anonymous]`
-// that are read at the line producing them.
-//
-// This module holds values only. No functions, no conditions, nothing that runs
-// at import beyond building these objects. A "constant" that needs a branch to
-// compute is not a constant, and it would put an untestable branch in the one
-// file that no test imports directly.
+// Values only. A "constant" needing a branch to compute is not one, and it
+// would put an untestable branch in the file no test imports directly.
 
 import type { ResolvedConfig } from "./models/config";
 import type { LogLevel } from "./models/log-record";
@@ -27,13 +21,7 @@ import type { LogLevel } from "./models/log-record";
 // Library-wide
 // ----------------------------------
 
-/**
- * Tag on anything this library writes to the host console.
- *
- * A consumer reading their own console needs to see at a glance that a line is
- * ours and not theirs, and a fixed prefix is also what makes our output
- * filterable out of theirs.
- */
+/** Tag on anything this library writes to the host console, so a consumer can spot and filter it. */
 export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 
 // ----------------------------------
@@ -41,12 +29,9 @@ export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 // ----------------------------------
 
 /**
- * Default window in which one diagnostic code may emit at most one event.
- *
- * A broken render loop can produce ten thousand identical errors a second, and a
- * consumer handler invoked ten thousand times a second is itself the outage.
- * Counting is never throttled, so the true total still rides on the next event
- * that gets through.
+ * Default window in which one diagnostic code may emit at most one event. A
+ * broken render loop produces ten thousand identical errors a second, and a
+ * handler called that often is itself the outage. Counting is never throttled.
  */
 export const DIAGNOSTIC_THROTTLE_MS = 1000;
 
@@ -70,11 +55,9 @@ export const TAB_ID_KEY = "ui-observability.tab";
 export const SESSION_IDLE_MS = 30 * 60 * 1000;
 
 /**
- * Minimum spacing between two writes of the session's last-seen time.
- *
- * The record path is the only place that reliably knows the user is still here,
- * and it is hot, so keeping the session alive has to cost one integer compare
- * rather than a storage write per record.
+ * Minimum spacing between two writes of the session's last-seen time. The
+ * record path is the only place that knows the user is still here, and it is
+ * hot, so keeping a session alive costs one compare rather than a write.
  */
 export const SESSION_TOUCH_MS = 60_000;
 
@@ -94,10 +77,8 @@ export const BYTE_VALUE_COUNT = 256;
 // ----------------------------------
 
 /**
- * Marks the OpenFin desktop runtime in a user agent.
- *
- * Both the desktop runtime and the Core Web adapter expose `fin`, so this
- * pattern is the only thing separating them.
+ * Marks the OpenFin desktop runtime in a user agent. Both it and the Core Web
+ * adapter expose `fin`, so this pattern is the only thing separating them.
  */
 export const OPENFIN_UA_PATTERN = /OpenFin/i;
 
@@ -125,12 +106,9 @@ export const MOBILE_UA_PATTERN = /\bMobile\b/;
 export const WEBKIT_UA_TOKEN = "AppleWebKit";
 
 /**
- * Token sent by every real iOS browser and by no in-application webview.
- *
- * Its absence is what identifies an iOS webview. Matching positively on
- * something like `Mobile.*Safari` instead reports every ordinary iPhone as a
- * webview, and then every dashboard split by platform is wrong for all iOS
- * traffic.
+ * Token sent by every real iOS browser and by no in-application webview, so its
+ * absence identifies a webview. Matching `Mobile.*Safari` positively instead
+ * reports every ordinary iPhone as one.
  */
 export const SAFARI_UA_TOKEN = "Safari/";
 
@@ -159,12 +137,7 @@ export const UTF8_TWO_BYTE_CEILING = 0x800;
  */
 export const MAX_NODE_CLASS_NAMES = 3;
 
-/**
- * Size charged for a null or an undefined.
- *
- * Both serialize as the four characters of `null`, since `JSON.stringify` has no
- * representation for undefined.
- */
+/** Size charged for a null or an undefined. Both serialize as the four characters of `null`. */
 export const BYTES_PER_NULL = 4;
 
 /**
@@ -193,17 +166,13 @@ export const BYTES_PER_KEY_OVERHEAD = 4;
 // ----------------------------------
 
 /**
- * Each level as its OpenTelemetry severity number.
+ * Each level as its OpenTelemetry severity number. Fixed by that specification,
+ * not chosen here: a backend sorts and filters on them, and invented values
+ * would make these records incomparable with every other source. The gaps are
+ * standard too, reserved for finer grades such as `INFO2`.
  *
- * These numbers are fixed by that specification rather than chosen here. A
- * backend sorts, filters and colours on them, so inventing values would make
- * this library's records incomparable with every other source feeding the same
- * collector. The gaps are part of the standard too, which reserves the space
- * between named levels for finer grades such as `INFO2`.
- *
- * Typed as a total `Record<LogLevel, number>` on purpose: adding a level to
- * `LogLevel` without numbering it here then fails the build, rather than
- * shipping an undefined severity to the wire.
+ * Typed as a total `Record<LogLevel, number>`, so adding a level without
+ * numbering it fails the build rather than shipping an undefined severity.
  */
 export const SEVERITY_NUMBER: Record<LogLevel, number> = {
   TRACE: 1,
@@ -215,14 +184,11 @@ export const SEVERITY_NUMBER: Record<LogLevel, number> = {
 };
 
 /**
- * The same table, under the name the level filter reads it by.
- *
- * Deliberately the identical object and not a copy. Ordering levels and
- * numbering them for the wire are one fact, so a second table would be a second
- * thing to keep in step, and the first time the two drifted a record would be
- * filtered as one level and reported as another. Both names exist because the
- * call sites read differently: comparing `LEVEL_ORDER` values is a threshold
- * test, reading `SEVERITY_NUMBER` is an encoding step.
+ * The same table under the name the level filter reads it by. The identical
+ * object, not a copy: ordering levels and numbering them for the wire are one
+ * fact, and once two tables drifted a record would be filtered as one level and
+ * reported as another. Both names exist because the call sites read
+ * differently, a threshold test against an encoding step.
  */
 export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 
@@ -230,22 +196,19 @@ export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 // Attribute and resource keys
 // ----------------------------------
 //
-// The names records carry on the wire. They are constants because the record
-// builder writes them and the serializers read them back by name, so a typo in
-// either place is a field that silently stops arriving rather than a build
-// error. Dotted names follow the OpenTelemetry semantic conventions wherever
-// one exists, and the `uiobs.` prefix marks the few that are this library
-// talking about its own behaviour.
+// The names records carry on the wire. Constants because the record builder
+// writes them and the serializers read them back, so a typo in either place is
+// a field that stops arriving rather than a build error. Dotted names follow
+// the OpenTelemetry semantic conventions where one exists; the `uiobs.` prefix
+// marks this library talking about its own behaviour.
 
 /** What kind of thing the record describes. Dashboards split on it and sampling rates are keyed by it. */
 export const ATTR_LOG_TYPE = "log.type";
 
 /**
- * Position of this record in its context's own stream.
- *
- * Monotonic within one `context.id` and meaningless across two, which is the
- * strongest ordering a browser can offer: timestamps are client clocks and can
- * be skewed or move backwards.
+ * Position of this record in its context's own stream. Monotonic within one
+ * `context.id`, meaningless across two, and the strongest ordering a browser
+ * offers: timestamps are client clocks and can move backwards.
  */
 export const ATTR_LOG_SEQ = "log.seq";
 
@@ -253,21 +216,16 @@ export const ATTR_LOG_SEQ = "log.seq";
 export const ATTR_APP_NAMESPACE = "app.namespace";
 
 /**
- * The document URL at the moment the record was built.
- *
- * An attribute rather than a resource field, because it changes on every route
- * change in a single-page application, and a resource field is by definition
- * identical for every record from one context.
+ * The document URL when the record was built. An attribute, not a resource
+ * field: it changes on every route change, and a resource field is by
+ * definition identical for every record from one context.
  */
 export const ATTR_PAGE_URL = "page.url";
 
 /**
- * The target of the HTTP request a record is about, owned by the network capture.
- *
- * Deliberately distinct from `ATTR_PAGE_URL`. This is the OpenTelemetry name
- * for the request being described, so stamping the page URL over it rewrites
- * every captured request to the page it was made from and leaves the real
- * target only inside the body string.
+ * The target of the HTTP request a record is about, owned by the network
+ * capture. Distinct from `ATTR_PAGE_URL`: stamping the page URL over this
+ * rewrites every captured request to the page that made it.
  */
 export const ATTR_URL_FULL = "url.full";
 
@@ -332,12 +290,9 @@ export const RESOURCE_OPENFIN_NAME = "openfin.name";
 export const TELEMETRY_SDK_NAME = "ui-observability";
 
 /**
- * The value of `telemetry.sdk.version`.
- *
- * A literal rather than a read of package.json, which cannot be imported
- * without pulling a JSON module into the bundle and pinning the published
- * package's shape. It therefore has to be bumped by hand alongside the version
- * in package.json, and this is the note saying so.
+ * The value of `telemetry.sdk.version`. A literal, because importing
+ * package.json pulls a JSON module into the bundle and pins the published
+ * package's shape. Bump it by hand alongside the version in package.json.
  */
 export const TELEMETRY_SDK_VERSION = "1.0.0";
 
@@ -345,56 +300,68 @@ export const TELEMETRY_SDK_VERSION = "1.0.0";
 export const TELEMETRY_SDK_LANGUAGE = "webjs";
 
 // ----------------------------------
+// Serializers
+// ----------------------------------
+
+/**
+ * The OTLP/JSON serializer's name. Two readers: the serializer stamps it on
+ * itself, and config resolves this spelling when a consumer names a format
+ * rather than passing an implementation.
+ */
+export const SERIALIZER_NAME_OTLP = "otlp";
+
+/** The Elastic Common Schema serializer's name, resolved from config the same way. */
+export const SERIALIZER_NAME_ECS = "ecs";
+
+/** Content type of an OTLP/JSON body, which is what the collector's logs endpoint accepts. */
+export const CONTENT_TYPE_JSON = "application/json";
+
+/** Content type of newline-delimited JSON, which is what a bulk ingest endpoint accepts. */
+export const CONTENT_TYPE_NDJSON = "application/x-ndjson";
+
+/** Nanoseconds in one millisecond. A bigint, because a record timestamp is past exact double range. */
+export const NANOS_PER_MILLI = 1000000n;
+
+// ----------------------------------
 // Journey
 // ----------------------------------
 
 /**
- * sessionStorage key holding the journey this context is in.
- *
- * sessionStorage rather than localStorage, and the choice is load bearing: a
- * journey belongs to one tab, so a localStorage key would hand one tab's
- * finished journey to every other tab on the origin. Compare `SESSION_ID_KEY`,
- * which is localStorage for exactly the opposite reason.
+ * sessionStorage key holding the journey this context is in. sessionStorage,
+ * not localStorage: a journey belongs to one tab, and a localStorage key would
+ * hand one tab's finished journey to every other tab on the origin. Compare
+ * `SESSION_ID_KEY`, which is localStorage for the opposite reason.
  */
 export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
 
 /**
- * Longest journey name a token carries.
- *
- * A token rides in a query string, which is the one channel with a hard length
- * limit, proxy truncation and access-log noise. The name is the only free-form
- * field in it and therefore the only one that needs a cap. The untruncated name
- * survives in what is persisted and on every record, so this costs nothing
- * outside the token.
+ * Longest journey name a token carries. A token rides in a query string, which
+ * has a hard length limit and proxy truncation, and the name is its only
+ * free-form field. The full name still reaches storage and every record.
  */
 export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
 
 /**
- * Cap on a whole token, past which no token is issued at all.
- *
- * Three fields and a capped name cannot reach this, so this firing means the
- * encoder grew a field rather than that a caller did anything wrong. It is a
+ * Cap on a whole token, past which none is issued. Three fields and a capped
+ * name cannot reach it, so this firing means the encoder grew a field. A
  * tripwire on the query-string budget, not input validation.
  */
 export const JOURNEY_TOKEN_MAX_CHARS = 256;
 
 /**
- * Key under an OpenFin window's `customData` that carries a seeded journey token.
- *
- * A window a platform provider creates has no URL of its own to read a token
- * from, so `customData` is the seeding channel there. The consumer code that
- * writes it when creating the window and the code that reads it here have to
- * agree on this spelling, and nothing else checks that they do.
+ * Key under an OpenFin window's `customData` carrying a seeded journey token. A
+ * provider-created window has no URL of its own to read one from. The consumer
+ * writing it and this library reading it must agree on the spelling, and
+ * nothing else checks that they do.
  */
 export const OPENFIN_JOURNEY_CUSTOM_DATA_KEY = "uiObsJourney";
 
 /**
  * The `+` of standard base64, which is `-` in the URL-safe alphabet.
  *
- * These five patterns are module-level despite the `g` flag, which is safe:
- * `String.prototype.replace` resets `lastIndex` on a global regex before it
- * runs, so a shared instance carries no state between calls. That is not true
- * of `test` and `exec`, which is why nothing here is used with them.
+ * These five are module-level despite the `g` flag: `replace` resets
+ * `lastIndex` before it runs, so a shared instance carries no state between
+ * calls. `test` and `exec` do not, which is why none is used with them.
  */
 export const BASE64_PLUS_PATTERN = /\+/g;
 
@@ -424,31 +391,23 @@ export const TRACE_ID_BYTES = 16;
 export const SPAN_ID_BYTES = 8;
 
 /**
- * How long one ambient trace lives before it rotates on its own.
- *
- * A trace id is not minted per record. Records that share one hold together as
- * a single trace in the backend, which is the entire value of the field, so the
- * id rotates on meaningful boundaries: a click, a route change, an explicit
- * call, and failing all of those, this age. The cap exists because a tab left
- * open all day would otherwise pile a week of records into one trace.
+ * How long one ambient trace lives before it rotates on its own. The id rotates
+ * on a click, a route change, an explicit call, and failing those, this age,
+ * so a tab left open all day does not pile a week of records into one trace.
  */
 export const TRACE_MAX_AGE_MS = 5 * 60 * 1000;
 
 /**
- * trace-flags with the sampled bit set.
- *
- * Every record this library emits has already survived sampling by the time it
- * is built, so an unsampled flag would tell the backend to discard something
- * this library deliberately kept.
+ * trace-flags with the sampled bit set. Every record has already survived
+ * sampling by the time it is built, so an unsampled flag would tell the backend
+ * to discard what this library deliberately kept.
  */
 export const TRACE_FLAGS_SAMPLED = 1;
 
 /**
- * trace-flags is one byte on the wire, so the field is masked to eight bits before it is printed.
- *
- * The mask matters rather than being decoration: the field is a bitfield whose
- * further bits are already defined, and collapsing it to sampled or not
- * silently discards every other flag an upstream tracer set.
+ * trace-flags is one byte on the wire, so the field is masked to eight bits
+ * before printing. The bitfield's further bits are already defined, and
+ * collapsing it to sampled or not discards what an upstream tracer set.
  */
 export const TRACE_FLAGS_MASK = 0xff;
 
@@ -460,14 +419,10 @@ export const TRACEPARENT_VERSION = "00";
 // ----------------------------------
 
 /**
- * Smallest breadcrumb buffer that still functions.
- *
- * The buffer is a ring whose write pointer advances modulo the capacity, and
- * modulo zero is NaN, so a capacity of zero does not store nothing, it writes
- * every crumb to index NaN and reads none of them back. A consumer asking for
- * zero breadcrumbs is asking to turn a feature off, which is what the capture
- * flags are for, so the capacity clamps to this rather than throwing out of a
- * constructor that runs inside `configure()`.
+ * Smallest breadcrumb buffer that still functions. The write pointer advances
+ * modulo the capacity, and modulo zero is NaN: a capacity of zero writes every
+ * crumb to index NaN and reads none back. Turning breadcrumbs off is what the
+ * capture flags are for, so this clamps instead.
  */
 export const BREADCRUMB_MIN_CAPACITY = 1;
 
@@ -476,10 +431,8 @@ export const BREADCRUMB_MIN_CAPACITY = 1;
 // ----------------------------------
 
 /**
- * What `service.name` becomes when a consumer configures no service name.
- *
- * A fixed placeholder is better than an empty string, because it is searchable
- * in the backend and it tells whoever finds it that the field was never set
+ * What `service.name` becomes when a consumer configures none. A fixed
+ * placeholder is searchable in the backend and says the field was never set
  * rather than lost in transit.
  */
 export const UNKNOWN_SERVICE_NAME = "unknown-service";
@@ -491,30 +444,22 @@ export const SAMPLING_RATE_MIN = 0;
 export const SAMPLING_RATE_MAX = 1;
 
 /**
- * What an out-of-range sampling rate falls back to.
- *
- * It keeps everything on purpose. A typo in a rate should cost volume, not
- * visibility, and silently dropping records is the harder failure to notice.
+ * What an out-of-range sampling rate falls back to. Keeps everything: a typo in
+ * a rate should cost volume, not visibility.
  */
 export const SAMPLING_RATE_FALLBACK = 1;
 
 /**
- * Config keys that are valid but carry no default, so they never appear in
- * `DEFAULT_CONFIG`.
- *
- * The unknown-key check reads the default's own keys to decide what it
- * recognises, and without this list it would report every callback a consumer
- * passes as a typo.
+ * Valid config keys that carry no default and so never appear in
+ * `DEFAULT_CONFIG`. The unknown-key check reads that object's own keys, and
+ * without this list would report every callback a consumer passes as a typo.
  */
 export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers"] as const;
 
 /**
- * The nested config sections, which are merged into the objects already in
- * place rather than replaced.
- *
- * Components capture a reference to a section once at construction, so
- * preserving the identity of these nine objects across a reconfigure is what
- * makes a changed setting reach the code already holding it.
+ * The nested config sections, merged into the objects already in place rather
+ * than replaced. Components hold a reference to a section from construction, so
+ * preserving the identity of these nine is what makes a change reach them.
  */
 export const CONFIG_SECTIONS = [
   "streams",
@@ -530,12 +475,11 @@ export const CONFIG_SECTIONS = [
 
 /**
  * Every setting the runtime reads, at the value it takes when the consumer says
- * nothing.
+ * nothing. Fully populated: downstream code reads these without checking, so a
+ * hole here becomes an undefined in arithmetic far away.
  *
- * Fully populated on purpose: downstream code reads these without checking
- * them first, so a hole here becomes an undefined in arithmetic somewhere far
- * away. This object is the base of a first `configure()` call only. A later
- * call merges onto the config already in force, never back onto this.
+ * The base of a first `configure()` only. A later call merges onto the config
+ * in force, never back onto this.
  */
 export const DEFAULT_CONFIG: ResolvedConfig = {
   endpoint: "",
@@ -546,9 +490,8 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   minLevel: "INFO",
   streams: {
     logs: { flushIntervalMs: 2000, batchSize: 100 },
-    // Metrics arrive from timers and web vitals at a steady trickle, and nobody
-    // is waiting for one. Batching them harder is most of the point of
-    // splitting the streams at all.
+    // Metrics trickle in from timers and web vitals and nobody waits on one, so
+    // they batch harder. That is most of the point of splitting the streams.
     metrics: { flushIntervalMs: 10_000, batchSize: 500 },
   },
   maxConcurrentRequests: 2,
@@ -605,9 +548,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     maxRecordBytes: 32768,
   },
   console: { enabled: false, level: "DEBUG" },
-  // There is no default serializer because there is no serializer: the wire
-  // format lives at the transport boundary, which does not exist yet. Nothing
-  // reads this field, so a placeholder would only be a value no code can use.
+  // No default serializer yet: nothing reads one until the transport lands.
   // Final form:
   //   serializer: otlpSerializer,
 };

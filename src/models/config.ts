@@ -3,18 +3,15 @@
 // The two faces of configuration: what a consumer may pass, and what the
 // runtime actually holds.
 //
-// They are declared separately and on purpose. `ObservabilityConfig` is almost
-// entirely optional, because the whole point is that `configure({ endpoint })`
-// works. `ResolvedConfig` has no optionality left in it, because every component
-// downstream reads these values without checking them first.
+// Declared separately on purpose. `ObservabilityConfig` is almost entirely
+// optional so that `configure({ endpoint })` works; `ResolvedConfig` has no
+// optionality left, because downstream components read it without checking.
 //
-// Do not try to derive the second from the first with
-// `Required<ObservabilityConfig>`. `Required<T>` strips `?` at the top level
-// only, so `config.storage.maxBatches` would stay `number | undefined` and every
-// arithmetic use of it is a type error under `strict`. The mistake compiles
-// happily right up until a section is handed to something that expects real
-// numbers. Each nested section is therefore declared once, fully required, and
-// appears on `ObservabilityConfig` as a `Partial` of itself.
+// Do not derive the second with `Required<ObservabilityConfig>`. `Required<T>`
+// strips `?` at the top level only, so `config.storage.maxBatches` stays
+// `number | undefined` and every arithmetic use of it fails under `strict`.
+// Each nested section is declared once, fully required, and appears on
+// `ObservabilityConfig` as a `Partial` of itself.
 //
 // Every default these types take lives in `src/constants.ts`, not here.
 
@@ -204,11 +201,9 @@ export interface CaptureOptions {
   /** identical errors within this window are counted, not re-sent */
   errorDedupeMs: number;
   /**
-   * Hand the library the `web-vitals` module yourself. Optional, and it exists
-   * because of bundlers: a literal `import("web-vitals")` inside this package is
-   * a dependency every consumer has to resolve, whether or not they ever turn
-   * vitals capture on. Passing a loader keeps that import in the consumer's own
-   * graph, where it is their decision.
+   * Hand the library the `web-vitals` module yourself. A literal
+   * `import("web-vitals")` inside this package is a dependency every consumer
+   * has to resolve, used or not; a loader keeps that import in their graph.
    */
   webVitalsLoader?: () => Promise<WebVitalsModule>;
 }
@@ -291,9 +286,8 @@ export interface ObservabilityConfig {
    * saves.
    */
   compressionThresholdBytes?: number;
-  // Choosing a wire format is not offered yet, because no serializer
-  // implementation exists to choose between. Passing this key today reports as
-  // an unknown key, which is honest: nothing would read it.
+  // Not offered yet: the serializers exist, but nothing reads a resolved one
+  // until the transport lands. Passing this key today reports as unknown.
   // Final form:
   //   serializer?: "otlp" | "ecs" | LogSerializer;
   /**
@@ -336,17 +330,13 @@ export interface ObservabilityConfig {
 }
 
 /**
- * What the runtime holds. Every section is fully populated.
+ * What the runtime holds. Every section is fully populated; the field meanings
+ * are the ones documented on `ObservabilityConfig` and each section above.
  *
- * Field meanings are the ones documented on `ObservabilityConfig` and on each
- * section interface above. What differs here is only that nothing is optional.
- *
- * Exactly one of these objects exists per runtime, and a reconfigure mutates it
- * in place through `applyResolvedConfig`. That is deliberate: the bus, the
- * journey engine, the exit flush, the retry engine and every capture module
- * capture a reference to this object, or to one of its sections, at construction
- * and never look it up again. Replace it wholesale and all of them keep reading
- * the old settings forever.
+ * One object per runtime, mutated in place by `applyResolvedConfig`. The bus,
+ * the journey engine, the exit flush, the retry engine and every capture module
+ * hold a reference to it or to one of its sections from construction, so
+ * replacing it wholesale leaves all of them on the old settings.
  */
 export interface ResolvedConfig {
   endpoint: string;
@@ -369,9 +359,7 @@ export interface ResolvedConfig {
   capture: CaptureOptions;
   limits: LimitOptions;
   console: ConsoleOptions;
-  // The resolved serializer lands here once there is one to resolve. Nothing
-  // reads this field yet, so declaring it would only mean declaring a type for
-  // a value no code can produce.
+  // The resolved serializer lands here with the transport that reads it.
   // Final form:
   //   serializer: LogSerializer;
   headers?: ObservabilityConfig["headers"];

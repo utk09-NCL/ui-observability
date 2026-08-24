@@ -1,39 +1,31 @@
 // playground/vanilla/child.ts
 //
-// The iframe half of the harness. A child document does not send its own
-// records: it forwards them to the nearest long-lived owner, normally the top
-// window, which batches and posts them. Proving that is the point of this file.
+// The iframe half of the harness. A child document forwards its records to the
+// nearest long-lived owner, normally the top window, which batches and posts
+// them. Proving that is the point of this file.
 //
-// It imports nothing today, for the same reason main.ts does not: src/index.ts
-// exports nothing yet, and named imports of exports that do not exist fail at
-// module link time, leaving the frame dead rather than merely quiet.
+// It imports nothing yet, for the same reason main.ts does not: naming an
+// absent export fails at module link time and leaves the frame dead.
 //
-// Two details of the eventual configure call are the ones that get written
-// wrong, so they are recorded here rather than rediscovered later:
+// Two details of the eventual configure call that get written wrong:
 //
-//   1. The child configures with the SAME endpoint as the parent
-//      ("http://localhost:8787/v1/logs"). A forwarder never posts, so the
-//      endpoint looks redundant, but an empty one raises config.invalid and
-//      makes the frame look broken for the wrong reason on the day it does
-//      promote itself to sender.
-//   2. The child deliberately does NOT pin its bus mode. Which role this frame
-//      resolves to is the thing under test, so hard-coding it removes the
-//      test. Trusted origins are the parent's concern, not the child's: the
-//      receiver is what decides whose messages it believes.
+//   1. The child uses the SAME endpoint as the parent
+//      ("http://localhost:8787/v1/logs"). A forwarder never posts, so it looks
+//      redundant, but an empty endpoint raises config.invalid and makes the
+//      frame look broken on the day it promotes itself to sender.
+//   2. The child does NOT pin its bus mode. Which role it resolves to is the
+//      thing under test. Trusted origins are the parent's concern: the
+//      receiver decides whose messages it believes.
 //
-// Once the bus exists, the diagnostics callback listens for a role_resolved
-// event and writes the resolved role and the transport it resolved through
-// into #role. Until then the role genuinely is unresolved, and the text below
-// says so rather than leaving the markup reading "resolving" forever, which
-// would be a lie that outlives whoever wrote it.
+// Once the bus exists, the diagnostics callback writes the resolved role and
+// transport into #role. Until then the role is genuinely unresolved and the
+// text says so, rather than reading "resolving" forever.
 //
-// The `export {}` at the bottom is load-bearing. With no import and no export,
-// tsc treats this file and main.ts as global scripts sharing one scope and
-// reports TS2451 on their top level consts.
+// The `export {}` at the bottom is load-bearing: with no import and no export,
+// tsc treats this file and main.ts as one global scope and reports TS2451.
 
-// Same reasoning as main.ts: name the missing selector instead of asserting it
-// away. The two files share no module, so this helper is duplicated rather
-// than pulling a third file into a two-file harness for four lines.
+// Same as main.ts: name the missing selector rather than assert it away.
+// Duplicated instead of pulling a third file into a two-file harness.
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
   if (!found) {
@@ -53,27 +45,24 @@ showChildState("");
 
 el("#child-log").addEventListener("click", () => {
   // Final form: log.logAction("CHILD_CLICK", { at: Date.now() })
-  // The bus is what carries that record into the parent's request, where it
-  // should arrive tagged with this frame's own context id but the parent's
-  // tab id. That pairing is the evidence forwarding actually happened.
+  // The record should arrive in the parent's request carrying this frame's
+  // context id and the parent's tab id. That pairing is the evidence.
   showChildState(`CHILD_CLICK at ${String(Date.now())}, waiting on the bus to forward it`);
 });
 el("#child-journey").addEventListener("click", () => {
   // Final form: startJourney("started-in-the-child")
-  // A same-origin child shares sessionStorage with its parent, so starting a
-  // journey here overwrites the parent's. That is intended: a journey is a
-  // property of the user's task, not of the document that happened to start
-  // it, and every window on the origin should adopt it.
+  // A same-origin child shares sessionStorage with its parent, so this
+  // overwrites the parent's journey. Intended: a journey belongs to the
+  // user's task, not to the document that started it.
   showChildState("startJourney: waiting on the journey engine and the bus");
 });
 
-// Once forwarding works, a heartbeat here lets you watch records arrive in the
-// parent without clicking anything:
+// Once forwarding works, a heartbeat shows records arriving in the parent
+// without clicking anything:
 //
 //   setInterval(() => log.debug("child heartbeat", getDiagnosticCounters()), 1000);
 //
-// It stays a comment for now. There are no counters to read, and a timer
-// firing every second into a dead handler is noise on a page whose success
-// condition is that it stays quiet.
+// A comment for now: there are no counters to read, and a timer firing into a
+// dead handler is noise on a page whose success condition is silence.
 
 export {};
