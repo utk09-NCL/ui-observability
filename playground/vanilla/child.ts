@@ -1,31 +1,26 @@
 // playground/vanilla/child.ts
 //
 // The iframe half of the harness. A child document forwards its records to the
-// nearest long-lived owner, normally the top window, which batches and posts
-// them. Proving that is the point of this file.
-//
-// It imports nothing yet, for the same reason main.ts does not: naming an
-// absent export fails at module link time and leaves the frame dead.
-//
-// Two details of the eventual configure call that get written wrong:
-//
-//   1. The child uses the SAME endpoint as the parent
-//      ("http://localhost:8787/v1/logs"). A forwarder never posts, so it looks
-//      redundant, but an empty endpoint raises config.invalid and makes the
-//      frame look broken on the day it promotes itself to sender.
-//   2. The child does NOT pin its bus mode. Which role it resolves to is the
-//      thing under test. Trusted origins are the parent's concern: the
-//      receiver decides whose messages it believes.
-//
-// Once the bus exists, the diagnostics callback writes the resolved role and
-// transport into #role. Until then the role is genuinely unresolved and the
-// text says so, rather than reading "resolving" forever.
-//
-// The `export {}` at the bottom is load-bearing: with no import and no export,
-// tsc treats this file and main.ts as one global scope and reports TS2451.
+// nearest long-lived owner, which batches and posts them.
 
-// Same as main.ts: name the missing selector rather than assert it away.
-// Duplicated instead of pulling a third file into a two-file harness.
+import { Bus } from "../../src/bus/bus";
+import { resolveConfig } from "../../src/core/config";
+import { ContextStore } from "../../src/core/context";
+import { Diagnostics } from "../../src/core/diagnostics";
+import { JourneyEngine } from "../../src/core/journey";
+import { type BuildInput, RecordBuilder } from "../../src/core/record";
+import { resolveIdentity } from "../../src/utils/identity";
+import { detectPlatform } from "../../src/utils/platform";
+import { Sequence } from "../../src/utils/sequence";
+import { TraceEngine } from "../../src/utils/tracing";
+
+const INGEST_ENDPOINT = "http://localhost:8787/v1/logs";
+
+/**
+ * Queries a DOM element by selector, throwing if missing.
+ * @param selector CSS selector string.
+ * @returns Matched DOM element.
+ */
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
   if (!found) {
@@ -35,34 +30,132 @@ const el = (selector: string): Element => {
 };
 
 const roleEl = el("#role");
-const baseRole = "unresolved, the bus does not exist yet";
 
-const showChildState = (detail: string) => {
-  roleEl.textContent = detail ? `${baseRole} (${detail})` : baseRole;
+let role = "resolving";
+let lastNote = "";
+
+/** Renders the resolved role and the most recent diagnostic into the frame. */
+const render = (): void => {
+  roleEl.textContent = lastNote ? `${role} (${lastNote})` : role;
 };
 
-showChildState("");
+/**
+ * Records the most recent diagnostic for display.
+ * @param code Diagnostic event code.
+ * @param message Event description.
+ */
+const note = (code: string, message: string): void => {
+  lastNote = `${code}: ${message}`;
+  render();
+};
+
+/**
+ * Normalizes caught errors into string messages.
+ * @param err Unknown caught error.
+ * @returns Formatted message string.
+ */
+const toMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+const diagnostics = new Diagnostics((event) => {
+  note(event.code, event.message);
+});
+
+// The child uses the same endpoint as the parent. A forwarder never posts, but
+// an empty endpoint raises config.invalid and makes the frame look broken on
+// the day it promotes itself to sender. The bus mode stays unpinned: which role
+// it resolves to is the thing under test.
+const config = resolveConfig(
+  {
+    endpoint: INGEST_ENDPOINT,
+    serviceName: "playground-child",
+    serviceVersion: "0.0.0-dev",
+    environment: "local",
+    minLevel: "DEBUG",
+  },
+  diagnostics,
+);
+
+const identity = resolveIdentity(diagnostics);
+const platform = detectPlatform(diagnostics);
+
+let bus: Bus | null = null;
+
+const journey = new JourneyEngine(config.journey, diagnostics, identity.contextId, (changed) => {
+  bus?.broadcastJourney(changed);
+});
+
+const builder = new RecordBuilder({
+  config,
+  diagnostics,
+  context: new ContextStore(),
+  journey,
+  tracing: new TraceEngine(diagnostics),
+  sequence: new Sequence(),
+  identity,
+  platform,
+});
+
+bus = new Bus(config, diagnostics, platform, identity.contextId, identity.tabId, {
+  // Only reached if this frame promoted itself to sender, which it cannot act
+  // on: a child builds no transport of its own.
+  onRecords: (records) => {
+    note("playground.child_orphaned", `${String(records.length)} record(s) with nowhere to go`);
+  },
+  onJourney: (incoming) => {
+    journey.applyRemote(incoming);
+  },
+  onJourneyRequest: () => journey.current(),
+  onTabConflict: () => {
+    note("playground.tab_conflict", "another context claimed this tab id");
+  },
+});
+
+bus
+  .start()
+  .then((resolved) => {
+    role = resolved;
+    render();
+  })
+  .catch((error: unknown) => {
+    note("playground.bus_failed", toMessage(error));
+  });
+
+journey.bootstrap().catch((error: unknown) => {
+  note("playground.bootstrap_failed", toMessage(error));
+});
+
+/**
+ * Builds a record and hands it to the owner that batches it.
+ * @param input Build options and payload.
+ */
+const forward = (input: BuildInput): void => {
+  const record = builder.build(input);
+  if (record === null) {
+    note("playground.dropped", "produced no record");
+    return;
+  }
+
+  bus.sendRecords([record]);
+};
 
 el("#child-log").addEventListener("click", () => {
-  // Final form: log.logAction("CHILD_CLICK", { at: Date.now() })
-  // The record should arrive in the parent's request carrying this frame's
-  // context id and the parent's tab id. That pairing is the evidence.
-  showChildState(`CHILD_CLICK at ${String(Date.now())}, waiting on the bus to forward it`);
+  // Arrives in the parent's request carrying this frame's context id and the
+  // parent's tab id. That pairing is the evidence.
+  forward({
+    level: "INFO",
+    type: "action",
+    body: "CHILD_CLICK",
+    namespace: "playground.child",
+    payload: { at: Date.now() },
+  });
 });
+
 el("#child-journey").addEventListener("click", () => {
-  // Final form: startJourney("started-in-the-child")
   // A same-origin child shares sessionStorage with its parent, so this
-  // overwrites the parent's journey. Intended: a journey belongs to the
-  // user's task, not to the document that started it.
-  showChildState("startJourney: waiting on the journey engine and the bus");
+  // overwrites the parent's journey. Intended: a journey belongs to the user's
+  // task, not to the document that started it.
+  const started = journey.start("started-in-the-child");
+  note("playground.journey", `started ${started.name}`);
 });
 
-// Once forwarding works, a heartbeat shows records arriving in the parent
-// without clicking anything:
-//
-//   setInterval(() => log.debug("child heartbeat", getDiagnosticCounters()), 1000);
-//
-// A comment for now: there are no counters to read, and a timer firing into a
-// dead handler is noise on a page whose success condition is silence.
-
-export {};
+render();

@@ -2,12 +2,16 @@
 //
 // Manual test harness assembling internal modules ahead of public logger facades.
 
+import { Bus } from "../../src/bus/bus";
+import type { Receive } from "../../src/bus/links";
+import { RUNTIME_GLOBAL_KEY } from "../../src/constants";
 import { resolveConfig } from "../../src/core/config";
 import { ContextStore } from "../../src/core/context";
 import { Diagnostics } from "../../src/core/diagnostics";
 import { JourneyEngine } from "../../src/core/journey";
 import { LogPipeline } from "../../src/core/pipeline";
 import { type BuildInput, RecordBuilder } from "../../src/core/record";
+import type { BusMessage } from "../../src/models/bus";
 import { drainEmergencyQueue } from "../../src/storage/emergency-queue";
 import { createStorage } from "../../src/storage/factory";
 import { ExitFlush } from "../../src/transport/exit-flush";
@@ -82,8 +86,22 @@ const config = resolveConfig(
 const identity = resolveIdentity(diagnostics);
 const platform = detectPlatform(diagnostics);
 
-// Broadcast callback remains empty until bus implementation lands.
-const journey = new JourneyEngine(config.journey, diagnostics, identity.contextId, () => undefined);
+// Assigned below: the journey engine is built first because the bus handlers
+// read it. A journey change made here is broadcast to every other context.
+let bus: Bus | null = null;
+
+const journey = new JourneyEngine(config.journey, diagnostics, identity.contextId, (changed) => {
+  bus?.broadcastJourney(changed);
+});
+
+// Registered before the storage await below: a same-origin child looks for this
+// symbol as it boots, and finding nothing it falls back to a postMessage
+// handshake. The closure reads `bus` when called, not now.
+(globalThis as unknown as Record<symbol, unknown>)[Symbol.for(RUNTIME_GLOBAL_KEY)] = {
+  busAccept: (message: BusMessage, reply: Receive): void => {
+    bus?.acceptDirect(message, reply);
+  },
+};
 
 const tracing = new TraceEngine(diagnostics);
 
@@ -124,6 +142,32 @@ const retry = new RetryEngine(storage, transport, diagnostics, config);
 retry.start();
 
 const pipeline = new LogPipeline(config, transport, storage, retry, diagnostics);
+
+bus = new Bus(config, diagnostics, platform, identity.contextId, identity.tabId, {
+  // A forwarded record joins this document's own pipeline, so one request
+  // carries the child's records and the parent's together.
+  onRecords: (records) => {
+    for (const record of records) {
+      pipeline.push(record);
+    }
+  },
+  onJourney: (incoming) => {
+    journey.applyRemote(incoming);
+  },
+  onJourneyRequest: () => journey.current(),
+  onTabConflict: () => {
+    note("playground.tab_conflict", "another window claimed this tab id");
+  },
+});
+
+bus
+  .start()
+  .then((role) => {
+    note("playground.bus", `role is ${role}`);
+  })
+  .catch((error: unknown) => {
+    note("playground.bus_failed", toMessage(error));
+  });
 
 const exitFlush = new ExitFlush({
   config,
