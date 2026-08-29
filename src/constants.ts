@@ -15,7 +15,7 @@
 // would put an untestable branch in the file no test imports directly.
 
 import type { ResolvedConfig } from "./models/config";
-import type { LogLevel } from "./models/log-record";
+import type { LogLevel, LogType } from "./models/log-record";
 
 // ----------------------------------
 // Library-wide
@@ -571,6 +571,32 @@ export const TRACEPARENT_VERSION = "00";
  * capture flags are for, so this clamps instead.
  */
 export const BREADCRUMB_MIN_CAPACITY = 1;
+
+// ----------------------------------
+// Sampling
+// ----------------------------------
+
+/** FNV-1a 32 bit offset basis. */
+export const FNV_OFFSET_BASIS = 0x811c9dc5;
+
+/** FNV-1a 32 bit prime. */
+export const FNV_PRIME = 0x01000193;
+
+/** Largest 32 bit unsigned value. Turns a hash into a 0 to 1 fraction. */
+export const UINT32_MAX = 0xffffffff;
+
+// ----------------------------------
+// Pipeline
+// ----------------------------------
+
+/** Record kind routed to the metric stream. */
+export const LOG_TYPE_METRIC: LogType = "metric";
+
+/**
+ * How many batches' worth of records one stream buffer holds before it drops
+ * the oldest. Reached only when the batch size stops the count-based flush.
+ */
+export const PENDING_BUFFER_BATCHES = 10;
 
 // ----------------------------------
 // Configuration

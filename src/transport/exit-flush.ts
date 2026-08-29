@@ -1,8 +1,8 @@
 // src/transport/exit-flush.ts
 //
-// The last delivery attempt a document gets. Everything here is synchronous: an
+// The last delivery attempt a document gets. Synchronous throughout: an
 // unloading document does not reliably run microtasks, and an IndexedDB write
-// never completes. What is too big to beacon goes to the emergency queue.
+// never completes. Anything too big to beacon goes to the emergency queue.
 
 import {
   BEACON_LIMIT_BYTES,
@@ -20,10 +20,7 @@ import { estimateBytes } from "../utils/sanitize";
 /** What triggered a flush. Reaches the server as a query parameter. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
-/**
- * The OpenFin listener calls this module makes, declared structurally so no
- * OpenFin types are required.
- */
+/** The two OpenFin listener calls this module makes. Structural, so no OpenFin types are needed. */
 interface FinMeLike {
   on?: (event: string, listener: () => void) => void;
   removeListener?: (event: string, listener: () => void) => void;
@@ -33,10 +30,9 @@ interface FinMeLike {
 type OpenFinGlobal = typeof globalThis & { fin?: { me?: FinMeLike } };
 
 /**
- * `sendBeacon` as this module calls it. A separate type rather than a member of
- * `OpenFinGlobal`: intersecting with `typeof globalThis` collapses an optional
- * `navigator` back to the DOM's non-nullish one, and both guards below then
- * read as dead code. A worker has neither.
+ * Kept out of `OpenFinGlobal`: intersecting with `typeof globalThis` restores
+ * the DOM's non-nullish `navigator`, and the guards below then lint as dead
+ * code. Works for `fin` only because no type definition declares it.
  */
 interface BeaconGlobal {
   navigator?: { sendBeacon?: (url: string, data: Blob) => boolean };
@@ -49,10 +45,9 @@ export interface ExitFlushDeps {
   /** Where a refused beacon and a serializer that threw are reported. */
   diagnostics: Diagnostics;
   /**
-   * Everything not yet sent, cleared as it is handed over. Emptying the buffer
-   * is the whole guard against a double send: a pagehide arriving straight
-   * after a visibilitychange finds nothing. An id set could not do the job,
-   * since every drain mints a new batch id.
+   * Everything not yet sent, cleared as it is handed over. Emptying it is the
+   * only double-send guard: a pagehide straight after a visibilitychange finds
+   * nothing. An id set cannot work, since every drain mints a new batch id.
    */
   drainPending: () => LogBatch | null;
 }
@@ -63,9 +58,8 @@ export class ExitFlush {
   private installed = false;
 
   /**
-   * Hidden means this document may never run again, so flush. It does not mean
-   * destroyed: a hidden OpenFin window is still alive and may be shown again,
-   * so nothing is torn down here.
+   * Hidden means this document may never run again. It does not mean destroyed:
+   * a hidden OpenFin window can be shown again, so nothing is torn down here.
    */
   private readonly onVisibility = () => {
     if (document.visibilityState === "hidden") {
@@ -97,13 +91,12 @@ export class ExitFlush {
     }
     this.installed = true;
 
-    // `document?.` is not enough. In a worker `document` is an undeclared
-    // binding, so evaluating it at all throws a ReferenceError; optional
-    // chaining guards null and undefined values, never undeclared identifiers.
+    // `document?.` is not enough: in a worker `document` is undeclared, and
+    // optional chaining guards null values, not undeclared identifiers.
     // Reachable, because a worker whose handshake fails promotes to sender.
     if (typeof document !== "undefined") {
-      // Both fire at the Document and neither bubbles, so a listener on the
-      // window never sees them.
+      // Both fire at the Document and neither bubbles, so a window listener
+      // never sees them.
       document.addEventListener("visibilitychange", this.onVisibility);
       document.addEventListener("freeze", this.onFreeze);
     }
@@ -139,16 +132,16 @@ export class ExitFlush {
   }
 
   /**
-   * Deliver what is buffered. Nothing here awaits, and nothing here throws: the
-   * caller is an unload handler and there is nothing left to catch anything.
+   * Deliver what is buffered. Never awaits and never throws: the caller is an
+   * unload handler, with nothing left to catch anything.
    *
    * @param reason What triggered this flush.
    */
   flush(reason: ExitReason): void {
     const { diagnostics } = this.deps;
 
-    // Checked before the drain: with nowhere to send them, emptying the buffer
-    // would only lose the records sooner.
+    // Before the drain: with nowhere to send them, emptying the buffer would
+    // only lose the records sooner.
     const url = this.endpointUrl();
     if (url === null) {
       return;
@@ -168,9 +161,8 @@ export class ExitFlush {
       return;
     }
 
-    // Over the beacon budget, and there is no time left for a normal request.
-    // localStorage is the only synchronous store, so it is the only one that
-    // works here. Recovered at the next startup.
+    // No time left for a normal request. localStorage is the only synchronous
+    // store, so it is the only one that works here. Recovered at next startup.
     if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
       saveToEmergencyQueue(batch, diagnostics);
       return;
@@ -189,11 +181,7 @@ export class ExitFlush {
     this.keepaliveFetch(target, serialized.body, reason);
   }
 
-  /**
-   * The configured endpoint as a URL, or null when there is nothing usable.
-   * `resolveConfig` has already reported both cases, so neither is reported
-   * again per flush.
-   */
+  /** The endpoint as a URL, or null when there is none or it will not parse. */
   private endpointUrl(): URL | null {
     const { endpoint } = this.deps.config;
     if (!endpoint) {
@@ -210,24 +198,23 @@ export class ExitFlush {
   }
 
   /**
-   * Queue the payload with the browser, which then owns delivery and outlives
-   * the document. Tried first for exactly that reason.
+   * Hand the payload to the browser, which then owns delivery and outlives the
+   * document.
    *
    * @returns Whether the browser took it. False means the shared budget is
    * spent, or this host has no `sendBeacon`.
    */
   private beacon(url: string, body: string): boolean {
     const sent = this.deps.diagnostics.guard("transport.http_error", "sendBeacon", () => {
-      // Called on the navigator, never through a local copy: a detached
-      // `sendBeacon` has no receiver and throws on invocation.
+      // Never lifted into a local: a detached `sendBeacon` has no receiver and
+      // throws on invocation.
       const nav = (globalThis as BeaconGlobal).navigator;
       if (!nav?.sendBeacon) {
         return false;
       }
 
-      // text/plain is CORS-safelisted, so this is a simple request and no
-      // preflight is started. A preflight during unload frequently never
-      // completes, and the beacon is then dropped silently.
+      // text/plain is CORS-safelisted, so no preflight is started. A preflight
+      // during unload frequently never completes, dropping the beacon silently.
       return nav.sendBeacon(url, new Blob([body], { type: CONTENT_TYPE_TEXT_PLAIN }));
     });
 
@@ -235,10 +222,9 @@ export class ExitFlush {
   }
 
   /**
-   * The fallback for a refused beacon. `keepalive` lets the request outlive the
-   * document, at the cost of drawing on the same 64 KiB pool. It carries none
-   * of the transport's headers: any of them would force a preflight, which is
-   * exactly what the beacon path avoids.
+   * The fallback for a refused beacon. `keepalive` outlives the document and
+   * draws on the same 64 KiB pool. Carries none of the transport's headers: any
+   * one of them forces a preflight.
    *
    * @param url The endpoint, batch id and reason already attached.
    * @param body The serialized batch.
