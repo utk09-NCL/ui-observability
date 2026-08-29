@@ -1,368 +1,562 @@
 // src/models/config.ts
 //
-// The two faces of configuration: what a consumer may pass, and what the
-// runtime actually holds.
+// Configuration types: what a consumer may pass to `configure()`, and what
+// the runtime holds after resolving defaults.
 //
-// Declared separately on purpose. `ObservabilityConfig` is almost entirely
-// optional so that `configure({ endpoint })` works; `ResolvedConfig` has no
-// optionality left, because downstream components read it without checking.
-//
-// Do not derive the second with `Required<ObservabilityConfig>`. `Required<T>`
-// strips `?` at the top level only, so `config.storage.maxBatches` stays
-// `number | undefined` and every arithmetic use of it fails under `strict`.
-// Each nested section is declared once, fully required, and appears on
-// `ObservabilityConfig` as a `Partial` of itself.
-//
-// Every default these types take lives in `src/constants.ts`, not here.
+// Not derived with `Required<ObservabilityConfig>`: that only strips `?` at
+// the top level, so a nested field like `storage.maxBatches` would stay
+// possibly undefined.
 
 import type { DiagnosticHandler } from "../core/diagnostics";
 import type { LogLevel, LogRecord } from "./log-record";
 import type { LogSerializer } from "./serializer";
 
-/** Where undelivered records wait. "auto" picks the best of these that the host actually offers. */
+/** Backing store for undelivered records. "auto" picks the best one the host supports. */
 export type StorageStrategy = "auto" | "indexeddb" | "localstorage" | "memory" | "none";
 
-/**
- * What this context does with its records.
- *
- * A sender delivers its own; a forwarder hands them to the context that owns
- * the connection. "auto" decides by asking, which is what keeps ten iframes
- * from opening ten connections to the same endpoint.
- */
+/** What this context does with its records: `sender` delivers its own, `forwarder` hands them to another context, `auto` decides, `off` does neither. */
 export type BusMode = "auto" | "sender" | "forwarder" | "off";
 
-/**
- * The subset of the `web-vitals` package this library uses.
- *
- * Declared structurally rather than imported. `web-vitals` is an optional peer
- * dependency, so a consumer who never turns vitals capture on must not need the
- * package present for their build to type-check, and a hard `import type` from
- * it would make it required for everyone.
- */
+/** Structural type for the `web-vitals` package's metric shape, so this library has no hard dependency on the package. */
 export interface WebVitalsMetric {
-  /** The measurement itself, in the unit that metric is defined in. */
+  /** Measurement value, in the metric's own unit. */
   value: number;
-  /** "good", "needs-improvement" or "poor", where the version in use reports one. */
+  /** Rating: "good", "needs-improvement", or "poor". */
   rating?: string;
-  /**
-   * Identifies this metric instance, so a later update to it can be matched to the first report.
-   */
+  /** Metric instance id, for matching a later update to its first report. */
   id: string;
 }
 
-/** The callback shape `web-vitals` invokes with a measurement. */
+/**
+ * Callback `web-vitals` invokes with a measurement.
+ * @param metric The measurement being reported.
+ */
 export type WebVitalsReporter = (metric: WebVitalsMetric) => void;
 
-/**
- * The five `web-vitals` entry points this library subscribes to, structurally typed for the same
- * reason as the metric above.
- */
+/** The five `web-vitals` entry points this library subscribes to. */
 export interface WebVitalsModule {
-  /** Largest Contentful Paint. */
+  /**
+   * Largest Contentful Paint.
+   * @param report Callback invoked with the LCP measurement.
+   */
   onLCP: (report: WebVitalsReporter) => void;
-  /** Cumulative Layout Shift. */
+  /**
+   * Cumulative Layout Shift.
+   * @param report Callback invoked with the CLS measurement.
+   */
   onCLS: (report: WebVitalsReporter) => void;
-  /** Interaction to Next Paint. */
+  /**
+   * Interaction to Next Paint.
+   * @param report Callback invoked with the INP measurement.
+   */
   onINP: (report: WebVitalsReporter) => void;
-  /** First Contentful Paint. */
+  /**
+   * First Contentful Paint.
+   * @param report Callback invoked with the FCP measurement.
+   */
   onFCP: (report: WebVitalsReporter) => void;
-  /** Time to First Byte. */
+  /**
+   * Time to First Byte.
+   * @param report Callback invoked with the TTFB measurement.
+   */
   onTTFB: (report: WebVitalsReporter) => void;
 }
 
-/**
- * One buffered record stream.
- *
- * Logs and metrics get their own policy rather than sharing one, because they
- * differ by orders of magnitude in volume and by a lot in urgency. Nobody is
- * waiting on a gauge; somebody is usually waiting on an error.
- */
+/** Batching policy for one record stream (logs or metrics). */
 export interface StreamOptions {
-  /** How long a partly filled batch waits before it is sent anyway. */
+  /** Max time a partial batch waits before it is sent, in milliseconds. */
   flushIntervalMs: number;
-  /** How many records fill a batch, at which point it is sent without waiting. */
+  /** Max records per batch before it is sent early. */
   batchSize: number;
 }
 
-/** The two streams, which are batched independently. */
+/** The two record streams, batched independently. */
 export interface StreamsOptions {
-  /** Everything from a log call or an automatic capture. */
+  /** Log stream batching. */
   logs: StreamOptions;
-  /** Timings, counters and web vitals. Higher volume, and nothing waits on them. */
+  /** Metric stream batching. */
   metrics: StreamOptions;
 }
 
-/** How undelivered records are kept across a failed send, a reload or an offline period. */
+/** Storage policy for undelivered records. */
 export interface StorageOptions {
-  /** Which backing store to use. */
+  /**
+   * Backing store.
+   * @default "auto"
+   */
   strategy: StorageStrategy;
-  /** IndexedDB database name. Only read when the strategy resolves to indexeddb. */
+  /**
+   * IndexedDB database name. Used only when the strategy resolves to indexeddb.
+   * @default "UiObservability"
+   */
   dbName: string;
-  /** How many batches may wait at once. The oldest are evicted past this. */
+  /**
+   * Max batches held at once. Oldest are evicted past this.
+   * @default 500
+   */
   maxBatches: number;
-  /** How old a batch may get before it is dropped rather than retried. */
+  /**
+   * Max batch age before it is dropped rather than retried, in milliseconds.
+   * @default 24 * 60 * 60 * 1000
+   */
   maxAgeMs: number;
-  /** How many delivery attempts one batch gets before it is dead-lettered. */
+  /**
+   * Max delivery attempts before a batch is dead-lettered.
+   * @default 5
+   */
   maxAttempts: number;
 }
 
-/** The backoff schedule for redelivering a stored batch. */
+/** Backoff schedule for redelivering a stored batch. */
 export interface RetryOptions {
-  /** First backoff step. Each further attempt doubles it. */
+  /**
+   * First backoff step, in milliseconds. Each attempt doubles it.
+   * @default 2000
+   */
   baseDelayMs: number;
-  /** Ceiling on the backoff, so a long outage does not push the next attempt hours away. */
+  /**
+   * Backoff ceiling, in milliseconds.
+   * @default 60000
+   */
   maxDelayMs: number;
-  /** How often to look for stored work when nothing has failed recently. */
+  /**
+   * How often to check for stored work when nothing has failed recently, in milliseconds.
+   * @default 30000
+   */
   idleDelayMs: number;
 }
 
-/** Which records survive, and which are dropped before they ever cost a byte. */
+/** Sampling policy: which records survive. */
 export interface SamplingOptions {
-  /** Fraction of records kept, 0 to 1, where no more specific rate applies. */
+  /**
+   * Default fraction of records kept, 0 to 1.
+   * @default 1
+   */
   defaultRate: number;
-  /** by `app.namespace`, most specific prefix wins */
+  /**
+   * Per-namespace override, keyed by `app.namespace`. Most specific prefix wins.
+   * @default {}
+   */
   rates: Record<string, number>;
-  /** log types that always bypass sampling */
+  /**
+   * Log types always kept, regardless of sampling rate.
+   * @default ["action"]
+   */
   alwaysSampleTypes: string[];
 }
 
-/** A journey is one user task spanning several contexts, and these are its lifetime rules. */
+/** Lifetime rules for a journey (one user task spanning several contexts). */
 export interface JourneyOptions {
-  /** How long a journey may stay open before it is treated as abandoned. */
+  /**
+   * Max time a journey stays open before it's treated as abandoned, in milliseconds.
+   * @default 30 * 60 * 1000
+   */
   maxAgeMs: number;
-  /** Whether closing the context that started the journey ends it for everyone. */
+  /**
+   * Whether closing the owning context ends the journey for everyone.
+   * @default false
+   */
   endOnOwnerClose: boolean;
-  /** query parameter searched at boot for a seeded journey token */
+  /**
+   * Query parameter checked at boot for a seeded journey token.
+   * @default "__uiobs_journey"
+   */
   urlParam: string;
 }
 
-/** How this context finds, trusts and talks to the other contexts on the page or the desktop. */
+/** Bus settings: how this context discovers, trusts, and messages the others. */
 export interface BusOptions {
-  /** Whether this context sends for itself, forwards to an owner, or stays off. */
+  /**
+   * This context's role.
+   * @default "auto"
+   */
   mode: BusMode;
   /**
-   * BroadcastChannel name for the control plane. Change it only to isolate two applications sharing
-   * an origin.
+   * BroadcastChannel name for the control plane.
+   * @default "ui_observability_control"
    */
   channelName: string;
-  /** REQUIRED on any document that will receive postMessage records from a cross-origin iframe */
+  /**
+   * Origins allowed to send postMessage records to this document. Required for any document receiving them from a cross-origin iframe.
+   * @default []
+   */
   trustedOrigins: string[];
-  /** How long a forwarder waits for an owner to answer before applying the orphan policy. */
+  /**
+   * Max time a forwarder waits for an owner to answer before applying the orphan policy, in milliseconds.
+   * @default 1500
+   */
   handshakeTimeoutMs: number;
-  /** Which OpenFin context owns delivery. */
+  /**
+   * Which OpenFin context owns delivery.
+   * @default "provider"
+   */
   openFinHost: "provider" | "self";
   /**
-   * Which OpenFin context this is. Only the platform provider answers a view's
-   * handshake, so getting this wrong means every view sends for itself.
+   * Which OpenFin context this is. Only the platform provider answers a
+   * handshake, so setting this wrong makes every view send for itself.
    * "auto" treats the window whose name equals its application uuid as the
-   * provider, which is the usual platform convention. Set it explicitly if
-   * yours names the provider differently.
+   * provider.
+   * @default "auto"
    */
   openFinRole: "auto" | "provider" | "client";
-  /** How many records a context may buffer while it is still working out who it is. */
+  /**
+   * Max records a context buffers before its bus role is determined.
+   * @default 500
+   */
   maxBootBufferRecords: number;
   /**
-   * What a forwarder does when no owner answers.
-   * "auto"    retry in a cross-origin frame, promote anywhere else
-   * "promote" become a sender immediately
-   * "retry"   retry the handshake, then promote as a last resort
+   * Forwarder behavior when no owner answers: `auto` retries in a
+   * cross-origin frame and promotes elsewhere, `promote` becomes a sender
+   * immediately, `retry` retries then promotes as a last resort.
+   * @default "auto"
    */
   orphanPolicy: "auto" | "promote" | "retry";
-  /** handshake attempts before promoting under the retry policy */
+  /**
+   * Handshake attempts allowed before promoting under the "retry" policy.
+   * @default 3
+   */
   maxHandshakeAttempts: number;
 }
 
-/**
- * What the library instruments on the consumer's behalf. Everything beyond errors is off until
- * asked for.
- */
+/** What the library instruments automatically. Everything but errors is off by default. */
 export interface CaptureOptions {
-  /** Log uncaught errors from `window.onerror`. */
+  /**
+   * Log uncaught errors from `window.onerror`.
+   * @default true
+   */
   errors: boolean;
-  /** Log unhandled promise rejections. */
+  /**
+   * Log unhandled promise rejections.
+   * @default true
+   */
   rejections: boolean;
-  /** Log failed image, script and stylesheet loads. Noisy on pages with third-party content. */
+  /**
+   * Log failed image, script, and stylesheet loads.
+   * @default false
+   */
   resourceErrors: boolean;
-  /** Wrap `fetch` to log requests. The endpoint itself is never logged, whatever this says. */
+  /**
+   * Wrap `fetch` to log requests. The ingest endpoint itself is never logged.
+   * @default false
+   */
   fetch: boolean;
-  /** Wrap `XMLHttpRequest` to log requests. */
+  /**
+   * Wrap `XMLHttpRequest` to log requests.
+   * @default false
+   */
   xhr: boolean;
-  /** Log clicks and other interactions as breadcrumbs. */
+  /**
+   * Log clicks and other interactions as breadcrumbs.
+   * @default false
+   */
   interactions: boolean;
-  /** Log route changes, including the ones a single page application makes without a page load. */
+  /**
+   * Log route changes, including single-page-application navigation.
+   * @default false
+   */
   navigation: boolean;
-  /** Report web vitals as metrics. Needs the `web-vitals` peer, or a loader below. */
+  /**
+   * Report web vitals as metrics. Requires the `web-vitals` peer or `webVitalsLoader`.
+   * @default false
+   */
   webVitals: boolean;
-  /** How many breadcrumbs to keep as context for the next error. */
+  /**
+   * Breadcrumbs kept as context for the next error.
+   * @default 50
+   */
   maxBreadcrumbs: number;
-  /** URLs matching these are never logged. The endpoint is always added. */
+  /**
+   * URLs excluded from logging. The ingest endpoint is always included.
+   * @default []
+   */
   ignoreUrls: (string | RegExp)[];
-  /** Only these targets receive a `traceparent` header. Never use a catch-all. */
+  /**
+   * Targets that receive a `traceparent` header. A catch-all breaks CORS on third-party endpoints.
+   * @default []
+   */
   propagateTraceHeaderTo: (string | RegExp)[];
-  /** identical errors within this window are counted, not re-sent */
+  /**
+   * Window within which identical errors are counted but not re-sent, in milliseconds.
+   * @default 5000
+   */
   errorDedupeMs: number;
   /**
-   * Hand the library the `web-vitals` module yourself. A literal
-   * `import("web-vitals")` inside this package is a dependency every consumer
-   * has to resolve, used or not; a loader keeps that import in their graph.
+   * Supplies the `web-vitals` module without a hard dependency on the package.
+   * @returns A promise resolving to the `web-vitals` module.
    */
   webVitalsLoader?: () => Promise<WebVitalsModule>;
 }
 
-/** The size ceilings that keep one hostile value from costing a whole batch. */
+/** Per-record size caps. */
 export interface LimitOptions {
-  /** Longest a record body may be. */
+  /**
+   * Max record body length, in characters.
+   * @default 4096
+   */
   maxBodyChars: number;
-  /** Longest a single string attribute may be. */
+  /**
+   * Max length of a single string attribute, in characters.
+   * @default 8192
+   */
   maxAttributeChars: number;
-  /** How many attributes one record may carry. */
+  /**
+   * Max attributes per record.
+   * @default 128
+   */
   maxAttributeCount: number;
   /**
-   * Longest a stack trace may be. Larger than an attribute, because a truncated stack is often a
-   * useless one.
+   * Max stack trace length, in characters. Larger than `maxAttributeChars`.
+   * @default 8192
    */
   maxStackChars: number;
-  /** How far into a nested value to walk before replacing the rest with a marker. */
+  /**
+   * Max depth walked into a nested value before truncating.
+   * @default 6
+   */
   maxDepth: number;
-  /** How many items of an array, set or map to keep. */
+  /**
+   * Max items kept from an array, set, or map.
+   * @default 100
+   */
   maxArrayLength: number;
-  /** whole-record attribute budget, checked after sanitize and after redact */
+  /**
+   * Max total attribute bytes per record, checked after sanitize and redact.
+   * @default 32768
+   */
   maxRecordBytes: number;
 }
 
-/** Mirroring records to the host console, which is for development rather than production. */
+/** Console mirroring, for development. */
 export interface ConsoleOptions {
-  /** Whether to mirror at all. */
+  /**
+   * Whether to mirror at all.
+   * @default false
+   */
   enabled: boolean;
   /**
-   * Minimum level to mirror. Independent of `minLevel`, so the console can be noisier than the
-   * wire.
+   * Min level to mirror. Independent of `minLevel`.
+   * @default "DEBUG"
    */
   level: LogLevel;
 }
 
-/**
- * What a consumer passes to `configure()`.
- *
- * Everything but the endpoint is optional, and a second call merges onto the
- * config already in force rather than back onto the defaults.
- */
+/** Options passed to `configure()`. Only `endpoint` is required. */
 export interface ObservabilityConfig {
-  /** Absolute URL of the ingest endpoint. Required. */
+  /** Ingest endpoint URL. Required. */
   endpoint: string;
 
-  /** Reported as `service.name`. Missing means every record says "unknown-service". */
+  /**
+   * Reported as `service.name`.
+   * @default ""
+   */
   serviceName?: string;
   /**
-   * Reported as `service.version`. Worth wiring to the build's version, since it is what makes a
-   * regression datable.
+   * Reported as `service.version`.
+   * @default ""
    */
   serviceVersion?: string;
-  /** Reported as `deployment.environment`, for splitting production from everything else. */
+  /**
+   * Reported as `deployment.environment`.
+   * @default ""
+   */
   environment?: string;
 
-  /** Master switch. When false, every log call is a no-op that costs one boolean check. */
+  /**
+   * Master switch. False makes every log call a no-op.
+   * @default true
+   */
   enabled?: boolean;
-  /** Records below this level never leave the log call. Default "INFO". */
+  /**
+   * Min level logged.
+   * @default "INFO"
+   */
   minLevel?: LogLevel;
 
-  /** Per-stream batching. `maxConcurrentRequests` below is shared by both. */
+  /** Per-stream batching. */
   streams?: {
-    /** Batching for the log stream. */
+    /**
+     * Log stream batching.
+     * @default { flushIntervalMs: 2000, batchSize: 100 }
+     */
     logs?: Partial<StreamOptions>;
-    /** Batching for the metric stream. */
+    /**
+     * Metric stream batching.
+     * @default { flushIntervalMs: 10000, batchSize: 500 }
+     */
     metrics?: Partial<StreamOptions>;
   };
-  /** How many ingest requests may be in flight at once, across both streams. */
+  /**
+   * Max concurrent ingest requests, across both streams.
+   * @default 2
+   */
   maxConcurrentRequests?: number;
-  /** How long one ingest request may take before it is aborted and retried. */
+  /**
+   * Max time one ingest request may take before it is aborted and retried, in milliseconds.
+   * @default 15000
+   */
   requestTimeoutMs?: number;
 
   /**
-   * Whether to gzip a payload past the threshold below, where the host offers compression at all.
+   * Whether to gzip a payload past `compressionThresholdBytes`.
+   * @default "gzip"
    */
   compression?: "gzip" | "none";
   /**
-   * Payloads smaller than this are sent uncompressed, since compressing them costs more than it
-   * saves.
+   * Min payload size to compress, in bytes.
+   * @default 1024
    */
   compressionThresholdBytes?: number;
   /**
-   * The wire format: a name, or an implementation of your own. Defaults to
-   * OTLP/JSON. Anything else reports `config.invalid` and falls back to it.
+   * Wire format: a name, or a custom implementation.
+   * @default "otlp"
    */
   serializer?: "otlp" | "ecs" | LogSerializer;
   /**
-   * Passed to `fetch`. "include" is the default, because an ingest endpoint behind a session cookie
-   * is the common case.
+   * Passed to `fetch`.
+   * @default "include"
    */
   credentials?: RequestCredentials;
-  /**
-   * Extra request headers, or a function returning them. Use the function form for anything that
-   * expires, such as a token.
-   */
+  /** Extra request headers, or a function returning them. */
   headers?:
     Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
 
-  /** Where undelivered records wait. */
+  /**
+   * Storage policy for undelivered records.
+   * @see {@link StorageOptions}
+   */
   storage?: Partial<StorageOptions>;
-  /** Backoff schedule for redelivering them. */
+  /**
+   * Backoff schedule for redelivering them.
+   * @see {@link RetryOptions}
+   */
   retry?: Partial<RetryOptions>;
-  /** Which records survive at all. */
+  /**
+   * Sampling policy.
+   * @see {@link SamplingOptions}
+   */
   sampling?: Partial<SamplingOptions>;
-  /** Lifetime rules for a multi-context user journey. */
+  /**
+   * Journey lifetime rules.
+   * @see {@link JourneyOptions}
+   */
   journey?: Partial<JourneyOptions>;
-  /** How this context talks to the others, and whose messages it believes. */
+  /**
+   * Bus discovery, trust, and messaging settings.
+   * @see {@link BusOptions}
+   */
   bus?: Partial<BusOptions>;
-  /** What is instrumented automatically. */
+  /**
+   * Automatic instrumentation.
+   * @see {@link CaptureOptions}
+   */
   capture?: Partial<CaptureOptions>;
-  /** Size ceilings applied to every record. */
+  /**
+   * Per-record size caps.
+   * @see {@link LimitOptions}
+   */
   limits?: Partial<LimitOptions>;
-  /** Console mirroring, for development. */
+  /**
+   * Console mirroring.
+   * @see {@link ConsoleOptions}
+   */
   console?: Partial<ConsoleOptions>;
 
-  /** Last chance to rewrite or drop a record. Return null to drop it. */
+  /**
+   * Rewrites or drops a record before it's sent.
+   * @param record The record about to be sent.
+   * @returns The record to send, or `null` to drop it.
+   */
   redact?: (record: LogRecord) => LogRecord | null;
 
   /**
-   * Where this library reports its own faults. Wire it up early: without it, a misconfiguration is
-   * silent.
+   * Reports this library's own faults.
+   * @see {@link DiagnosticHandler}
    */
   onDiagnostic?: DiagnosticHandler;
 }
 
-/**
- * What the runtime holds. Every section is fully populated; the field meanings
- * are the ones documented on `ObservabilityConfig` and each section above.
- *
- * One object per runtime, mutated in place by `applyResolvedConfig`. The bus,
- * the journey engine, the exit flush, the retry engine and every capture module
- * hold a reference to it or to one of its sections from construction, so
- * replacing it wholesale leaves all of them on the old settings.
- */
+/** Fully resolved config, held by the runtime. */
 export interface ResolvedConfig {
+  /** Ingest endpoint URL. */
   endpoint: string;
+  /** Reported as `service.name`. */
   serviceName: string;
+  /** Reported as `service.version`. */
   serviceVersion: string;
+  /** Reported as `deployment.environment`. */
   environment: string;
+  /** Master switch. False makes every log call a no-op. */
   enabled: boolean;
+  /** Min level logged. */
   minLevel: LogLevel;
+  /**
+   * Per-stream batching.
+   * @see {@link StreamsOptions}
+   */
   streams: StreamsOptions;
+  /** Max concurrent ingest requests, across both streams. */
   maxConcurrentRequests: number;
+  /** Max time one ingest request may take before it is aborted and retried, in milliseconds. */
   requestTimeoutMs: number;
+  /** Whether to gzip a payload past `compressionThresholdBytes`. */
   compression: "gzip" | "none";
+  /** Min payload size to compress, in bytes. */
   compressionThresholdBytes: number;
+  /** Passed to `fetch`. */
   credentials: RequestCredentials;
+  /**
+   * Storage policy for undelivered records.
+   * @see {@link StorageOptions}
+   */
   storage: StorageOptions;
+  /**
+   * Backoff schedule for redelivering a stored batch.
+   * @see {@link RetryOptions}
+   */
   retry: RetryOptions;
+  /**
+   * Sampling policy.
+   * @see {@link SamplingOptions}
+   */
   sampling: SamplingOptions;
+  /**
+   * Journey lifetime rules.
+   * @see {@link JourneyOptions}
+   */
   journey: JourneyOptions;
+  /**
+   * Bus discovery, trust, and messaging settings.
+   * @see {@link BusOptions}
+   */
   bus: BusOptions;
+  /**
+   * Automatic instrumentation.
+   * @see {@link CaptureOptions}
+   */
   capture: CaptureOptions;
+  /**
+   * Per-record size caps.
+   * @see {@link LimitOptions}
+   */
   limits: LimitOptions;
+  /**
+   * Console mirroring.
+   * @see {@link ConsoleOptions}
+   */
   console: ConsoleOptions;
+  /** Wire format implementation, resolved from a name or passed directly. */
   serializer: LogSerializer;
+  /** Extra request headers, or a function returning them. */
   headers?: ObservabilityConfig["headers"];
+  /**
+   * Rewrites or drops a record before it's sent.
+   * @param record The record about to be sent.
+   * @returns The record to send, or `null` to drop it.
+   */
   redact?: ObservabilityConfig["redact"];
+  /**
+   * Reports this library's own faults.
+   * @see {@link DiagnosticHandler}
+   */
   onDiagnostic?: DiagnosticHandler;
 }

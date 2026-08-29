@@ -1,18 +1,7 @@
 // src/constants.ts
 //
-// Every constant the library uses, in one file. A default beside the code that
-// reads it is invisible to everyone else, and two modules needing the same
-// number end up with two copies that drift.
-//
-// Here: every limit, threshold, timing window, storage key, pattern and
-// default, plus any literal more than one module has to agree on.
-//
-// Inline instead: arithmetic that explains itself, such as the byte widths in
-// the UTF-8 estimator, and single-use display fallbacks read at the line that
-// produces them.
-//
-// Values only. A "constant" needing a branch to compute is not one, and it
-// would put an untestable branch in the file no test imports directly.
+// All limits, thresholds, timing windows, storage keys, patterns, and
+// defaults used by the library.
 
 import type { ResolvedConfig } from "./models/config";
 import type { LogLevel, LogType } from "./models/log-record";
@@ -21,144 +10,98 @@ import type { LogLevel, LogType } from "./models/log-record";
 // Library-wide
 // ----------------------------------
 
-/** Tag on anything this library writes to the host console, so a consumer can spot and filter it. */
+/** Prefix on console messages this library writes. */
 export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 
 // ----------------------------------
 // Diagnostics
 // ----------------------------------
 
-/**
- * Default window in which one diagnostic code may emit at most one event. A
- * broken render loop produces ten thousand identical errors a second, and a
- * handler called that often is itself the outage. Counting is never throttled.
- */
+/** Throttle window per diagnostic code, in milliseconds. Limits how often an error loop can spam the handler. */
 export const DIAGNOSTIC_THROTTLE_MS = 1000;
 
 // ----------------------------------
 // Identity
 // ----------------------------------
 
-/**
- * localStorage key holding the session id and the time it was last seen. Shared by every tab on the
- * origin.
- */
+/** `localStorage` key for the session id and its last-seen time. */
 export const SESSION_ID_KEY = "ui-observability.session";
 
-/**
- * sessionStorage key holding the tab id. Per tab rather than per origin, which is why the store
- * differs from the session's.
- */
+/** `sessionStorage` key for the tab id. */
 export const TAB_ID_KEY = "ui-observability.tab";
 
-/** Idle time after which the stored session id is abandoned and a new visit begins. */
+/** Session idle timeout, in milliseconds. */
 export const SESSION_IDLE_MS = 30 * 60 * 1000;
 
-/**
- * Minimum spacing between two writes of the session's last-seen time. The
- * record path is the only place that knows the user is still here, and it is
- * hot, so keeping a session alive costs one compare rather than a write.
- */
+/** Min gap between session last-seen writes, in milliseconds. */
 export const SESSION_TOUCH_MS = 60_000;
 
-/**
- * Length of a generated id in bytes, when there is no `crypto.randomUUID` to call. Sixteen bytes
- * matches a UUID.
- */
+/** Random id length, in bytes, used when `crypto.randomUUID` is unavailable. */
 export const ID_BYTE_LENGTH = 16;
 
-/**
- * The number of distinct values one byte holds, used as the exclusive ceiling for a random byte.
- */
+/** Distinct values in one byte (256). */
 export const BYTE_VALUE_COUNT = 256;
 
 // ----------------------------------
 // Platform detection
 // ----------------------------------
 
-/**
- * Marks the OpenFin desktop runtime in a user agent. Both it and the Core Web
- * adapter expose `fin`, so this pattern is the only thing separating them.
- */
+/** Matches OpenFin's user agent. */
 export const OPENFIN_UA_PATTERN = /OpenFin/i;
 
-/**
- * The `wv` token Android stamps into the user agent of a webview, as opposed to Chrome for Android.
- */
+/** Matches Android's webview token (`wv`). */
 export const ANDROID_WEBVIEW_UA_PATTERN = /\bwv\b/;
 
-/**
- * iOS hardware in a user agent. iOS has no webview token of its own, so the platform has to be
- * identified first.
- */
+/** Matches iOS hardware: iPhone, iPad, iPod. */
 export const IOS_DEVICE_UA_PATTERN = /\b(iPhone|iPad|iPod)\b/;
 
-/**
- * Desktop macOS in a user agent. An iPad requesting a desktop site reports this instead of its
- * hardware.
- */
+/** Matches desktop macOS in a user agent. */
 export const MACINTOSH_UA_PATTERN = /\bMacintosh\b/;
 
-/** The mobile token that, next to `Macintosh`, gives away an iPad requesting a desktop site. */
+/** Matches the mobile token. */
 export const MOBILE_UA_PATTERN = /\bMobile\b/;
 
-/** Engine token present in every WebKit user agent, webviews included. */
+/** WebKit engine token, present in every WebKit browser including webviews. */
 export const WEBKIT_UA_TOKEN = "AppleWebKit";
 
-/**
- * Token sent by every real iOS browser and by no in-application webview, so its
- * absence identifies a webview. Matching `Mobile.*Safari` positively instead
- * reports every ordinary iPhone as one.
- */
+/** Safari token sent by real iOS browsers, not in-app webviews. */
 export const SAFARI_UA_TOKEN = "Safari/";
 
 // ----------------------------------
 // Sanitizing and size estimation
 // ----------------------------------
 
-/**
- * First code unit of the UTF-16 high surrogate range. A string must never be cut between this and
- * its low half.
- */
+/** First UTF-16 high surrogate code unit. */
 export const HIGH_SURROGATE_MIN = 0xd800;
 
-/** Last code unit of the UTF-16 high surrogate range. */
+/** Last UTF-16 high surrogate code unit. */
 export const HIGH_SURROGATE_MAX = 0xdbff;
 
-/** Code units below this encode as a single UTF-8 byte. */
+/** Code units below this encode as one UTF-8 byte. */
 export const UTF8_ONE_BYTE_CEILING = 0x80;
 
 /** Code units below this, and at or above the one-byte ceiling, encode as two UTF-8 bytes. */
 export const UTF8_TWO_BYTE_CEILING = 0x800;
 
-/**
- * How many class names `describeNode` keeps in the selector it builds. Enough to identify an
- * element, short enough to stay readable.
- */
+/** Class names kept in a `describeNode` selector. */
 export const MAX_NODE_CLASS_NAMES = 3;
 
-/** Size charged for a null or an undefined. Both serialize as the four characters of `null`. */
+/** Byte cost of a null or undefined value. */
 export const BYTES_PER_NULL = 4;
 
-/**
- * Size charged for a number. A flat estimate, since the exact digit count is not worth a `toString`
- * per value.
- */
+/** Byte cost of a number (flat estimate). */
 export const BYTES_PER_NUMBER = 8;
 
-/** Size charged for a boolean, taking the longer of the two spellings. */
+/** Byte cost of a boolean. */
 export const BYTES_PER_BOOLEAN = 5;
 
-/** Size charged for the braces or brackets wrapping one object or array. */
+/** Byte cost of an object or array's wrapping braces or brackets. */
 export const BYTES_PER_CONTAINER = 2;
 
-/** Size charged for the two quote characters wrapping one string, on top of its own bytes. */
+/** Byte cost of a string's wrapping quotes. */
 export const BYTES_PER_QUOTED_STRING = 2;
 
-/**
- * Size charged for the punctuation around one key: two quotes, a colon and a comma, on top of the
- * key's own bytes.
- */
+/** Byte cost of one key's punctuation: quotes, colon, comma. */
 export const BYTES_PER_KEY_OVERHEAD = 4;
 
 // ----------------------------------
@@ -166,13 +109,8 @@ export const BYTES_PER_KEY_OVERHEAD = 4;
 // ----------------------------------
 
 /**
- * Each level as its OpenTelemetry severity number. Fixed by that specification,
- * not chosen here: a backend sorts and filters on them, and invented values
- * would make these records incomparable with every other source. The gaps are
- * standard too, reserved for finer grades such as `INFO2`.
- *
- * Typed as a total `Record<LogLevel, number>`, so adding a level without
- * numbering it fails the build rather than shipping an undefined severity.
+ * Log level to OpenTelemetry severity number.
+ * @see {@link LEVEL_ORDER}
  */
 export const SEVERITY_NUMBER: Record<LogLevel, number> = {
   TRACE: 1,
@@ -184,11 +122,8 @@ export const SEVERITY_NUMBER: Record<LogLevel, number> = {
 };
 
 /**
- * The same table under the name the level filter reads it by. The identical
- * object, not a copy: ordering levels and numbering them for the wire are one
- * fact, and once two tables drifted a record would be filtered as one level and
- * reported as another. Both names exist because the call sites read
- * differently, a threshold test against an encoding step.
+ * Alias for `SEVERITY_NUMBER`, used by the level filter.
+ * @see {@link SEVERITY_NUMBER}
  */
 export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 
@@ -196,254 +131,242 @@ export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 // Attribute and resource keys
 // ----------------------------------
 //
-// The names records carry on the wire. Constants because the record builder
-// writes them and the serializers read them back, so a typo in either place is
-// a field that stops arriving rather than a build error. Dotted names follow
-// the OpenTelemetry semantic conventions where one exists; the `uiobs.` prefix
-// marks this library talking about its own behaviour.
+// Attribute and resource key names records carry on the wire, following
+// OpenTelemetry conventions. `uiobs.` marks this library's own fields.
 
-/** What kind of thing the record describes. Dashboards split on it and sampling rates are keyed by it. */
+/** Record kind attribute key. */
 export const ATTR_LOG_TYPE = "log.type";
 
-/**
- * Position of this record in its context's own stream. Monotonic within one
- * `context.id`, meaningless across two, and the strongest ordering a browser
- * offers: timestamps are client clocks and can move backwards.
- */
+/** Record sequence number within its context, from zero. */
 export const ATTR_LOG_SEQ = "log.seq";
 
-/** Which logger, and therefore which part of a composed application, emitted the record. */
+/** Logger namespace attribute key. */
 export const ATTR_APP_NAMESPACE = "app.namespace";
 
-/**
- * The document URL when the record was built. An attribute, not a resource
- * field: it changes on every route change, and a resource field is by
- * definition identical for every record from one context.
- */
+/** Document URL when the record was built. */
 export const ATTR_PAGE_URL = "page.url";
 
 /**
- * The target of the HTTP request a record is about, owned by the network
- * capture. Distinct from `ATTR_PAGE_URL`: stamping the page URL over this
- * rewrites every captured request to the page that made it.
+ * HTTP request URL attribute key, set by network capture. Don't reuse `ATTR_PAGE_URL`; it would overwrite the request's target.
+ * @see {@link ATTR_PAGE_URL}
  */
 export const ATTR_URL_FULL = "url.full";
 
-/** The journey this record belongs to, which is what correlates records across windows. */
+/** Journey id attribute key. */
 export const ATTR_JOURNEY_ID = "journey.id";
 
-/** The journey's human-readable name, carried so a backend query does not need a second lookup. */
+/** Journey name attribute key. */
 export const ATTR_JOURNEY_NAME = "journey.name";
 
-/** The journey this one branched from, present only on a journey started as a child. */
+/** Parent journey id, present only on a child journey. */
 export const ATTR_JOURNEY_PARENT_ID = "journey.parent_id";
 
-/** Marks a record whose attributes could not be sanitized, so the gap is visible rather than silent. */
+/** Marks a record whose attributes failed to sanitize. */
 export const ATTR_SANITIZE_FAILED = "uiobs.sanitize_failed";
 
-/** Marks a record whose attributes were dropped for exceeding the per-record byte budget. */
+/**
+ * Marks a record whose attributes were dropped for exceeding the byte budget.
+ * @see {@link ATTR_ATTRIBUTES_BYTES}
+ */
 export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
 
-/** How many bytes those dropped attributes measured, which is what makes the budget tunable with evidence. */
+/**
+ * Byte size of the dropped attributes.
+ * @see {@link ATTR_ATTRIBUTES_DROPPED}
+ */
 export const ATTR_ATTRIBUTES_BYTES = "uiobs.attributes_bytes";
 
-/** The application these records come from. Every backend groups on it first. */
+/** Application name resource key. */
 export const RESOURCE_SERVICE_NAME = "service.name";
 
-/** The build of that application, which is what makes a spike in errors attributable to a release. */
+/** Application build version resource key. */
 export const RESOURCE_SERVICE_VERSION = "service.version";
 
-/** Which deployment the records come from, so production and staging do not share a dashboard. */
+/** Deployment environment resource key. */
 export const RESOURCE_DEPLOYMENT_ENVIRONMENT = "deployment.environment";
 
-/** Identifies this library as the producer, which is how a collector tells our records from a backend agent's. */
+/**
+ * Producer library name resource key.
+ * @see {@link TELEMETRY_SDK_NAME}
+ */
 export const RESOURCE_TELEMETRY_SDK_NAME = "telemetry.sdk.name";
 
-/** The version of this library that produced the record, which is what makes a client-side regression datable. */
+/**
+ * Producer library version resource key.
+ * @see {@link TELEMETRY_SDK_VERSION}
+ */
 export const RESOURCE_TELEMETRY_SDK_VERSION = "telemetry.sdk.version";
 
-/** The language the producing SDK is written in, fixed by the OpenTelemetry conventions rather than chosen. */
+/**
+ * Producer SDK language resource key.
+ * @see {@link TELEMETRY_SDK_LANGUAGE}
+ */
 export const RESOURCE_TELEMETRY_SDK_LANGUAGE = "telemetry.sdk.language";
 
-/** Which kind of host the records came from: a browser, a webview, or an OpenFin runtime. */
+/** Host platform resource key: browser, webview, or OpenFin. */
 export const RESOURCE_HOST_PLATFORM = "host.platform";
 
-/** One visit to this origin, shared by every tab in it. */
+/** Session id resource key. */
 export const RESOURCE_SESSION_ID = "session.id";
 
-/** One tab, OpenFin window or OpenFin view, surviving a reload. */
+/** Tab id resource key. */
 export const RESOURCE_TAB_ID = "tab.id";
 
-/** One realm. Two iframes of the same tab differ here and nowhere else. */
+/** Context (realm) id resource key. */
 export const RESOURCE_CONTEXT_ID = "context.id";
 
-/** The raw user agent, kept so a platform detection this library got wrong stays diagnosable after the fact. */
+/** Raw user agent resource key. */
 export const RESOURCE_BROWSER_USER_AGENT = "browser.user_agent";
 
-/** The OpenFin application uuid, present only on a desktop runtime. */
+/** OpenFin application uuid resource key. */
 export const RESOURCE_OPENFIN_UUID = "openfin.uuid";
 
-/** The OpenFin window or view name, present only on a desktop runtime. */
+/** OpenFin window or view name resource key. */
 export const RESOURCE_OPENFIN_NAME = "openfin.name";
 
-/** The value of `telemetry.sdk.name`: this package, as a collector sees it. */
+/**
+ * Value of `telemetry.sdk.name`.
+ * @see {@link RESOURCE_TELEMETRY_SDK_NAME}
+ */
 export const TELEMETRY_SDK_NAME = "ui-observability";
 
 /**
- * The value of `telemetry.sdk.version`. A literal, because importing
- * package.json pulls a JSON module into the bundle and pins the published
- * package's shape. Bump it by hand alongside the version in package.json.
+ * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
+ * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
 export const TELEMETRY_SDK_VERSION = "1.0.0";
 
-/** The value of `telemetry.sdk.language`, fixed by the OpenTelemetry conventions as the name for browser JavaScript. */
+/**
+ * Value of `telemetry.sdk.language`.
+ * @see {@link RESOURCE_TELEMETRY_SDK_LANGUAGE}
+ */
 export const TELEMETRY_SDK_LANGUAGE = "webjs";
 
 // ----------------------------------
 // Serializers
 // ----------------------------------
 
-/**
- * The OTLP/JSON serializer's name. Two readers: the serializer stamps it on
- * itself, and config resolves this spelling when a consumer names a format
- * rather than passing an implementation.
- */
+/** OTLP/JSON serializer name. */
 export const SERIALIZER_NAME_OTLP = "otlp";
 
-/** The Elastic Common Schema serializer's name, resolved from config the same way. */
+/** ECS serializer name. */
 export const SERIALIZER_NAME_ECS = "ecs";
 
-/** Content type of an OTLP/JSON body, which is what the collector's logs endpoint accepts. */
+/** Content type for an OTLP/JSON body. */
 export const CONTENT_TYPE_JSON = "application/json";
 
-/** Content type of newline-delimited JSON, which is what a bulk ingest endpoint accepts. */
+/** Content type for newline-delimited JSON. */
 export const CONTENT_TYPE_NDJSON = "application/x-ndjson";
 
-/** Nanoseconds in one millisecond. A bigint, because a record timestamp is past exact double range. */
+/** Nanoseconds per millisecond. */
 export const NANOS_PER_MILLI = 1000000n;
 
 // ----------------------------------
 // HTTP transport
 // ----------------------------------
 
-/** Names the payload format. Taken from the serializer, never from a consumer. */
+/** Content-Type header name. */
 export const HEADER_CONTENT_TYPE = "Content-Type";
 
-/** Labels a compressed body. Set only when compression actually happened. */
+/** Content-Encoding header name. */
 export const HEADER_CONTENT_ENCODING = "Content-Encoding";
 
-/** Response header asking to be left alone: delta seconds or an HTTP date. */
+/** Retry-After header name. */
 export const HEADER_RETRY_AFTER = "Retry-After";
 
 /**
- * The batch's deduplication key. The exit flush repeats it as a query
- * parameter, since `sendBeacon` cannot set headers.
+ * Batch deduplication key header name.
+ * @see {@link QUERY_PARAM_BATCH_ID}
  */
 export const HEADER_BATCH_ID = "X-UiObs-Batch-Id";
 
-/** Which delivery attempt this is, so a server can tell a retry from a first send. */
+/** Delivery attempt number header name. */
 export const HEADER_ATTEMPT = "X-UiObs-Attempt";
 
-/** The one compression this library speaks. Both a config value and a Content-Encoding. */
+/** Gzip encoding name. */
 export const ENCODING_GZIP = "gzip";
 
 /** 401, credentials missing or rejected. */
 export const HTTP_UNAUTHORIZED = 401;
 
-/** 403, credentials understood and refused. */
+/** 403, valid credentials but access denied. */
 export const HTTP_FORBIDDEN = 403;
 
-/** 408, the server gave up waiting. Retryable. */
+/** 408, the server closed the connection after a timeout. Retryable. */
 export const HTTP_REQUEST_TIMEOUT = 408;
 
-/** 413, the batch has to be split before it can be delivered. */
+/** 413, payload too large; batch must be split. */
 export const HTTP_PAYLOAD_TOO_LARGE = 413;
 
-/** 429, explicit backpressure, usually with a Retry-After. */
+/** 429, backpressure. */
 export const HTTP_TOO_MANY_REQUESTS = 429;
 
-/** 500, and the floor for treating a status as the server's fault rather than the payload's. */
+/** 500, floor for server-side errors. */
 export const HTTP_SERVER_ERROR_MIN = 500;
 
-/** 503, temporary unavailability. Treated as backpressure whether or not Retry-After is set. */
+/** 503, temporary unavailability. */
 export const HTTP_SERVICE_UNAVAILABLE = 503;
 
-/** Milliseconds in a second, for a Retry-After given in delta seconds. */
+/** Milliseconds per second. */
 export const MILLIS_PER_SECOND = 1000;
 
 // ----------------------------------
 // Exit flush
 // ----------------------------------
 
-/**
- * Budget for one exit payload. `sendBeacon` and `fetch(keepalive)` draw on one
- * 64 KiB pool shared by every in-flight request, and a payload over it is
- * dropped silently rather than refused. Anything larger goes to the emergency
- * queue instead.
- */
+/** Max exit payload size, in bytes (`sendBeacon`/`fetch(keepalive)` shared budget). */
 export const BEACON_LIMIT_BYTES = 60_000;
 
-/**
- * Content type of an exit payload. CORS-safelisted, so the request needs no
- * preflight; a preflight started while a document unloads frequently never
- * completes and the beacon is lost with no error anywhere. The server parses
- * the body as JSON regardless of this.
- */
+/** Content type for an exit payload. CORS-safelisted, avoids a preflight. */
 export const CONTENT_TYPE_TEXT_PLAIN = "text/plain;charset=UTF-8";
 
-/** Carries the batch id on the exit path, where `sendBeacon` cannot set headers. */
+/**
+ * Batch id query param name, for the exit path.
+ * @see {@link HEADER_BATCH_ID}
+ */
 export const QUERY_PARAM_BATCH_ID = "uiobs_batch_id";
 
-/** Names what triggered an exit flush. Read by humans, never by the retry path. */
+/** Exit reason query param name, for logs only. */
 export const QUERY_PARAM_EXIT_REASON = "uiobs_exit";
 
 // ----------------------------------
 // Storage
 // ----------------------------------
 
-/** Key prefix for a batch parked in localStorage. */
+/** localStorage key prefix for a parked batch. */
 export const BATCH_STORAGE_KEY_PREFIX = "ui-observability.batch.";
 
-/**
- * Digits the creation time is padded to inside that key. Fixed width, so
- * lexicographic order is chronological. Fourteen lasts to the year 5138.
- */
+/** Zero-padded digit width for the creation time in a batch key. */
 export const BATCH_KEY_TIME_WIDTH = 14;
 
-/**
- * Key prefix for a batch parked by the exit flush, when it was too large to
- * beacon and the document was already closing.
- */
+/** localStorage key prefix for a batch parked by exit flush. */
 export const EMERGENCY_STORAGE_KEY_PREFIX = "ui-observability.emergency.";
 
-/**
- * How many exit batches may wait at once. A crash loop closes and reopens the
- * same document forever, and without a cap it fills the origin's quota.
- */
+/** Max exit batches held at once. */
 export const EMERGENCY_MAX_ENTRIES = 20;
 
-/** Written and deleted to find out whether localStorage accepts writes at all. */
+/** Key used to test whether localStorage accepts writes. */
 export const STORAGE_PROBE_KEY = "ui-observability.probe";
 
-/** Share of the store thrown away when a write is refused for space: one in this many. */
+/** Fraction of the store evicted on a quota error (1 in N). */
 export const QUOTA_EVICTION_DIVISOR = 4;
 
-/** The DOMException name every browser uses when a store is full. */
+/** DOMException name for a full store. */
 export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
 
-/** IndexedDB schema version. Bumping it means writing a Dexie migration. */
+/** IndexedDB schema version. Bumping it requires a matching Dexie migration. */
 export const INDEXEDDB_SCHEMA_VERSION = 1;
 
-/** Adapter name, and the `storage.strategy` spelling that selects it. */
+/** IndexedDB adapter/strategy name. */
 export const STORAGE_NAME_INDEXEDDB = "indexeddb";
 
-/** Adapter name, and the `storage.strategy` spelling that selects it. */
+/** localStorage adapter/strategy name. */
 export const STORAGE_NAME_LOCAL = "localstorage";
 
-/** Adapter name, and the `storage.strategy` spelling that selects it. */
+/** In-memory adapter/strategy name. */
 export const STORAGE_NAME_MEMORY = "memory";
 
-/** Adapter name for the store that keeps nothing, and the strategy that selects it. */
+/** No-op adapter/strategy name. */
 export const STORAGE_NAME_NONE = "none";
 
 // ----------------------------------
@@ -451,138 +374,103 @@ export const STORAGE_NAME_NONE = "none";
 // ----------------------------------
 
 /**
- * The origin-wide lock one drain runs under. Every context on the origin has to
- * spell it the same way or the lock guards nothing.
+ * Origin-wide lock name a drain runs under.
+ * @see {@link EMERGENCY_LOCK_NAME}
  */
 export const DRAIN_LOCK_NAME = "ui-observability.drain";
 
 /**
- * The lock the startup recovery runs under. Separate from the drain: after a
- * crash five windows recover at once, and they would each import the same keys.
+ * Lock name startup recovery runs under.
+ * @see {@link DRAIN_LOCK_NAME}
  */
 export const EMERGENCY_LOCK_NAME = "ui-observability.emergency";
 
-/**
- * Stored batches one drain tick sends. A full tick comes straight back for
- * more, so this bounds one pass rather than the queue.
- */
+/** Batches sent per drain tick. */
 export const BATCHES_PER_DRAIN = 20;
 
 // ----------------------------------
 // Journey
 // ----------------------------------
 
-/**
- * sessionStorage key holding the journey this context is in. sessionStorage,
- * not localStorage: a journey belongs to one tab, and a localStorage key would
- * hand one tab's finished journey to every other tab on the origin. Compare
- * `SESSION_ID_KEY`, which is localStorage for the opposite reason.
- */
+/** `sessionStorage` key for the current journey. */
 export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
 
 /**
- * Longest journey name a token carries. A token rides in a query string, which
- * has a hard length limit and proxy truncation, and the name is its only
- * free-form field. The full name still reaches storage and every record.
+ * Max journey name length in a token, in characters.
+ * @see {@link JOURNEY_TOKEN_MAX_CHARS}
  */
 export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
 
 /**
- * Cap on a whole token, past which none is issued. Three fields and a capped
- * name cannot reach it, so this firing means the encoder grew a field. A
- * tripwire on the query-string budget, not input validation.
+ * Max whole-token length, in characters. A tripwire, not validation.
+ * @see {@link JOURNEY_TOKEN_NAME_MAX_CHARS}
  */
 export const JOURNEY_TOKEN_MAX_CHARS = 256;
 
-/**
- * Key under an OpenFin window's `customData` carrying a seeded journey token. A
- * provider-created window has no URL of its own to read one from. The consumer
- * writing it and this library reading it must agree on the spelling, and
- * nothing else checks that they do.
- */
+/** Key under an OpenFin window's `customData` carrying a seeded journey token. */
 export const OPENFIN_JOURNEY_CUSTOM_DATA_KEY = "uiObsJourney";
 
-/**
- * The `+` of standard base64, which is `-` in the URL-safe alphabet.
- *
- * These five are module-level despite the `g` flag: `replace` resets
- * `lastIndex` before it runs, so a shared instance carries no state between
- * calls. `test` and `exec` do not, which is why none is used with them.
- */
+/** Matches `+` in standard base64 (`-` in URL-safe). */
 export const BASE64_PLUS_PATTERN = /\+/g;
 
-/** The `/` of standard base64, which is `_` in the URL-safe alphabet. */
+/** Matches `/` in standard base64 (`_` in URL-safe). */
 export const BASE64_SLASH_PATTERN = /\//g;
 
-/** Trailing `=` padding, dropped from a URL-safe token and recomputed on the way back. */
+/** Matches trailing `=` padding. */
 export const BASE64_PADDING_PATTERN = /=+$/;
 
-/** The `-` of the URL-safe alphabet, which is `+` in standard base64. */
+/** Matches `-` in URL-safe base64 (`+` in standard). */
 export const BASE64URL_DASH_PATTERN = /-/g;
 
-/** The `_` of the URL-safe alphabet, which is `/` in standard base64. */
+/** Matches `_` in URL-safe base64 (`/` in standard). */
 export const BASE64URL_UNDERSCORE_PATTERN = /_/g;
 
-/** Base64 spends four characters on every three bytes, so a short final group is padded back to four. */
+/** Base64 characters per 3-byte group. */
 export const BASE64_GROUP_CHARS = 4;
 
 // ----------------------------------
 // Tracing
 // ----------------------------------
 
-/** Width of a W3C trace id: sixteen bytes, thirty-two hex characters. */
+/** W3C trace id width, in bytes. */
 export const TRACE_ID_BYTES = 16;
 
-/** Width of a W3C span id: eight bytes, sixteen hex characters. */
+/** W3C span id width, in bytes. */
 export const SPAN_ID_BYTES = 8;
 
-/**
- * How long one ambient trace lives before it rotates on its own. The id rotates
- * on a click, a route change, an explicit call, and failing those, this age,
- * so a tab left open all day does not pile a week of records into one trace.
- */
+/** Max ambient trace lifetime with no activity, in milliseconds. */
 export const TRACE_MAX_AGE_MS = 5 * 60 * 1000;
 
-/**
- * trace-flags with the sampled bit set. Every record has already survived
- * sampling by the time it is built, so an unsampled flag would tell the backend
- * to discard what this library deliberately kept.
- */
+/** trace-flags value with the sampled bit set. */
 export const TRACE_FLAGS_SAMPLED = 1;
 
-/**
- * trace-flags is one byte on the wire, so the field is masked to eight bits
- * before printing. The bitfield's further bits are already defined, and
- * collapsing it to sampled or not discards what an upstream tracer set.
- */
+/** Mask for the one-byte trace-flags field. */
 export const TRACE_FLAGS_MASK = 0xff;
 
-/** The only `traceparent` version defined so far, and the prefix of every header this library writes. */
+/** traceparent header version prefix. */
 export const TRACEPARENT_VERSION = "00";
 
 // ----------------------------------
 // Breadcrumbs
 // ----------------------------------
 
-/**
- * Smallest breadcrumb buffer that still functions. The write pointer advances
- * modulo the capacity, and modulo zero is NaN: a capacity of zero writes every
- * crumb to index NaN and reads none back. Turning breadcrumbs off is what the
- * capture flags are for, so this clamps instead.
- */
+/** Smallest valid breadcrumb buffer capacity. */
 export const BREADCRUMB_MIN_CAPACITY = 1;
 
 // ----------------------------------
 // Sampling
 // ----------------------------------
+//
+// FNV-1a hash constants, used to turn a sampling key into a stable 0-1
+// fraction.
 
-/** FNV-1a 32 bit offset basis. */
+/** FNV-1a 32-bit offset basis. */
 export const FNV_OFFSET_BASIS = 0x811c9dc5;
 
-/** FNV-1a 32 bit prime. */
+/** FNV-1a 32-bit prime. */
 export const FNV_PRIME = 0x01000193;
 
-/** Largest 32 bit unsigned value. Turns a hash into a 0 to 1 fraction. */
+/** Largest 32-bit unsigned value. */
 export const UINT32_MAX = 0xffffffff;
 
 // ----------------------------------
@@ -592,46 +480,37 @@ export const UINT32_MAX = 0xffffffff;
 /** Record kind routed to the metric stream. */
 export const LOG_TYPE_METRIC: LogType = "metric";
 
-/**
- * How many batches' worth of records one stream buffer holds before it drops
- * the oldest. Reached only when the batch size stops the count-based flush.
- */
+/** Batches held per stream buffer before the oldest is dropped. */
 export const PENDING_BUFFER_BATCHES = 10;
 
 // ----------------------------------
 // Configuration
 // ----------------------------------
 
-/**
- * What `service.name` becomes when a consumer configures none. A fixed
- * placeholder is searchable in the backend and says the field was never set
- * rather than lost in transit.
- */
+/** Default `service.name` when a consumer sets none. */
 export const UNKNOWN_SERVICE_NAME = "unknown-service";
 
-/** Lowest accepted sampling rate: drop everything. */
+/** Lowest sampling rate (drop everything). */
 export const SAMPLING_RATE_MIN = 0;
 
-/** Highest accepted sampling rate: keep everything. */
+/** Highest sampling rate (keep everything). */
 export const SAMPLING_RATE_MAX = 1;
 
 /**
- * What an out-of-range sampling rate falls back to. Keeps everything: a typo in
- * a rate should cost volume, not visibility.
+ * Fallback for an invalid sampling rate (keep everything).
+ * @see {@link SAMPLING_RATE_MAX}
  */
 export const SAMPLING_RATE_FALLBACK = 1;
 
 /**
- * Valid config keys that carry no default and so never appear in
- * `DEFAULT_CONFIG`. The unknown-key check reads that object's own keys, and
- * without this list would report every callback a consumer passes as a typo.
+ * Config keys with no default, excluded from `DEFAULT_CONFIG`.
+ * @see {@link DEFAULT_CONFIG}
  */
 export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers", "serializer"] as const;
 
 /**
- * The nested config sections, merged into the objects already in place rather
- * than replaced. Components hold a reference to a section from construction, so
- * preserving the identity of these nine is what makes a change reach them.
+ * Nested config section keys.
+ * @see {@link ResolvedConfig}
  */
 export const CONFIG_SECTIONS = [
   "streams",
@@ -646,16 +525,10 @@ export const CONFIG_SECTIONS = [
 ] as const;
 
 /**
- * Every setting the runtime reads, at the value it takes when the consumer says
- * nothing. Fully populated: downstream code reads these without checking, so a
- * hole here becomes an undefined in arithmetic far away.
- *
- * The base of a first `configure()` only. A later call merges onto the config
- * in force, never back onto this.
- *
- * Every default except the serializer, which is an implementation rather than a
- * value: naming one here would import the transport into this file, and the
- * serializers import these constants back. `resolveConfig` supplies it.
+ * Default runtime config, before a consumer's `configure()` call.
+ * Excludes `serializer`; `resolveConfig` supplies its default to avoid a circular import.
+ * @see {@link ResolvedConfig}
+ * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
 export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   endpoint: "",
@@ -666,8 +539,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   minLevel: "INFO",
   streams: {
     logs: { flushIntervalMs: 2000, batchSize: 100 },
-    // Metrics trickle in from timers and web vitals and nobody waits on one, so
-    // they batch harder. That is most of the point of splitting the streams.
+    // Metrics batch harder than logs: higher volume, nothing waits on them.
     metrics: { flushIntervalMs: 10_000, batchSize: 500 },
   },
   maxConcurrentRequests: 2,

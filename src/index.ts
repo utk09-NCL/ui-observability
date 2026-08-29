@@ -1,9 +1,10 @@
 // src/index.ts
 //
-// The single public entry point. The exports map names this file and nothing
-// else, so anything a consumer is meant to reach is re-exported here by name.
+// This is the only public entry point. package.json's exports map points
+// only here, so re-export everything a consumer should be able to import.
 //
-// Stays side-effect free. `sideEffects: false` in package.json is only true
-// while importing this module does no work, and a bundler acting on that field
-// will tree-shake away code a side effect here depended on.
+// Keep this file free of side effects. package.json promises sideEffects:
+// false, meaning importing this module does nothing by itself. If you add a
+// side effect anyway, a bundler will still believe that promise, strip the
+// side effect out, and quietly break whatever depended on it running.
 export {};

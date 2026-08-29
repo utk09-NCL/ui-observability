@@ -1,57 +1,79 @@
 // src/models/storage.ts
 //
-// Where undelivered batches wait, behind one interface with four
-// implementations.
-//
-// The obvious shape, a `drainBatches(sender)` that takes a callback, is not
-// this one: it couples storage to transport, hides the attempt counter, and
-// makes a poison batch impossible to detect. Separate `take`, `remove` and
-// `bumpAttempts` are what let the retry engine give up on a batch the server
-// will never accept.
+// Storage interface for undelivered batches, with adapters for IndexedDB,
+// localStorage, memory, and a no-op fallback.
 
 import type { LogBatch } from "./batch";
 
-/** One place undelivered batches wait. Every method resolves; none throws. */
+/** Persistent batch storage interface. All methods must resolve and never throw. */
 export interface StorageAdapter {
-  /** Which implementation this is. Reported, and asserted on in tests. */
+  /** Adapter identifier name. */
   readonly name: string;
-  /** Persist a batch that failed to send. */
+
+  /**
+   * Persists a batch to storage.
+   * @param batch The batch to store.
+   */
   save(batch: LogBatch): Promise<void>;
-  /** Oldest first. Does not remove; the caller removes on success. */
+
+  /**
+   * Reads up to `limit` batches in FIFO order without removing them.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Oldest persisted batches.
+   */
   take(limit: number): Promise<LogBatch[]>;
-  /** Forget one batch, by id. Removing an id that is not there is not an error. */
+
+  /**
+   * Removes a batch by ID. Non-existent IDs resolve without error.
+   * @param id Batch identifier.
+   */
   remove(id: string): Promise<void>;
-  /** Record a failed delivery attempt, so an attempt limit can be enforced across reloads. */
+
+  /**
+   * Updates the total delivery attempts for a batch.
+   * @param id Batch identifier.
+   * @param attempts Absolute attempt count.
+   */
   bumpAttempts(id: string, attempts: number): Promise<void>;
-  /** Drop batches that are too old or over the count limit. */
+
+  /**
+   * Deletes expired and over-capacity batches.
+   * @returns Prune summary metrics.
+   */
   prune(): Promise<PruneResult>;
-  /** How many batches are waiting. */
+
+  /** Returns the total number of stored batches. */
   count(): Promise<number>;
-  /** Forget everything. */
+
+  /** Deletes all batches in storage. */
   clear(): Promise<void>;
-  /** Release the underlying store. Called on shutdown. */
+
+  /** Closes storage connections and releases resources. */
   close(): Promise<void>;
 }
 
-/** The subset of `storage` config an adapter enforces, so it need not read the whole config. */
+/** Capacity and retention thresholds enforced by a storage adapter. */
 export interface StorageLimits {
-  /** How many batches may wait at once. The oldest go first past this. */
+  /** Maximum batch capacity before FIFO eviction. */
   maxBatches: number;
-  /** How old a batch may get before it is dropped rather than retried. */
+  /** Maximum time-to-live for a stored batch in milliseconds. */
   maxAgeMs: number;
-  /** How many delivery attempts one batch gets before the retry engine dead-letters it. */
+  /** Maximum delivery attempts before dead-letter drop. */
   maxAttempts: number;
 }
 
-/** What a prune threw away. Turned into a gap record, so the backend sees the hole. */
+/** Metrics for batches and records dropped during storage pruning. */
 export interface PruneResult {
-  /** How many batches were dropped. */
+  /** Total batches dropped. */
   batches: number;
-  /** How many records went with them. */
+  /** Total records dropped within evicted batches. */
   records: number;
-  /** Which rule fired. A mixed prune reports the last one, since one label has to cover the lot. */
+  /** Eviction reason that triggered the prune. If more than one rule fired, this is the last one. */
   reason: "expired" | "over_capacity" | "quota";
 }
 
-/** Told whenever records are thrown away, so the hole becomes visible downstream. */
+/**
+ * Callback invoked when dropped records create a telemetry gap.
+ * @param result Summary of evicted data.
+ */
 export type GapReporter = (result: PruneResult) => void;
