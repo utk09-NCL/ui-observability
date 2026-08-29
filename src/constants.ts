@@ -494,6 +494,34 @@ export const BUS_PROTOCOL = "ui-observability/1";
 export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
 
 // ----------------------------------
+// Capture
+// ----------------------------------
+
+/** Maximum error records captured per throttling window before suppression. */
+export const ERROR_STORM_MAX_PER_WINDOW = 20;
+
+/** Error rate-limiting window duration in milliseconds. */
+export const ERROR_STORM_WINDOW_MS = 10_000;
+
+/** Maximum distinct error signatures tracked for deduplication before LRU eviction. */
+export const MAX_TRACKED_ERROR_SIGNATURES = 200;
+
+/** Maximum character length retained from clicked element text in breadcrumbs. */
+export const CLICK_TEXT_MAX_CHARS = 50;
+
+/** Maximum character length retained from an aria-label attribute in generated selectors. */
+export const ARIA_LABEL_MAX_CHARS = 40;
+
+/** Maximum class names included per element in generated CSS selectors. */
+export const SELECTOR_MAX_CLASSES = 2;
+
+/** CSS styling applied to console prefix labels. */
+export const CONSOLE_PREFIX_STYLE = "color:#888";
+
+/** Scaling factor for rounding duration measurements to three decimal places. */
+export const DURATION_PRECISION = 1000;
+
+// ----------------------------------
 // Configuration
 // ----------------------------------
 

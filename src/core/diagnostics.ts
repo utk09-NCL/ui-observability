@@ -1,21 +1,10 @@
 // src/core/diagnostics.ts
 //
-// The internal error channel. Every catch block in this library reports here,
-// so a fault inside the logger does not become silence in the consumer's
-// application. Counters work with no handler set, so `snapshot()` answers
-// "what am I not seeing".
-//
-// Emission is capped at one event per code per window: a broken render loop
-// produces ten thousand identical errors a second, and a handler called that
-// often is itself the outage. Counting is never throttled, so a throttled code
-// still reports its true total on the next event through and in `snapshot()`.
+// Internal telemetry error reporting, rate-limited emission, and cumulative event counters.
 
 import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
 
-/**
- * Every fault this library can report. Closed rather than free-form: consumers
- * alert on these codes, and a typo would be an alert that never fires.
- */
+/** Closed set of diagnostic event codes emitted by library subsystems. */
 export type DiagnosticCode =
   | "config.invalid"
   | "config.reconfigured"
@@ -51,59 +40,60 @@ export type DiagnosticCode =
   | "pipeline.crashed"
   | "capture.install_failed"
   | "capture.rate_limited"
+  | "capture.header_failed"
+  | "capture.record_failed"
   | "openfin.unavailable"
   | "handler.threw";
 
-/** One fault, as it reaches the consumer's handler. */
+/** Diagnostic event payload dispatched to consumer handlers. */
 export interface DiagnosticEvent {
-  /** Which fault, from the closed set above. Alert on this, not on the message. */
+  /** Diagnostic fault code. */
   code: DiagnosticCode;
-  /** Human-readable detail. Free-form, and it may change between versions. */
+  /** Human-readable description. */
   message: string;
-  /** Structured context, where there is any worth attaching. */
+  /** Structured context metadata. */
   detail?: Record<string, unknown>;
-  /** The error or rejected value behind this, when one exists. */
+  /** Caught error instance or reason. */
   cause?: unknown;
-  /** epoch ms */
+  /** Event timestamp in epoch milliseconds. */
   at: number;
-  /** how many times this code has fired since startup, including throttled ones */
+  /** Cumulative count of this code since startup, including rate-limited occurrences. */
   count: number;
 }
 
-/**
- * What a consumer passes as `onDiagnostic`. It must not throw, and it is not trusted to keep that
- * promise.
- */
+/** Consumer callback for receiving rate-limited diagnostic events. */
 export type DiagnosticHandler = (event: DiagnosticEvent) => void;
 
-/**
- * The internal error channel. Two rules:
- *   1. Nothing in this library uses a bare `catch {}`. Everything reports here.
- *   2. Reporting must never throw, including when the consumer's handler throws.
- */
+/** Internal error reporting channel with rate-limited dispatch and unthrottled counters. */
 export class Diagnostics {
+  /** Running occurrence counts per diagnostic code. */
   private readonly counters = new Map<DiagnosticCode, number>();
+
+  /** Timestamp of last emitted event per code in epoch milliseconds. */
   private readonly lastEmitted = new Map<DiagnosticCode, number>();
 
   /**
-   * Usable with no handler at all, which is what makes the counters work before a consumer
-   * configures anything.
+   * @param handler Optional diagnostic event listener callback.
+   * @param throttleMs Minimum duration in milliseconds between emitted events for a single code.
    */
   constructor(
     private handler?: DiagnosticHandler,
-    /** per code, at most one emission in this window. Counting is never throttled. */
     private readonly throttleMs = DIAGNOSTIC_THROTTLE_MS,
   ) {}
 
-  /** Swap the consumer's handler, or drop it by passing nothing. Called on every reconfigure. */
+  /**
+   * Updates or removes the active diagnostic event handler.
+   * @param handler New diagnostic event handler.
+   */
   setHandler(handler?: DiagnosticHandler): void {
     this.handler = handler;
   }
 
   /**
-   * Increment the counter without emitting. For hot paths such as sampling
-   * drops. Returns the new running total for this code, which is what
-   * `report()` puts on the event.
+   * Increments the occurrence count for a code without triggering handler emission.
+   * @param code Diagnostic code to increment.
+   * @param by Increment delta.
+   * @returns Updated cumulative total for the code.
    */
   count(code: DiagnosticCode, by = 1): number {
     const total = (this.counters.get(code) ?? 0) + by;
@@ -112,11 +102,11 @@ export class Diagnostics {
   }
 
   /**
-   * Count this fault and, unless the code is inside its throttle window, hand
-   * it to the consumer's handler.
-   *
-   * This is the one method every catch block in the library calls. It never
-   * throws, including when the handler does.
+   * Increments counter and dispatches event if outside the throttling window. Never throws.
+   * @param code Diagnostic code.
+   * @param message Event description.
+   * @param detail Optional structured metadata.
+   * @param cause Caught error instance or reason.
    */
   report(
     code: DiagnosticCode,
@@ -147,20 +137,21 @@ export class Diagnostics {
     try {
       this.handler(event);
     } catch (handlerError) {
-      // The one catch that counts instead of calling report(): report() is what
-      // called the handler, so reporting here would recurse until the stack ran out.
+      // Increments counter without calling report() to avoid recursion on handler faults.
       this.count("handler.threw");
-      // Not every context has a console.
       if (typeof console !== "undefined") {
-        // eslint-disable-next-line no-console -- last-resort sink: reporting a throwing diagnostic handler would call it again and recurse
+        // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
         console.warn(`${LIBRARY_LOG_PREFIX} onDiagnostic handler threw`, handlerError);
       }
     }
   }
 
   /**
-   * Run `fn`, reporting instead of throwing. Use at every boundary where a
-   * platform API might not exist or might be blocked by a sandbox.
+   * Executes a synchronous function and reports any thrown error to diagnostics.
+   * @param code Diagnostic code to report on throw.
+   * @param message Error description.
+   * @param fn Function to execute.
+   * @returns Function return value, or undefined on throw.
    */
   guard<T>(code: DiagnosticCode, message: string, fn: () => T): T | undefined {
     try {
@@ -172,8 +163,11 @@ export class Diagnostics {
   }
 
   /**
-   * As `guard`, for a boundary that returns a promise. A rejection reports rather than escaping as
-   * an unhandled one.
+   * Executes an asynchronous function and reports any rejected promise to diagnostics.
+   * @param code Diagnostic code to report on rejection.
+   * @param message Error description.
+   * @param fn Async function to execute.
+   * @returns Promise resolving to the return value, or undefined on rejection.
    */
   async guardAsync<T>(
     code: DiagnosticCode,
@@ -188,15 +182,15 @@ export class Diagnostics {
     }
   }
 
-  /** Counts since startup. Emit this periodically as a metric to answer "what am I not seeing". */
+  /**
+   * Returns a copy of all cumulative diagnostic event counts since initialization.
+   * @returns Map of diagnostic codes to occurrence counts.
+   */
   snapshot(): Record<string, number> {
     return Object.fromEntries(this.counters);
   }
 
-  /**
-   * Forget every count and every throttle window, so the next report emits immediately. Mostly a
-   * test seam.
-   */
+  /** Clears all counters and throttling history. */
   reset(): void {
     this.counters.clear();
     this.lastEmitted.clear();

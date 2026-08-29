@@ -4,7 +4,13 @@
 
 import { Bus } from "../../src/bus/bus";
 import type { Receive } from "../../src/bus/links";
+import { ErrorCapture } from "../../src/capture/errors";
+import { InteractionCapture } from "../../src/capture/interactions";
+import { NetworkCapture } from "../../src/capture/network";
+import type { Capture, CaptureLogger } from "../../src/capture/types";
+import { WebVitalsCapture } from "../../src/capture/web-vitals";
 import { RUNTIME_GLOBAL_KEY } from "../../src/constants";
+import { BreadcrumbBuffer } from "../../src/core/breadcrumbs";
 import { resolveConfig } from "../../src/core/config";
 import { ContextStore } from "../../src/core/context";
 import { Diagnostics } from "../../src/core/diagnostics";
@@ -22,8 +28,13 @@ import { detectPlatform } from "../../src/utils/platform";
 import { Sequence } from "../../src/utils/sequence";
 import { TraceEngine } from "../../src/utils/tracing";
 
+/** Base URL for the local mock ingest server. */
 const MOCK_SERVER = "http://localhost:8787";
+
+/** Target HTTP endpoint for log ingest requests. */
 const INGEST_ENDPOINT = `${MOCK_SERVER}/v1/logs`;
+
+/** Number of log records generated in a single test burst. */
 const BURST_SIZE = 250;
 
 /**
@@ -39,6 +50,7 @@ const el = (selector: string): Element => {
   return found;
 };
 
+/** Diagnostic output container in the playground DOM. */
 const out = el("#diagnostics");
 
 /**
@@ -66,10 +78,12 @@ const on = (id: string, fn: () => void): void => {
   el(`#${id}`).addEventListener("click", fn);
 };
 
+/** Central diagnostics instance for internal error reporting. */
 const diagnostics = new Diagnostics((event) => {
   note(event.code, event.message);
 });
 
+/** Resolved runtime configuration for the playground harness. */
 const config = resolveConfig(
   {
     endpoint: INGEST_ENDPOINT,
@@ -79,32 +93,49 @@ const config = resolveConfig(
     minLevel: "DEBUG",
     // Origins allowed to transmit records over the window bus.
     bus: { trustedOrigins: [location.origin, "http://localhost:5174"] },
+    capture: {
+      errors: true,
+      rejections: true,
+      resourceErrors: true,
+      fetch: true,
+      xhr: true,
+      interactions: true,
+      navigation: true,
+      webVitals: true,
+      // Literal specifier resolved by Vite. The library's default loader holds
+      // it in a variable so a bundler cannot resolve it at build time, which
+      // leaves the browser unable to resolve the bare specifier at runtime.
+      webVitalsLoader: () => import("web-vitals"),
+    },
   },
   diagnostics,
 );
 
+/** Identity metadata containing context, session, and tab identifiers. */
 const identity = resolveIdentity(diagnostics);
+
+/** Platform runtime metadata identifying browser and container capabilities. */
 const platform = detectPlatform(diagnostics);
 
-// Assigned below: the journey engine is built first because the bus handlers
-// read it. A journey change made here is broadcast to every other context.
+/** Active cross-realm communication bus instance. */
 let bus: Bus | null = null;
 
+/** Journey tracking engine managing active task correlation. */
 const journey = new JourneyEngine(config.journey, diagnostics, identity.contextId, (changed) => {
   bus?.broadcastJourney(changed);
 });
 
-// Registered before the storage await below: a same-origin child looks for this
-// symbol as it boots, and finding nothing it falls back to a postMessage
-// handshake. The closure reads `bus` when called, not now.
+// Registered before storage initialization so booting same-origin children find the direct link.
 (globalThis as unknown as Record<symbol, unknown>)[Symbol.for(RUNTIME_GLOBAL_KEY)] = {
   busAccept: (message: BusMessage, reply: Receive): void => {
     bus?.acceptDirect(message, reply);
   },
 };
 
+/** Ambient distributed trace context engine. */
 const tracing = new TraceEngine(diagnostics);
 
+/** Record builder for assembling structured log records. */
 const builder = new RecordBuilder({
   config,
   diagnostics,
@@ -116,6 +147,7 @@ const builder = new RecordBuilder({
   platform,
 });
 
+/** HTTP transport instance for live log delivery. */
 const transport = new HttpTransport(config, diagnostics);
 
 // Top-level await prevents logging before storage initialization resolves.
@@ -138,14 +170,16 @@ drainEmergencyQueue(storage, diagnostics)
     note("playground.recover_failed", toMessage(error));
   });
 
+/** Background retry engine for redelivering failed offline batches. */
 const retry = new RetryEngine(storage, transport, diagnostics, config);
 retry.start();
 
+/** Primary log pipeline managing stream buffering, batching, and delivery. */
 const pipeline = new LogPipeline(config, transport, storage, retry, diagnostics);
 
 bus = new Bus(config, diagnostics, platform, identity.contextId, identity.tabId, {
-  // A forwarded record joins this document's own pipeline, so one request
-  // carries the child's records and the parent's together.
+  // Forwards incoming child records into this document's pipeline, so one
+  // request carries the child's records and the parent's together.
   onRecords: (records) => {
     for (const record of records) {
       pipeline.push(record);
@@ -169,6 +203,7 @@ bus
     note("playground.bus_failed", toMessage(error));
   });
 
+/** Exit flush handler executing atomic batch delivery during page unload. */
 const exitFlush = new ExitFlush({
   config,
   diagnostics,
@@ -190,6 +225,100 @@ const log = (input: BuildInput, label: string): void => {
 
   pipeline.push(record);
 };
+
+/** Circular buffer for storing contextual user breadcrumbs. */
+const breadcrumbs = new BreadcrumbBuffer(config.capture.maxBreadcrumbs);
+
+/** Minimal logger facade adapter routing auto-capture records through the harness. */
+const captureLogger: CaptureLogger = {
+  error: (message, error, payload) => {
+    log(
+      {
+        level: "ERROR",
+        type: "event",
+        body: message,
+        namespace: "capture",
+        payload: { ...payload, error, breadcrumbs: breadcrumbs.snapshot() },
+      },
+      "capture.error",
+    );
+  },
+  warn: (message, payload) => {
+    log(
+      {
+        level: "WARN",
+        type: "event",
+        body: message,
+        namespace: "capture",
+        payload,
+      },
+      "capture.warn",
+    );
+  },
+  logEvent: (name, payload) => {
+    log(
+      {
+        level: "INFO",
+        type: "event",
+        body: name,
+        namespace: "capture",
+        payload,
+      },
+      "capture.event",
+    );
+  },
+  logMetric: (name, value, unit, type, attrs) => {
+    log(
+      {
+        level: "INFO",
+        type: "metric",
+        body: name,
+        namespace: "capture",
+        payload: {
+          "metric.value": value,
+          "metric.unit": unit,
+          "metric.type": type,
+          ...attrs,
+        },
+      },
+      "capture.metric",
+    );
+  },
+  debug: (message, payload) => {
+    log(
+      {
+        level: "DEBUG",
+        type: "event",
+        body: message,
+        namespace: "capture",
+        payload,
+      },
+      "capture.debug",
+    );
+  },
+};
+
+/** Context object bundling dependencies for auto-capture modules. */
+const captureContext = {
+  config,
+  diagnostics,
+  logger: captureLogger,
+  breadcrumbs,
+  tracing,
+};
+
+/** Registered auto-capture instrumentation modules. */
+const captures: Capture[] = [
+  new ErrorCapture(captureContext),
+  new NetworkCapture(captureContext),
+  new InteractionCapture(captureContext),
+  new WebVitalsCapture(captureContext),
+];
+
+for (const capture of captures) {
+  capture.install();
+}
+note("playground.capture", `installed ${captures.map((c) => c.name).join(", ")}`);
 
 // Adopts URL-seeded journey token before initial records are built.
 journey.bootstrap().catch((error: unknown) => {
@@ -313,8 +442,8 @@ on("circular", () => {
 on("burst", () => {
   // Generates records exceeding batch capacity to verify buffer splitting.
   for (let i = 0; i < BURST_SIZE; i++) {
-    // Sampling keys on the ambient trace id. Without a rotation per record
-    // all 250 share one key and the rate keeps or drops the whole burst.
+    // Rotates the trace id per record: sampling keys on it, so without this all
+    // 250 share one key and a rate keeps or drops the whole burst.
     tracing.rotate("explicit");
 
     log(
@@ -348,8 +477,9 @@ on("queue", () => {
     });
 });
 
-// Toggles mock server 503 responses to verify offline storage and retries.
+/** Tracks mock server failure simulation state. */
 let failing = false;
+
 on("offline", () => {
   failing = !failing;
   const control = `${MOCK_SERVER}/__control?status=${failing ? "503&retryAfter=3" : "200"}`;

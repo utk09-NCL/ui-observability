@@ -108,6 +108,14 @@ export default defineConfig(
   },
 
   {
+    // Allows console calls in the dedicated developer console sink.
+    files: ["src/utils/console.ts"],
+    rules: {
+      "no-console": "off",
+    },
+  },
+
+  {
     files: ["tests/**/*.ts"],
     rules: {
       "@typescript-eslint/dot-notation": ["error", { allowPrivateClassPropertyAccess: true }],
