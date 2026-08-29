@@ -484,6 +484,16 @@ export const LOG_TYPE_METRIC: LogType = "metric";
 export const PENDING_BUFFER_BATCHES = 10;
 
 // ----------------------------------
+// Bus
+// ----------------------------------
+
+/** Protocol identifier for bus envelopes. Mismatched versions are dropped. */
+export const BUS_PROTOCOL = "ui-observability/1";
+
+/** Global window property key used to locate a same-origin runtime instance. */
+export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
+
+// ----------------------------------
 // Configuration
 // ----------------------------------
 

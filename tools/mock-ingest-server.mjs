@@ -120,6 +120,15 @@ const server = createServer(async (req, res) => {
 
   const unwrap = (v) => (v ? Object.values(v)[0] : undefined);
 
+  // Per-request record count: the per-record lines below cannot show where one
+  // batch ends and the next begins.
+  const batchSize = (payload.resourceLogs ?? []).reduce(
+    (total, rl) =>
+      total + (rl.scopeLogs ?? []).reduce((sub, sl) => sub + (sl.logRecords ?? []).length, 0),
+    0,
+  );
+  console.log(`[batch] batch=${batchId} records=${batchSize}`);
+
   for (const rl of payload.resourceLogs ?? []) {
     const resAttrs = Object.fromEntries(
       (rl.resource?.attributes ?? []).map((a) => [a.key, unwrap(a.value)]),
