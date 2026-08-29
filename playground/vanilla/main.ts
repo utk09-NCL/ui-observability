@@ -5,9 +5,10 @@
 // examples must not: they exist to prove the published API works from outside.
 //
 // The wiring below is temporary. There is no public API and no pipeline yet, so
-// this file assembles the pieces by hand and posts one batch per click. When
-// the runtime lands, all of it collapses into `configure()` and a logger, and
-// every deep import here goes away.
+// this file assembles the pieces by hand: records buffer, a timer coalesces
+// them into a batch, a failed send goes to storage, and the retry engine drains
+// it. When the runtime lands, all of it collapses into `configure()` and a
+// logger, and every deep import here goes away.
 //
 // Handlers that still need code which does not exist print what they wait for
 // and carry a `// Final form:` comment.
@@ -19,7 +20,11 @@ import { JourneyEngine } from "../../src/core/journey";
 import { type BuildInput, RecordBuilder } from "../../src/core/record";
 import type { LogBatch } from "../../src/models/batch";
 import type { LogRecord } from "../../src/models/log-record";
+import { drainEmergencyQueue } from "../../src/storage/emergency-queue";
+import { createStorage } from "../../src/storage/factory";
+import { ExitFlush } from "../../src/transport/exit-flush";
 import { HttpTransport } from "../../src/transport/http-transport";
+import { RetryEngine } from "../../src/transport/retry-engine";
 import { newId, resolveIdentity } from "../../src/utils/identity";
 import { detectPlatform } from "../../src/utils/platform";
 import { Sequence } from "../../src/utils/sequence";
@@ -90,31 +95,113 @@ const builder = new RecordBuilder({
 
 const transport = new HttpTransport(config, diagnostics);
 
-/** One batch per click. Batching, storage and retry all belong to the pipeline, which does not exist. */
-const post = (records: LogRecord[], label: string) => {
-  if (records.length === 0) {
+// Logged but not yet handed to a batch. The exit flush drains this, which is
+// the only reason a buffer exists here rather than one batch per click.
+const pending: LogRecord[] = [];
+
+/** Everything buffered as one batch, or null. Synchronous, because an unloading document waits for nothing. */
+const drainPending = (): LogBatch | null => {
+  if (pending.length === 0) {
+    return null;
+  }
+  return { id: newId(), records: pending.splice(0), createdAt: Date.now(), attempts: 0 };
+};
+
+// The IndexedDB adapter is a dynamic import, so the store is built
+// asynchronously. Awaited at the top level: no handler is bound until it
+// resolves, so nothing can log into a store that does not exist.
+const storage = await createStorage(
+  config.storage.strategy,
+  config.storage.dbName,
+  config.storage,
+  diagnostics,
+);
+note("playground.storage", `offline queue is ${storage.name}`);
+
+// What the last close parked in localStorage because it was too large to beacon.
+drainEmergencyQueue(storage, diagnostics)
+  .then((recovered) => {
+    if (recovered > 0) {
+      note("playground.recovered", `${String(recovered)} batch(es) from the last close`);
+    }
+  })
+  .catch((error: unknown) => {
+    note("playground.recover_failed", toMessage(error));
+  });
+
+const retry = new RetryEngine(storage, transport, diagnostics, config);
+retry.start();
+
+const exitFlush = new ExitFlush({ config, diagnostics, drainPending });
+exitFlush.install();
+
+/** Park a batch the server would not take, and wake the retry engine rather than wait for its idle tick. */
+const queue = (batch: LogBatch, label: string, reason: string) => {
+  storage
+    .save(batch)
+    .then(() => storage.count())
+    .then((waiting) => {
+      note("playground.queued", `${label}: ${reason}, ${String(waiting)} batch(es) waiting`);
+      retry.nudge();
+    })
+    .catch((error: unknown) => {
+      note("playground.queue_failed", `${label}: ${toMessage(error)}`);
+    });
+};
+
+/** The live path: send now, and hand a failure to the durable queue. */
+const send = (batch: LogBatch, label: string) => {
+  const size = String(batch.records.length);
+  transport
+    .send(batch)
+    .then(() => {
+      note("playground.sent", `${label}: ${size} record(s) as ${batch.id}`);
+    })
+    .catch((error: unknown) => {
+      queue(batch, label, toMessage(error));
+    });
+};
+
+// One pending timer, cleared before anything re-arms it. A fresh timer per
+// click would coalesce nothing and multiply its own polling.
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+const dispatch = (label: string) => {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+
+  const batch = drainPending();
+  if (batch === null) {
+    return;
+  }
+
+  send(batch, label);
+};
+
+const log = (input: BuildInput, label: string) => {
+  const record = builder.build(input);
+  if (record === null) {
     note("playground.dropped", `${label} produced no record`);
     return;
   }
 
-  const batch: LogBatch = { id: newId(), records, createdAt: Date.now(), attempts: 0 };
-  transport
-    .send(batch)
-    .then(() => {
-      note("playground.sent", `${label}: ${String(records.length)} record(s) as ${batch.id}`);
-    })
-    .catch((error: unknown) => {
-      note("playground.send_failed", `${label}: ${toMessage(error)}`);
-    });
-};
+  pending.push(record);
 
-const build = (input: BuildInput): LogRecord[] => {
-  const record = builder.build(input);
-  return record === null ? [] : [record];
-};
+  // A full batch goes now; a partial one waits for the interval. Both rules are
+  // the pipeline's, spelled here by hand.
+  if (pending.length >= config.streams.logs.batchSize) {
+    dispatch(label);
+    return;
+  }
 
-const log = (input: BuildInput, label: string) => {
-  post(build(input), label);
+  // Armed only when nothing is pending. Re-arming on every record would push a
+  // busy buffer's flush out indefinitely.
+  flushTimer ??= setTimeout(() => {
+    flushTimer = null;
+    dispatch("flush");
+  }, config.streams.logs.flushIntervalMs);
 };
 
 // A journey seeded into this document's URL is adopted before the first record
@@ -227,23 +314,37 @@ on("circular", () => {
 });
 
 on("burst", () => {
-  // One batch of 250 rather than 250 requests. Coalescing them on a timer is
-  // the pipeline's job, and the durable queue is what survives a server that
-  // is refusing writes.
-  const records: LogRecord[] = [];
+  // Crosses the batch size several times, so this is a handful of requests
+  // rather than 250, and the tail waits for the interval like any other record.
   for (let i = 0; i < BURST_SIZE; i++) {
-    records.push(
-      ...build({
+    log(
+      {
         level: "DEBUG",
         type: "event",
         body: `burst ${String(i)}`,
         namespace: "playground",
         payload: { i },
-      }),
+      },
+      "burst",
     );
   }
+});
 
-  post(records, "burst");
+on("flush", () => {
+  dispatch("manual flush");
+});
+on("queue", () => {
+  storage
+    .count()
+    .then((waiting) => {
+      note(
+        "playground.queue",
+        `${String(pending.length)} buffered, ${String(waiting)} batch(es) in ${storage.name}`,
+      );
+    })
+    .catch((error: unknown) => {
+      note("playground.queue_failed", toMessage(error));
+    });
 });
 
 // Drives the mock server's control plane end to end. This is how you make the

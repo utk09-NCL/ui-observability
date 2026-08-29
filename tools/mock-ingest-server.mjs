@@ -29,6 +29,10 @@ function cors(req, res) {
     "Access-Control-Allow-Headers",
     "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt",
   );
+  // Without this the browser hides Retry-After from the client on every
+  // cross-origin response, so a 429 or 503 arrives with no delay attached and
+  // the client backs off on its own schedule instead of the server's.
+  res.setHeader("Access-Control-Expose-Headers", "retry-after");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Max-Age", "86400");
 }

@@ -372,6 +372,32 @@ export const HTTP_SERVICE_UNAVAILABLE = 503;
 export const MILLIS_PER_SECOND = 1000;
 
 // ----------------------------------
+// Exit flush
+// ----------------------------------
+
+/**
+ * Budget for one exit payload. `sendBeacon` and `fetch(keepalive)` draw on one
+ * 64 KiB pool shared by every in-flight request, and a payload over it is
+ * dropped silently rather than refused. Anything larger goes to the emergency
+ * queue instead.
+ */
+export const BEACON_LIMIT_BYTES = 60_000;
+
+/**
+ * Content type of an exit payload. CORS-safelisted, so the request needs no
+ * preflight; a preflight started while a document unloads frequently never
+ * completes and the beacon is lost with no error anywhere. The server parses
+ * the body as JSON regardless of this.
+ */
+export const CONTENT_TYPE_TEXT_PLAIN = "text/plain;charset=UTF-8";
+
+/** Carries the batch id on the exit path, where `sendBeacon` cannot set headers. */
+export const QUERY_PARAM_BATCH_ID = "uiobs_batch_id";
+
+/** Names what triggered an exit flush. Read by humans, never by the retry path. */
+export const QUERY_PARAM_EXIT_REASON = "uiobs_exit";
+
+// ----------------------------------
 // Storage
 // ----------------------------------
 
