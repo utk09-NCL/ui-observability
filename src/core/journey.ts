@@ -38,6 +38,7 @@ import {
 } from "../constants";
 import type { JourneyOptions } from "../models/config";
 import { newId } from "../utils/identity";
+import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
 /**
@@ -87,24 +88,6 @@ interface FinLike {
 
 /** The global object with the OpenFin runtime's one addition, widened once for this module. */
 type OpenFinGlobal = typeof globalThis & { fin?: FinLike };
-
-/**
- * A timer handle as the two host families actually hand one back: a number in a
- * browser, an object in Node.
- */
-type TimerHandle = number | { unref?: () => void };
-
-/**
- * Stop a pending expiry timer from holding a Node process open. The timer is
- * scheduled up to `maxAgeMs` out, half an hour by default, and under SSR or a
- * test runner it alone keeps the process alive. A browser's numeric handle has
- * no `unref` and needs none.
- */
-function unrefTimer(timer: TimerHandle): void {
-  if (typeof timer !== "number") {
-    timer.unref?.();
-  }
-}
 
 /**
  * One string field of a value that is not trusted to have it. `Reflect.get`

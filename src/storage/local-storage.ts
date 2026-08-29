@@ -16,6 +16,7 @@ import {
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
+import { keysWithPrefix } from "./keys";
 
 /**
  * The key carries the creation time, and it has to.
@@ -248,19 +249,6 @@ export class LocalStorageStorage implements StorageAdapter {
 
   /** Every batch key, oldest first. The key embeds a fixed-width `createdAt`, so sorting is chronological. */
   private keys(): string[] {
-    const out: string[] = [];
-
-    this.diagnostics.guard("storage.unavailable", "enumerating localStorage", () => {
-      for (let i = 0; i < localStorage.length; i++) {
-        // Stringified rather than null-checked: an index below `length` always
-        // names a key, so the null branch is one nothing can take.
-        const key = String(localStorage.key(i));
-        if (key.startsWith(BATCH_STORAGE_KEY_PREFIX)) {
-          out.push(key);
-        }
-      }
-    });
-
-    return out.sort();
+    return keysWithPrefix(BATCH_STORAGE_KEY_PREFIX, this.diagnostics);
   }
 }

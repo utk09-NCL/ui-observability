@@ -384,6 +384,18 @@ export const BATCH_STORAGE_KEY_PREFIX = "ui-observability.batch.";
  */
 export const BATCH_KEY_TIME_WIDTH = 14;
 
+/**
+ * Key prefix for a batch parked by the exit flush, when it was too large to
+ * beacon and the document was already closing.
+ */
+export const EMERGENCY_STORAGE_KEY_PREFIX = "ui-observability.emergency.";
+
+/**
+ * How many exit batches may wait at once. A crash loop closes and reopens the
+ * same document forever, and without a cap it fills the origin's quota.
+ */
+export const EMERGENCY_MAX_ENTRIES = 20;
+
 /** Written and deleted to find out whether localStorage accepts writes at all. */
 export const STORAGE_PROBE_KEY = "ui-observability.probe";
 
@@ -407,6 +419,28 @@ export const STORAGE_NAME_MEMORY = "memory";
 
 /** Adapter name for the store that keeps nothing, and the strategy that selects it. */
 export const STORAGE_NAME_NONE = "none";
+
+// ----------------------------------
+// Retry
+// ----------------------------------
+
+/**
+ * The origin-wide lock one drain runs under. Every context on the origin has to
+ * spell it the same way or the lock guards nothing.
+ */
+export const DRAIN_LOCK_NAME = "ui-observability.drain";
+
+/**
+ * The lock the startup recovery runs under. Separate from the drain: after a
+ * crash five windows recover at once, and they would each import the same keys.
+ */
+export const EMERGENCY_LOCK_NAME = "ui-observability.emergency";
+
+/**
+ * Stored batches one drain tick sends. A full tick comes straight back for
+ * more, so this bounds one pass rather than the queue.
+ */
+export const BATCHES_PER_DRAIN = 20;
 
 // ----------------------------------
 // Journey
