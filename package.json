@@ -24,7 +24,10 @@
   },
   "workspaces": [
     "playground/react",
-    "playground/angular"
+    "playground/angular",
+    "playground/microfrontend/host",
+    "playground/microfrontend/remote-blotter",
+    "playground/microfrontend/remote-ticket"
   ],
   "scripts": {
     "dev": "concurrently -k \"npm:dev:*\"",
@@ -33,6 +36,7 @@
     "dev:cross-origin": "vite --config vite.cross-origin.config.ts",
     "example:react": "npm run dev --workspace @example/react",
     "example:angular": "npm run dev --workspace @example/angular",
+    "example:microfrontend": "concurrently -k \"npm run dev --workspace @example/mf-blotter\" \"npm run dev --workspace @example/mf-ticket\" \"npm run dev --workspace @example/mf-host\"",
     "build": "rimraf dist && tsc --project tsconfig.build.json && vite build",
     "build:watch": "vite build --watch",
     "lint": "eslint .",
