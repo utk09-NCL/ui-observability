@@ -1,11 +1,8 @@
 // src/transport/retry-engine.ts
 //
-// Redelivery of stored batches. One timer, never a chain: every scheduling path
-// goes through `schedule()`, which clears the pending handle first. A fresh
-// timer per `online` event multiplies its own polling until the tab crawls.
-//
-// Classification belongs to the transport. What happens to the batch belongs
-// here.
+// Scheduled background redelivery of stored log batches using jittered exponential
+// backoff. One timer, never a chain. Every scheduling path clears the pending
+// timer first.
 
 import { BATCHES_PER_DRAIN, DRAIN_LOCK_NAME } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -17,32 +14,32 @@ import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
 import type { HttpTransport } from "./http-transport";
 
-/** Sends what storage is holding, on a timer, until the queue is empty. */
+/** Manages timed redelivery of persisted offline batches with backoff, lock coordination, and batch splitting. */
 export class RetryEngine {
-  /** The one pending timer. Null when none is armed. */
+  /** Active retry timer handle or null if unreserved. */
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Consecutive failed attempts. The exponent in the backoff. */
+  /** Consecutive failed delivery attempts for exponential backoff calculation. */
   private attempt = 0;
 
-  /** True while a drain is in flight, so a timer that fires meanwhile does nothing. */
+  /** Indicates whether a storage drain operation is actively executing. */
   private draining = false;
 
-  /** True between `stop()` and the next `start()`. Nothing schedules while set. */
+  /** Indicates whether the engine is stopped. */
   private stopped = false;
 
-  /** Back online: drop the accumulated backoff and drain now. */
-  private readonly onOnline = () => {
+  /** Online event listener resetting attempts and scheduling immediate drain. */
+  private readonly onOnline = (): void => {
     this.attempt = 0;
     this.schedule(0);
   };
 
   /**
-   * @param storage Where undelivered batches wait.
-   * @param transport How one is sent.
-   * @param diagnostics Where a dead-lettered batch and a broken drain are reported.
-   * @param config The live config object, read through on every use.
-   * @param batchesPerDrain Stored batches one tick sends.
+   * @param storage Storage adapter holding undelivered batches.
+   * @param transport HTTP transport for batch delivery.
+   * @param diagnostics Diagnostics reporter.
+   * @param config Active configuration instance.
+   * @param batchesPerDrain Maximum batches processed per drain tick.
    */
   constructor(
     private readonly storage: StorageAdapter,
@@ -52,12 +49,10 @@ export class RetryEngine {
     private readonly batchesPerDrain = BATCHES_PER_DRAIN,
   ) {}
 
-  /** Arm the idle timer and start listening for the connection coming back. */
+  /** Starts the retry engine, listens for online events, and arms the initial timer. */
   start(): void {
     this.stopped = false;
 
-    // Undeclared outside a browser and a worker, so `typeof` rather than a
-    // property read.
     if (typeof addEventListener !== "undefined") {
       addEventListener("online", this.onOnline);
     }
@@ -65,14 +60,14 @@ export class RetryEngine {
     this.schedule(this.config.retry.idleDelayMs);
   }
 
-  /** Called the moment a batch is stored, so recovery is not left to the idle timer. */
+  /** Triggers an accelerated retry schedule when a new batch is stored offline. */
   nudge(): void {
     if (!this.draining) {
       this.schedule(this.config.retry.baseDelayMs);
     }
   }
 
-  /** Stop draining and release the timer. `start()` resumes. */
+  /** Halts retry execution, removes listeners, and clears pending timers. */
   stop(): void {
     this.stopped = true;
 
@@ -84,9 +79,8 @@ export class RetryEngine {
   }
 
   /**
-   * Replace the pending timer with one firing in `delayMs`.
-   *
-   * @param delayMs How long to wait. Zero means the next macrotask.
+   * Clears existing timers and schedules a new drain execution after a delay.
+   * @param delayMs Delay duration in milliseconds.
    */
   private schedule(delayMs: number): void {
     if (this.stopped) {
@@ -103,7 +97,7 @@ export class RetryEngine {
     unrefTimer(timer);
   }
 
-  /** Drop the pending timer. Zero is a legal handle, so this tests for null. */
+  /** Clears the pending timer handle if active. */
   private clearTimer(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
@@ -112,8 +106,9 @@ export class RetryEngine {
   }
 
   /**
-   * The delay before the next attempt. Full jitter, not a fixed offset added to
-   * a delay: tabs that reconnect together would otherwise stampede the endpoint.
+   * Computes jittered exponential backoff delay based on consecutive failures. Full
+   * jitter, not a fixed offset. Tabs reconnecting together stampede otherwise.
+   * @returns Backoff duration in milliseconds.
    */
   private backoffMs(): number {
     const exponential = Math.min(
@@ -124,7 +119,7 @@ export class RetryEngine {
     return Math.random() * exponential;
   }
 
-  /** One tick: take the origin-wide lock, drain under it, and make sure a next tick exists. */
+  /** Executes a drain operation protected by the origin-wide Web Lock. */
   private async drain(): Promise<void> {
     if (this.draining) {
       return;
@@ -132,12 +127,10 @@ export class RetryEngine {
     this.draining = true;
 
     try {
-      // Origin-wide, so five open windows do not each send the same stored
-      // batches. A window already draining hands back a null grant.
       const ran = await withDrainLock(DRAIN_LOCK_NAME, this.diagnostics, () => this.drainLocked());
 
-      // `undefined` means the lock was held elsewhere and nothing ran. Without
-      // the reschedule, losing one race retires this window for good.
+      // undefined means the lock was held elsewhere. Without the reschedule, one
+      // lost race retires this window.
       if (ran !== true) {
         this.schedule(this.config.retry.idleDelayMs);
       }
@@ -147,8 +140,9 @@ export class RetryEngine {
   }
 
   /**
-   * Send what is waiting, holding the lock. Always arms the next tick before it
-   * returns, and always resolves: a throw here would leave the engine idle.
+   * Processes batches while holding the Web Lock and schedules subsequent ticks.
+   * Always resolves. A throw leaves the engine idle with no timer armed.
+   * @returns Promise resolving to true on completion.
    */
   private async drainLocked(): Promise<true> {
     try {
@@ -160,8 +154,6 @@ export class RetryEngine {
 
       const batches = await this.storage.take(this.batchesPerDrain);
 
-      // The attempt counter stays where it is: an idle app would otherwise
-      // climb to the maximum backoff and stay there.
       if (batches.length === 0) {
         this.schedule(this.config.retry.idleDelayMs);
         return true;
@@ -178,7 +170,6 @@ export class RetryEngine {
         }
       }
 
-      // A full tick means there may be more waiting.
       this.schedule(batches.length === this.batchesPerDrain ? 0 : this.config.retry.idleDelayMs);
       return true;
     } catch (error) {
@@ -190,13 +181,11 @@ export class RetryEngine {
   }
 
   /**
-   * Deliver one batch and dispose of it.
-   *
-   * @returns True to carry on with the next batch. False to stop the loop, with
-   * the timer for the next attempt already armed.
+   * Attempts delivery of a single batch, removing it on success or handling errors.
+   * @param batch Log batch to deliver.
+   * @returns True to continue processing next batch; false to halt current drain.
    */
   private async deliver(batch: LogBatch): Promise<boolean> {
-    // A batch retried forever blocks every batch behind it.
     if (batch.attempts >= this.config.storage.maxAttempts) {
       this.diagnostics.report(
         "storage.dead_lettered",
@@ -213,7 +202,6 @@ export class RetryEngine {
       this.attempt = 0;
       return true;
     } catch (error) {
-      // Anything the transport did not classify is treated as transient.
       const failure = error instanceof TransportError ? error : undefined;
 
       if (failure?.kind === "permanent") {
@@ -226,7 +214,6 @@ export class RetryEngine {
         return true;
       }
 
-      // Nothing was tried, so nothing is counted against the batch.
       if (failure?.kind === "offline") {
         this.schedule(this.config.retry.idleDelayMs);
         return false;
@@ -240,26 +227,22 @@ export class RetryEngine {
   }
 
   /**
-   * Replace an oversized batch with two stored halves.
-   *
-   * Split here rather than in the transport: each half gets its own id and its
-   * own delivery record. Splitting inside one send redelivers the half that
-   * succeeded under an id the server has never seen.
-   *
-   * @param batch The batch the server rejected.
-   * @param serverMaxBytes The limit the server named, where it named one.
+   * Splits an oversized batch into two smaller stored batches after a 413 rejection.
+   * @param batch Rejected log batch.
+   * @param serverMaxBytes Optional byte limit reported by the server.
    */
   private async splitStored(batch: LogBatch, serverMaxBytes: number | undefined): Promise<void> {
     const halves = splitBatch(batch);
     await this.storage.remove(batch.id);
 
-    // One record the server will never accept. Retrying it forever would block
-    // every batch behind it.
     if (!halves) {
       this.diagnostics.report(
         "transport.dropped_permanent",
         "a single record exceeds the server limit and was dropped",
-        { batchId: batch.id, bodies: batch.records.map((record) => record.body) },
+        {
+          batchId: batch.id,
+          bodies: batch.records.map((record) => record.body),
+        },
       );
       return;
     }

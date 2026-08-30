@@ -1,16 +1,11 @@
 // src/core/config.ts
 //
-// Turns whatever a consumer passed into something the rest of the library can
-// read without checking. Two rules, each of which fails silently when broken:
-//
-//   1. A reconfigure merges onto the config in force, never onto the defaults.
-//      Anything else turns a one-key change into a full reset.
-//   2. The resolved config object is mutated, never replaced. That is what
-//      `applyResolvedConfig` is for.
-//
-// Nothing here throws into the caller. Consumers write plain JavaScript too, so
-// a field typed as a number can hold anything at runtime. Bad values report to
-// diagnostics and fall back to a default.
+// Resolves partial consumer options into validated configuration objects and updates live instances.
+// Two rules, both failing silently when broken:
+//   1. A reconfigure merges onto the config in force, not onto the defaults.
+//   2. The resolved object is mutated, never replaced. Subsystems hold the
+//      reference from construction.
+// Nothing here throws into the caller.
 
 import {
   CONFIG_SECTIONS,
@@ -29,7 +24,11 @@ import { ecsSerializer } from "../transport/serializers/ecs";
 import { otlpSerializer } from "../transport/serializers/otlp";
 import type { Diagnostics } from "./diagnostics";
 
-/** Whether a value a consumer passed can act as a serializer. */
+/**
+ * Type guard verifying if an object implements the LogSerializer interface.
+ * @param value Value to check.
+ * @returns True if value implements serialize.
+ */
 function isSerializer(value: unknown): value is LogSerializer {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -39,11 +38,11 @@ function isSerializer(value: unknown): value is LogSerializer {
 }
 
 /**
- * The serializer a consumer named, the one already in force, or OTLP.
- *
- * `requested` is read as `unknown` for the same reason the sampling rate is:
- * the declared type says a name or an implementation, and a JavaScript consumer
- * can pass neither.
+ * Resolves serializer selection to a valid LogSerializer instance.
+ * @param requested Serializer name or custom serializer implementation.
+ * @param previous Previously resolved serializer instance.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Resolved LogSerializer instance.
  */
 function resolveSerializer(
   requested: unknown,
@@ -71,15 +70,11 @@ function resolveSerializer(
 }
 
 /**
- * Resolve a partial config into a fully populated one, reporting anything
- * suspicious.
- *
- * `previous` is the config in force. Merging onto it is what makes
- * `configure({ enabled: false })` a kill switch rather than a reset that drops
- * the endpoint, the service name and every capture setting.
- *
- * Resolves only, and announces nothing: whether the result is adopted is known
- * to the caller that swaps the live config in, which reports it there.
+ * Resolves partial configuration inputs into a validated ResolvedConfig object.
+ * @param input Partial consumer configuration options.
+ * @param diagnostics Diagnostics reporter.
+ * @param previous Active configuration instance for incremental reconfigurations.
+ * @returns Fully populated and validated configuration object.
  */
 export function resolveConfig(
   input: Partial<ObservabilityConfig>,
@@ -91,8 +86,7 @@ export function resolveConfig(
   const merged: ResolvedConfig = {
     ...base,
     ...input,
-    // After the spreads, so the resolved implementation replaces the name a
-    // consumer passed rather than sitting beside it.
+    // Serializer instance overrides string identifier after object merge.
     serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
     streams: {
       logs: { ...base.streams.logs, ...input.streams?.logs },
@@ -100,8 +94,6 @@ export function resolveConfig(
     },
     storage: { ...base.storage, ...input.storage },
     retry: { ...base.retry, ...input.retry },
-    // `rates` gets a fresh object of its own because the clamping below mutates
-    // it, and mutating the caller's object is a side effect nobody asked for.
     sampling: {
       ...base.sampling,
       ...input.sampling,
@@ -140,9 +132,6 @@ export function resolveConfig(
     merged.serviceName = UNKNOWN_SERVICE_NAME;
   }
 
-  // Read as `unknown` on purpose. The declared type says number, but a
-  // JavaScript consumer can pass a string, and this is the only place that
-  // notices. Without the widening the guard below is dead code.
   const rate: unknown = merged.sampling.defaultRate;
   if (typeof rate !== "number" || rate < SAMPLING_RATE_MIN || rate > SAMPLING_RATE_MAX) {
     diagnostics.report("config.invalid", `sampling.defaultRate must be 0..1, got ${String(rate)}`);
@@ -160,18 +149,15 @@ export function resolveConfig(
     }
   }
 
-  // The endpoint must never be logged by the network capture, or one failed
-  // POST produces a log, which produces a POST, which produces a log. On a
-  // reconfigure the OLD endpoint has to come back out as well, or changing the
-  // endpoint leaves a stale entry behind and the live one is not covered.
+  // Replaces previous endpoint in ignore list to prevent self-logging loops. One
+  // failed POST would otherwise log another, forever.
   merged.capture.ignoreUrls = merged.capture.ignoreUrls.filter((url) => url !== previous?.endpoint);
   if (merged.endpoint && !merged.capture.ignoreUrls.includes(merged.endpoint)) {
     merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, merged.endpoint];
   }
 
-  // Catches a typo that is otherwise undebuggable: `remoteUrl` instead of
-  // `endpoint` type-checks, because the argument is a `Partial`, and nothing
-  // is ever sent.
+  // Validates top-level keys against known schema to detect configuration typos.
+  // remoteUrl instead of endpoint is otherwise accepted in silence.
   const known = new Set<string>([...Object.keys(DEFAULT_CONFIG), ...UNDEFAULTED_CONFIG_KEYS]);
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
@@ -183,30 +169,22 @@ export function resolveConfig(
 }
 
 /**
- * Copy `next` into the live config object in place, preserving the identity of
- * that object and of every section inside it.
- *
- * Half the library captures `config`, or `config.capture`, once at construction
- * and never looks it up again. Assigning a new object would leave those
- * components reading settings the consumer believes they changed, and a
- * debugger shows the runtime holding the new values while a component beside it
- * uses the old ones.
- *
- * Scalars are copied with `Object.assign` and a computed key: `ResolvedConfig`
- * is an interface, so it has no implicit index signature and neither direction
- * of a `target as Record<string, unknown>` assertion is legal under `strict`.
+ * Mutates an existing configuration object in place to propagate updates to referenced sections.
+ * @param target Active configuration object to mutate.
+ * @param next Source configuration object containing updated values.
  */
 export function applyResolvedConfig(target: ResolvedConfig, next: ResolvedConfig): void {
   for (const key of Object.keys(next) as (keyof ResolvedConfig)[]) {
-    // `as`, not `satisfies`: the tuple has to widen so `includes` accepts any
-    // key. `satisfies` leaves it narrow and every non-section key fails to compile.
+    // Cast widens tuple so includes accepts arbitrary string keys. satisfies leaves
+    // it narrow and every non-section key fails to compile.
     if ((CONFIG_SECTIONS as readonly string[]).includes(key)) {
       continue;
     }
     Object.assign(target, { [key]: next[key] });
   }
-  // Sections are merged into the objects that are already there, so anything
-  // holding a reference to one of them sees the new values.
+
+  // Merges section objects in place to preserve object references. A new object
+  // leaves subsystems on the section captured at construction.
   for (const section of CONFIG_SECTIONS) {
     Object.assign(target[section] as object, next[section] as object);
   }

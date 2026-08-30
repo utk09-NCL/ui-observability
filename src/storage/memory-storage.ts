@@ -1,58 +1,69 @@
 // src/storage/memory-storage.ts
 //
-// The last resort, and the reference implementation. Everything the other
-// adapters do, without a store that can refuse a write.
-//
-// A document that reloads loses what is here, which is the whole difference
-// between this and the other two. It is still better than dropping records the
-// moment a send fails.
+// In-memory fallback storage adapter for volatile batch retention during offline
+// periods. A reload loses everything here. Last resort adapter.
 
 import { STORAGE_NAME_MEMORY } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 
-/** How many records a set of batches holds, which is the size of the hole they leave. */
+/**
+ * Sums the total count of records contained across an array of batches.
+ * @param batches Batches to measure.
+ * @returns Total record count.
+ */
 function countRecords(batches: LogBatch[]): number {
   return batches.reduce((total, batch) => total + batch.records.length, 0);
 }
 
-/** Batches held in an array. Survives nothing, refuses nothing. */
+/** In-memory StorageAdapter implementation retaining batches in volatile memory. */
 export class MemoryStorage implements StorageAdapter {
-  /** The adapter name, which is also the strategy that selects it. */
+  /** Storage adapter strategy name. */
   readonly name = STORAGE_NAME_MEMORY;
 
-  /** Oldest first, which is the order `take` is required to return. */
+  /** Internal array holding batches in chronological FIFO order. */
   private batches: LogBatch[] = [];
 
   /**
-   * @param limits Age and count ceilings.
-   * @param onGap Told when a prune drops records.
+   * @param limits Storage capacity and retention thresholds.
+   * @param onGap Optional callback for dropped record reporting.
    */
   constructor(
     private readonly limits: StorageLimits,
     private readonly onGap?: GapReporter,
   ) {}
 
-  /** @param batch The batch to keep. Pruning follows, so the ceilings hold after every save. */
+  /**
+   * Appends a batch to memory storage and applies retention pruning.
+   * @param batch Batch to store.
+   */
   async save(batch: LogBatch): Promise<void> {
     this.batches.push(batch);
     await this.prune();
   }
 
-  /** @param limit How many to hand back. */
+  /**
+   * Retrieves up to limit batches in chronological order without deletion.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Promise resolving to an array of batches.
+   */
   take(limit: number): Promise<LogBatch[]> {
     return Promise.resolve(this.batches.slice(0, limit));
   }
 
-  /** @param id The batch that was delivered, or given up on. */
+  /**
+   * Deletes a batch from memory storage by batch ID.
+   * @param id Batch identifier.
+   */
   remove(id: string): Promise<void> {
     this.batches = this.batches.filter((batch) => batch.id !== id);
     return Promise.resolve();
   }
 
   /**
-   * @param id The batch that was tried.
-   * @param attempts Its new attempt count.
+   * Updates delivery attempt count for a stored batch.
+   * @param id Batch identifier.
+   * @param attempts New absolute attempt count.
    */
   bumpAttempts(id: string, attempts: number): Promise<void> {
     const found = this.batches.find((batch) => batch.id === id);
@@ -62,7 +73,10 @@ export class MemoryStorage implements StorageAdapter {
     return Promise.resolve();
   }
 
-  /** Drop what is too old, then what is over capacity. Oldest first in both passes. */
+  /**
+   * Removes expired batches and evicts oldest entries exceeding capacity limits.
+   * @returns Promise resolving to prune summary metrics.
+   */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
@@ -88,18 +102,21 @@ export class MemoryStorage implements StorageAdapter {
     return Promise.resolve(result);
   }
 
-  /** How many batches are waiting. */
+  /**
+   * Returns total count of stored batches.
+   * @returns Promise resolving to batch count.
+   */
   count(): Promise<number> {
     return Promise.resolve(this.batches.length);
   }
 
-  /** Forget every batch. */
+  /** Clears all stored batches from memory. */
   clear(): Promise<void> {
     this.batches = [];
     return Promise.resolve();
   }
 
-  /** Nothing to release, so this is `clear` under the name the interface uses. */
+  /** Clears stored batches on storage teardown. */
   close(): Promise<void> {
     this.batches = [];
     return Promise.resolve();

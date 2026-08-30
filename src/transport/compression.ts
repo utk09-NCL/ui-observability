@@ -1,21 +1,16 @@
 // src/transport/compression.ts
 //
-// gzip through the platform's own CompressionStream, which older Safari and
-// some webviews do not have.
+// Compresses payloads using the native CompressionStream API when available.
+// Returns null rather than raw text. A non-gzip body under Content-Encoding: gzip
+// is a 400 the server cannot explain.
 
 import { ENCODING_GZIP } from "../constants";
 
 /**
- * The gzipped bytes, or null when this runtime has no CompressionStream.
- *
- * Null means the caller sends the plain body. A `Content-Encoding: gzip` on a
- * body that is not gzip is a 400 the server cannot explain.
- *
- * The buffer is spelled out as non-shared. A bare `Uint8Array` is backed by
- * `ArrayBufferLike`, which covers `SharedArrayBuffer`, and `fetch` takes
- * neither that nor a body typed as possibly holding one.
- *
- * @param text The serialized batch.
+ * Compresses a string into a gzip-encoded byte array using CompressionStream.
+ * Returns non-shared ArrayBuffer backed Uint8Array compatible with fetch BodyInit.
+ * @param text Raw serialized payload to compress.
+ * @returns Promise resolving to compressed Uint8Array, or null if CompressionStream is unsupported.
  */
 export async function gzip(text: string): Promise<Uint8Array<ArrayBuffer> | null> {
   const CS = (globalThis as { CompressionStream?: typeof CompressionStream }).CompressionStream;

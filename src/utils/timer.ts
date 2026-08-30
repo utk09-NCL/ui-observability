@@ -59,10 +59,6 @@ function fail(
 
 /**
  * Executes and measures the duration of a synchronous function.
- *
- * Takes the narrow `CaptureLogger` rather than the runtime class: importing the
- * class here and this module there is a circular import, which works only until
- * a bundler evaluates the two in the other order.
  * @param logger Target telemetry logger.
  * @param label Metric name prefix.
  * @param fn Synchronous function to execute.

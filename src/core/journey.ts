@@ -1,28 +1,8 @@
 // src/core/journey.ts
 //
-// A journey is one piece of work a person is doing, followed across every
-// window, view and application it touches. No other identifier spans that: a
-// session ends after an idle period, a tab id dies with its tab, a context id
-// belongs to one document.
-//
-// It exists in two forms:
-//
-//   1. The token, which rides in a query string and in an OpenFin window's
-//      customData, the two channels that can seed a document that does not
-//      exist yet. A query string has a hard length limit, is truncated by
-//      proxies and lands in access logs, so the token carries three fields
-//      only: id, name, start time. Deliberately lossy.
-//   2. The persisted journey, held whole in sessionStorage. No size pressure,
-//      so nothing is dropped. Persisting the lossy form instead would let a
-//      reload delete the parent link, and `endOnOwnerClose` with it.
-//
-// `applyRemote` never calls `onLocalChange`. Without that rule window A
-// broadcasts, B applies and re-broadcasts, A applies and re-broadcasts, and two
-// windows saturate the bus for as long as both are open.
-//
-// Nothing out of storage or a token is trusted: any code on the origin can
-// write that key, and a token comes from a URL anyone can edit. Both are
-// checked field by field.
+// Manages multi-window user journey lifecycles, token encoding, persistence, and expiration.
+// Nothing from storage or a token is trusted. Any code on the origin can write
+// either.
 
 import {
   BASE64_GROUP_CHARS,
@@ -41,59 +21,37 @@ import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
-/**
- * One journey, as every context that joins it sees it. The whole form: what is
- * persisted and what the record builder reads. A token carries a subset.
- */
+/** User journey workflow context shared across windows and applications. */
 export interface Journey {
-  /**
-   * Groups records from every window and application that joins this journey.
-   * Travels in the token.
-   */
+  /** Unique journey correlation identifier. */
   id: string;
-  /**
-   * What the consumer called it, for whoever reads the logs. Truncated inside a
-   * token and nowhere else, so the full name still reaches every record.
-   */
+  /** Human-readable journey workflow name. */
   name: string;
-  /** Epoch ms. Age is measured from here, so this is what `maxAgeMs` is compared against. */
+  /** Journey start timestamp in epoch milliseconds. */
   startedAt: number;
-  /**
-   * The journey this one branched from. Never travels in a token, since a chain
-   * of parents is the growth a query string cannot absorb; the control plane
-   * backfills it.
-   */
+  /** Optional parent journey identifier when branched from an earlier workflow. */
   parentId?: string;
-  /**
-   * The context that started the journey. `endOnOwnerClose` keys on it, so a
-   * context seeded from elsewhere leaves it empty: its closing must not end a
-   * journey it did not start.
-   */
+  /** Context identifier of the document that initiated the journey. */
   ownerContextId: string;
 }
 
-/**
- * The one OpenFin call this module makes, declared structurally because the
- * OpenFin types are not a dependency of this package. Everything is optional:
- * the Core Web adapter exposes `fin` too, with a smaller surface than the
- * desktop runtime, so the chains below are checks rather than decoration.
- */
+/** Structural interface for OpenFin window metadata. */
 interface FinLike {
-  /** This window or view. */
+  /** Target OpenFin window or view. */
   me?: {
-    /** Resolves the options the window was created with, `customData` among them. */
+    /** Resolves initial window creation options including customData. */
     getOptions?: () => Promise<{ customData?: Record<string, unknown> }>;
   };
 }
 
-/** The global object with the OpenFin runtime's one addition, widened once for this module. */
+/** Global environment extended with optional OpenFin APIs. */
 type OpenFinGlobal = typeof globalThis & { fin?: FinLike };
 
 /**
- * One string field of a value that is not trusted to have it. `Reflect.get`
- * rather than an index, since indexing asserts a shape onto the value whose
- * shape is in question. Empty counts as absent: every field read here is an
- * identifier or a display name.
+ * Safely extracts a non-empty string property from an unverified object.
+ * @param source Object to read from.
+ * @param key Property name.
+ * @returns Non-empty string value or undefined.
  */
 function readString(source: object, key: string): string | undefined {
   const value: unknown = Reflect.get(source, key);
@@ -101,9 +59,10 @@ function readString(source: object, key: string): string | undefined {
 }
 
 /**
- * The numeric half of `readString`. NaN and the infinities are rejected too:
- * the only numbers here are timestamps, and an age computed from NaN is never
- * greater than `maxAgeMs`, so such a journey would never expire.
+ * Safely extracts a finite numeric property from an unverified object.
+ * @param source Object to read from.
+ * @param key Property name.
+ * @returns Finite number value or undefined.
  */
 function readNumber(source: object, key: string): number | undefined {
   const value: unknown = Reflect.get(source, key);
@@ -111,9 +70,9 @@ function readNumber(source: object, key: string): number | undefined {
 }
 
 /**
- * A value read back out of sessionStorage, as a journey or not at all. Id, name
- * and start time are required, with nothing sensible to substitute. Owner and
- * parent are optional in the type, so a value missing them is still usable.
+ * Parses and validates raw sessionStorage data into a Journey object.
+ * @param value Unverified parsed JSON value.
+ * @returns Validated Journey instance or null.
  */
 function journeyFromStorage(value: unknown): Journey | null {
   if (typeof value !== "object" || value === null) {
@@ -135,12 +94,9 @@ function journeyFromStorage(value: unknown): Journey | null {
 }
 
 /**
- * The decoded body of a token, as a journey or not at all. The single-letter
- * keys are the token's, short for the reason it has three fields: every
- * character is spent in a query string.
- *
- * A missing start time falls back to now, costing an inaccurate age rather than
- * discarding a journey that is probably real. A missing id or name does not.
+ * Parses and validates decoded token payload into a Journey object.
+ * @param value Unverified parsed token payload.
+ * @returns Validated Journey instance or null.
  */
 function journeyFromTokenPayload(value: unknown): Journey | null {
   if (typeof value !== "object" || value === null) {
@@ -155,17 +111,15 @@ function journeyFromTokenPayload(value: unknown): Journey | null {
     id,
     name,
     startedAt: readNumber(value, "s") ?? Date.now(),
-    // Neither of these is carried in a token. The control plane fills them in
-    // if it reaches this context.
     parentId: undefined,
     ownerContextId: "",
   };
 }
 
 /**
- * A journey as a token: three fields, base64url, no padding. base64url because
- * the result goes into a query string, where `+` means a space and `/` and `=`
- * need percent-encoding, which inflates what the length cap protects.
+ * Encodes journey metadata into a compact, URL-safe base64 string.
+ * @param journey Journey instance to serialize.
+ * @returns Unpadded base64url encoded token string.
  */
 function encodeToken(journey: Journey): string {
   const json = JSON.stringify({
@@ -173,8 +127,8 @@ function encodeToken(journey: Journey): string {
     n: journey.name.slice(0, JOURNEY_TOKEN_NAME_MAX_CHARS),
     s: journey.startedAt,
   });
-  // `btoa` takes one character per byte, so the UTF-8 bytes go into a binary
-  // string first. Without it a name in any non-Latin script throws here.
+  // Binary string conversion handles multi-byte UTF-8 characters before btoa. btoa
+  // throws above U+00FF, so a name in a non-Latin script fails without it.
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   for (const byte of bytes) {
@@ -186,47 +140,35 @@ function encodeToken(journey: Journey): string {
     .replace(BASE64_PADDING_PATTERN, "");
 }
 
-/**
- * The journey this context is in, and every way it can come to be in one. One
- * instance per runtime, owning the in-memory journey, what is persisted for it
- * and the timer that ends it, so those three cannot disagree.
- */
+/** Manages journey lifecycle, cross-window adoption, storage synchronization, and expiration. */
 export class JourneyEngine {
-  /** The journey in force, or null when this context is not in one. */
+  /** Active journey context, or null if none is in progress. */
   private journey: Journey | null = null;
 
-  /**
-   * Handle of the timer that ends the current journey at `maxAgeMs`. Kept so it
-   * can be cancelled: a journey replaced before it expires must not be ended
-   * later by its predecessor's timer.
-   */
+  /** Active expiration timer handle. */
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * @param options Journey configuration thresholds.
+   * @param diagnostics Diagnostics reporter.
+   * @param contextId Unique context identifier for this document.
+   * @param onLocalChange Callback invoked when journey state changes locally.
+   */
   constructor(
-    /** The resolved journey section, by reference, so a later reconfigure reaches this instance. */
     private readonly options: JourneyOptions,
-    /** Where unreadable storage, undecodable tokens and expiries are reported. */
     private readonly diagnostics: Diagnostics,
-    /** This context's id, stamped on a journey started here so `ownerClosed` recognises its own. */
     private readonly contextId: string,
-    /**
-     * Called when this context changes the journey, so the bus can tell the
-     * others. Never called for a change that arrived from the bus.
-     */
     private readonly onLocalChange: (journey: Journey | null) => void,
   ) {}
 
-  /** The journey in force, or null. Read on every record, so it stays a field access. */
+  /** Returns the active journey instance or null. */
   current(): Journey | null {
     return this.journey;
   }
 
   /**
-   * Join the journey this context was seeded with, if any. The order matters: a
-   * URL token wins as the most recent thing that happened to this document, a
-   * persisted journey means a reload, and OpenFin's customData is read last
-   * because it is async and every browser would pay a turn of the event loop
-   * for a call that cannot succeed there.
+   * Discovers and adopts initial journey from URL query parameters, sessionStorage, or OpenFin customData.
+   * @returns Promise resolving when journey initialization completes.
    */
   async bootstrap(): Promise<void> {
     const fromUrl = this.readUrlToken();
@@ -250,13 +192,10 @@ export class JourneyEngine {
   }
 
   /**
-   * Begin a journey here, replacing whatever this context was in.
-   *
-   * @param name Shown to whoever reads the logs. Not an identifier, so it need not be unique.
-   * @param opts `parent` links the new journey to the one it replaces, so a
-   * sub-task reads as part of the task that spawned it. `id` adopts an
-   * identifier minted elsewhere, for correlating with an upstream system.
-   * @returns The journey that is now in force.
+   * Initiates a new journey, replacing any active journey and notifying connected peers.
+   * @param name Human-readable workflow name.
+   * @param opts Optional parent linkage and pre-assigned identifier.
+   * @returns Started Journey instance.
    */
   start(name: string, opts: { parent?: boolean; id?: string } = {}): Journey {
     const journey: Journey = {
@@ -271,10 +210,7 @@ export class JourneyEngine {
     return journey;
   }
 
-  /**
-   * End the journey here and tell the other contexts. Ending nothing is not an
-   * error and says nothing.
-   */
+  /** Terminates the active journey and broadcasts the change. */
   end(): void {
     if (this.journey === null) {
       return;
@@ -284,9 +220,10 @@ export class JourneyEngine {
   }
 
   /**
-   * Take the journey another context is in. Does not call `onLocalChange`,
-   * which is what stops two windows ping-ponging one change forever. A journey
+   * Applies journey updates received from external bus peers without echoing
+   * broadcasts. Echoing makes two windows ping the change back and forth. A journey
    * matching the one in force is ignored, so an echo cannot restart the timer.
+   * @param journey Updated Journey instance or null.
    */
   applyRemote(journey: Journey | null): void {
     const current = this.journey;
@@ -297,12 +234,8 @@ export class JourneyEngine {
   }
 
   /**
-   * The current journey as a token for a window being opened, or undefined when
-   * there is none.
-   *
-   * The size cap is a tripwire, not validation: three fields and a truncated
-   * name cannot reach it, so a token that does carries a caller's own id.
-   * Issuing nothing beats issuing a URL a proxy will cut in half.
+   * Serializes the active journey into a compact token for URL or intent transfer.
+   * @returns Base64url token string or undefined if no journey is active or size cap is exceeded.
    */
   getToken(): string | undefined {
     const journey = this.journey;
@@ -322,16 +255,11 @@ export class JourneyEngine {
   }
 
   /**
-   * Join the journey a token describes, unless it is too old to still be one.
-   *
-   * @param token The encoded journey, from wherever this context was seeded.
-   * @param source Where it came from, reported so a seeding channel producing
-   * junk is identifiable from the diagnostics alone.
-   * @param broadcast For a journey handed over deliberately, the desktop intent
-   * case, where the token reaches one window and the rest of the application
-   * has to learn of it. Seeding at boot does not broadcast: every window there
-   * gets its own seed, and telling the others would overwrite theirs.
-   * @returns Whether the journey was adopted.
+   * Validates and adopts a serialized journey token.
+   * @param token Base64url journey token.
+   * @param source Originating source description for diagnostics.
+   * @param broadcast Indicates whether to broadcast adoption to connected bus peers.
+   * @returns True if the token was valid, unexpired, and adopted.
    */
   adopt(token: string, source: string, broadcast = false): boolean {
     const decoded = this.decodeToken(token);
@@ -358,11 +286,8 @@ export class JourneyEngine {
   }
 
   /**
-   * End the journey when the context that started it goes away. Off by default:
-   * a trade ticket's journey ends with the ticket, a research task's outlives
-   * the window that opened it.
-   *
-   * @param ownerContextId The context that closed, as the control plane reports it.
+   * Ends the journey if the terminated context matches the journey owner and endOnOwnerClose is enabled.
+   * @param ownerContextId Context identifier of the closed window.
    */
   ownerClosed(ownerContextId: string): void {
     if (!this.options.endOnOwnerClose) {
@@ -373,20 +298,15 @@ export class JourneyEngine {
     }
   }
 
-  /**
-   * Release the expiry timer. Called on shutdown, since a pending timer
-   * outlives the runtime that scheduled it.
-   */
+  /** Clears pending expiration timers and releases resources on shutdown. */
   destroy(): void {
     this.clearTimer();
   }
 
   /**
-   * Resume the journey this context persisted before a reload.
-   *
-   * @param raw What was under the storage key. Anything on the origin can write
-   * there, so it is validated rather than believed.
-   * @returns Whether a journey was resumed.
+   * Resumes a persisted journey from raw sessionStorage data.
+   * @param raw Serialized JSON string from storage.
+   * @returns True if journey was successfully restored.
    */
   private restore(raw: string): boolean {
     const parsed = this.diagnostics.guard(
@@ -418,10 +338,11 @@ export class JourneyEngine {
   }
 
   /**
-   * A token back into a journey, or null when it was not one. Every step throws
-   * on input that is not a token, and tokens come from URLs anyone can edit, so
-   * the whole decode runs inside a guard. Junk there is a configuration problem
-   * worth reporting, not a reason to fail.
+   * Decodes a base64url token into a validated Journey object. Tokens come from URLs
+   * anyone can edit. Every step throws on non-token input, so the failure is
+   * reported, not raised.
+   * @param token Encoded token string.
+   * @returns Decoded Journey instance or null on decode error.
    */
   private decodeToken(token: string): Journey | null {
     const decoded = this.diagnostics.guard(
@@ -431,8 +352,6 @@ export class JourneyEngine {
         const standard = token
           .replace(BASE64URL_DASH_PATTERN, "+")
           .replace(BASE64URL_UNDERSCORE_PATTERN, "/");
-        // Padding was dropped to keep the token short, so it is recomputed:
-        // `atob` rejects a final group shorter than four characters.
         const missing =
           (BASE64_GROUP_CHARS - (standard.length % BASE64_GROUP_CHARS)) % BASE64_GROUP_CHARS;
         const padding = "=".repeat(missing);
@@ -444,8 +363,8 @@ export class JourneyEngine {
   }
 
   /**
-   * Put a journey in force, persist it, arm its expiry. The single path by
-   * which the journey changes, so none of the three can be updated alone.
+   * Sets the active journey, updates sessionStorage, and schedules expiration.
+   * @param journey Target Journey instance or null.
    */
   private setJourney(journey: Journey | null): void {
     this.journey = journey;
@@ -463,9 +382,6 @@ export class JourneyEngine {
       return;
     }
 
-    // Measured from the journey's start, not from now: one adopted twenty
-    // minutes into its thirty expires in ten, and one already past its age
-    // expires immediately.
     const remaining = Math.max(this.options.maxAgeMs - (Date.now() - journey.startedAt), 0);
     const timer = setTimeout(() => {
       this.diagnostics.report(
@@ -473,9 +389,6 @@ export class JourneyEngine {
         `journey "${journey.name}" hit maxAgeMs and was ended automatically`,
         { journeyId: journey.id },
       );
-      // Cleared but not announced. Every context in the journey shares its
-      // `startedAt` and reaches this moment on its own, so a broadcast per
-      // window would say what they all know.
       this.journey = null;
       this.expiryTimer = null;
       this.clearStored();
@@ -484,18 +397,14 @@ export class JourneyEngine {
     unrefTimer(timer);
   }
 
-  /** Forget the persisted journey. Storage that cannot be written is reported, never thrown. */
+  /** Removes journey data from sessionStorage. */
   private clearStored(): void {
     this.diagnostics.guard("storage.unavailable", "clearing the persisted journey", () => {
       sessionStorage.removeItem(JOURNEY_STORAGE_KEY);
     });
   }
 
-  /**
-   * Cancel the expiry timer if one is pending. Compared against null, not
-   * tested for truth: a host handing back numeric handles may hand back zero,
-   * and a truth test would leave that timer running.
-   */
+  /** Cancels any active expiration timer. */
   private clearTimer(): void {
     if (this.expiryTimer !== null) {
       clearTimeout(this.expiryTimer);
@@ -504,8 +413,8 @@ export class JourneyEngine {
   }
 
   /**
-   * The seeding token in this document's URL, if there is one. `location` is
-   * absent under SSR, and reading a URL can throw in a sandboxed frame.
+   * Extracts the journey token from the current window location search parameters.
+   * @returns Token string or null.
    */
   private readUrlToken(): string | null {
     const token = this.diagnostics.guard(
@@ -522,9 +431,8 @@ export class JourneyEngine {
   }
 
   /**
-   * The seeding token in this window's OpenFin options. A window a platform
-   * provider creates has no URL of its own to carry one, so `customData` is the
-   * seeding channel there.
+   * Reads the journey token from OpenFin window creation customData.
+   * @returns Promise resolving to token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
     const me = (globalThis as OpenFinGlobal).fin?.me;
@@ -533,8 +441,8 @@ export class JourneyEngine {
       return null;
     }
 
-    // Called through `call`: on the real runtime this method reads `this`, and
-    // a detached copy throws on invocation.
+    // Uses call to preserve target receiver context on native OpenFin methods. A
+    // detached copy throws on invocation.
     const options = await this.diagnostics.guardAsync(
       "openfin.unavailable",
       "reading fin.me.getOptions()",

@@ -1,14 +1,8 @@
 // src/transport/http-transport.ts
 //
-// One batch, one POST. This class classifies, reports and throws; it does not
-// split, store or retry. What to keep, what to halve and when to try again
-// lives with whoever holds the records: the pipeline on the live path, the
-// retry engine on the stored one.
-//
-// Cookie auth is why `credentials` defaults to "include" and why there is no
-// token cache here. A move to bearer tokens goes through the header resolver,
-// and would also need the exit flush reworked, since an unloading page cannot
-// await a token refresh.
+// Serializes, compresses, and delivers log batches over HTTP with error
+// classification. Classifies, reports and throws. What happens to a rejected batch
+// belongs to the caller that owns storage.
 
 import {
   ENCODING_GZIP,
@@ -33,14 +27,14 @@ import { estimateBytes } from "../utils/sanitize";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
 
-/** Delivers batches over HTTP. */
+/** HTTP transport delivering serialized log batches with header resolution, gzip compression, and error classification. */
 export class HttpTransport {
-  /** Epoch ms until which the server has asked to be left alone. Zero when it has not asked. */
+  /** Timestamp in epoch milliseconds until which requests are throttled. */
   private throttledUntil = 0;
 
   /**
-   * @param config The live config object, so a reconfigure reaches this instance.
-   * @param diagnostics Where a rejected batch and a broken header resolver are reported.
+   * @param config Active configuration instance.
+   * @param diagnostics Diagnostics reporter.
    */
   constructor(
     private readonly config: ResolvedConfig,
@@ -48,12 +42,9 @@ export class HttpTransport {
   ) {}
 
   /**
-   * Send one batch.
-   *
-   * @param batch The records, and the id the server deduplicates on.
-   * @throws TransportError on any failure the caller has to react to. A batch
-   * the serializer cannot encode resolves instead: it would fail identically
-   * forever, so there is nothing to store and nothing to retry.
+   * Delivers a single log batch over HTTP.
+   * @param batch Batch to send.
+   * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch): Promise<void> {
     if (!this.config.endpoint || batch.records.length === 0) {
@@ -64,17 +55,17 @@ export class HttpTransport {
   }
 
   /**
-   * How long the server has asked to be left alone, in milliseconds.
-   *
-   * The pipeline checks this before dispatching, so a 429 slows the live path
-   * too. Without it the retry engine backs off politely while the pipeline
-   * posts a fresh batch every flush interval into a server asking it to stop.
+   * Returns the remaining throttle backoff duration in milliseconds.
+   * @returns Milliseconds remaining in throttle window, or 0 if unthrottled.
    */
   throttledForMs(): number {
     return Math.max(0, this.throttledUntil - Date.now());
   }
 
-  /** Encode, label, dispatch, and turn a failed response into a classified error. */
+  /**
+   * Serializes, encodes, and dispatches a batch, throwing a classified TransportError on failure.
+   * @param batch Batch to deliver.
+   */
   private async post(batch: LogBatch): Promise<void> {
     const { config } = this;
 
@@ -91,11 +82,7 @@ export class HttpTransport {
       return;
     }
 
-    // A `Headers` rather than a plain object, because header names are
-    // case-insensitive: a consumer returning `x-uiobs-batch-id` keeps its own
-    // key beside ours in an object literal, and fetch folds the two into
-    // "spoofed, 0f1c...". The server then deduplicates on a value no client
-    // sent. `Headers.set` normalises the name, so ours really does win.
+    // Headers normalizes header names case-insensitively.
     const headers = new Headers(await this.resolveHeaders());
     headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
     headers.set(HEADER_BATCH_ID, batch.id);
@@ -116,11 +103,9 @@ export class HttpTransport {
   }
 
   /**
-   * The body to send: gzipped bytes past the threshold, the text otherwise.
-   *
-   * A gzip that fails costs a bigger request, not a lost batch, so it reports
-   * and falls back. The return type is what tells the caller whether to label
-   * the request.
+   * Compresses the serialized payload if gzip compression is enabled and size exceeds threshold.
+   * @param text Serialized payload string.
+   * @returns Promise resolving to original string or compressed byte array.
    */
   private async encodeBody(text: string): Promise<string | Uint8Array<ArrayBuffer>> {
     const { config } = this;
@@ -141,10 +126,11 @@ export class HttpTransport {
   }
 
   /**
-   * One POST, with the timeout that stops a hung request holding a batch open.
-   *
-   * @throws TransportError when the request never produced a response. Not
-   * reported here: the caller decides what a transient failure costs.
+   * Executes the HTTP POST request with timeout and network error mapping.
+   * @param headers HTTP request headers.
+   * @param body Request body string or byte array.
+   * @returns Promise resolving to the HTTP Response.
+   * @throws TransportError on network failure, timeout, or offline status.
    */
   private async dispatch(
     headers: Headers,
@@ -163,7 +149,6 @@ export class HttpTransport {
         body,
         credentials: config.credentials,
         signal: controller.signal,
-        // A log request must never keep a page or a service worker alive.
         cache: "no-store",
       });
     } catch {
@@ -171,8 +156,6 @@ export class HttpTransport {
         const waited = String(config.requestTimeoutMs);
         throw new TransportError("timeout", `request exceeded ${waited}ms`);
       }
-      // Read off globalThis: `navigator` is absent in some hosts, and the DOM
-      // types declare it as always present.
       const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
       throw new TransportError(online === false ? "offline" : "transient", "network error");
     } finally {
@@ -181,17 +164,16 @@ export class HttpTransport {
   }
 
   /**
-   * A failed response as the error the caller reacts to.
-   *
-   * @param response The server's answer, already known not to be ok.
-   * @param batchId Reported with a batch that is being dropped.
+   * Classifies an HTTP error response into a structured TransportError.
+   * @param response Unsuccessful HTTP response.
+   * @param batchId Identifier of the rejected batch.
+   * @returns Classified TransportError instance.
    */
   private async classify(response: Response, batchId: string): Promise<TransportError> {
     const status = response.status;
     const retryAfterMs = parseRetryAfter(response.headers.get(HEADER_RETRY_AFTER));
 
     if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) {
-      // The likeliest cause by far, and impossible to see from a bare 401.
       const advice =
         "In a cross-origin iframe the session cookie is a third-party cookie and is very " +
         "likely blocked. Forward to the platform document instead of promoting to sender, " +
@@ -202,6 +184,8 @@ export class HttpTransport {
         `server returned ${String(status)}. ${advice}`,
         { status, endpoint: this.config.endpoint },
       );
+      // Permanent. Retrying a rejected credential forever blocks every batch behind
+      // it.
       return new TransportError("permanent", `rejected with ${String(status)}`, status);
     }
 
@@ -215,7 +199,9 @@ export class HttpTransport {
       this.throttledUntil = Date.now() + (retryAfterMs ?? this.config.retry.baseDelayMs);
 
       if (throttled) {
-        this.diagnostics.report("transport.throttled", "server throttled us", { retryAfterMs });
+        this.diagnostics.report("transport.throttled", "server throttled us", {
+          retryAfterMs,
+        });
       }
 
       return new TransportError(
@@ -230,8 +216,6 @@ export class HttpTransport {
       return new TransportError("transient", `server error ${String(status)}`, status);
     }
 
-    // Any other 4xx will never succeed. Retrying it forever is how one bad
-    // batch blocks every batch behind it.
     this.diagnostics.report(
       "transport.dropped_permanent",
       `server rejected the batch with ${String(status)}, dropping it`,
@@ -240,15 +224,24 @@ export class HttpTransport {
     return new TransportError("permanent", `rejected with ${String(status)}`, status);
   }
 
-  /** The limit a 413 body may carry. Optional per the server contract, so junk there is not an error. */
+  /**
+   * Extracts optional maxBytes payload limit from a 413 response body.
+   * @param response HTTP 413 Response instance.
+   * @returns Promise resolving to maximum byte limit or undefined.
+   */
   private async readMaxBytes(response: Response): Promise<number | undefined> {
     return this.diagnostics.guardAsync("transport.http_error", "reading the 413 body", async () => {
-      const parsed = JSON.parse(await response.text()) as { maxBytes?: unknown };
+      const parsed = JSON.parse(await response.text()) as {
+        maxBytes?: unknown;
+      };
       return typeof parsed.maxBytes === "number" ? parsed.maxBytes : undefined;
     });
   }
 
-  /** The consumer's headers. A resolver that throws costs its headers, never the batch. */
+  /**
+   * Evaluates configured static or dynamic request headers.
+   * @returns Promise resolving to resolved header map.
+   */
   private async resolveHeaders(): Promise<Record<string, string>> {
     const { headers } = this.config;
     if (!headers) {

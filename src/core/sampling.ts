@@ -1,7 +1,8 @@
 // src/core/sampling.ts
 //
-// Whether a record is kept. Keyed on the journey, so a sampled journey arrives
-// whole rather than as scattered records.
+// Deterministic record sampling based on namespace rules, journey IDs, and trace
+// IDs. Keyed on the journey, so one journey is kept or dropped whole. Stable
+// across windows and reloads.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -17,10 +18,9 @@ import type { ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 
 /**
- * FNV-1a, 32 bit. Spreads ids evenly. Not a security hash.
- *
- * @param value The key to hash.
- * @returns An unsigned 32 bit integer.
+ * Computes 32-bit FNV-1a hash of a string value. Not a security hash.
+ * @param value Key string to hash.
+ * @returns Unsigned 32-bit integer hash.
  */
 function hash(value: string): number {
   let h = FNV_OFFSET_BASIS;
@@ -34,11 +34,11 @@ function hash(value: string): number {
 }
 
 /**
- * One attribute as a string. Absent and non-string both read as empty: a
- * forwarded record has only passed a shape check.
- *
- * @param record The record being sampled.
- * @param key Which attribute to read.
+ * Safely extracts a string attribute value from a log record. Absent and non-string
+ * both read as empty. A forwarded record has only passed a shape check.
+ * @param record Log record being evaluated.
+ * @param key Attribute key.
+ * @returns String attribute value, or empty string if missing or non-string.
  */
 function readAttr(record: LogRecord, key: string): string {
   const value: unknown = record.attributes[key];
@@ -46,12 +46,11 @@ function readAttr(record: LogRecord, key: string): string {
 }
 
 /**
- * The rate for a namespace. Longest matching prefix wins, so `trading.ticks`
- * overrides `trading`.
- *
- * @param namespace The record's `app.namespace`.
- * @param config The live config.
- * @returns The matching rate, or `defaultRate`.
+ * Resolves sampling rate for a namespace using longest-prefix matching, so
+ * trading.ticks overrides trading.
+ * @param namespace Target application namespace.
+ * @param config Active configuration instance.
+ * @returns Matched namespace sampling rate or default rate.
  */
 function rateFor(namespace: string, config: ResolvedConfig): number {
   const { rates, defaultRate } = config.sampling;
@@ -71,14 +70,13 @@ function rateFor(namespace: string, config: ResolvedConfig): number {
 }
 
 /**
- * Whether this record is kept. Deterministic per journey, across windows and
- * reloads.
- *
- * @param record The record to judge.
- * @param config The live config, read through so a reconfigure applies.
+ * Evaluates whether a log record should be sampled for retention.
+ * @param record Record to evaluate.
+ * @param config Active configuration instance.
+ * @returns True if the record should be retained and transmitted.
  */
 export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean {
-  // Errors bypass sampling.
+  // Errors and fatal records bypass sampling filters.
   if (record.severityText === "ERROR" || record.severityText === "FATAL") {
     return true;
   }
@@ -95,7 +93,8 @@ export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean
     return false;
   }
 
-  // No journey: the trace still groups one operation.
+  // Falls back to trace ID when journey ID is absent. The trace still groups one
+  // operation.
   const key = readAttr(record, ATTR_JOURNEY_ID) || record.traceId;
 
   return hash(key) / UINT32_MAX < rate;

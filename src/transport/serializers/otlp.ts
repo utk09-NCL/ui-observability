@@ -1,8 +1,6 @@
 // src/transport/serializers/otlp.ts
 //
-// OTLP/JSON. Attributes are a list of pairs, each value tagged with its type,
-// and the resource block is hoisted out of the records. A batch can hold
-// records from several resources, so grouping is per resource, not per batch.
+// Serializes log batches into OpenTelemetry (OTLP/JSON) formatted log records grouped by resource.
 
 import {
   CONTENT_TYPE_JSON,
@@ -13,39 +11,35 @@ import {
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 
-/** One OTLP value: a single-key object naming its type, such as `{ stringValue: "buy" }`. */
+/** OTLP AnyValue container with typed value wrappers. */
 type AnyValue = Record<string, unknown>;
 
-/** One entry of an OTLP attribute list. */
+/** OTLP KeyValue pair container. */
 interface KeyValue {
-  /** Attribute name. */
+  /** Attribute key. */
   key: string;
-  /** Attribute value, in its type wrapper. */
+  /** Typed AnyValue container. */
   value: AnyValue;
 }
 
-/** The records of one batch that share a resource, and that resource. */
+/** Records grouped by shared resource attributes. */
 interface ResourceGroup {
-  /** Sent once for the whole group. */
+  /** Resource attribute map. */
   resource: Record<string, unknown>;
-  /** The records carrying it. */
+  /** Log records associated with the resource. */
   records: LogRecord[];
 }
 
 /**
- * One value in its OTLP type wrapper, or null when OTLP has no field for it.
- *
- * int64 is encoded as a string. Getting that wrong is a silent 400.
- *
- * @param value An attribute or resource value.
+ * Wraps a JavaScript value in an OTLP AnyValue container.
+ * @param value Raw attribute or resource value.
+ * @returns Typed AnyValue object or null if unsupported.
  */
 function toAnyValue(value: unknown): AnyValue | null {
   if (value === null || value === undefined) {
     return null;
   }
 
-  // Sequential typeof checks, not a switch: a switch over `unknown` is never
-  // exhaustive, and each check narrows `value` in place.
   if (typeof value === "string") {
     return { stringValue: value };
   }
@@ -54,18 +48,19 @@ function toAnyValue(value: unknown): AnyValue | null {
     return { boolValue: value };
   }
 
+  // Encodes int64 as decimal strings per OTLP protobuf JSON specification. A number
+  // is a silent 400 from a conforming collector.
   if (typeof value === "number") {
     return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
   }
 
-  // A structured clone from another realm carries a bigint through untouched,
-  // and JSON.stringify throws on one.
+  // Converts BigInt to decimal string representation for JSON serialization.
+  // JSON.stringify throws on a BigInt and loses the batch.
   if (typeof value === "bigint") {
     return { intValue: value.toString() };
   }
 
   if (Array.isArray(value)) {
-    // Array.isArray narrows an unknown to any[], so widen before reading elements.
     const items: readonly unknown[] = value;
     const values = items.map(toAnyValue).filter((item): item is AnyValue => item !== null);
 
@@ -77,15 +72,13 @@ function toAnyValue(value: unknown): AnyValue | null {
     return { kvlistValue: { values: toKeyValues(nested) } };
   }
 
-  // Symbol or function, the only types left. JSON.stringify drops both from an
-  // object, so dropping them here keeps the payload consistent with it.
   return null;
 }
 
 /**
- * An object as an OTLP attribute list, minus the keys with no representable value.
- *
- * @param source Attributes or a resource block.
+ * Converts a plain object into an array of OTLP KeyValue pairs.
+ * @param source Key-value attribute object.
+ * @returns Array of valid KeyValue pairs.
  */
 function toKeyValues(source: Record<string, unknown>): KeyValue[] {
   const out: KeyValue[] = [];
@@ -100,18 +93,13 @@ function toKeyValues(source: Record<string, unknown>): KeyValue[] {
   return out;
 }
 
-/**
- * Grouping keys, memoized per resource object.
- *
- * The record builder stamps one cached object onto every record from a context,
- * so this costs one stringify per resource rather than one per record.
- */
+/** Memoized JSON string keys per resource object to avoid redundant stringification. */
 const resourceKeys = new WeakMap<object, string>();
 
 /**
- * A stable key for one resource block.
- *
- * @param resource The block hoisted out of a record.
+ * Computes or retrieves a stable serialization key for a resource object.
+ * @param resource Resource attribute object.
+ * @returns JSON key string.
  */
 function resourceKey(resource: Record<string, unknown>): string {
   const cached = resourceKeys.get(resource);
@@ -125,16 +113,15 @@ function resourceKey(resource: Record<string, unknown>): string {
   return key;
 }
 
-/** OpenTelemetry logs over HTTP, JSON encoding. */
+/** Serializer formatting log records into OTLP/JSON payloads. */
 export const otlpSerializer: LogSerializer = {
-  /** The name a consumer selects this format by. */
+  /** Format identifier name. */
   name: SERIALIZER_NAME_OTLP,
 
   /**
-   * Group by resource, then encode. Records forwarded from an iframe carry a
-   * different resource from the parent's, so never assume one group.
-   *
-   * @param records The batch's records.
+   * Groups records by resource and encodes them into an OTLP ExportLogsServiceRequest JSON payload.
+   * @param records Array of log records to serialize.
+   * @returns Serialized JSON batch payload.
    */
   serialize(records: LogRecord[]): SerializedBatch {
     const groups = new Map<string, ResourceGroup>();
@@ -158,8 +145,7 @@ export const otlpSerializer: LogSerializer = {
           scope: { name: TELEMETRY_SDK_NAME, version: TELEMETRY_SDK_VERSION },
           logRecords: group.records.map((record) => ({
             timeUnixNano: record.timeUnixNano,
-            // Some collectors reject an empty observed time, and only a
-            // forwarded record has one that genuinely differs.
+            // Falls back to timeUnixNano if observedTimeUnixNano is unset.
             observedTimeUnixNano: record.observedTimeUnixNano ?? record.timeUnixNano,
             severityNumber: record.severityNumber,
             severityText: record.severityText,
@@ -173,6 +159,9 @@ export const otlpSerializer: LogSerializer = {
       ],
     }));
 
-    return { body: JSON.stringify({ resourceLogs }), contentType: CONTENT_TYPE_JSON };
+    return {
+      body: JSON.stringify({ resourceLogs }),
+      contentType: CONTENT_TYPE_JSON,
+    };
   },
 };

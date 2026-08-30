@@ -1,36 +1,26 @@
 // src/utils/sequence.ts
 //
-// Per-context record ordering. Timestamps cannot provide it: wall clocks are
-// skewed between machines and step backwards when NTP corrects them, so two
-// records can reach the backend in the wrong order with nothing in the output
-// to show it.
-//
-// Numbers from two contexts are unrelated; what relates those records is the
-// correlation ids. Paired with the context id this is a total order over one
-// realm. An increment has no failure mode, so this file has no diagnostics
-// dependency.
+// Generates monotonic sequence numbers for deterministic per-context record
+// ordering. Clocks step and two records share a millisecond, so timestamps cannot
+// order them. One counter per context: a shared counter shows holes, and a hole
+// reads as a lost record.
 
-/** A monotonic counter, meaningful only alongside the context id it is paired with. */
+/** Monotonic sequence counter establishing total record ordering within an execution context. */
 export class Sequence {
-  /**
-   * The last number handed out. Per instance, not per module: two runtimes
-   * sharing a counter would each see holes, and a hole reads as a lost record.
-   */
+  /** Last emitted sequence counter value. */
   private value = 0;
 
   /**
-   * The next number. Counts from one, leaving zero as an obviously-unset value.
-   *
-   * No wrap handling: at a thousand records a second, reaching the largest safe
-   * integer outlasts any document.
+   * Increments and returns the next monotonic sequence number starting at 1.
+   * @returns Next sequence number.
    */
   next(): number {
     return ++this.value;
   }
 
   /**
-   * Start from one again, for a runtime torn down and configured afresh, where
-   * continuing the count would imply a continuity with the previous run.
+   * Resets the sequence counter to zero, for a runtime configured afresh.
+   * Continuing the count implies continuity with the previous run.
    */
   reset(): void {
     this.value = 0;

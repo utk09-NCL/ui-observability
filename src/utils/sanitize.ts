@@ -1,12 +1,7 @@
 // src/utils/sanitize.ts
 //
-// One bad payload must not take down a batch of a hundred unrelated records, so
-// sanitizing happens when a record is built rather than when a batch is sent: a
-// circular object poisons the record that carried it and nothing else.
-//
-// Size accounting rides on the same walk. Stringifying the finished attributes
-// to measure them instead serializes every record twice, once to measure and
-// once to send.
+// Sanitizes arbitrary data into JSON-safe structures with cycle detection and byte-size estimation.
+// Never throws. Never returns a circular structure.
 
 import {
   BYTES_PER_BOOLEAN,
@@ -22,53 +17,47 @@ import {
   UTF8_TWO_BYTE_CEILING,
 } from "../constants";
 
-/**
- * The subset of the configured limits this module enforces, so a caller need not pass the whole
- * config.
- */
+/** Structural depth and size limits enforced during object sanitization. */
 export interface SanitizeLimits {
-  /** How far down to walk before returning a marker instead of recursing. */
+  /** Maximum recursion depth before truncating nested objects. */
   maxDepth: number;
-  /** How many items of an array, set or map to keep. The rest become a count. */
+  /** Maximum items retained in arrays, sets, and maps before truncating. */
   maxArrayLength: number;
-  /** Longest a single string attribute may be. */
+  /** Maximum string attribute length in characters. */
   maxAttributeChars: number;
-  /** How many keys of one object to keep. The rest become a count. */
+  /** Maximum key-value properties retained in a single object. */
   maxAttributeCount: number;
-  /**
-   * Longest a stack trace may be. Separate from `maxAttributeChars`, since a useful stack is longer
-   * than a useful string.
-   */
+  /** Maximum error stack trace length in characters. */
   maxStackChars: number;
 }
 
 /**
- * Shorten a string to `max` characters, saying how much was dropped. Safe to hand any string,
- * including one holding emoji.
+ * Truncates a string to maximum character length while preserving UTF-16 surrogate pairs.
+ * @param value Target string.
+ * @param max Maximum allowed character length.
+ * @returns Truncated string with appended drop count suffix.
  */
 export function truncate(value: string, max: number): string {
   if (value.length <= max) {
     return value;
   }
-  // Never cut a surrogate pair in half. `slice` works in UTF-16 code units, so
-  // the obvious version can leave a lone surrogate behind, which is not a
-  // character and which some ingest pipelines reject outright.
+
+  // Avoids splitting UTF-16 surrogate pairs at truncation boundaries. slice works in
+  // code units. Half a pair serializes as U+FFFD.
   const end = isHighSurrogate(value.charCodeAt(max - 1)) ? max - 1 : max;
   return `${value.slice(0, end)}… [truncated ${String(value.length - end)} chars]`;
 }
 
 /**
- * Whether a UTF-16 code unit is the leading half of a surrogate pair, and therefore must not be the
- * last one kept.
+ * Evaluates whether a UTF-16 code unit is a leading surrogate.
+ * @param code UTF-16 character code.
+ * @returns True if character is a high surrogate.
  */
 function isHighSurrogate(code: number): boolean {
   return code >= HIGH_SURROGATE_MIN && code <= HIGH_SURROGATE_MAX;
 }
 
-/**
- * Structural rather than `Node`, so a node from another realm or behind a proxy
- * still describes rather than throwing. Nothing here assumes a property exists.
- */
+/** Structural interface for DOM Node inspection across realms. */
 interface NodeLike {
   nodeName?: string;
   id?: string;
@@ -76,8 +65,9 @@ interface NodeLike {
 }
 
 /**
- * A DOM node as a short CSS-like selector, which is what someone reading the log actually wants.
- * Never serialize the node itself.
+ * Formats a DOM node as a descriptive CSS selector string.
+ * @param node Node-like object to format.
+ * @returns Formatted selector string.
  */
 function describeNode(node: NodeLike): string {
   const tag = (node.nodeName ?? "NODE").toLowerCase();
@@ -89,53 +79,60 @@ function describeNode(node: NodeLike): string {
   return `[Element ${tag}${id}${cls}]`;
 }
 
-/** A sanitized value and what it is expected to cost on the wire. */
+/** Sanitized JSON-safe output with estimated serialized byte size. */
 export interface SanitizeResult {
-  /** The JSON-safe value. Guaranteed to survive `JSON.stringify` without throwing. */
+  /** JSON-safe sanitized structure. */
   value: unknown;
-  /**
-   * Roughly how many bytes the result serializes to. Approximate on purpose, so
-   * the record builder can enforce a budget without stringifying to measure.
-   * Strings are counted exactly, everything else gets a small fixed estimate.
-   */
+  /** Approximate serialized byte count. */
   bytes: number;
 }
 
-/**
- * The running byte total, carried through the walk by reference so a recursive call can add to it.
- */
+/** Mutable byte accumulator passed through recursive sanitization passes. */
 interface SizeState {
   bytes: number;
 }
 
 /**
- * Convert an arbitrary value into something `JSON.stringify` can always handle.
- * Never throws. Never returns a circular structure.
+ * Sanitizes arbitrary values into JSON-safe structures without throwing.
+ * @param value Raw value to sanitize.
+ * @param limits Configuration limits for depth, count, and character lengths.
+ * @returns JSON-safe sanitized value.
  */
 export function sanitize(value: unknown, limits: SanitizeLimits): unknown {
   return sanitizeWithSize(value, limits).value;
 }
 
-/** As `sanitize`, and also reports the approximate size of what came back. */
+/**
+ * Sanitizes arbitrary values and calculates approximate serialized byte sizes.
+ * @param value Raw value to sanitize.
+ * @param limits Configuration limits.
+ * @returns SanitizeResult containing sanitized value and byte count.
+ */
 export function sanitizeWithSize(value: unknown, limits: SanitizeLimits): SanitizeResult {
   const state: SizeState = { bytes: 0 };
   const result = walk(value, limits, new WeakSet(), 0, state);
   return { value: result, bytes: state.bytes };
 }
 
-/** Count a value that is already in its final form, and hand it back. */
+/**
+ * Adds string length and quotes overhead to size accumulator.
+ * @param text Serialized string token.
+ * @param state Byte size accumulator.
+ * @returns Input text unchanged.
+ */
 function counted(text: string, state: SizeState): string {
   state.bytes += estimateBytes(text) + BYTES_PER_QUOTED_STRING;
   return text;
 }
 
 /**
- * The recursive worker: one value in, one JSON-safe value out, with its size
- * added to `state` on the way.
- *
- * `seen` holds the current ancestor chain, not everything visited, so a genuine
- * cycle becomes `[Circular]` while one object appearing twice as a sibling is
- * serialized twice.
+ * Recursively walks object trees, replacing cyclic references, hostile getters, and invalid primitives.
+ * @param value Target value to sanitize.
+ * @param limits Truncation and depth limits.
+ * @param seen Set of active ancestor objects for cycle detection.
+ * @param depth Current recursion depth.
+ * @param state Running byte size accumulator.
+ * @returns JSON-safe sanitized representation.
  */
 function walk(
   value: unknown,
@@ -149,14 +146,11 @@ function walk(
     return value;
   }
 
-  // Narrowed with `typeof` inline. Reading `typeof value` into a variable first
-  // defeats control flow narrowing and every branch then needs a cast.
   if (typeof value === "string") {
     return counted(truncate(value, limits.maxAttributeChars), state);
   }
   if (typeof value === "number") {
     state.bytes += BYTES_PER_NUMBER;
-    // NaN and the infinities are not representable in JSON.
     return Number.isFinite(value) ? value : String(value);
   }
   if (typeof value === "boolean") {
@@ -201,8 +195,6 @@ function walk(
       return counted(value.toString(), state);
     }
     if (value instanceof Map) {
-      // Narrowing an `unknown` with `instanceof` yields `Map<any, any>`, so the
-      // keys and values are widened back to `unknown` before anything reads them.
       const map: ReadonlyMap<unknown, unknown> = value;
       const out: Record<string, unknown> = {};
       let shown = 0;
@@ -220,22 +212,15 @@ function walk(
     }
     if (value instanceof Set) {
       const set: ReadonlySet<unknown> = value;
-      // Same depth, not deeper: the array is this module's own representation
-      // of the set, not another level the consumer wrote.
       return walk([...set].slice(0, limits.maxArrayLength), limits, seen, depth, state);
     }
     if (ArrayBuffer.isView(value)) {
-      // `ArrayBufferView` covers `DataView` too, which has no `length`.
       const length = (value as { length?: number }).length ?? 0;
       return counted(`[${value.constructor.name}(${String(length)})]`, state);
     }
-    // No `typeof Promise !== "undefined"` guard, unlike `Node` below: Promise
-    // is ES2015 and present in every targeted host, so the false branch is
-    // unreachable. On an exotic host without it, the catch below covers this.
     if (value instanceof Promise) {
       return counted("[Promise]", state);
     }
-    // `Node` does not exist in a worker, so it is checked rather than assumed.
     if (typeof Node !== "undefined" && value instanceof Node) {
       return counted(describeNode(value), state);
     }
@@ -251,8 +236,6 @@ function walk(
       return out;
     }
 
-    // Respect an explicit toJSON, which is how most library objects want to be
-    // serialized.
     const maybeToJson: unknown = (value as { toJSON?: unknown }).toJSON;
     if (typeof maybeToJson === "function") {
       const toJson = maybeToJson as () => unknown;
@@ -274,18 +257,22 @@ function walk(
     }
     return out;
   } catch (error) {
-    // A getter threw, or a proxy refused. One hostile value costs one
-    // attribute, never the record.
+    // Catches hostile getters and throwing proxies. One costs an attribute, not the
+    // record.
     const name = error instanceof Error ? error.name : "error";
     return counted(`[Unserializable: ${name}]`, state);
   } finally {
-    // Dropped on the way back up, so only ancestor cycles count. Without this,
-    // one object appearing twice as siblings reads as circular.
+    // Removes object from ancestor set on unwind. Left in, a repeated sibling reads
+    // as a cycle.
     seen.delete(value);
   }
 }
 
-/** Cheap UTF-8 byte estimate. Avoids allocating a Blob per record. */
+/**
+ * Estimates UTF-8 encoded byte length for a string.
+ * @param value Target string.
+ * @returns Estimated UTF-8 byte length.
+ */
 export function estimateBytes(value: string): number {
   let bytes = 0;
   for (let i = 0; i < value.length; i++) {
@@ -295,8 +282,6 @@ export function estimateBytes(value: string): number {
     } else if (code < UTF8_TWO_BYTE_CEILING) {
       bytes += 2;
     } else if (code >= HIGH_SURROGATE_MIN && code <= HIGH_SURROGATE_MAX) {
-      // A surrogate pair is four bytes in UTF-8, and its low half must not be
-      // counted again on the next iteration.
       bytes += 4;
       i++;
     } else {

@@ -1,11 +1,8 @@
 // src/storage/local-storage.ts
 //
-// The fallback when IndexedDB is missing: a webview, a sandboxed frame, or a
-// browser in private mode.
-//
-// Everything here is synchronous and small on purpose. localStorage blocks the
-// main thread, so the store is read by key rather than by parsing its contents,
-// and a batch is deserialized only when something actually needs it.
+// Persistent synchronous storage adapter backed by localStorage using time-ordered
+// keys. The padding makes keys().sort() a sort by creation time. Unpadded it sorts
+// by hex and take() stops returning the oldest batch first.
 
 import {
   BATCH_KEY_TIME_WIDTH,
@@ -19,32 +16,26 @@ import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "..
 import { keysWithPrefix } from "./keys";
 
 /**
- * The key carries the creation time, and it has to.
- *
- * localStorage has no index and no ordering, so the key string is the only sort
- * key available. Keying on the batch id alone, which is random, makes
- * `keys().sort()` a sort by random hex: `take` stops returning oldest first and
- * the over-capacity prune evicts whatever sorts low. Both are silent, and
- * `MemoryStorage` behaves correctly, so it only shows up on the machines that
- * fell back to this adapter.
- *
- * The alternative, parsing every batch to sort by `createdAt`, makes `count()`
- * deserialize hundreds of blobs to answer "how many".
+ * Formats a storage key with zero-padded creation time for FIFO key sorting. Always
+ * from batch.createdAt, never Date.now(). A rebuilt key does not match the one
+ * written.
+ * @param batch Target log batch.
+ * @returns Prefixed, timestamp-ordered storage key.
  */
 function keyFor(batch: LogBatch): string {
   const at = String(batch.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
   return `${BATCH_STORAGE_KEY_PREFIX}${at}.${batch.id}`;
 }
 
-/** Batches parked in localStorage, one key each. */
+/** Persistent StorageAdapter implementation backed by localStorage. */
 export class LocalStorageStorage implements StorageAdapter {
-  /** The adapter name, which is also the strategy that selects it. */
+  /** Storage adapter strategy name. */
   readonly name = STORAGE_NAME_LOCAL;
 
   /**
-   * @param limits Age and count ceilings.
-   * @param diagnostics Where a refused write, a blocked store and a corrupt entry are reported.
-   * @param onGap Told when a prune drops records.
+   * @param limits Storage capacity and retention thresholds.
+   * @param diagnostics Diagnostics reporter.
+   * @param onGap Optional callback for dropped record reporting.
    */
   constructor(
     private readonly limits: StorageLimits,
@@ -53,13 +44,8 @@ export class LocalStorageStorage implements StorageAdapter {
   ) {}
 
   /**
-   * Write one batch, then prune.
-   *
-   * A refused write is nearly always a full store, so a share of the oldest
-   * goes and the batch that triggered it is dropped. Retrying it here would
-   * mean writing during the eviction it caused.
-   *
-   * @param batch The batch to keep.
+   * Persists a batch to localStorage, evicting oldest entries on quota errors.
+   * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
     const written = this.diagnostics.guard(
@@ -81,14 +67,17 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * @param limit How many to hand back, oldest first.
-   * @returns The batches that parsed. A corrupt entry is removed rather than returned.
+   * Retrieves up to limit batches in chronological order without deletion.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Promise resolving to an array of valid batches.
    */
   take(limit: number): Promise<LogBatch[]> {
     const out: LogBatch[] = [];
 
     for (const key of this.keys().slice(0, limit)) {
       const batch = this.read(key);
+      // Corrupt and unrecoverable. Dropped without counting a gap: no record count
+      // can be read from it.
       if (batch === null) {
         this.removeKey(key);
         continue;
@@ -99,7 +88,10 @@ export class LocalStorageStorage implements StorageAdapter {
     return Promise.resolve(out);
   }
 
-  /** @param id The batch that was delivered, or given up on. */
+  /**
+   * Deletes a batch from localStorage by batch ID.
+   * @param id Batch identifier.
+   */
   remove(id: string): Promise<void> {
     const key = this.keyOf(id);
     if (key !== null) {
@@ -109,8 +101,9 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * @param id The batch that was tried.
-   * @param attempts Its new attempt count.
+   * Updates delivery attempt count for a stored batch without changing its key.
+   * @param id Batch identifier.
+   * @param attempts New absolute attempt count.
    */
   bumpAttempts(id: string, attempts: number): Promise<void> {
     const key = this.keyOf(id);
@@ -124,8 +117,6 @@ export class LocalStorageStorage implements StorageAdapter {
     }
 
     batch.attempts = attempts;
-    // The key encodes createdAt, which an attempt does not change, so the same
-    // key is still the right one. Never re-derive it from Date.now().
     this.diagnostics.guard("storage.degraded", "updating attempts", () => {
       localStorage.setItem(key, JSON.stringify(batch));
     });
@@ -133,26 +124,25 @@ export class LocalStorageStorage implements StorageAdapter {
     return Promise.resolve();
   }
 
-  /** Drop what is too old, then what is over capacity. Oldest first in both passes. */
+  /**
+   * Deletes expired batches and evicts oldest entries exceeding capacity limits.
+   * @returns Promise resolving to prune summary metrics.
+   */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
 
-    const drop = (key: string, records: number) => {
+    const drop = (key: string, records: number): void => {
       this.removeKey(key);
       result.batches++;
       result.records += records;
     };
 
-    // Read once, carrying the record counts forward. Re-reading below to count
-    // what is being evicted would mean handling an unreadable entry that this
-    // pass has already dropped, which is a branch nothing can take.
     const alive: { key: string; records: number }[] = [];
 
     for (const key of this.keys()) {
       const batch = this.read(key);
       if (batch === null) {
-        // Corrupt and unrecoverable, so it is dropped but not a countable gap.
         drop(key, 0);
         continue;
       }
@@ -183,23 +173,30 @@ export class LocalStorageStorage implements StorageAdapter {
     return Promise.resolve(result);
   }
 
-  /** How many batches are waiting. Counts keys, so nothing is deserialized. */
+  /**
+   * Returns total count of stored batch keys without deserialization.
+   * @returns Promise resolving to batch count.
+   */
   count(): Promise<number> {
     return Promise.resolve(this.keys().length);
   }
 
-  /** Forget every batch, leaving anything else on the origin alone. */
+  /** Deletes all matching batch keys from localStorage. */
   clear(): Promise<void> {
     this.evict(this.keys());
     return Promise.resolve();
   }
 
-  /** Nothing to release. localStorage is not a connection. */
+  /** No-op storage teardown method. */
   close(): Promise<void> {
     return Promise.resolve();
   }
 
-  /** One stored batch, or null when the value is missing, unparseable or not a batch. */
+  /**
+   * Deserializes and validates a stored batch from a key.
+   * @param key Storage key to read.
+   * @returns Validated LogBatch or null if missing or malformed.
+   */
   private read(key: string): LogBatch | null {
     const raw = this.diagnostics.guard("storage.unavailable", "reading a stored batch", () =>
       localStorage.getItem(key),
@@ -217,8 +214,6 @@ export class LocalStorageStorage implements StorageAdapter {
       return null;
     }
 
-    // Written by an earlier version of this library, or by anything else on the
-    // origin, so the two fields the callers read are checked rather than assumed.
     const createdAt: unknown = Reflect.get(parsed, "createdAt");
     const records: unknown = Reflect.get(parsed, "records");
     if (typeof createdAt !== "number" || !Array.isArray(records)) {
@@ -228,26 +223,39 @@ export class LocalStorageStorage implements StorageAdapter {
     return parsed as LogBatch;
   }
 
-  /** The key holding a given id. Not derivable, so it is found: a few hundred string compares. */
+  /**
+   * Resolves storage key containing the specified batch ID suffix.
+   * @param id Batch identifier.
+   * @returns Matching storage key string or null.
+   */
   private keyOf(id: string): string | null {
     return this.keys().find((key) => key.endsWith(`.${id}`)) ?? null;
   }
 
-  /** Delete several keys. */
+  /**
+   * Deletes an array of storage keys.
+   * @param keys Keys to delete.
+   */
   private evict(keys: string[]): void {
     for (const key of keys) {
       this.removeKey(key);
     }
   }
 
-  /** Delete one key. Separate from `remove`, which takes a batch id rather than a key. */
+  /**
+   * Deletes a single storage key with error guarding.
+   * @param key Storage key to remove.
+   */
   private removeKey(key: string): void {
     this.diagnostics.guard("storage.degraded", "removing a stored batch", () => {
       localStorage.removeItem(key);
     });
   }
 
-  /** Every batch key, oldest first. The key embeds a fixed-width `createdAt`, so sorting is chronological. */
+  /**
+   * Returns all sorted batch storage keys matching prefix.
+   * @returns Sorted array of storage keys.
+   */
   private keys(): string[] {
     return keysWithPrefix(BATCH_STORAGE_KEY_PREFIX, this.diagnostics);
   }

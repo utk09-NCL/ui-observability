@@ -1,41 +1,26 @@
 // src/core/context.ts
 //
-// The mapped diagnostic context: the key/value pairs that belong to everything
-// this runtime logs from now on rather than to one call. A desk name, a user
-// id, a region.
-//
-// Owned per instance, never per module. A module-level Map is shared by every
-// runtime in the realm, which makes two runtimes in one document silently share
-// a user id and makes each test depend on the order the files ran in.
-//
-// Values are stored exactly as given. Sanitizing and size-capping happen where
-// the record is built, against the limits in force then, which a consumer can
-// replace at any time. A Map accepts any key and value, so there is no failure
-// to report and no diagnostics dependency.
+// Stores ambient contextual attributes merged into all subsequent log records.
+// Per instance, never module level. A module Map is shared by every runtime in the
+// realm.
 
-/** The context shared by every record this runtime builds. */
+/** Key-value store for ambient context attributes attached to log records. */
 export class ContextStore {
-  /**
-   * A Map rather than an object literal, so that keys like `__proto__` and
-   * `constructor` are ordinary data rather than writes to the prototype chain.
-   */
+  /** Backing store mapping attribute keys to raw values. */
   private readonly map = new Map<string, unknown>();
 
   /**
-   * Add or replace one pair.
-   *
-   * @param key The attribute name, used verbatim on every record from here on.
-   * @param value Anything at all. It is sanitized when a record is built, not now.
+   * Sets an ambient context attribute key and value.
+   * @param key Attribute key.
+   * @param value Raw attribute value.
    */
   set(key: string, value: unknown): void {
     this.map.set(key, value);
   }
 
   /**
-   * Add or replace several pairs, merging onto what is already there so that a
-   * caller setting a region cannot drop the user id someone else set.
-   *
-   * @param values The pairs to merge in.
+   * Merges multiple key-value pairs into the ambient context store.
+   * @param values Record of attributes to merge.
    */
   setMany(values: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(values)) {
@@ -44,36 +29,31 @@ export class ContextStore {
   }
 
   /**
-   * Read one value back.
-   *
-   * @param key The attribute name.
-   * @returns The stored value, or `undefined` when nothing is stored under that
-   * key. A stored `undefined` and an absent key are indistinguishable here, and
-   * both serialize to the same absence on a record.
+   * Retrieves an attribute value by key.
+   * @param key Attribute key.
+   * @returns Stored attribute value or undefined if not set.
    */
   get(key: string): unknown {
     return this.map.get(key);
   }
 
   /**
-   * Forget one pair, so records built after this call no longer carry it.
-   *
-   * @param key The attribute name. Removing a key that was never set is not an error.
+   * Deletes an attribute from the ambient context store.
+   * @param key Attribute key to remove.
    */
   remove(key: string): void {
     this.map.delete(key);
   }
 
-  /** Forget every pair. The usual caller is a sign-out. */
+  /** Clears all attributes from the ambient context store. */
   clear(): void {
     this.map.clear();
   }
 
   /**
-   * Every pair, as a plain object.
-   *
-   * @returns A fresh snapshot on each call. Handing out the live map would let
-   * a merge target, a sanitizer or a consumer mutate the context by accident.
+   * Returns a snapshot copy of all ambient context attributes. A copy: a merge
+   * target or sanitizer must not mutate the store.
+   * @returns Plain object containing stored key-value pairs.
    */
   getAll(): Record<string, unknown> {
     return Object.fromEntries(this.map);

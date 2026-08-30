@@ -1,80 +1,46 @@
 // src/core/breadcrumbs.ts
 //
-// The last few things that happened before an error, kept in memory. Never sent
-// on their own; they ride on the record that needed them.
-//
-// A crumb is a summary, not a record: a timestamp, a category, a string and a
-// small optional object. Attaching whole records instead made one error report
-// 50 to 100 KB and pushed batches into the server's 413 path.
-//
-// Storage is a fixed-size ring with a write pointer, so memory is bounded by
-// the configured capacity rather than by how long the document has been open.
-// Nothing here throws: no platform API is touched and the one consumer-supplied
-// value is clamped, so this file has no diagnostics dependency.
+// Ring buffer holding a bounded chronological trail of recent user and system
+// events. Crumbs are never sent as records. They reach the backend on an error
+// record's payload. Nothing here throws.
 
 import { BREADCRUMB_MIN_CAPACITY } from "../constants";
 
-/**
- * What kind of thing a breadcrumb records.
- *
- * A closed set, because these are what a reader filters an error's trail by and
- * two capture engines spelling one idea differently would make that filter lie.
- */
+/** Category classification for breadcrumb events. */
 export type BreadcrumbCategory =
   "log" | "action" | "event" | "click" | "navigation" | "http" | "console";
 
-/** One thing that happened, small enough that fifty fit on an error report. */
+/** Lightweight event summary recorded prior to errors. */
 export interface Breadcrumb {
-  /** When it happened, in epoch milliseconds. Short name: the key repeats once per crumb on the wire. */
+  /** Timestamp in epoch milliseconds. */
   t: number;
-  /** Which capture path produced this crumb. Filters a trail down to one kind of activity. */
+  /** Event category classification. */
   category: BreadcrumbCategory;
-  /** A human-readable summary, kept short by its producer. */
+  /** Human-readable event description. */
   message: string;
-  /**
-   * A few extra scalars, when the message alone loses something that matters,
-   * such as a status code or a target selector. Sanitized where the record is
-   * built, against the limits in force then.
-   */
+  /** Optional contextual metadata. */
   data?: Record<string, unknown>;
 }
 
-/**
- * A bounded, chronological trail of recent activity.
- *
- * Per runtime instance, so two runtimes in one document do not braid their
- * trails together and a test does not inherit the previous file's crumbs.
- */
+/** Bounded circular ring buffer storing recent breadcrumb events in chronological order. */
 export class BreadcrumbBuffer {
-  /**
-   * The ring. Slots stay typed as possibly empty even after it wraps, so the
-   * reader has to prove it is handing out crumbs rather than holes.
-   */
+  /** Internal storage array for the ring buffer. */
   private buffer: (Breadcrumb | undefined)[];
 
-  /** Where the next crumb is written. Also the oldest crumb once the ring has wrapped. */
+  /** Next write index in the circular buffer. */
   private pointer = 0;
 
   /**
-   * Whether the ring has wrapped. The pointer alone cannot separate a ring
-   * never written to from one wrapped exactly back to the start.
+   * Indicates whether the buffer has wrapped around its capacity. The pointer alone
+   * cannot separate an unwritten ring from one wrapped exactly to the start.
    */
   private filled = false;
 
-  /** How many crumbs are kept, never below {@link BREADCRUMB_MIN_CAPACITY}. Mutable: a reconfigure can change it. */
+  /** Maximum number of breadcrumbs retained in memory. */
   private capacity: number;
 
   /**
-   * @param capacity How many crumbs to keep, from `capture.maxBreadcrumbs`.
-   *
-   * Clamped rather than rejected. A capacity of zero makes the pointer
-   * arithmetic `% 0`, which is NaN, so every crumb is written to index NaN and
-   * none is read back. And this runs inside `configure()`, where throwing would
-   * take the host application down as it sets logging up. Turning breadcrumbs
-   * off is what the capture flags are for.
-   *
-   * No default value here: the capacity always arrives from the resolved
-   * config, and a second copy would be free to drift from it.
+   * @param capacity Maximum breadcrumb capacity, clamped to minimum allowed size.
    */
   constructor(capacity: number) {
     this.capacity = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
@@ -82,18 +48,16 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Change how many crumbs are kept, preserving the newest, which are the ones
-   * nearest an error. Same clamp as the constructor, so the two cannot disagree.
-   *
-   * @param capacity The new capacity, from `capture.maxBreadcrumbs`.
+   * Resizes buffer capacity while preserving the newest breadcrumbs.
+   * @param capacity New maximum capacity.
    */
   resize(capacity: number): void {
     const clamped = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
     if (clamped === this.capacity) {
       return;
     }
-    // The clamp guarantees a positive count, so this never degrades into
-    // `slice(-0)`, which would keep the whole trail instead of the tail of it.
+
+    // The clamp guarantees a positive count. slice(-0) keeps the whole trail.
     const kept = this.snapshot().slice(-clamped);
     this.capacity = clamped;
     this.clear();
@@ -103,10 +67,8 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Record one crumb, overwriting the oldest once the ring is full.
-   *
-   * @param crumb Kept by reference and never copied, so a caller must not
-   * mutate a crumb after handing it over.
+   * Appends a breadcrumb, overwriting the oldest entry when capacity is reached.
+   * @param crumb Breadcrumb event to append.
    */
   push(crumb: Breadcrumb): void {
     this.buffer[this.pointer] = crumb;
@@ -117,11 +79,8 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * The trail as it stands, oldest first.
-   *
-   * @returns A fresh array each call. Once the ring has wrapped the oldest
-   * crumb sits at the write pointer, so the tail of the storage is read before
-   * its head. The crumbs in it are the stored objects, not copies.
+   * Returns all stored breadcrumbs ordered from oldest to newest.
+   * @returns Chronological list of breadcrumbs.
    */
   snapshot(): Breadcrumb[] {
     const ordered = this.filled
@@ -130,10 +89,7 @@ export class BreadcrumbBuffer {
     return ordered.filter((crumb): crumb is Breadcrumb => crumb !== undefined);
   }
 
-  /**
-   * Forget every crumb. Allocates a fresh ring, so the discarded crumbs and
-   * anything they reference become collectable immediately.
-   */
+  /** Clears all stored breadcrumbs and resets buffer state. */
   clear(): void {
     this.buffer = new Array<Breadcrumb | undefined>(this.capacity);
     this.pointer = 0;

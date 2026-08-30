@@ -1,12 +1,6 @@
 // src/storage/indexeddb-storage.ts
 //
-// The preferred store: asynchronous, indexed, and big enough that a long
-// offline period does not overflow it.
-//
-// This is the only file that imports Dexie, and the factory imports this file
-// dynamically. Dexie is by some way the heaviest dependency here, and a static
-// import puts it in the main bundle for every consumer, including the ones who
-// configured `storage: { strategy: "memory" }` to avoid exactly that.
+// Persistent storage adapter backed by IndexedDB and Dexie with time-ordered indexing.
 
 import Dexie, { type Table } from "dexie";
 import {
@@ -19,36 +13,42 @@ import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 
-/** How many records a set of batches holds, which is the size of the hole they leave. */
+/**
+ * Sums the total count of records contained across an array of batches.
+ * @param batches Batches to measure.
+ * @returns Total record count.
+ */
 function countRecords(batches: LogBatch[]): number {
   return batches.reduce((total, batch) => total + batch.records.length, 0);
 }
 
-/** One table, keyed by batch id and indexed by creation time, which is the order everything reads in. */
+/** Dexie database instance schema definition for log batch storage. */
 class ObservabilityDb extends Dexie {
-  /** The batches waiting to be delivered. */
+  /** Table storing LogBatch entities keyed by id and indexed by createdAt. */
   batches!: Table<LogBatch, string>;
 
-  /** @param name The database name, from `storage.dbName`. */
+  /**
+   * @param name IndexedDB database name.
+   */
   constructor(name: string) {
     super(name);
     this.version(INDEXEDDB_SCHEMA_VERSION).stores({ batches: "id, createdAt" });
   }
 }
 
-/** Batches in IndexedDB, through Dexie. */
+/** Persistent StorageAdapter implementation backed by IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
-  /** The adapter name, which is also the strategy that selects it. */
+  /** Storage adapter strategy name. */
   readonly name = STORAGE_NAME_INDEXEDDB;
 
-  /** The open database. Private, and reached in tests only to force a failure inside Dexie. */
+  /** Underlying Dexie database instance. */
   private readonly db: ObservabilityDb;
 
   /**
-   * @param dbName Which database to open, from `storage.dbName`.
-   * @param limits Age and count ceilings.
-   * @param diagnostics Where a full disk and a failed read are reported.
-   * @param onGap Told when a prune drops records.
+   * @param dbName Database name.
+   * @param limits Storage capacity and retention thresholds.
+   * @param diagnostics Diagnostics reporter.
+   * @param onGap Optional callback for dropped record reporting.
    */
   constructor(
     dbName: string,
@@ -60,12 +60,8 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Write one batch, then prune.
-   *
-   * A full disk evicts a share of the oldest rather than giving up: the newest
-   * batch is the one most likely to still matter.
-   *
-   * @param batch The batch to keep.
+   * Persists a batch to IndexedDB and triggers storage pruning.
+   * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
     try {
@@ -94,7 +90,11 @@ export class IndexedDbStorage implements StorageAdapter {
     }
   }
 
-  /** @param limit How many to hand back, oldest first. */
+  /**
+   * Reads up to limit batches in chronological order without deletion.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Array of retrieved batches.
+   */
   async take(limit: number): Promise<LogBatch[]> {
     const batches = await this.diagnostics.guardAsync(
       "storage.degraded",
@@ -104,7 +104,10 @@ export class IndexedDbStorage implements StorageAdapter {
     return batches ?? [];
   }
 
-  /** @param id The batch that was delivered, or given up on. */
+  /**
+   * Deletes a batch from IndexedDB by ID.
+   * @param id Batch identifier to delete.
+   */
   async remove(id: string): Promise<void> {
     await this.diagnostics.guardAsync("storage.degraded", "deleting a batch", () =>
       this.db.batches.delete(id),
@@ -112,8 +115,9 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * @param id The batch that was tried.
-   * @param attempts Its new attempt count.
+   * Updates delivery attempt count for a stored batch.
+   * @param id Batch identifier.
+   * @param attempts New absolute attempt count.
    */
   async bumpAttempts(id: string, attempts: number): Promise<void> {
     await this.diagnostics.guardAsync("storage.degraded", "updating attempts", () =>
@@ -121,14 +125,15 @@ export class IndexedDbStorage implements StorageAdapter {
     );
   }
 
-  /** Drop what is too old, then what is over capacity. Oldest first in both passes. */
+  /**
+   * Removes expired batches and evicts oldest entries exceeding capacity.
+   * @returns Prune summary metrics.
+   */
   async prune(): Promise<PruneResult> {
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
 
     await this.diagnostics.guardAsync("storage.degraded", "pruning", async () => {
       const cutoff = Date.now() - this.limits.maxAgeMs;
-      // Read then bulk delete, rather than a bare delete: the record count is
-      // what the gap report needs, and it is gone once the rows are.
       const expired = await this.db.batches.where("createdAt").below(cutoff).toArray();
       if (expired.length > 0) {
         await this.db.batches.bulkDelete(expired.map((batch) => batch.id));
@@ -149,7 +154,10 @@ export class IndexedDbStorage implements StorageAdapter {
     return result;
   }
 
-  /** How many batches are waiting. Zero when the database cannot answer. */
+  /**
+   * Returns total count of stored batches.
+   * @returns Total batch count or 0 on failure.
+   */
   async count(): Promise<number> {
     const total = await this.diagnostics.guardAsync("storage.degraded", "counting", () =>
       this.db.batches.count(),
@@ -157,14 +165,14 @@ export class IndexedDbStorage implements StorageAdapter {
     return total ?? 0;
   }
 
-  /** Forget every batch. The database itself stays. */
+  /** Deletes all stored batches from the database. */
   async clear(): Promise<void> {
     await this.diagnostics.guardAsync("storage.degraded", "clearing", () =>
       this.db.batches.clear(),
     );
   }
 
-  /** Close the connection, so a reload is not blocked by this one holding it open. */
+  /** Closes the active IndexedDB connection. */
   close(): Promise<void> {
     this.diagnostics.guard("storage.degraded", "closing the database", () => {
       this.db.close();
@@ -172,7 +180,10 @@ export class IndexedDbStorage implements StorageAdapter {
     return Promise.resolve();
   }
 
-  /** Announce a hole, once, and only when there is one. */
+  /**
+   * Reports dropped records to diagnostics and registered gap handlers.
+   * @param result Prune result metrics.
+   */
   private reportGap(result: PruneResult): void {
     if (result.batches === 0) {
       return;
@@ -187,12 +198,11 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Delete the oldest batches and say what went with them.
-   *
-   * Unguarded on purpose: both callers guard it, and swallowing the failure
-   * here would report an eviction that did not happen.
-   *
-   * @param howMany How many to delete.
+   * Deletes a specified count of the oldest stored batches. Unguarded: both callers
+   * guard it, and swallowing the failure here reports an eviction that did not
+   * happen.
+   * @param howMany Number of oldest batches to evict.
+   * @returns Metrics of evicted batches and records.
    */
   private async evictOldest(howMany: number): Promise<Omit<PruneResult, "reason">> {
     const doomed = await this.db.batches.orderBy("createdAt").limit(howMany).toArray();

@@ -1,23 +1,20 @@
 // src/utils/lock.ts
 //
-// One origin-wide lock around a drain. IndexedDB and localStorage are scoped to
-// the origin, not the window, so five same-origin windows share one queue and
-// without this each drains and sends the same stored batches. The server
-// deduplicates them, but the requests still leave every machine on the desk.
-//
-// Not leader election: the lock covers one short drain rather than a lifetime,
-// so a window that dies holding it costs nothing and needs no recovery.
+// Coordinates origin-wide batch draining operations using the Web Locks API.
+// Without it every window on the origin drains and sends the same batches
 
 import type { Diagnostics } from "../core/diagnostics";
 
-/** What the lock manager hands the callback: a grant, or null when another context holds the lock. */
+/** Lock grant object or null if lock acquisition was unavailable. */
 type LockGrant = { name: string } | null;
 
-/** The one `navigator.locks` call this module makes, declared structurally so no DOM lib is required. */
+/** Structural interface for navigator.locks operations. */
 interface LockManagerLike {
   /**
-   * Run `callback` under the named lock. Under `ifAvailable` a held lock yields
-   * a null grant rather than queueing.
+   * Requests a lock and executes a callback under the acquired lock grant.
+   * @param name Lock name.
+   * @param options Lock request options.
+   * @param callback Callback executed with lock grant.
    */
   request<T>(
     name: string,
@@ -27,15 +24,15 @@ interface LockManagerLike {
 }
 
 /**
- * Run `fn` under an origin-wide lock.
- *
- * @param name The lock name. Every context on the origin has to spell it the same way.
- * @param diagnostics Where a lock manager that throws is reported.
- * @param fn The work to run while holding the lock.
- * @param options.skipIfBusy Skip this tick when the lock is held, rather than waiting for it.
- * @returns What `fn` returned, or undefined when it never ran. A caller that
- * cannot tell those apart stops rescheduling, and one lost race then ends
- * draining in that window for good.
+ * Executes an asynchronous function under a Web Locks API origin-wide lock.
+ * Falls back to direct execution in environments without Web Locks support.
+ * @param name Origin-scoped lock identifier.
+ * @param diagnostics Diagnostics reporter.
+ * @param fn Asynchronous task to execute while holding the lock.
+ * @param options Lock acquisition options.
+ * @param options.skipIfBusy Skips execution if lock is currently held by another context.
+ * @returns Promise resolving to the task result, or undefined if the lock was held
+ * and nothing ran. A caller that conflates the two stops rescheduling.
  */
 export function withDrainLock<T>(
   name: string,
@@ -45,8 +42,7 @@ export function withDrainLock<T>(
 ): Promise<T | undefined> {
   const locks = (globalThis as { navigator?: { locks?: LockManagerLike } }).navigator?.locks;
 
-  // No Web Locks in this host. Running unguarded beats not running: the server
-  // still deduplicates on the batch id.
+  // Falls back to unguarded execution if Web Locks API is unavailable.
   if (!locks?.request) {
     return fn();
   }

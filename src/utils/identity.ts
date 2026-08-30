@@ -1,4 +1,9 @@
 // src/utils/identity.ts
+//
+// Generates and manages session, tab, and context correlation identifiers. Storage
+// throws rather than returning null in a sandboxed iframe and in private mode. An
+// unguarded read takes the library down at import.
+
 import {
   BYTE_VALUE_COUNT,
   ID_BYTE_LENGTH,
@@ -9,28 +14,21 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 
-/** The three ids every record carries, from widest scope to narrowest. */
+/** Correlation identifiers attached to log records across session, tab, and realm scopes. */
 export interface Identity {
-  /** One visit to this origin, shared by every tab and expiring after an idle period. */
+  /** Origin-wide user session identifier surviving across tabs until idle expiration. */
   sessionId: string;
-  /** One browser tab, OpenFin window or OpenFin view, surviving a reload. */
+  /** Browser tab or desktop window identifier surviving document reloads. */
   tabId: string;
-  /** One realm, regenerated on every reload. Distinguishes two iframes of the same tab. */
+  /** Unique execution realm identifier regenerated on every document load. */
   contextId: string;
 }
 
 /**
- * Random bytes as a lower-case hex string.
- *
- * Falls back to `Math.random` where `crypto.getRandomValues` is absent, which
- * happens in sandboxes and insecure contexts. The fallback is weaker and that
- * is accepted: these ids group records, none is a secret, and an id merely
- * unlikely to collide beats no logging.
- *
- * Shared with tracing, which needs the same bytes at 16 and 8 wide, so the
- * source of randomness is chosen in one place.
- *
- * @param byteLength How many random bytes to draw. The result is twice this many characters.
+ * Generates a random lowercase hexadecimal string of the specified byte length.
+ * Uses crypto.getRandomValues when available, falling back to Math.random.
+ * @param byteLength Number of random bytes to generate.
+ * @returns Hexadecimal string of length byteLength * 2.
  */
 export function randomHex(byteLength: number): string {
   const bytes = new Uint8Array(byteLength);
@@ -45,8 +43,8 @@ export function randomHex(byteLength: number): string {
 }
 
 /**
- * A random id. Prefers `crypto.randomUUID`, which a consumer correlating ids by
- * hand expects to see, and falls back to hex bytes where it is absent or blocked.
+ * Generates a unique identifier string using crypto.randomUUID or randomHex fallback.
+ * @returns UUID or random hex identifier.
  */
 export function newId(): string {
   try {
@@ -54,16 +52,18 @@ export function newId(): string {
       return crypto.randomUUID();
     }
   } catch {
-    // Some sandboxed contexts expose crypto but forbid randomUUID, and they
-    // throw on the call rather than leaving the method absent.
+    // Catches sandbox SecurityError throws when crypto.randomUUID is blocked. The
+    // method is present; only the call fails.
   }
   return randomHex(ID_BYTE_LENGTH);
 }
 
 /**
- * Storage access throws, it does not return null, in a sandboxed iframe without
- * allow-same-origin and in some webviews. Every access goes through here, so an
- * unguarded read cannot take the library down at import time.
+ * Reads a value from localStorage or sessionStorage with storage error guarding.
+ * @param store Storage target ("local" or "session").
+ * @param key Storage key.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Stored string value or null if unreadable or absent.
  */
 function safeRead(
   store: "local" | "session",
@@ -78,7 +78,13 @@ function safeRead(
   );
 }
 
-/** The write half of `safeRead`, and it throws in exactly the same places. */
+/**
+ * Writes a key-value pair to localStorage or sessionStorage with storage error guarding.
+ * @param store Storage target ("local" or "session").
+ * @param key Storage key.
+ * @param value String value to store.
+ * @param diagnostics Diagnostics reporter.
+ */
 function safeWrite(
   store: "local" | "session",
   key: string,
@@ -92,23 +98,22 @@ function safeWrite(
 }
 
 /**
- * Establish this realm's three ids, restoring the session and tab from storage
- * where they are still valid. Called once per realm at startup.
- *
- * Unreadable storage costs continuity, not logging: every id falls back to a
- * fresh random one.
+ * Resolves or initializes session, tab, and context identifiers for the active realm.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Populated Identity object.
  */
 export function resolveIdentity(diagnostics: Diagnostics): Identity {
   const contextId = newId();
   const now = Date.now();
 
-  // The session is shared by every tab on this origin and expires after an
-  // idle period, so one visit is one session however many tabs it opens.
   let sessionId = newId();
   const rawSession = safeRead("local", SESSION_ID_KEY, diagnostics);
   if (rawSession) {
     try {
-      const parsed = JSON.parse(rawSession) as { id?: string; lastSeenAt?: number };
+      const parsed = JSON.parse(rawSession) as {
+        id?: string;
+        lastSeenAt?: number;
+      };
       if (parsed.id && now - (parsed.lastSeenAt ?? 0) < SESSION_IDLE_MS) {
         sessionId = parsed.id;
       }
@@ -119,10 +124,6 @@ export function resolveIdentity(diagnostics: Diagnostics): Identity {
   const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
   safeWrite("local", SESSION_ID_KEY, session, diagnostics);
 
-  // The tab is one browser tab, one OpenFin window, or one OpenFin view.
-  // Duplicating a tab copies sessionStorage, so two tabs can start out claiming
-  // the same id. The control plane detects that collision and the newer context
-  // regenerates; without it, two tabs look like one.
   let tabId = safeRead("session", TAB_ID_KEY, diagnostics) ?? "";
   if (!tabId) {
     tabId = newId();
@@ -132,19 +133,13 @@ export function resolveIdentity(diagnostics: Diagnostics): Identity {
   return { sessionId, tabId, contextId };
 }
 
-/**
- * When the session's last-seen time was last written. Module state, so it is reset by
- * `resetSessionTouch`.
- */
+/** Timestamp of last recorded session touch in epoch milliseconds. */
 let lastTouchAt = 0;
 
 /**
- * Keep an active session alive. Called from the record path, the only place
- * that reliably knows the user is still here, and throttled to one write a
- * minute so that path costs an integer compare.
- *
- * Without it the idle window runs from the last realm boot: a tab open for 45
- * minutes, then a second tab beside it, gives one visit two session ids.
+ * Updates session activity timestamp in localStorage, throttled by SESSION_TOUCH_MS.
+ * @param sessionId Active session identifier.
+ * @param diagnostics Diagnostics reporter.
  */
 export function touchSession(sessionId: string, diagnostics: Diagnostics): void {
   const now = Date.now();
@@ -156,7 +151,7 @@ export function touchSession(sessionId: string, diagnostics: Diagnostics): void 
   safeWrite("local", SESSION_ID_KEY, session, diagnostics);
 }
 
-/** Test seam. Module-level throttle state has to be resettable between tests. */
+/** Resets the session touch throttle timer state for testing. */
 export function resetSessionTouch(): void {
   lastTouchAt = 0;
 }

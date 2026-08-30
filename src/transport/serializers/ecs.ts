@@ -1,9 +1,6 @@
 // src/transport/serializers/ecs.ts
 //
-// Elastic Common Schema, newline-delimited JSON, one document per record.
-// A rename plus two conversions: nanoseconds to an ISO timestamp, and the
-// level to lower case. Here so a gateway that does not speak OTLP costs one
-// config value rather than a change upstream of the serializer.
+// Serializes log batches into Elastic Common Schema (ECS) formatted newline-delimited JSON.
 
 import {
   ATTR_PAGE_URL,
@@ -19,22 +16,20 @@ import {
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 
-/** Elastic Common Schema over a bulk ingest endpoint. */
+/** Serializer formatting log records into Elastic Common Schema (ECS) NDJSON documents. */
 export const ecsSerializer: LogSerializer = {
-  /** The name a consumer selects this format by. */
+  /** Format identifier name. */
   name: SERIALIZER_NAME_ECS,
 
   /**
-   * One JSON document per record. Resource and attributes are also copied into
-   * `labels`, so a field with no ECS name stays searchable. Attributes win a
-   * collision, being the more specific of the two.
-   *
-   * @param records The batch's records.
+   * Serializes an array of log records into newline-delimited ECS JSON documents.
+   * @param records Records to serialize.
+   * @returns Serialized NDJSON batch payload.
    */
   serialize(records: LogRecord[]): SerializedBatch {
     const lines = records.map((record) => {
-      // Divide as a bigint, then convert. A nanosecond timestamp is past what a
-      // double holds exactly, so converting first can land the wrong millisecond.
+      // BigInt division preserves precision before conversion to millisecond Date.
+      // No double holds a nanosecond epoch exactly.
       const millis = Number(BigInt(record.timeUnixNano) / NANOS_PER_MILLI);
 
       return JSON.stringify({
@@ -49,10 +44,10 @@ export const ecsSerializer: LogSerializer = {
           environment: record.resource[RESOURCE_DEPLOYMENT_ENVIRONMENT],
         },
         user_agent: { original: record.resource[RESOURCE_BROWSER_USER_AGENT] },
-        // The request this record is about, falling back to the page it was
-        // logged from. The other way round rewrites a captured request to the
-        // document that made it.
-        url: { full: record.attributes[ATTR_URL_FULL] ?? record.attributes[ATTR_PAGE_URL] },
+        // Prefers request URL over ambient page URL for captured network events.
+        url: {
+          full: record.attributes[ATTR_URL_FULL] ?? record.attributes[ATTR_PAGE_URL],
+        },
         labels: { ...record.resource, ...record.attributes },
       });
     });

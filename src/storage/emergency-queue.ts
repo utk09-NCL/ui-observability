@@ -1,10 +1,8 @@
 // src/storage/emergency-queue.ts
 //
-// Where a batch goes when the document is closing and it is too large to
-// beacon. localStorage because it is the only synchronous store: nothing
-// asynchronous completes during an unload, IndexedDB writes least of all.
-//
-// Written by the exit flush, read once at the next startup.
+// Synchronous localStorage queue parking oversized batches during unload for startup recovery.
+// Synchronous and never throws. Runs while the document is being destroyed, where
+// no promise settles.
 
 import {
   BATCH_KEY_TIME_WIDTH,
@@ -19,10 +17,9 @@ import { withDrainLock } from "../utils/lock";
 import { keysWithPrefix } from "./keys";
 
 /**
- * The key carries the creation time, for the reason `local-storage.ts` spells
- * out: sorting keys is the only ordering a Storage has, and a batch id is
- * random, so keying on it alone evicts an arbitrary entry rather than the
- * oldest.
+ * Formats a storage key with zero-padded creation time for FIFO sorting.
+ * @param batch Target log batch.
+ * @returns Prefixed, timestamp-ordered storage key.
  */
 function keyFor(batch: LogBatch): string {
   const at = String(batch.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
@@ -30,11 +27,10 @@ function keyFor(batch: LogBatch): string {
 }
 
 /**
- * One stored batch, or null when the entry is not one. Anything on the origin
- * can write this key, and an older version of this library may have.
- *
- * @param raw What the key held.
- * @param diagnostics Where an entry that is not a batch is reported.
+ * Parses and validates a raw storage string into a LogBatch object.
+ * @param raw Raw serialized storage string.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Validated LogBatch or null if unparseable or malformed.
  */
 function readBatch(raw: string, diagnostics: Diagnostics): LogBatch | null {
   const parsed = diagnostics.guard(
@@ -58,13 +54,18 @@ function readBatch(raw: string, diagnostics: Diagnostics): LogBatch | null {
   return parsed as LogBatch;
 }
 
-/** Move every entry into `storage`, oldest first. */
+/**
+ * Imports all emergency queue entries into the target storage adapter in FIFO order.
+ * @param storage Destination storage adapter.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Total number of recovered batches.
+ */
 async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Promise<number> {
   let moved = 0;
 
   for (const key of keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics)) {
-    // Claimed synchronously, before the save it is waiting on. An entry that
-    // cannot be saved is lost, which beats every window reimporting it forever.
+    // Atomically removes key before async persistence to prevent duplicate recovery.
+    // A second window importing at the same time cannot take the same batch.
     const raw = diagnostics.guard("storage.unavailable", "reading the emergency queue", () => {
       const value = localStorage.getItem(key);
       localStorage.removeItem(key);
@@ -97,17 +98,15 @@ async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Pro
 }
 
 /**
- * Park one batch. Synchronous by design, and it never throws: this runs as the
- * document is closing, and nothing is left to catch anything.
- *
- * @param batch The batch that could not be sent.
- * @param diagnostics Where a store that refuses the write is reported.
+ * Synchronously writes an unsent batch to the emergency queue during document unload.
+ * @param batch Oversized log batch.
+ * @param diagnostics Diagnostics reporter.
  */
 export function saveToEmergencyQueue(batch: LogBatch, diagnostics: Diagnostics): void {
   diagnostics.guard("storage.quota_exceeded", "writing the emergency queue", () => {
     const keys = keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics);
 
-    // Make room for this one, oldest first.
+    // Evicts oldest entries to enforce capacity ceiling.
     for (const old of keys.slice(0, Math.max(0, keys.length - EMERGENCY_MAX_ENTRIES + 1))) {
       localStorage.removeItem(old);
     }
@@ -117,12 +116,10 @@ export function saveToEmergencyQueue(batch: LogBatch, diagnostics: Diagnostics):
 }
 
 /**
- * Move what survived the last close into real storage. Called once at startup,
- * before anything else writes.
- *
- * @param storage Where the recovered batches go.
- * @param diagnostics Where an unreadable entry is reported.
- * @returns How many batches were recovered.
+ * Recovers batches parked in emergency storage during prior shutdowns.
+ * @param storage Destination storage adapter.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Promise resolving to the number of recovered batches.
  */
 export async function drainEmergencyQueue(
   storage: StorageAdapter,
@@ -132,7 +129,6 @@ export async function drainEmergencyQueue(
     EMERGENCY_LOCK_NAME,
     diagnostics,
     () => importAll(storage, diagnostics),
-    // One shot at startup, so wait for the other window rather than skip.
     { skipIfBusy: false },
   );
 

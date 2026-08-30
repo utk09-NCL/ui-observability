@@ -1,19 +1,15 @@
 // src/utils/unref.ts
 //
-// One timer handle, two host families.
+// Utility for safely unreferencing timer handles across Node and browser
+// environments. A pending timer keeps a Node process alive under SSR and in
+// tests.
 
-/**
- * A timer handle as the two host families actually hand one back: a number in a
- * browser, an object in Node.
- */
+/** Cross-platform timer handle representing browser numeric IDs or Node Timeout objects. */
 export type TimerHandle = number | { unref?: () => void };
 
 /**
- * Stop a pending timer from holding a Node process open: under SSR or a test
- * runner one long timer keeps the process alive. A browser's numeric handle has
- * no `unref` and needs none.
- *
- * @param timer The handle `setTimeout` returned.
+ * Unreferences a timer handle to prevent it from keeping a Node.js process alive.
+ * @param timer Timer handle returned by setTimeout.
  */
 export function unrefTimer(timer: TimerHandle): void {
   if (typeof timer !== "number") {
