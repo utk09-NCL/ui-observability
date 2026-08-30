@@ -12,6 +12,14 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:5173",
   "http://localhost:5174", // a second origin, for cross-origin iframe testing
   "http://127.0.0.1:5174", // same machine, different origin to the browser
+  // The example workspaces, each on its own port. An origin missing here fails
+  // the preflight, and the example logs nothing while looking correctly wired.
+  "http://localhost:5180", // react
+  "http://localhost:4200", // angular
+  "http://localhost:5191", // microfrontend host
+  "http://localhost:5192", // microfrontend remote, blotter
+  "http://localhost:5193", // microfrontend remote, ticket
+  "http://localhost:5194", // openfin
 ]);
 
 let forcedStatus = 0;

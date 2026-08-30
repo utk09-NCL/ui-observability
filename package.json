@@ -22,11 +22,15 @@
     },
     "./package.json": "./package.json"
   },
+  "workspaces": [
+    "playground/react"
+  ],
   "scripts": {
     "dev": "concurrently -k \"npm:dev:*\"",
     "dev:vanilla": "vite",
     "dev:ingest": "node tools/mock-ingest-server.mjs",
     "dev:cross-origin": "vite --config vite.cross-origin.config.ts",
+    "example:react": "npm run dev --workspace @example/react",
     "build": "rimraf dist && tsc --project tsconfig.build.json && vite build",
     "build:watch": "vite build --watch",
     "lint": "eslint .",
