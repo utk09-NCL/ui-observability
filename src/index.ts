@@ -273,6 +273,14 @@ export function flush(): Promise<void> {
 }
 
 /**
+ * Counts the batches waiting in storage for delivery.
+ * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
+ */
+export function getQueueDepth(): Promise<number> {
+  return requireRuntime().queueDepth();
+}
+
+/**
  * Returns a snapshot of cumulative diagnostic event counts.
  * @returns Map of diagnostic fault codes to occurrence counts.
  */

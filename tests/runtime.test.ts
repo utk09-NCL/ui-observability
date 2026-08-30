@@ -14,6 +14,7 @@ import {
   getDiagnosticCounters,
   getJourneyToken,
   getLogger,
+  getQueueDepth,
   getTraceHeaders,
   info,
   logAction,
@@ -530,6 +531,40 @@ describe("runtime flush as a sender", () => {
     await flush();
 
     expect(vi.mocked(globalThis.fetch).mock.calls.length).toBe(calls);
+  });
+});
+
+describe("queue depth", () => {
+  it("counts the batches waiting in storage", async () => {
+    configure(base);
+    await ready();
+    const storage = runtime()["storage"];
+    if (!storage) {
+      throw new Error("sender was not built");
+    }
+    vi.spyOn(storage, "count").mockResolvedValue(3);
+
+    await expect(getQueueDepth()).resolves.toBe(3);
+  });
+
+  it("reports 0 for a forwarder, which persists nothing", async () => {
+    configure({ ...base, bus: { mode: "forwarder" } });
+    await ready();
+
+    await expect(getQueueDepth()).resolves.toBe(0);
+  });
+
+  it("reports a broken store as 0 rather than rejecting the caller", async () => {
+    configure(base);
+    await ready();
+    const storage = runtime()["storage"];
+    if (!storage) {
+      throw new Error("sender was not built");
+    }
+    vi.spyOn(storage, "count").mockRejectedValue(new Error("store is closed"));
+
+    await expect(getQueueDepth()).resolves.toBe(0);
+    expect(getDiagnosticCounters()["storage.degraded"]).toBe(1);
   });
 });
 

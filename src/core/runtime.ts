@@ -502,6 +502,20 @@ export class ObservabilityRuntime {
   }
 
   /**
+   * Counts the batches held in storage after a failed or deferred delivery.
+   * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
+   */
+  async queueDepth(): Promise<number> {
+    const count = await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "counting the batches waiting in storage",
+      () => this.storage?.count() ?? Promise.resolve(0),
+    );
+
+    return count ?? 0;
+  }
+
+  /**
    * Flushes all pending records in the pipeline or forward buffer.
    * @returns Promise resolving when queued records are transmitted or handed off.
    */
