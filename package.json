@@ -1,6 +1,6 @@
 {
   "name": "@utk09/ui-observability",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "UI observability and logging for browser, OpenFin and webview applications",
   "license": "Apache-2.0",
   "keywords": [
