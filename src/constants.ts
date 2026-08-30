@@ -522,6 +522,22 @@ export const CONSOLE_PREFIX_STYLE = "color:#888";
 export const DURATION_PRECISION = 1000;
 
 // ----------------------------------
+// Runtime
+// ----------------------------------
+
+/** Minimum duration in milliseconds between storage gap warning reports. */
+export const GAP_REPORT_THROTTLE_MS = 60_000;
+
+/** Default namespace for telemetry records emitted by auto-capture modules. */
+export const CAPTURE_NAMESPACE = "uiobs.capture";
+
+/** Default namespace for telemetry records emitted by storage subsystems. */
+export const STORAGE_NAMESPACE = "uiobs.storage";
+
+/** Fallback measurement unit applied when none is specified. */
+export const DEFAULT_METRIC_UNIT = "count";
+
+// ----------------------------------
 // Configuration
 // ----------------------------------
 
