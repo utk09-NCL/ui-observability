@@ -1,5 +1,5 @@
 import { Component, inject } from "@angular/core";
-import { endJourney, startJourney } from "ui-observability";
+import { endJourney, startJourney } from "@utk09/ui-observability";
 import { ObservabilityService } from "./observability";
 
 /** One order ticket: a submit that is logged, and a throw only Angular sees. */

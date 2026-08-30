@@ -6,7 +6,7 @@
 // the tempting alternative and it is a race: in the shell a remote can finish
 // loading before the host's configure() runs, and then both configure, in an
 // order that changes between reloads.
-import { configure } from "ui-observability";
+import { configure } from "@utk09/ui-observability";
 
 configure({
   endpoint: "http://localhost:8787/v1/logs",

@@ -1,8 +1,31 @@
 {
-  "name": "ui-observability",
-  "version": "1.0.0",
+  "name": "@utk09/ui-observability",
+  "version": "0.1.0",
   "description": "UI observability and logging for browser, OpenFin and webview applications",
   "license": "Apache-2.0",
+  "keywords": [
+    "observability",
+    "logging",
+    "telemetry",
+    "otlp",
+    "opentelemetry",
+    "browser",
+    "frontend",
+    "microfrontend",
+    "openfin",
+    "web-vitals"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/utk09-NCL/ui-observability.git"
+  },
+  "homepage": "https://github.com/utk09-NCL/ui-observability#readme",
+  "bugs": {
+    "url": "https://github.com/utk09-NCL/ui-observability/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -47,7 +70,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run build && npm run test:coverage"
+    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run build && npm run test:coverage",
+    "prepublishOnly": "npm run verify"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",

@@ -146,7 +146,7 @@ export default defineConfig(
         {
           patterns: [
             {
-              group: ["**/src/*", "**/../src", "ui-observability/dist/*"],
+              group: ["**/src/*", "**/../src", "@utk09/ui-observability/dist/*"],
               message:
                 "Examples import the package by name. Deep imports prove nothing about the published API.",
             },

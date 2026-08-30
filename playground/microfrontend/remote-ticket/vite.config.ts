@@ -11,7 +11,7 @@ export default defineConfig({
       name: "ticket",
       filename: "remoteEntry.js",
       exposes: { "./mount": "./src/mount.tsx" },
-      shared: { "ui-observability": { singleton: true } },
+      shared: { "@utk09/ui-observability": { singleton: true } },
       // The host declares these types by hand, so nothing consumes the
       // generated archive this would publish.
       dts: false,

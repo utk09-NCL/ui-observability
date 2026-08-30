@@ -7,7 +7,7 @@ export default defineConfig({
       name: "blotter",
       filename: "remoteEntry.js",
       exposes: { "./mount": "./src/mount.ts" },
-      shared: { "ui-observability": { singleton: true } },
+      shared: { "@utk09/ui-observability": { singleton: true } },
       // The host declares these types by hand, so nothing consumes the
       // generated archive this would publish.
       dts: false,

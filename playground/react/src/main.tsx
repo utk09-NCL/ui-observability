@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { configure } from "ui-observability";
+import { configure } from "@utk09/ui-observability";
 import { App } from "./app";
 
 // Module scope, before render, exactly once. configure() is idempotent, so a

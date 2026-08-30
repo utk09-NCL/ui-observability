@@ -1,4 +1,4 @@
-import { configure, getLogger, startJourney } from "ui-observability";
+import { configure, getLogger, startJourney } from "@utk09/ui-observability";
 
 // The shell owns configuration. One document holds one runtime, so this call
 // configures both remotes as well as the shell.

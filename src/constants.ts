@@ -228,13 +228,13 @@ export const RESOURCE_OPENFIN_NAME = "openfin.name";
  * Value of `telemetry.sdk.name`.
  * @see {@link RESOURCE_TELEMETRY_SDK_NAME}
  */
-export const TELEMETRY_SDK_NAME = "ui-observability";
+export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
 
 /**
  * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "1.0.0";
+export const TELEMETRY_SDK_VERSION = "0.1.0";
 
 /**
  * Value of `telemetry.sdk.language`.

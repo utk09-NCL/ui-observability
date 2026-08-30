@@ -352,7 +352,7 @@ describe("the resource block", () => {
     expect(resource["service.name"]).toBe("svc");
     expect(resource["service.version"]).toBe("2.1.0");
     expect(resource["deployment.environment"]).toBe("test");
-    expect(resource["telemetry.sdk.name"]).toBe("ui-observability");
+    expect(resource["telemetry.sdk.name"]).toBe("@utk09/ui-observability");
     expect(resource["telemetry.sdk.language"]).toBe("webjs");
     expect(resource["session.id"]).toBe("s1");
     expect(resource["tab.id"]).toBe("t1");

@@ -1,4 +1,4 @@
-import { getLogger } from "ui-observability";
+import { getLogger } from "@utk09/ui-observability";
 
 // A namespace, never a second configure(). A remote that calls configure()
 // reconfigures the one runtime in the document, which renames service.name on

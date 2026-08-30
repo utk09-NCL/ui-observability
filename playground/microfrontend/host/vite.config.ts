@@ -12,7 +12,7 @@ export default defineConfig({
       // Sharing saves the bytes and keeps one module instance. It is not what
       // makes this correct: the runtime is pinned to a symbol on globalThis, so
       // three unshared copies of the library would still find one runtime.
-      shared: { "ui-observability": { singleton: true } },
+      shared: { "@utk09/ui-observability": { singleton: true } },
       // src/remotes.d.ts declares what the remotes export. Left on, the DTS
       // plugin writes a generated @mf-types tree into the workspace and the
       // host races the remotes for it at startup.

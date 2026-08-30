@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import { createRoot } from "react-dom/client";
-import { getLogger } from "ui-observability";
+import { getLogger } from "@utk09/ui-observability";
 
 // The same library, the same runtime, a different framework. Nothing on the
 // records says which remote produced them except app.namespace.

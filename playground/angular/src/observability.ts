@@ -21,7 +21,7 @@ import {
   startTrace,
   type ObservabilityConfig,
   type OneLogger,
-} from "ui-observability";
+} from "@utk09/ui-observability";
 
 /** Carries the config from `provideObservability` to the initializer that reads it. */
 export const UI_OBSERVABILITY_CONFIG = new InjectionToken<Partial<ObservabilityConfig>>(

@@ -5,7 +5,7 @@
 // breaks when the library's internals change.
 
 import * as React from "react";
-import { endJourney, getLogger, type OneLogger, startJourney } from "ui-observability";
+import { endJourney, getLogger, type OneLogger, startJourney } from "@utk09/ui-observability";
 
 const LoggerContext = React.createContext<OneLogger | null>(null);
 

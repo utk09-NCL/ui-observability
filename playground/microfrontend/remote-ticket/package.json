@@ -10,7 +10,7 @@
   "dependencies": {
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "ui-observability": "file:../../.."
+    "@utk09/ui-observability": "file:../../.."
   },
   "devDependencies": {
     "@module-federation/vite": "1.21.1",

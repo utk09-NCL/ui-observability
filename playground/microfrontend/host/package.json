@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
-    "ui-observability": "file:../../.."
+    "@utk09/ui-observability": "file:../../.."
   },
   "devDependencies": {
     "@module-federation/vite": "1.21.1",
