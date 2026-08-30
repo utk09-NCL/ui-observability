@@ -20,6 +20,10 @@ configure({
     interactions: true,
     navigation: true,
     webVitals: true,
+    // Required. The default loader holds the specifier in a variable so a
+    // bundler cannot resolve it, which is also why the browser cannot: without
+    // this line the install fails and reports capture.install_failed.
+    webVitalsLoader: () => import("web-vitals"),
   },
 });
 

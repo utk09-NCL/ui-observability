@@ -14,6 +14,15 @@ npm run verify   # typecheck, lint, build, tests with coverage
 
 The playground is at `http://localhost:5173/playground/vanilla/index.html`. Records arrive in the terminal running the mock ingest server. Port 5174 must be free.
 
+## Consumer examples
+
+Each example imports the built package by name, so run `npm run build` first, and `npm run dev` alongside for the ingest server on port 8787.
+
+```bash
+npm run example:react     # http://localhost:5180
+npm run example:angular   # http://localhost:4200
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

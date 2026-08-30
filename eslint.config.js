@@ -153,6 +153,9 @@ export default defineConfig(
           ],
         },
       ],
+      // An Angular shell component holds a template and no members. Without this
+      // option no-extraneous-class rejects it and the fix is a filler field.
+      "@typescript-eslint/no-extraneous-class": ["error", { allowWithDecorator: true }],
     },
   },
 
