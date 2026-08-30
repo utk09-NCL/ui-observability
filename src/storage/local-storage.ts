@@ -11,7 +11,7 @@ import {
   STORAGE_NAME_LOCAL,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
-import type { LogBatch } from "../models/batch";
+import { isLogBatch, type LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 import { keysWithPrefix } from "./keys";
 
@@ -210,17 +210,18 @@ export class LocalStorageStorage implements StorageAdapter {
       "a stored batch was corrupt and was removed",
       () => JSON.parse(raw) as unknown,
     );
-    if (typeof parsed !== "object" || parsed === null) {
+    // The guard above already reported a parse failure. Reporting again here would
+    // count one corrupt entry twice.
+    if (parsed === undefined) {
       return null;
     }
 
-    const createdAt: unknown = Reflect.get(parsed, "createdAt");
-    const records: unknown = Reflect.get(parsed, "records");
-    if (typeof createdAt !== "number" || !Array.isArray(records)) {
+    if (!isLogBatch(parsed)) {
+      this.diagnostics.report("storage.degraded", "a stored entry was not a batch and was dropped");
       return null;
     }
 
-    return parsed as LogBatch;
+    return parsed;
   }
 
   /**

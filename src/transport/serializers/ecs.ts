@@ -6,6 +6,7 @@ import {
   ATTR_PAGE_URL,
   ATTR_URL_FULL,
   CONTENT_TYPE_NDJSON,
+  NANOS_PATTERN,
   NANOS_PER_MILLI,
   RESOURCE_BROWSER_USER_AGENT,
   RESOURCE_DEPLOYMENT_ENVIRONMENT,
@@ -15,6 +16,21 @@ import {
 } from "../../constants";
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
+
+/**
+ * Converts a nanosecond epoch string to epoch milliseconds. A record forwarded over
+ * the bus has only passed a shape check, and BigInt throws a SyntaxError on a
+ * non-numeric string, which loses the whole batch instead of one record.
+ * @param timeUnixNano Nanosecond epoch as decimal digits.
+ * @returns Epoch milliseconds, or the current time when the input is not numeric.
+ */
+function toMillis(timeUnixNano: string): number {
+  if (!NANOS_PATTERN.test(timeUnixNano)) {
+    return Date.now();
+  }
+
+  return Number(BigInt(timeUnixNano) / NANOS_PER_MILLI);
+}
 
 /** Serializer formatting log records into Elastic Common Schema (ECS) NDJSON documents. */
 export const ecsSerializer: LogSerializer = {
@@ -28,9 +44,7 @@ export const ecsSerializer: LogSerializer = {
    */
   serialize(records: LogRecord[]): SerializedBatch {
     const lines = records.map((record) => {
-      // BigInt division preserves precision before conversion to millisecond Date.
-      // No double holds a nanosecond epoch exactly.
-      const millis = Number(BigInt(record.timeUnixNano) / NANOS_PER_MILLI);
+      const millis = toMillis(record.timeUnixNano);
 
       return JSON.stringify({
         "@timestamp": new Date(millis).toISOString(),

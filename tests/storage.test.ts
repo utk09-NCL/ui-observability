@@ -274,8 +274,26 @@ describe("LocalStorageStorage", () => {
       "ui-observability.batch.00000000000001.empty": "",
       "ui-observability.batch.00000000000002.null": "null",
       "ui-observability.batch.00000000000003.number": "123",
-      "ui-observability.batch.00000000000004.no-time": JSON.stringify({ records: [] }),
-      "ui-observability.batch.00000000000005.no-records": JSON.stringify({ createdAt: 1 }),
+      "ui-observability.batch.00000000000004.no-id": JSON.stringify({
+        createdAt: 1,
+        attempts: 0,
+        records: [],
+      }),
+      "ui-observability.batch.00000000000005.no-time": JSON.stringify({
+        id: "no-time",
+        attempts: 0,
+        records: [],
+      }),
+      "ui-observability.batch.00000000000006.no-attempts": JSON.stringify({
+        id: "no-attempts",
+        createdAt: 1,
+        records: [],
+      }),
+      "ui-observability.batch.00000000000008.no-records": JSON.stringify({
+        id: "no-records",
+        createdAt: 1,
+        attempts: 0,
+      }),
     };
     for (const [key, value] of Object.entries(planted)) {
       localStorage.setItem(key, value);

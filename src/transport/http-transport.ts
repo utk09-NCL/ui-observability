@@ -24,6 +24,7 @@ import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { SerializedBatch } from "../models/serializer";
 import { estimateBytes } from "../utils/sanitize";
+import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
 
@@ -141,6 +142,7 @@ export class HttpTransport {
     const timer = setTimeout(() => {
       controller.abort();
     }, config.requestTimeoutMs);
+    unrefTimer(timer);
 
     try {
       return await fetch(config.endpoint, {

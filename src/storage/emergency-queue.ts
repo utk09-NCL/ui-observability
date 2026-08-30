@@ -11,7 +11,7 @@ import {
   EMERGENCY_STORAGE_KEY_PREFIX,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
-import type { LogBatch } from "../models/batch";
+import { isLogBatch, type LogBatch } from "../models/batch";
 import type { StorageAdapter } from "../models/storage";
 import { withDrainLock } from "../utils/lock";
 import { keysWithPrefix } from "./keys";
@@ -39,19 +39,17 @@ function readBatch(raw: string, diagnostics: Diagnostics): LogBatch | null {
     () => JSON.parse(raw) as unknown,
   );
 
-  if (typeof parsed !== "object" || parsed === null) {
+  // The guard above already reported a parse failure.
+  if (parsed === undefined) {
     return null;
   }
 
-  const createdAt: unknown = Reflect.get(parsed, "createdAt");
-  const records: unknown = Reflect.get(parsed, "records");
-
-  if (typeof createdAt !== "number" || !Array.isArray(records)) {
+  if (!isLogBatch(parsed)) {
     diagnostics.report("storage.degraded", "an emergency entry was not a batch and was dropped");
     return null;
   }
 
-  return parsed as LogBatch;
+  return parsed;
 }
 
 /**
@@ -103,7 +101,11 @@ async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Pro
  * @param diagnostics Diagnostics reporter.
  */
 export function saveToEmergencyQueue(batch: LogBatch, diagnostics: Diagnostics): void {
-  diagnostics.guard("storage.quota_exceeded", "writing the emergency queue", () => {
+  // Names the record count, because a full localStorage drops this batch for good:
+  // evicting emergency keys cannot free quota another application's keys are using.
+  const context = `writing the emergency queue, ${String(batch.records.length)} records`;
+
+  diagnostics.guard("storage.quota_exceeded", context, () => {
     const keys = keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics);
 
     // Evicts oldest entries to enforce capacity ceiling.

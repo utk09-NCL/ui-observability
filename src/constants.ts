@@ -261,6 +261,12 @@ export const CONTENT_TYPE_NDJSON = "application/x-ndjson";
 /** Nanoseconds per millisecond. */
 export const NANOS_PER_MILLI = 1000000n;
 
+/**
+ * Matches a nanosecond epoch written as decimal digits, e.g. "1755543600123000000".
+ * @see {@link NANOS_PER_MILLI}
+ */
+export const NANOS_PATTERN = /^\d+$/;
+
 // ----------------------------------
 // HTTP transport
 // ----------------------------------
@@ -406,6 +412,13 @@ export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
  * @see {@link JOURNEY_TOKEN_NAME_MAX_CHARS}
  */
 export const JOURNEY_TOKEN_MAX_CHARS = 256;
+
+/**
+ * How long to wait for `fin.me.getOptions()` before giving up on a seeded journey,
+ * in milliseconds.
+ * @see {@link OPENFIN_JOURNEY_CUSTOM_DATA_KEY}
+ */
+export const OPENFIN_OPTIONS_TIMEOUT_MS = 2000;
 
 /** Key under an OpenFin window's `customData` carrying a seeded journey token. */
 export const OPENFIN_JOURNEY_CUSTOM_DATA_KEY = "uiObsJourney";

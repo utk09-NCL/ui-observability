@@ -16,7 +16,8 @@ export function keysWithPrefix(prefix: string, diagnostics: Diagnostics): string
 
   diagnostics.guard("storage.unavailable", "enumerating localStorage", () => {
     for (let i = 0; i < localStorage.length; i++) {
-      // String conversion handles valid indexed key reads without unneeded null branches.
+      // localStorage.key(i) is typed string | null but cannot be null below length.
+      // A null check here is a branch no test can reach.
       const key = String(localStorage.key(i));
       if (key.startsWith(prefix)) {
         out.push(key);

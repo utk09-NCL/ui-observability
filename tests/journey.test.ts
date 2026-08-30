@@ -535,6 +535,21 @@ describe("reading OpenFin customData", () => {
     expect(engine.current()?.id).toBe("j-1");
   });
 
+  it("gives up on a getOptions that never settles", async () => {
+    // A stalled bridge would otherwise leave bootstrap pending, and with it the
+    // runtime's init(), so records queue in the boot buffer until it evicts.
+    vi.useFakeTimers();
+    vi.stubGlobal("fin", { me: { getOptions: () => new Promise(() => undefined) } });
+    const { engine, handler } = makeEngine();
+
+    const settled = engine.bootstrap();
+    await vi.advanceTimersByTimeAsync(2001);
+    await settled;
+
+    expect(engine.current()).toBeNull();
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "openfin.unavailable" }));
+  });
+
   it("calls getOptions with fin.me as its receiver, since it is a method that reads this", async () => {
     const me = {
       seeded: tokenAged(1000),

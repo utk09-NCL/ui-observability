@@ -15,6 +15,7 @@ import {
   JOURNEY_TOKEN_MAX_CHARS,
   JOURNEY_TOKEN_NAME_MAX_CHARS,
   OPENFIN_JOURNEY_CUSTOM_DATA_KEY,
+  OPENFIN_OPTIONS_TIMEOUT_MS,
 } from "../constants";
 import type { JourneyOptions } from "../models/config";
 import { newId } from "../utils/identity";
@@ -138,6 +139,27 @@ function encodeToken(journey: Journey): string {
     .replace(BASE64_PLUS_PATTERN, "-")
     .replace(BASE64_SLASH_PATTERN, "_")
     .replace(BASE64_PADDING_PATTERN, "");
+}
+
+/**
+ * Rejects when a promise has not settled within a deadline. A stalled OpenFin bridge
+ * would otherwise leave `bootstrap()` pending, and with it `init()`, so `ready` is
+ * never set and records queue in the boot buffer until it evicts.
+ * @param work Promise to bound.
+ * @param ms Deadline in milliseconds.
+ * @returns The promise's value, or a rejection once the deadline passes.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  const deadline = new Promise<never>((_resolve, reject) => {
+    // Not cleared on the happy path. The timer is unreferenced, and the rejection
+    // it raises later is delivered to a race that has already settled.
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${String(ms)}ms`));
+    }, ms);
+    unrefTimer(timer);
+  });
+
+  return Promise.race([work, deadline]);
 }
 
 /** Manages journey lifecycle, cross-window adoption, storage synchronization, and expiration. */
@@ -431,7 +453,9 @@ export class JourneyEngine {
   }
 
   /**
-   * Reads the journey token from OpenFin window creation customData.
+   * Reads the journey token from OpenFin window creation customData. Bounded by
+   * OPENFIN_OPTIONS_TIMEOUT_MS: a deadline reached here reports openfin.unavailable
+   * and yields no token, which is the same outcome as a window created without one.
    * @returns Promise resolving to token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
@@ -446,7 +470,7 @@ export class JourneyEngine {
     const options = await this.diagnostics.guardAsync(
       "openfin.unavailable",
       "reading fin.me.getOptions()",
-      () => getOptions.call(me),
+      () => withDeadline(getOptions.call(me), OPENFIN_OPTIONS_TIMEOUT_MS),
     );
     const token = options?.customData?.[OPENFIN_JOURNEY_CUSTOM_DATA_KEY];
     return typeof token === "string" ? token : null;

@@ -148,7 +148,10 @@ export class LogPipeline {
   }
 
   /**
-   * Atomically drains all buffered and unconfirmed in-flight records into a single exit batch.
+   * Atomically drains all buffered and unconfirmed in-flight records into a single
+   * exit batch. Records already handed to fetch go out again under a new batch id,
+   * so the server cannot deduplicate them and the exit flush can deliver duplicates.
+   * A document being closed cannot confirm delivery, so this is by design.
    * @returns Combined LogBatch or null if no records are pending.
    */
   drainPending(): LogBatch | null {

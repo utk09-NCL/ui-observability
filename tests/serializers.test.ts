@@ -129,6 +129,11 @@ describe("ecsSerializer", () => {
 
   it("converts the OTLP nanosecond string into an ISO timestamp", () => {
     expect(ecs(record())["@timestamp"]).toBe(new Date(1755543600123).toISOString());
+
+    // A record forwarded over the bus has only passed a shape check. BigInt throws
+    // on a non-numeric string, which would lose every record in the batch.
+    const at = Date.parse(ecs(record({ timeUnixNano: "not-a-number" }))["@timestamp"]);
+    expect(Number.isNaN(at)).toBe(false);
   });
 
   it("lowercases the level, because that is what ECS expects", () => {

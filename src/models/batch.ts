@@ -21,6 +21,32 @@ export interface LogBatch {
 }
 
 /**
+ * Whether a value parsed out of storage carries the whole batch contract. An entry
+ * missing `id` is never matched by `keyOf` after delivery, so it is retried forever
+ * and blocks every batch behind it. One missing `attempts` counts as NaN, never
+ * reaches `maxAttempts`, and is never dead-lettered.
+ * @param value Parsed storage entry.
+ * @returns True when every required field is present and correctly typed.
+ */
+export function isLogBatch(value: unknown): value is LogBatch {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const id: unknown = Reflect.get(value, "id");
+  const createdAt: unknown = Reflect.get(value, "createdAt");
+  const attempts: unknown = Reflect.get(value, "attempts");
+  const records: unknown = Reflect.get(value, "records");
+
+  return (
+    typeof id === "string" &&
+    typeof createdAt === "number" &&
+    typeof attempts === "number" &&
+    Array.isArray(records)
+  );
+}
+
+/**
  * Splits a batch the server rejected as too large into two halves.
  * Each half gets a fresh id; age and attempts carry over unchanged.
  * @param batch The rejected batch.
