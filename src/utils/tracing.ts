@@ -16,6 +16,7 @@ import {
   TRACE_FLAGS_SAMPLED,
   TRACE_ID_BYTES,
   TRACE_MAX_AGE_MS,
+  TRACEPARENT_HEADER,
   TRACEPARENT_VERSION,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -157,12 +158,12 @@ export class TraceEngine {
     this.diagnostics.guard("trace.otel_failed", "injecting OpenTelemetry headers", () => {
       propagation.inject(otelContext.active(), carrier);
     });
-    if (!carrier.traceparent) {
+    if (!carrier[TRACEPARENT_HEADER]) {
       const ctx = this.resolve();
       // Masks trace flags to 2-digit hex byte per W3C specification. trace-flags is
       // a bitfield, not a boolean. 00 or 01 discards what an upstream tracer set.
       const flags = (ctx.traceFlags & TRACE_FLAGS_MASK).toString(16).padStart(2, "0");
-      carrier.traceparent = `${TRACEPARENT_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
+      carrier[TRACEPARENT_HEADER] = `${TRACEPARENT_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
     }
     return carrier;
   }

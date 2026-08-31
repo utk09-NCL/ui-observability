@@ -460,6 +460,12 @@ export const TRACE_FLAGS_SAMPLED = 1;
 /** Mask for the one-byte trace-flags field. */
 export const TRACE_FLAGS_MASK = 0xff;
 
+/**
+ * W3C trace context header name
+ * @see {@link TRACEPARENT_VERSION}
+ */
+export const TRACEPARENT_HEADER = "traceparent";
+
 /** traceparent header version prefix. */
 export const TRACEPARENT_VERSION = "00";
 
