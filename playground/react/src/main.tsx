@@ -12,7 +12,7 @@ configure({
   serviceVersion: "0.0.0",
   environment: "local",
   minLevel: "TRACE",
-  console: { enabled: true },
+  console: true,
   capture: {
     errors: true,
     rejections: true,

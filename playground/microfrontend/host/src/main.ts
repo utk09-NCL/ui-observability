@@ -8,7 +8,7 @@ configure({
   serviceVersion: "0.0.0",
   environment: "local",
   minLevel: "TRACE",
-  console: { enabled: true },
+  console: true,
   sampling: {
     defaultRate: 1,
     // Rates are per namespace, which is how one chatty remote turns down

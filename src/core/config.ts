@@ -9,6 +9,7 @@
 
 import {
   CONFIG_SECTIONS,
+  CONSOLE_DEFAULT_LEVEL,
   DEFAULT_CONFIG,
   SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
@@ -18,7 +19,8 @@ import {
   UNDEFAULTED_CONFIG_KEYS,
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
-import type { ObservabilityConfig, ResolvedConfig } from "../models/config";
+import type { ConsoleOption, ObservabilityConfig, ResolvedConfig } from "../models/config";
+import type { LogLevel } from "../models/log-record";
 import type { LogSerializer } from "../models/serializer";
 import { ecsSerializer } from "../transport/serializers/ecs";
 import { otlpSerializer } from "../transport/serializers/otlp";
@@ -70,6 +72,28 @@ function resolveSerializer(
 }
 
 /**
+ * Normalizes the console option into a minimum mirror level.
+ * @param requested Consumer console option.
+ * @param previous Console level in force.
+ * @returns Min level to mirror, or null when mirroring is off.
+ */
+function resolveConsole(
+  requested: ConsoleOption | undefined,
+  previous: LogLevel | null,
+): LogLevel | null {
+  if (requested === undefined) {
+    return previous;
+  }
+  if (requested === false) {
+    return null;
+  }
+  if (requested === true) {
+    return CONSOLE_DEFAULT_LEVEL;
+  }
+  return requested;
+}
+
+/**
  * Resolves partial configuration inputs into a validated ResolvedConfig object.
  * @param input Partial consumer configuration options.
  * @param diagnostics Diagnostics reporter.
@@ -88,22 +112,14 @@ export function resolveConfig(
     ...input,
     // Serializer instance overrides string identifier after object merge.
     serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
-    streams: {
-      logs: { ...base.streams.logs, ...input.streams?.logs },
-      metrics: { ...base.streams.metrics, ...input.streams?.metrics },
-    },
-    storage: { ...base.storage, ...input.storage },
-    retry: { ...base.retry, ...input.retry },
+    console: resolveConsole(input.console, base.console),
     sampling: {
       ...base.sampling,
       ...input.sampling,
       rates: { ...base.sampling.rates, ...input.sampling?.rates },
     },
-    journey: { ...base.journey, ...input.journey },
     bus: { ...base.bus, ...input.bus },
     capture: { ...base.capture, ...input.capture },
-    limits: { ...base.limits, ...input.limits },
-    console: { ...base.console, ...input.console },
   };
 
   if (!merged.endpoint) {

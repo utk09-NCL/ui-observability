@@ -14,7 +14,6 @@ export type DiagnosticCode =
   | "record.dropped_by_sampling"
   | "record.dropped_by_redact"
   | "record.dropped_boot_buffer_full"
-  | "record.dropped_pending_full"
   | "record.dropped_malformed"
   | "journey.expired"
   | "journey.adopted"

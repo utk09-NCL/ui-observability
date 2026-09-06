@@ -4,7 +4,14 @@
 // backoff. One timer, never a chain. Every scheduling path clears the pending
 // timer first.
 
-import { BATCHES_PER_DRAIN, DRAIN_LOCK_NAME } from "../constants";
+import {
+  BATCHES_PER_DRAIN,
+  DRAIN_LOCK_NAME,
+  RETRY_BASE_DELAY_MS,
+  RETRY_IDLE_DELAY_MS,
+  RETRY_MAX_DELAY_MS,
+  STORAGE_LIMITS,
+} from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
@@ -57,13 +64,13 @@ export class RetryEngine {
       addEventListener("online", this.onOnline);
     }
 
-    this.schedule(this.config.retry.idleDelayMs);
+    this.schedule(RETRY_IDLE_DELAY_MS);
   }
 
   /** Triggers an accelerated retry schedule when a new batch is stored offline. */
   nudge(): void {
     if (!this.draining) {
-      this.schedule(this.config.retry.baseDelayMs);
+      this.schedule(RETRY_BASE_DELAY_MS);
     }
   }
 
@@ -111,10 +118,7 @@ export class RetryEngine {
    * @returns Backoff duration in milliseconds.
    */
   private backoffMs(): number {
-    const exponential = Math.min(
-      this.config.retry.baseDelayMs * 2 ** this.attempt,
-      this.config.retry.maxDelayMs,
-    );
+    const exponential = Math.min(RETRY_BASE_DELAY_MS * 2 ** this.attempt, RETRY_MAX_DELAY_MS);
 
     return Math.random() * exponential;
   }
@@ -132,7 +136,7 @@ export class RetryEngine {
       // undefined means the lock was held elsewhere. Without the reschedule, one
       // lost race retires this window.
       if (ran !== true) {
-        this.schedule(this.config.retry.idleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
       }
     } finally {
       this.draining = false;
@@ -148,14 +152,14 @@ export class RetryEngine {
     try {
       const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
       if (online === false) {
-        this.schedule(this.config.retry.idleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return true;
       }
 
       const batches = await this.storage.take(this.batchesPerDrain);
 
       if (batches.length === 0) {
-        this.schedule(this.config.retry.idleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return true;
       }
 
@@ -170,7 +174,7 @@ export class RetryEngine {
         }
       }
 
-      this.schedule(batches.length === this.batchesPerDrain ? 0 : this.config.retry.idleDelayMs);
+      this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
       return true;
     } catch (error) {
       this.diagnostics.report("storage.degraded", "the drain loop threw", undefined, error);
@@ -186,7 +190,7 @@ export class RetryEngine {
    * @returns True to continue processing next batch; false to halt current drain.
    */
   private async deliver(batch: LogBatch): Promise<boolean> {
-    if (batch.attempts >= this.config.storage.maxAttempts) {
+    if (batch.attempts >= STORAGE_LIMITS.maxAttempts) {
       this.diagnostics.report(
         "storage.dead_lettered",
         `giving up on a batch after ${batch.attempts.toString()} attempts`,
@@ -215,7 +219,7 @@ export class RetryEngine {
       }
 
       if (failure?.kind === "offline") {
-        this.schedule(this.config.retry.idleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return false;
       }
 

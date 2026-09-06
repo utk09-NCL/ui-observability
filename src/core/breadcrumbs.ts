@@ -37,7 +37,7 @@ export class BreadcrumbBuffer {
   private filled = false;
 
   /** Maximum number of breadcrumbs retained in memory. */
-  private capacity: number;
+  private readonly capacity: number;
 
   /**
    * @param capacity Maximum breadcrumb capacity, clamped to minimum allowed size.
@@ -45,25 +45,6 @@ export class BreadcrumbBuffer {
   constructor(capacity: number) {
     this.capacity = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
     this.buffer = new Array<Breadcrumb | undefined>(this.capacity);
-  }
-
-  /**
-   * Resizes buffer capacity while preserving the newest breadcrumbs.
-   * @param capacity New maximum capacity.
-   */
-  resize(capacity: number): void {
-    const clamped = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
-    if (clamped === this.capacity) {
-      return;
-    }
-
-    // The clamp guarantees a positive count. slice(-0) keeps the whole trail.
-    const kept = this.snapshot().slice(-clamped);
-    this.capacity = clamped;
-    this.clear();
-    for (const crumb of kept) {
-      this.push(crumb);
-    }
   }
 
   /**

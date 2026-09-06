@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
-import { JourneyEngine, type Journey } from "../src/core/journey";
-import type { JourneyOptions } from "../src/models/config";
+import { JourneyEngine, type Journey, type JourneyOptions } from "../src/core/journey";
 
 // Own copies of both literals: a test that reads the constant it checks cannot
 // catch a typo in that constant.

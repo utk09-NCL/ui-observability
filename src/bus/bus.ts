@@ -1,7 +1,12 @@
 // src/bus/bus.ts
 //
-// Manages cross-realm bus role resolution, message routing, and boot buffering.
+// Manages cross-realm bus role resolution and message routing.
 
+import {
+  BUS_CHANNEL_NAME,
+  BUS_HANDSHAKE_TIMEOUT_MS,
+  BUS_MAX_HANDSHAKE_ATTEMPTS,
+} from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { Journey } from "../core/journey";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
@@ -21,6 +26,20 @@ import {
   type Receive,
   type WorkerLike,
 } from "./links";
+
+/** Handshake timing for a forwarder waiting on an owner. */
+export interface HandshakeOptions {
+  /** Max time to wait for an owner to answer, in milliseconds. */
+  timeoutMs: number;
+  /** Attempts allowed before a cross-origin forwarder promotes itself to sender. */
+  maxAttempts: number;
+}
+
+/** Handshake timing in force. Tests build a bus with shorter values. */
+export const HANDSHAKE_OPTIONS: HandshakeOptions = {
+  timeoutMs: BUS_HANDSHAKE_TIMEOUT_MS,
+  maxAttempts: BUS_MAX_HANDSHAKE_ATTEMPTS,
+};
 
 /** Callbacks for handling records and journey events from connected realms. */
 export interface BusHandlers {
@@ -78,6 +97,7 @@ export class Bus {
     private readonly contextId: string,
     private readonly tabId: string,
     private readonly handlers: BusHandlers,
+    private readonly handshakeOptions: HandshakeOptions = HANDSHAKE_OPTIONS,
   ) {}
 
   /** Returns the resolved bus role. */
@@ -154,7 +174,7 @@ export class Bus {
       return this.role;
     }
 
-    const attempts = this.orphanPolicy() === "retry" ? this.config.bus.maxHandshakeAttempts : 1;
+    const attempts = this.orphanPolicy() === "retry" ? this.handshakeOptions.maxAttempts : 1;
 
     let welcomed = false;
     for (let attempt = 0; attempt < attempts && !welcomed; attempt++) {
@@ -170,7 +190,7 @@ export class Bus {
       }
       this.diagnostics.report(
         "bus.handshake_timeout",
-        `no owner answered after ${String(attempts)} attempt(s) of ${String(this.config.bus.handshakeTimeoutMs)}ms, promoting to sender`,
+        `no owner answered after ${String(attempts)} attempt(s) of ${String(this.handshakeOptions.timeoutMs)}ms, promoting to sender`,
         { via: candidate.kind, crossOrigin: this.isCrossOriginFrame() },
       );
     }
@@ -375,10 +395,6 @@ export class Bus {
 
   /** Resolves the handshake orphan policy for the current platform context. */
   private orphanPolicy(): "promote" | "retry" {
-    const configured = this.config.bus.orphanPolicy;
-    if (configured !== "auto") {
-      return configured;
-    }
     return this.isCrossOriginFrame() ? "retry" : "promote";
   }
 
@@ -403,11 +419,7 @@ export class Bus {
     if (!this.platform.isTopLevelDocument) {
       return createParentLink(this.receive, this.diagnostics);
     }
-    if (
-      this.platform.platform === "openfin" &&
-      this.config.bus.openFinHost === "provider" &&
-      !this.isOpenFinProvider
-    ) {
+    if (this.platform.platform === "openfin" && !this.isOpenFinProvider) {
       return this.ensureOpenFinLink();
     }
     return null;
@@ -423,7 +435,7 @@ export class Bus {
 
     if (this.platform.isTopLevelDocument) {
       push(createChildrenLink(this.receive, this.config.bus.trustedOrigins, this.diagnostics));
-      push(createBroadcastLink(this.config.bus.channelName, this.receive, this.diagnostics));
+      push(createBroadcastLink(BUS_CHANNEL_NAME, this.receive, this.diagnostics));
     }
     if (this.platform.platform === "openfin" || this.platform.platform === "openfin_web") {
       push(this.ensureOpenFinLink());
@@ -432,11 +444,7 @@ export class Bus {
 
   /** Returns the singleton OpenFin InterApplicationBus link. */
   private ensureOpenFinLink(): Link | null {
-    this.openFinLink ??= createOpenFinLink(
-      this.config.bus.channelName,
-      this.receive,
-      this.diagnostics,
-    );
+    this.openFinLink ??= createOpenFinLink(BUS_CHANNEL_NAME, this.receive, this.diagnostics);
     return this.openFinLink;
   }
 
@@ -464,7 +472,7 @@ export class Bus {
       // the timer exists, because the welcome arrives through the post below.
       const timer = setTimeout(() => {
         finish(false);
-      }, this.config.bus.handshakeTimeoutMs);
+      }, this.handshakeOptions.timeoutMs);
       unrefTimer(timer);
       candidate.post({ t: "hello", from: this.contextId, tabId: this.tabId });
     });
@@ -478,42 +486,5 @@ export class Bus {
       tabId: this.tabId,
     });
     this.post({ t: "journey?", from: this.contextId });
-  }
-}
-
-/** Buffers log records during bus role resolution with FIFO overflow eviction. */
-export class BootBuffer {
-  /** Held records in FIFO order. */
-  private records: LogRecord[] = [];
-
-  /**
-   * @param config Active configuration instance.
-   * @param diagnostics Diagnostics reporter.
-   */
-  constructor(
-    private readonly config: ResolvedConfig,
-    private readonly diagnostics: Diagnostics,
-  ) {}
-
-  /**
-   * Buffers a record, dropping the oldest when capacity is exceeded.
-   * @param record Record to buffer.
-   */
-  push(record: LogRecord): void {
-    if (this.records.length >= this.config.bus.maxBootBufferRecords) {
-      this.records.shift();
-      this.diagnostics.count("record.dropped_boot_buffer_full");
-    }
-    this.records.push(record);
-  }
-
-  /**
-   * Drains and returns all buffered records in FIFO order.
-   * @returns Buffered log records.
-   */
-  release(): LogRecord[] {
-    const released = this.records;
-    this.records = [];
-    return released;
   }
 }

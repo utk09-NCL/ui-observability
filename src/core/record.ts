@@ -44,7 +44,7 @@ import {
 } from "../models/log-record";
 import type { Identity } from "../utils/identity";
 import { currentUrl, type PlatformMetadata } from "../utils/platform";
-import { sanitizeWithSize, truncate } from "../utils/sanitize";
+import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
 import type { Sequence } from "../utils/sequence";
 import type { TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
@@ -55,6 +55,8 @@ import type { JourneyEngine } from "./journey";
 export interface RecordBuilderDeps {
   /** Active configuration object reference. */
   config: ResolvedConfig;
+  /** Per-record size caps. */
+  limits: RecordLimits;
   /** Diagnostics reporter instance. */
   diagnostics: Diagnostics;
   /** Ambient context store. */
@@ -69,6 +71,14 @@ export interface RecordBuilderDeps {
   identity: Identity;
   /** Detected host platform metadata. */
   platform: PlatformMetadata;
+}
+
+/** Per-record size caps, applied after sanitize and again after redact. */
+export interface RecordLimits extends SanitizeLimits {
+  /** Max record body length, in characters. */
+  maxBodyChars: number;
+  /** Max total attribute bytes per record. */
+  maxRecordBytes: number;
 }
 
 /** Input parameters for constructing a single log record. */
@@ -130,14 +140,13 @@ export class RecordBuilder {
    * @returns Completed LogRecord or null if dropped by severity or redaction.
    */
   build(input: BuildInput): LogRecord | null {
-    const { config, diagnostics, tracing, journey, sequence } = this.deps;
+    const { config, diagnostics, tracing, journey, sequence, limits } = this.deps;
 
     if (!this.isEnabled(input.level)) {
       diagnostics.count("record.dropped_by_level");
       return null;
     }
 
-    const limits = config.limits;
     const traceCtx = tracing.resolve();
     const activeJourney = journey.current();
     const seq = sequence.next();

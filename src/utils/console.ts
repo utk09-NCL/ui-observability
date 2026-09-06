@@ -18,21 +18,15 @@ const METHOD: Record<LogLevel, "debug" | "info" | "warn" | "error"> = {
 /** Mirrors log records directly to browser or Node console methods based on severity. */
 export class ConsoleSink {
   /**
-   * @param enabled Indicates whether console mirroring is active.
-   * @param minLevel Minimum log level required to emit to the console.
+   * @param minLevel Minimum log level required to emit, or null to mirror nothing.
    */
-  constructor(
-    private enabled: boolean,
-    private minLevel: LogLevel,
-  ) {}
+  constructor(private minLevel: LogLevel | null) {}
 
   /**
-   * Updates console sink configuration settings.
-   * @param enabled Indicates whether console mirroring is active.
-   * @param minLevel Minimum log level required to emit to the console.
+   * Updates the console mirroring threshold.
+   * @param minLevel Minimum log level required to emit, or null to mirror nothing.
    */
-  update(enabled: boolean, minLevel: LogLevel): void {
-    this.enabled = enabled;
+  update(minLevel: LogLevel | null): void {
     this.minLevel = minLevel;
   }
 
@@ -43,10 +37,7 @@ export class ConsoleSink {
    * @param payload Optional contextual payload or object reference.
    */
   write(level: LogLevel, message: string, payload?: unknown): void {
-    if (!this.enabled) {
-      return;
-    }
-    if (LEVEL_ORDER[level] < LEVEL_ORDER[this.minLevel]) {
+    if (this.minLevel === null || LEVEL_ORDER[level] < LEVEL_ORDER[this.minLevel]) {
       return;
     }
     // Prevents throws in environments where console is undefined. Absent in a worker

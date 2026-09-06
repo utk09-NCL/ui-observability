@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  RETRY_BASE_DELAY_MS,
+  RETRY_IDLE_DELAY_MS,
+  RETRY_MAX_DELAY_MS,
+  STORAGE_LIMITS,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -8,10 +14,12 @@ import { TransportError } from "../src/transport/errors";
 import type { HttpTransport } from "../src/transport/http-transport";
 import { RetryEngine } from "../src/transport/retry-engine";
 
-const BASE_DELAY_MS = 100;
-const MAX_DELAY_MS = 1000;
-const IDLE_DELAY_MS = 500;
-const MAX_ATTEMPTS = 3;
+// The schedule is no longer configurable, so the tests drive the shipped values
+// under fake timers.
+const BASE_DELAY_MS = RETRY_BASE_DELAY_MS;
+const MAX_DELAY_MS = RETRY_MAX_DELAY_MS;
+const IDLE_DELAY_MS = RETRY_IDLE_DELAY_MS;
+const MAX_ATTEMPTS = STORAGE_LIMITS.maxAttempts;
 const SERVER_MAX_BYTES = 65536;
 
 const limits = { maxBatches: 100, maxAgeMs: 60_000, maxAttempts: MAX_ATTEMPTS };
@@ -20,8 +28,6 @@ const config = resolveConfig(
   {
     endpoint: "https://x/v1/logs",
     serviceName: "svc",
-    retry: { baseDelayMs: BASE_DELAY_MS, maxDelayMs: MAX_DELAY_MS, idleDelayMs: IDLE_DELAY_MS },
-    storage: limits,
   },
   new Diagnostics(vi.fn(), 0),
 );
@@ -302,7 +308,10 @@ describe("RetryEngine splitting", () => {
 
     engine.start();
     engine.nudge();
-    await tick(2000);
+    // Three drains: 4 splits to 2x2, those split to 4x1, then the four send. A
+    // split does not back off, so the nudge arms the first and each drain after
+    // it re-arms at the idle delay.
+    await tick(BASE_DELAY_MS + IDLE_DELAY_MS * 2 + 1000);
 
     expect(await storage.count()).toBe(0);
     expect(handler).toHaveBeenCalledWith(

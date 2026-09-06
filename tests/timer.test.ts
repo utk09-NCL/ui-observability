@@ -135,7 +135,7 @@ describe("ConsoleSink", () => {
   it("prints nothing at all when disabled", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    new ConsoleSink(false, "TRACE").write("INFO", "hello");
+    new ConsoleSink(null).write("INFO", "hello");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -143,7 +143,7 @@ describe("ConsoleSink", () => {
   it("respects its own level independently of the pipeline level", () => {
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
-    new ConsoleSink(true, "WARN").write("DEBUG", "quiet");
+    new ConsoleSink("WARN").write("DEBUG", "quiet");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -151,7 +151,7 @@ describe("ConsoleSink", () => {
   it("prints a message with no payload", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    new ConsoleSink(true, "TRACE").write("INFO", "hello");
+    new ConsoleSink("TRACE").write("INFO", "hello");
 
     expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c INFO", "color:#888", "", "hello");
   });
@@ -159,7 +159,7 @@ describe("ConsoleSink", () => {
   it("appends the payload when there is one", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    new ConsoleSink(true, "TRACE").write("WARN", "careful", { orderId: "ORD-1" });
+    new ConsoleSink("TRACE").write("WARN", "careful", { orderId: "ORD-1" });
 
     expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c WARN", "color:#888", "", "careful", {
       orderId: "ORD-1",
@@ -169,7 +169,7 @@ describe("ConsoleSink", () => {
   it("routes each level to its console method", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const sink = new ConsoleSink(true, "TRACE");
+    const sink = new ConsoleSink("TRACE");
 
     sink.write("TRACE", "t");
     sink.write("FATAL", "f");
@@ -180,10 +180,10 @@ describe("ConsoleSink", () => {
 
   it("takes a changed configuration through update", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const sink = new ConsoleSink(false, "TRACE");
+    const sink = new ConsoleSink(null);
 
     sink.write("INFO", "before");
-    sink.update(true, "INFO");
+    sink.update("INFO");
     sink.write("INFO", "after");
 
     expect(spy).toHaveBeenCalledTimes(1);
@@ -194,7 +194,7 @@ describe("ConsoleSink", () => {
     vi.stubGlobal("console", undefined);
 
     expect(() => {
-      new ConsoleSink(true, "TRACE").write("INFO", "nowhere");
+      new ConsoleSink("TRACE").write("INFO", "nowhere");
     }).not.toThrow();
   });
 });

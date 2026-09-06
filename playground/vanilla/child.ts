@@ -52,7 +52,7 @@ configure({
   environment: "local",
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console at its own level.
-  console: { enabled: true, level: "DEBUG" },
+  console: "DEBUG",
   onDiagnostic: (event) => {
     // bus.role_resolved carries the resolved role, which is the frame's readout.
     if (event.code === "bus.role_resolved" && typeof event.detail?.role === "string") {

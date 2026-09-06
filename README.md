@@ -112,38 +112,29 @@ log.error("pricing call failed", caughtError);
 
 `endpoint` is the only required property.
 
-| Key                          | Default                   | Description                                                                                |
-| ---------------------------- | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `endpoint`                   | _required_                | Target HTTP endpoint URL for log ingestion.                                                |
-| `serviceName`                | `""`                      | Service identifier attached to all records.                                                |
-| `serviceVersion`             | `""`                      | Application version attached to all records.                                               |
-| `environment`                | `""`                      | Deployment environment label (`production`, `staging`).                                    |
-| `enabled`                    | `true`                    | Master kill-switch. When `false`, suppresses all logging.                                  |
-| `minLevel`                   | `"INFO"`                  | Minimum severity threshold (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).           |
-| `streams.logs`               | `2000` ms, `100` records  | Flush interval and batch limit for standard logs.                                          |
-| `streams.metrics`            | `10000` ms, `500` records | Flush interval and batch limit for metrics.                                                |
-| `compression`                | `"gzip"`                  | Compression algorithm (`gzip`, `none`). Applies above `compressionThresholdBytes`, `1024`. |
-| `serializer`                 | `"otlp"`                  | Wire format (`otlp`, `ecs`, or custom `LogSerializer`).                                    |
-| `credentials`                | `"include"`               | Fetch credentials policy.                                                                  |
-| `headers`                    | `{}`                      | Static headers or dynamic header resolver function.                                        |
-| `maxConcurrentRequests`      | `2`                       | Maximum concurrent in-flight HTTP requests.                                                |
-| `requestTimeoutMs`           | `15000`                   | HTTP request timeout in milliseconds.                                                      |
-| `storage.strategy`           | `"auto"`                  | Persistence engine (`auto`, `indexeddb`, `localstorage`, `memory`, `none`).                |
-| `storage.maxBatches`         | `500`                     | Maximum batches stored offline before FIFO pruning.                                        |
-| `storage.maxAgeMs`           | `86400000` (24h)          | Maximum offline batch retention in milliseconds.                                           |
-| `storage.maxAttempts`        | `5`                       | Maximum redelivery attempts before dead-letter drop.                                       |
-| `retry.baseDelayMs`          | `2000`                    | Initial exponential backoff delay.                                                         |
-| `retry.maxDelayMs`           | `60000`                   | Maximum backoff delay ceiling.                                                             |
-| `sampling.defaultRate`       | `1`                       | Keep rate applied when no namespace rule matches.                                          |
-| `sampling.rates`             | `{}`                      | Per-namespace keep rates, longest matching prefix wins.                                    |
-| `sampling.alwaysSampleTypes` | `["action"]`              | Record types kept regardless of rate.                                                      |
-| `journey.maxAgeMs`           | `1800000` (30m)           | Maximum journey duration.                                                                  |
-| `bus.mode`                   | `"auto"`                  | Bus role (`auto`, `sender`, `forwarder`, `off`).                                           |
-| `capture`                    | See below                 | Browser auto-instrumentation settings.                                                     |
-| `limits.maxRecordBytes`      | `32768` (32 KB)           | Per-record size ceiling before truncation.                                                 |
-| `console.enabled`            | `false`                   | Mirrors formatted records to browser devtools.                                             |
-| `redact(record)`             | `undefined`               | Hook to mutate or drop (`null`) records before ingest.                                     |
-| `onDiagnostic(event)`        | `undefined`               | Listener for internal diagnostics and telemetry faults.                                    |
+| Key                          | Default      | Description                                                                      |
+| ---------------------------- | ------------ | -------------------------------------------------------------------------------- |
+| `endpoint`                   | _required_   | Target HTTP endpoint URL for log ingestion.                                      |
+| `serviceName`                | `""`         | Service identifier attached to all records.                                      |
+| `serviceVersion`             | `""`         | Application version attached to all records.                                     |
+| `environment`                | `""`         | Deployment environment label (`production`, `staging`).                          |
+| `enabled`                    | `true`       | Master kill-switch. When `false`, suppresses all logging.                        |
+| `minLevel`                   | `"INFO"`     | Minimum severity threshold (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`). |
+| `compression`                | `"gzip"`     | Compression algorithm (`gzip`, `none`). Applies to payloads over 1 KB.           |
+| `serializer`                 | `"otlp"`     | Wire format (`otlp`, `ecs`, or custom `LogSerializer`).                          |
+| `credentials`                | `"include"`  | Fetch credentials policy.                                                        |
+| `headers`                    | `{}`         | Static headers or dynamic header resolver function.                              |
+| `storage`                    | `"auto"`     | Persistence engine (`auto`, `indexeddb`, `localstorage`, `memory`, `none`).      |
+| `sampling.defaultRate`       | `1`          | Keep rate applied when no namespace rule matches.                                |
+| `sampling.rates`             | `{}`         | Per-namespace keep rates, longest matching prefix wins.                          |
+| `sampling.alwaysSampleTypes` | `["action"]` | Record types kept regardless of rate.                                            |
+| `bus.mode`                   | `"auto"`     | Bus role (`auto`, `sender`, `forwarder`, `off`).                                 |
+| `bus.trustedOrigins`         | `[]`         | Origins allowed to post records to this document from a cross-origin frame.      |
+| `bus.openFinRole`            | `"auto"`     | OpenFin context role (`auto`, `provider`, `client`).                             |
+| `capture`                    | See below    | Browser auto-instrumentation settings.                                           |
+| `console`                    | `false`      | Mirrors records to devtools. `true` mirrors from `DEBUG`, or name a level.       |
+| `redact(record)`             | `undefined`  | Hook to mutate or drop (`null`) records before ingest.                           |
+| `onDiagnostic(event)`        | `undefined`  | Listener for internal diagnostics and telemetry faults.                          |
 
 ### Auto-Capture Options
 

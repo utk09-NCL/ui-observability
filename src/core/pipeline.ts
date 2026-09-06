@@ -21,9 +21,17 @@ import {
   type Subscription,
   tap,
 } from "rxjs";
-import { ATTR_LOG_TYPE, LOG_TYPE_METRIC, PENDING_BUFFER_BATCHES } from "../constants";
+import {
+  ATTR_LOG_TYPE,
+  LOG_BATCH_SIZE,
+  LOG_FLUSH_INTERVAL_MS,
+  LOG_TYPE_METRIC,
+  MAX_CONCURRENT_REQUESTS,
+  METRIC_BATCH_SIZE,
+  METRIC_FLUSH_INTERVAL_MS,
+} from "../constants";
 import type { LogBatch } from "../models/batch";
-import type { ResolvedConfig, StreamOptions } from "../models/config";
+import type { ResolvedConfig } from "../models/config";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
 import type { HttpTransport } from "../transport/http-transport";
@@ -44,42 +52,40 @@ function isMetric(record: LogRecord): boolean {
   return record.attributes[ATTR_LOG_TYPE] === LOG_TYPE_METRIC;
 }
 
+/** Batching policy for one record stream. */
+export interface StreamOptions {
+  /** Max time a partial batch waits before it is sent, in milliseconds. */
+  flushIntervalMs: number;
+  /** Max records per batch before it is sent early. */
+  batchSize: number;
+}
+
+/** Batching policy per stream. Metrics batch harder: higher volume, nothing waits on them. */
+export const STREAM_OPTIONS: Record<StreamName, StreamOptions> = {
+  logs: { flushIntervalMs: LOG_FLUSH_INTERVAL_MS, batchSize: LOG_BATCH_SIZE },
+  metrics: { flushIntervalMs: METRIC_FLUSH_INTERVAL_MS, batchSize: METRIC_BATCH_SIZE },
+};
+
 /** Dedicated stream buffer accumulating records until flushed by timer, capacity, or exit flush. */
 class RecordStream {
   /** Pending records waiting in chronological order. */
   private pending: LogRecord[] = [];
 
   /**
-   * @param config Active configuration instance.
+   * @param options Batching policy for this stream.
    * @param name Target stream name.
-   * @param diagnostics Diagnostics reporter.
    */
   constructor(
-    private readonly config: ResolvedConfig,
+    readonly options: StreamOptions,
     readonly name: StreamName,
-    private readonly diagnostics: Diagnostics,
   ) {}
 
-  /** Stream batching configuration options. */
-  get options(): StreamOptions {
-    return this.config.streams[this.name];
-  }
-
-  /** Maximum buffered record capacity before FIFO eviction. */
-  private get capacity(): number {
-    return Math.max(this.options.batchSize, 1) * PENDING_BUFFER_BATCHES;
-  }
-
   /**
-   * Buffers a record, dropping the oldest if capacity is exceeded.
+   * Buffers a record. bufferTime emits on the batchSize-th record and `claim`
+   * drains synchronously, so this never holds more than one batch.
    * @param record Record to enqueue.
    */
   add(record: LogRecord): void {
-    if (this.pending.length >= this.capacity) {
-      this.pending.shift();
-      this.diagnostics.count("record.dropped_pending_full");
-    }
-
     this.pending.push(record);
   }
 
@@ -118,6 +124,7 @@ export class LogPipeline {
    * @param storage Storage adapter for offline batch persistence.
    * @param retry Retry engine for redelivering persisted batches.
    * @param diagnostics Diagnostics reporter.
+   * @param streamOptions Batching policy per stream.
    */
   constructor(
     private readonly config: ResolvedConfig,
@@ -125,10 +132,11 @@ export class LogPipeline {
     private readonly storage: StorageAdapter,
     private readonly retry: RetryEngine,
     private readonly diagnostics: Diagnostics,
+    streamOptions: Record<StreamName, StreamOptions> = STREAM_OPTIONS,
   ) {
     this.streams = {
-      logs: new RecordStream(config, "logs", diagnostics),
-      metrics: new RecordStream(config, "metrics", diagnostics),
+      logs: new RecordStream(streamOptions.logs, "logs"),
+      metrics: new RecordStream(streamOptions.metrics, "metrics"),
     };
 
     this.subscribe();
@@ -232,7 +240,7 @@ export class LogPipeline {
                 return EMPTY;
               }),
             ),
-          this.config.maxConcurrentRequests,
+          MAX_CONCURRENT_REQUESTS,
         ),
       )
       .subscribe();
@@ -315,7 +323,7 @@ export class LogPipeline {
         await this.transport.send(batch);
       } catch (error) {
         // Increments attempt count before storing failed live send. Stored at 0,
-        // the batch exceeds storage.maxAttempts by one and attempt headers
+        // the batch exceeds STORAGE_LIMITS.maxAttempts by one and attempt headers
         // under-report.
         await this.store({ ...batch, attempts: batch.attempts + 1 });
         this.diagnostics.report(

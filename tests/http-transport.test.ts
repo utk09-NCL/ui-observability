@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { COMPRESSION_THRESHOLD_BYTES, REQUEST_TIMEOUT_MS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -32,6 +33,15 @@ const batch = (count = 2): LogBatch => ({
     resource: { "service.name": "svc" },
   })),
 });
+
+/** A batch whose serialized body clears COMPRESSION_THRESHOLD_BYTES with room to spare. */
+const bigBatch = (): LogBatch => {
+  const b = batch(1);
+  return {
+    ...b,
+    records: [{ ...b.records[0], body: "x".repeat(COMPRESSION_THRESHOLD_BYTES * 2) }],
+  };
+};
 
 const stubFetch = (impl: (url: string, init: RequestInit) => Promise<Response>) => {
   const fetchMock = vi.fn(impl);
@@ -129,6 +139,7 @@ describe("HttpTransport", () => {
   });
 
   it("reports a timeout rather than hanging forever", async () => {
+    vi.useFakeTimers();
     stubFetch(
       (_url, init) =>
         new Promise<Response>((_resolve, reject) => {
@@ -137,11 +148,15 @@ describe("HttpTransport", () => {
           });
         }),
     );
-    const t = new HttpTransport(config({ requestTimeoutMs: 10 }), diagnostics());
+    const t = new HttpTransport(config(), diagnostics());
 
-    const failure = await t.send(batch()).catch((error: unknown) => error);
+    const pending = t.send(batch()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    const failure = await pending;
+
     expect(failure).toBeInstanceOf(TransportError);
     expect(failure).toMatchObject({ kind: "timeout" });
+    vi.useRealTimers();
   });
 
   it("names third-party cookie blocking on a 401, because a bare 401 explains nothing", async () => {
@@ -252,12 +267,9 @@ describe("HttpTransport", () => {
 
   it("gzips a body over the threshold and labels it", async () => {
     const fetchMock = answer(204);
-    const t = new HttpTransport(
-      config({ compression: "gzip", compressionThresholdBytes: 1 }),
-      diagnostics(),
-    );
+    const t = new HttpTransport(config({ compression: "gzip" }), diagnostics());
 
-    await t.send(batch());
+    await t.send(bigBatch());
 
     expect(headersOf(fetchMock).get("Content-Encoding")).toBe("gzip");
     expect(initOf(fetchMock).body).toBeInstanceOf(Uint8Array);
@@ -265,12 +277,9 @@ describe("HttpTransport", () => {
 
   it("leaves a body under the threshold alone", async () => {
     const fetchMock = answer(204);
-    const t = new HttpTransport(
-      config({ compression: "gzip", compressionThresholdBytes: 1_000_000 }),
-      diagnostics(),
-    );
+    const t = new HttpTransport(config({ compression: "gzip" }), diagnostics());
 
-    await t.send(batch());
+    await t.send(batch(1));
 
     expect(headersOf(fetchMock).get("Content-Encoding")).toBeNull();
     expect(typeof initOf(fetchMock).body).toBe("string");
@@ -281,12 +290,9 @@ describe("HttpTransport", () => {
     // is not gzip is a 400 the server cannot explain.
     const fetchMock = answer(204);
     vi.stubGlobal("CompressionStream", undefined);
-    const t = new HttpTransport(
-      config({ compression: "gzip", compressionThresholdBytes: 1 }),
-      diagnostics(),
-    );
+    const t = new HttpTransport(config({ compression: "gzip" }), diagnostics());
 
-    await t.send(batch());
+    await t.send(bigBatch());
 
     expect(headersOf(fetchMock).get("Content-Encoding")).toBeNull();
     expect(typeof initOf(fetchMock).body).toBe("string");
@@ -298,12 +304,9 @@ describe("HttpTransport", () => {
     vi.stubGlobal("CompressionStream", function Exploding() {
       throw new Error("compression is broken here");
     });
-    const t = new HttpTransport(
-      config({ compression: "gzip", compressionThresholdBytes: 1 }),
-      new Diagnostics(handler, 0),
-    );
+    const t = new HttpTransport(config({ compression: "gzip" }), new Diagnostics(handler, 0));
 
-    await t.send(batch());
+    await t.send(bigBatch());
 
     expect(headersOf(fetchMock).get("Content-Encoding")).toBeNull();
     expect(typeof initOf(fetchMock).body).toBe("string");

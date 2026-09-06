@@ -3,6 +3,7 @@
 // Captures uncaught errors, unhandled rejections and failed resource loads.
 
 import {
+  ERROR_DEDUPE_MS,
   ERROR_STORM_MAX_PER_WINDOW,
   ERROR_STORM_WINDOW_MS,
   MAX_TRACKED_ERROR_SIGNATURES,
@@ -148,7 +149,7 @@ export class ErrorCapture implements Capture {
     const key = `${asError.name}|${asError.message}|${frame}`;
     const previous = this.seen.get(key);
 
-    if (previous && now - previous.at < this.ctx.config.capture.errorDedupeMs) {
+    if (previous && now - previous.at < ERROR_DEDUPE_MS) {
       previous.count++;
       previous.at = now;
       return;

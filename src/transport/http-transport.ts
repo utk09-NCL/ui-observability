@@ -5,6 +5,7 @@
 // belongs to the caller that owns storage.
 
 import {
+  COMPRESSION_THRESHOLD_BYTES,
   ENCODING_GZIP,
   HEADER_ATTEMPT,
   HEADER_BATCH_ID,
@@ -18,6 +19,8 @@ import {
   HTTP_SERVICE_UNAVAILABLE,
   HTTP_TOO_MANY_REQUESTS,
   HTTP_UNAUTHORIZED,
+  REQUEST_TIMEOUT_MS,
+  RETRY_BASE_DELAY_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
@@ -110,10 +113,7 @@ export class HttpTransport {
    */
   private async encodeBody(text: string): Promise<string | Uint8Array<ArrayBuffer>> {
     const { config } = this;
-    if (
-      config.compression !== ENCODING_GZIP ||
-      estimateBytes(text) < config.compressionThresholdBytes
-    ) {
+    if (config.compression !== ENCODING_GZIP || estimateBytes(text) < COMPRESSION_THRESHOLD_BYTES) {
       return text;
     }
 
@@ -141,7 +141,7 @@ export class HttpTransport {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
-    }, config.requestTimeoutMs);
+    }, REQUEST_TIMEOUT_MS);
     unrefTimer(timer);
 
     try {
@@ -155,7 +155,7 @@ export class HttpTransport {
       });
     } catch {
       if (controller.signal.aborted) {
-        const waited = String(config.requestTimeoutMs);
+        const waited = String(REQUEST_TIMEOUT_MS);
         throw new TransportError("timeout", `request exceeded ${waited}ms`);
       }
       const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
@@ -198,7 +198,7 @@ export class HttpTransport {
 
     if (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_SERVICE_UNAVAILABLE) {
       const throttled = status === HTTP_TOO_MANY_REQUESTS;
-      this.throttledUntil = Date.now() + (retryAfterMs ?? this.config.retry.baseDelayMs);
+      this.throttledUntil = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
 
       if (throttled) {
         this.diagnostics.report("transport.throttled", "server throttled us", {

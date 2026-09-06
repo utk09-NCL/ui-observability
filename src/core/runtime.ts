@@ -10,9 +10,14 @@ import { NetworkCapture } from "../capture/network";
 import type { Capture } from "../capture/types";
 import { WebVitalsCapture } from "../capture/web-vitals";
 import {
+  BUS_MAX_BOOT_BUFFER_RECORDS,
   CAPTURE_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
+  MAX_BREADCRUMBS,
+  RECORD_LIMITS,
   RUNTIME_GLOBAL_KEY,
+  STORAGE_DB_NAME,
+  STORAGE_LIMITS,
   STORAGE_NAMESPACE,
   TAB_ID_KEY,
 } from "../constants";
@@ -34,7 +39,7 @@ import { BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
 import { Diagnostics } from "./diagnostics";
-import { JourneyEngine } from "./journey";
+import { JourneyEngine, JOURNEY_OPTIONS } from "./journey";
 import { OneLogger } from "./logger";
 import { LogPipeline } from "./pipeline";
 import { RecordBuilder } from "./record";
@@ -125,12 +130,12 @@ export class ObservabilityRuntime {
     this.platform = detectPlatform(this.diagnostics);
     this.config = resolveConfig(input, this.diagnostics);
     this.identity = resolveIdentity(this.diagnostics);
-    this.breadcrumbs = new BreadcrumbBuffer(this.config.capture.maxBreadcrumbs);
+    this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
     this.tracing = new TraceEngine(this.diagnostics);
-    this.console = new ConsoleSink(this.config.console.enabled, this.config.console.level);
+    this.console = new ConsoleSink(this.config.console);
 
     this.journey = new JourneyEngine(
-      this.config.journey,
+      JOURNEY_OPTIONS,
       this.diagnostics,
       this.identity.contextId,
       (journey) => {
@@ -140,6 +145,7 @@ export class ObservabilityRuntime {
 
     this.builder = new RecordBuilder({
       config: this.config,
+      limits: RECORD_LIMITS,
       diagnostics: this.diagnostics,
       context: this.context,
       journey: this.journey,
@@ -223,8 +229,7 @@ export class ObservabilityRuntime {
     this.diagnostics.setHandler(this.config.onDiagnostic);
 
     this.builder.invalidateResource();
-    this.console.update(this.config.console.enabled, this.config.console.level);
-    this.breadcrumbs.resize(this.config.capture.maxBreadcrumbs);
+    this.console.update(this.config.console);
     this.pipeline?.refresh();
 
     if (this.ready) {
@@ -266,9 +271,9 @@ export class ObservabilityRuntime {
   /** Initializes storage, transport, pipeline, and unload listeners for sender role. */
   private async becomeSender(): Promise<void> {
     this.storage = await createStorage(
-      this.config.storage.strategy,
-      this.config.storage.dbName,
       this.config.storage,
+      STORAGE_DB_NAME,
+      STORAGE_LIMITS,
       this.diagnostics,
       this.reportGap,
     );
@@ -388,7 +393,7 @@ export class ObservabilityRuntime {
     touchSession(this.identity.sessionId, this.diagnostics);
 
     if (!this.ready) {
-      if (this.bootBuffer.length >= this.config.bus.maxBootBufferRecords) {
+      if (this.bootBuffer.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
         this.bootBuffer.shift();
         this.diagnostics.count("record.dropped_boot_buffer_full");
       }

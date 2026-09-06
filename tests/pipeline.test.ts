@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import { LogPipeline } from "../src/core/pipeline";
+import { LogPipeline, type StreamOptions } from "../src/core/pipeline";
 import type { LogBatch } from "../src/models/batch";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
@@ -39,18 +39,22 @@ const metric = (over: Partial<LogRecord> = {}): LogRecord =>
   record({ attributes: { "log.type": "metric", "app.namespace": "trading" }, ...over });
 
 /** A real MemoryStorage, stubbed transport and retry, and a pipeline wired to all three. */
-const setup = (over: Partial<ObservabilityConfig> = {}, override?: StorageAdapter) => {
+const DEFAULT_STREAMS: Record<"logs" | "metrics", StreamOptions> = {
+  logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: BATCH_SIZE },
+  metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+};
+
+const setup = (
+  over: Partial<ObservabilityConfig> = {},
+  override?: StorageAdapter,
+  streams: Record<"logs" | "metrics", StreamOptions> = DEFAULT_STREAMS,
+) => {
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const diagnostics = new Diagnostics(handler, 0);
   const config = resolveConfig(
     {
       endpoint: "https://x/v1/logs",
       serviceName: "svc",
-      streams: {
-        logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: BATCH_SIZE },
-        metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
-      },
-      storage: limits,
       ...over,
     },
     diagnostics,
@@ -67,6 +71,7 @@ const setup = (over: Partial<ObservabilityConfig> = {}, override?: StorageAdapte
     storage,
     { nudge } as unknown as RetryEngine,
     diagnostics,
+    streams,
   );
 
   return { pipeline, send, throttledForMs, storage, nudge, diagnostics, handler };
@@ -241,24 +246,6 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("drops the oldest record when a stream buffer fills", () => {
-    // A batch size of zero stops the operator flushing on count, which is the
-    // one way the buffer can outgrow its cap.
-    const { pipeline, diagnostics } = setup({
-      streams: { logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 0 } },
-    });
-
-    for (let i = 0; i < 11; i++) {
-      pipeline.push(record({ body: String(i) }));
-    }
-    const batch = pipeline.drainPending();
-
-    expect(batch?.records).toHaveLength(10);
-    expect(bodiesOf(batch!)[0]).toBe("1");
-    expect(diagnostics.snapshot()["record.dropped_pending_full"]).toBe(1);
-    pipeline.destroy();
-  });
-
   it("does not resend records the exit flush already took", async () => {
     const { pipeline, send } = setup();
     pipeline.push(record());
@@ -286,11 +273,12 @@ describe("LogPipeline", () => {
   });
 
   it("hands over batches that are claimed but not yet confirmed sent", async () => {
-    // One request that never settles, so the batches behind it sit between the
-    // claim and the network. A closing document takes those too.
-    const { pipeline, send } = setup({
-      streams: { logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 } },
-      maxConcurrentRequests: 1,
+    // Requests that never settle, so every claimed batch sits between the claim
+    // and the network. Three batches form; MAX_CONCURRENT_REQUESTS lets two go
+    // in flight and holds the third. A closing document takes all of them.
+    const { pipeline, send } = setup({}, undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });
     send.mockImplementation(() => new Promise<void>(() => undefined));
 
@@ -301,7 +289,7 @@ describe("LogPipeline", () => {
 
     const batch = pipeline.drainPending();
 
-    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledTimes(2);
     expect(batch?.records).toHaveLength(6);
     pipeline.destroy();
   });

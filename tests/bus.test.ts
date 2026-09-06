@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { BootBuffer, Bus } from "../src/bus/bus";
+import { Bus, type HandshakeOptions } from "../src/bus/bus";
 import {
   createBroadcastLink,
   createChildrenLink,
@@ -22,6 +22,7 @@ import {
   type LinkKind,
   type MessageSource,
 } from "../src/models/bus";
+import type { BusOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import { BUS_PROTOCOL } from "../src/constants";
 
@@ -82,19 +83,28 @@ const platform = (over = {}) => ({
 
 const fakeLink = (kind: LinkKind) => ({ kind, post: vi.fn(), close: vi.fn() });
 
-function make(over = {}, platformOver = {}, ctx = "ctx-1") {
+function make(
+  over: Partial<BusOptions> & Partial<HandshakeOptions> = {},
+  platformOver = {},
+  ctx = "ctx-1",
+) {
+  const { timeoutMs, maxAttempts, ...busOver } = over;
   const diagnostics = new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 0);
   const config = resolveConfig(
     {
       endpoint: "https://x/v1/logs",
       serviceName: "svc",
-      bus: { handshakeTimeoutMs: 20, ...over },
+      bus: busOver,
     },
     diagnostics,
   );
+  const handshake: HandshakeOptions = {
+    timeoutMs: timeoutMs ?? 20,
+    maxAttempts: maxAttempts ?? 3,
+  };
   const h = handlers();
   return {
-    bus: new Bus(config, diagnostics, platform(platformOver), ctx, "tab-1", h),
+    bus: new Bus(config, diagnostics, platform(platformOver), ctx, "tab-1", h, handshake),
     handlers: h,
     diagnostics,
     config,
@@ -826,7 +836,6 @@ describe("Bus role resolution: auto mode", () => {
       {
         endpoint: "https://x/v1/logs",
         serviceName: "svc",
-        bus: { handshakeTimeoutMs: 20 },
       },
       diagnostics,
     );
@@ -837,6 +846,7 @@ describe("Bus role resolution: auto mode", () => {
       "ctx-2",
       "tab-2",
       handlers(),
+      { timeoutMs: 20, maxAttempts: 3 },
     );
 
     // No parent replies: window.parent === window in this environment, so
@@ -879,10 +889,7 @@ describe("Bus role resolution: auto mode", () => {
 
   it("becomes a forwarder through the handshake loop when an owner answers", async () => {
     vi.stubGlobal("WorkerGlobalScope", {});
-    const { bus } = make(
-      { handshakeTimeoutMs: 1000 },
-      { isWorker: true, isTopLevelDocument: false },
-    );
+    const { bus } = make({ timeoutMs: 1000 }, { isWorker: true, isTopLevelDocument: false });
     vi.stubGlobal(
       "postMessage",
       vi.fn((data: unknown) => {
@@ -912,11 +919,7 @@ describe("Bus role resolution: auto mode", () => {
       {
         endpoint: "https://x/v1/logs",
         serviceName: "svc",
-        bus: {
-          handshakeTimeoutMs: 5,
-          maxHandshakeAttempts: 2,
-          openFinRole: "client",
-        },
+        bus: { openFinRole: "client" },
       },
       diagnostics,
     );
@@ -930,6 +933,7 @@ describe("Bus role resolution: auto mode", () => {
       "ctx-1",
       "tab-1",
       handlers(),
+      { timeoutMs: 5, maxAttempts: 2 },
     );
 
     expect(await bus.start()).toBe("sender");
@@ -957,7 +961,6 @@ describe("Bus role resolution: auto mode", () => {
       {
         endpoint: "https://x/v1/logs",
         serviceName: "svc",
-        bus: { handshakeTimeoutMs: 5 },
       },
       diagnostics,
     );
@@ -968,6 +971,7 @@ describe("Bus role resolution: auto mode", () => {
       "ctx-1",
       "tab-1",
       handlers(),
+      { timeoutMs: 5, maxAttempts: 3 },
     );
 
     expect(await bus.start()).toBe("sender");
@@ -987,7 +991,7 @@ describe("Bus handshake", () => {
     // The OpenFin and worker case. A handshake that only listened for a
     // `message` event would time out here every time, because neither
     // channel ever fires one.
-    const { bus } = make({ handshakeTimeoutMs: 1000 });
+    const { bus } = make({ timeoutMs: 1000 });
     const upstream = fakeLink("openfin");
     upstream.post.mockImplementation((message: BusMessage) => {
       if (message.t !== "hello") {
@@ -1009,7 +1013,7 @@ describe("Bus handshake", () => {
   });
 
   it("ignores a welcome addressed to a different context", async () => {
-    const { bus } = make({ handshakeTimeoutMs: 30 });
+    const { bus } = make({ timeoutMs: 30 });
     const upstream = fakeLink("openfin");
     upstream.post.mockImplementation(() => {
       deliver(
@@ -1028,7 +1032,7 @@ describe("Bus handshake", () => {
   });
 
   it("ignores a correctly addressed welcome that arrives on the wrong link", async () => {
-    const { bus } = make({ handshakeTimeoutMs: 20 });
+    const { bus } = make({ timeoutMs: 20 });
     const upstream = fakeLink("parent");
     upstream.post.mockImplementation(() => {
       deliver(
@@ -1047,7 +1051,7 @@ describe("Bus handshake", () => {
   });
 
   it("ignores a second call to settle once the handshake has already resolved", async () => {
-    const { bus } = make({ handshakeTimeoutMs: 1000 });
+    const { bus } = make({ timeoutMs: 1000 });
     const upstream = fakeLink("parent");
 
     const promise = (bus as unknown as { handshake: (link: Link) => Promise<boolean> }).handshake(
@@ -1397,11 +1401,6 @@ describe("Bus internals: orphanPolicy and isCrossOriginFrame", () => {
     return (bus as unknown as { isCrossOriginFrame: () => boolean }).isCrossOriginFrame();
   };
 
-  it("returns an explicit policy without inspecting the frame", () => {
-    expect(orphanPolicyOf({ orphanPolicy: "promote" })).toBe("promote");
-    expect(orphanPolicyOf({ orphanPolicy: "retry" })).toBe("retry");
-  });
-
   it("is never cross-origin with no window", () => {
     vi.stubGlobal("window", undefined);
     expect(crossOrigin()).toBe(false);
@@ -1423,11 +1422,11 @@ describe("Bus internals: orphanPolicy and isCrossOriginFrame", () => {
     expect(crossOrigin()).toBe(true);
   });
 
-  it("auto-resolves retry cross-origin and promote otherwise", () => {
-    expect(orphanPolicyOf({ orphanPolicy: "auto" })).toBe("promote");
+  it("resolves retry cross-origin and promote otherwise", () => {
+    expect(orphanPolicyOf()).toBe("promote");
 
     vi.spyOn(window, "parent", "get").mockReturnValue(crossOriginParent());
-    expect(orphanPolicyOf({ orphanPolicy: "auto" })).toBe("retry");
+    expect(orphanPolicyOf()).toBe("retry");
   });
 });
 
@@ -1463,11 +1462,6 @@ describe("Bus internals: candidateUpstream", () => {
   it("does not forward when it is itself the OpenFin provider", () => {
     vi.stubGlobal("fin", { InterApplicationBus: fakeIab() });
     expect(call({}, { platform: "openfin" }, true)).toBeNull();
-  });
-
-  it("does not forward when openFinHost is self", () => {
-    vi.stubGlobal("fin", { InterApplicationBus: fakeIab() });
-    expect(call({ openFinHost: "self" }, { platform: "openfin" }, false)).toBeNull();
   });
 });
 
@@ -1672,53 +1666,5 @@ describe("Bus public methods", () => {
       from: "ctx-1",
       journey: j,
     });
-  });
-});
-
-describe("BootBuffer", () => {
-  const bootBuffer = (maxBootBufferRecords = 2) => {
-    const diagnostics = new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 0);
-    const config = resolveConfig(
-      {
-        endpoint: "https://x/v1/logs",
-        serviceName: "svc",
-        bus: { maxBootBufferRecords },
-      },
-      diagnostics,
-    );
-    return { buffer: new BootBuffer(config, diagnostics), diagnostics };
-  };
-
-  it("holds records under the cap with nothing dropped", () => {
-    const { buffer, diagnostics } = bootBuffer(2);
-    buffer.push(oneRecord()[0]);
-    buffer.push(oneRecord()[0]);
-
-    expect(buffer.release()).toHaveLength(2);
-    expect(diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBeUndefined();
-  });
-
-  it("drops the oldest record and counts it once the cap is reached", () => {
-    const { buffer, diagnostics } = bootBuffer(2);
-    const first = { body: "first" } as unknown as LogRecord;
-    const second = { body: "second" } as unknown as LogRecord;
-    const third = { body: "third" } as unknown as LogRecord;
-
-    buffer.push(first);
-    buffer.push(second);
-    buffer.push(third);
-
-    const released = buffer.release();
-    expect(released.map((r) => r.body)).toEqual(["second", "third"]);
-    expect(diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
-  });
-
-  it("empties on release, so a second call returns nothing", () => {
-    const { buffer } = bootBuffer(5);
-    buffer.push(oneRecord()[0]);
-
-    buffer.release();
-
-    expect(buffer.release()).toEqual([]);
   });
 });

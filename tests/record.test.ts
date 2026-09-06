@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
+import { RECORD_LIMITS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { ContextStore } from "../src/core/context";
 import { Diagnostics } from "../src/core/diagnostics";
-import { JourneyEngine } from "../src/core/journey";
-import { type BuildInput, RecordBuilder, type RecordBuilderDeps } from "../src/core/record";
+import { JOURNEY_OPTIONS, JourneyEngine } from "../src/core/journey";
+import {
+  type BuildInput,
+  RecordBuilder,
+  type RecordBuilderDeps,
+  type RecordLimits,
+} from "../src/core/record";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import type { PlatformMetadata } from "../src/utils/platform";
@@ -33,7 +39,11 @@ const openfin: PlatformMetadata = {
  * stubbing them would leave the combining untested. Only the pieces a test
  * cannot otherwise reach, such as a context store that throws, get replaced.
  */
-function makeBuilder(overrides: Partial<ObservabilityConfig> = {}, platform = browser) {
+function makeBuilder(
+  overrides: Partial<ObservabilityConfig> = {},
+  platform = browser,
+  limits: RecordLimits = RECORD_LIMITS,
+) {
   const diagnostics = new Diagnostics(vi.fn(), 0);
   const config = resolveConfig(
     {
@@ -46,10 +56,11 @@ function makeBuilder(overrides: Partial<ObservabilityConfig> = {}, platform = br
     },
     diagnostics,
   );
-  const journey = new JourneyEngine(config.journey, diagnostics, "ctx-1", vi.fn());
+  const journey = new JourneyEngine(JOURNEY_OPTIONS, diagnostics, "ctx-1", vi.fn());
   const context = new ContextStore();
   const deps: RecordBuilderDeps = {
     config,
+    limits,
     diagnostics,
     context,
     journey,
@@ -210,7 +221,10 @@ describe("attributes", () => {
 
 describe("the body", () => {
   it("truncates an overlong body and counts it", () => {
-    const { builder, diagnostics } = makeBuilder({ limits: { maxBodyChars: 10 } });
+    const { builder, diagnostics } = makeBuilder({}, browser, {
+      ...RECORD_LIMITS,
+      maxBodyChars: 10,
+    });
 
     const record = built(builder, { body: "x".repeat(50) });
 
@@ -276,10 +290,11 @@ describe("the redact hook", () => {
   it("re-measures a record the hook replaced, rather than trusting the old total", () => {
     // The running byte total describes the record that was built, not whatever
     // the hook handed back.
-    const { builder } = makeBuilder({
-      limits: { maxRecordBytes: 200 },
-      redact: (record) => ({ ...record, attributes: { huge: "x".repeat(5000) } }),
-    });
+    const { builder } = makeBuilder(
+      { redact: (record) => ({ ...record, attributes: { huge: "x".repeat(5000) } }) },
+      browser,
+      { ...RECORD_LIMITS, maxRecordBytes: 200 },
+    );
 
     const record = built(builder);
 
@@ -307,7 +322,10 @@ describe("the size budget", () => {
   it("keeps the keys that make a record findable when oversized attributes are dropped", () => {
     // Dropping the journey here would leave the one record most worth looking
     // up as the one record with nothing to look it up by.
-    const { builder, journey, diagnostics } = makeBuilder({ limits: { maxRecordBytes: 200 } });
+    const { builder, journey, diagnostics } = makeBuilder({}, browser, {
+      ...RECORD_LIMITS,
+      maxRecordBytes: 200,
+    });
     const started = journey.start("order-lifecycle");
 
     const record = built(builder, { payload: { blob: "x".repeat(50_000) } });
@@ -324,7 +342,7 @@ describe("the size budget", () => {
   });
 
   it("drops oversized attributes with no journey running, keeping the rest", () => {
-    const { builder } = makeBuilder({ limits: { maxRecordBytes: 200 } });
+    const { builder } = makeBuilder({}, browser, { ...RECORD_LIMITS, maxRecordBytes: 200 });
 
     const record = built(builder, { payload: { blob: "x".repeat(50_000) } });
 

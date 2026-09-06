@@ -39,22 +39,29 @@ describe("resolveConfig", () => {
     expect(resolved.endpoint).toBe(ENDPOINT);
     expect(resolved.enabled).toBe(true);
     expect(resolved.minLevel).toBe("INFO");
-    expect(resolved.streams.logs).toEqual({ flushIntervalMs: 2000, batchSize: 100 });
-    expect(resolved.streams.metrics).toEqual({ flushIntervalMs: 10_000, batchSize: 500 });
-    expect(resolved.maxConcurrentRequests).toBe(2);
     expect(resolved.compression).toBe("gzip");
     expect(resolved.credentials).toBe("include");
-    expect(resolved.storage.strategy).toBe("auto");
-    expect(resolved.retry.baseDelayMs).toBe(2000);
+    expect(resolved.storage).toBe("auto");
     expect(resolved.sampling.defaultRate).toBe(1);
-    expect(resolved.journey.urlParam).toBe("__uiobs_journey");
+    expect(resolved.sampling.alwaysSampleTypes).toEqual(["action"]);
     expect(resolved.bus.mode).toBe("auto");
-    expect(resolved.limits.maxDepth).toBe(6);
-    expect(resolved.console.enabled).toBe(false);
+    expect(resolved.capture.errors).toBe(true);
+    expect(resolved.console).toBeNull();
 
     // The only complaint should be the absent serviceName.
     expect(messages(events)).toHaveLength(1);
     expect(events[0].code).toBe("config.invalid");
+  });
+
+  it("reads the console option as off, on, or an explicit level", () => {
+    const { diagnostics } = collect();
+
+    expect(resolveConfig({ ...valid(), console: true }, diagnostics).console).toBe("DEBUG");
+    expect(resolveConfig({ ...valid(), console: "WARN" }, diagnostics).console).toBe("WARN");
+
+    // false has to turn off a level already in force, not fall through to it.
+    const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
+    expect(resolveConfig({ console: false }, diagnostics, live).console).toBeNull();
   });
 
   it("reports a missing endpoint and still returns a usable config", () => {
@@ -97,30 +104,6 @@ describe("resolveConfig", () => {
 
     expect(resolved.serviceName).toBe("checkout");
     expect(events).toEqual([]);
-  });
-
-  it("merges a partial stream policy onto the default for that stream only", () => {
-    const { diagnostics } = collect();
-
-    const resolved = resolveConfig(
-      { ...valid(), streams: { logs: { batchSize: 5 } } },
-      diagnostics,
-    );
-
-    expect(resolved.streams.logs).toEqual({ flushIntervalMs: 2000, batchSize: 5 });
-    expect(resolved.streams.metrics).toEqual({ flushIntervalMs: 10_000, batchSize: 500 });
-  });
-
-  it("merges a partial metrics policy without disturbing the logs policy", () => {
-    const { diagnostics } = collect();
-
-    const resolved = resolveConfig(
-      { ...valid(), streams: { metrics: { flushIntervalMs: 1 } } },
-      diagnostics,
-    );
-
-    expect(resolved.streams.metrics).toEqual({ flushIntervalMs: 1, batchSize: 500 });
-    expect(resolved.streams.logs).toEqual({ flushIntervalMs: 2000, batchSize: 100 });
   });
 
   describe("sampling.defaultRate", () => {
@@ -372,8 +355,8 @@ describe("applyResolvedConfig", () => {
     // Half the library captures these references once at construction and never
     // looks them up again, so their identity is the thing under test.
     const capture = live.capture;
-    const journey = live.journey;
-    const streams = live.streams;
+    const sampling = live.sampling;
+    const bus = live.bus;
 
     const next = resolveConfig(
       { endpoint: OTHER_ENDPOINT, enabled: false, capture: { fetch: true } },
@@ -386,8 +369,8 @@ describe("applyResolvedConfig", () => {
     expect(live.enabled).toBe(false);
 
     expect(live.capture).toBe(capture);
-    expect(live.journey).toBe(journey);
-    expect(live.streams).toBe(streams);
+    expect(live.sampling).toBe(sampling);
+    expect(live.bus).toBe(bus);
 
     // Merged in place, so a component holding `config.capture` sees the change.
     expect(capture.fetch).toBe(true);
@@ -397,7 +380,7 @@ describe("applyResolvedConfig", () => {
   it("leaves sections that the reconfigure did not mention at their current values", () => {
     const { diagnostics } = collect();
     const live = resolveConfig(
-      { ...valid(), limits: { maxDepth: 2 }, console: { enabled: true } },
+      { ...valid(), sampling: { defaultRate: 0.25 }, console: "WARN" },
       diagnostics,
     );
 
@@ -405,7 +388,7 @@ describe("applyResolvedConfig", () => {
     applyResolvedConfig(live, next);
 
     expect(live.minLevel).toBe("ERROR");
-    expect(live.limits.maxDepth).toBe(2);
-    expect(live.console.enabled).toBe(true);
+    expect(live.sampling.defaultRate).toBe(0.25);
+    expect(live.console).toBe("WARN");
   });
 });

@@ -11,16 +11,35 @@ import {
   BASE64_SLASH_PATTERN,
   BASE64URL_DASH_PATTERN,
   BASE64URL_UNDERSCORE_PATTERN,
+  JOURNEY_END_ON_OWNER_CLOSE,
+  JOURNEY_MAX_AGE_MS,
   JOURNEY_STORAGE_KEY,
   JOURNEY_TOKEN_MAX_CHARS,
   JOURNEY_TOKEN_NAME_MAX_CHARS,
   OPENFIN_JOURNEY_CUSTOM_DATA_KEY,
+  JOURNEY_URL_PARAM,
   OPENFIN_OPTIONS_TIMEOUT_MS,
 } from "../constants";
-import type { JourneyOptions } from "../models/config";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
+
+/** Lifetime rules for a journey (one user task spanning several contexts). */
+export interface JourneyOptions {
+  /** Max time a journey stays open before it is treated as abandoned, in milliseconds. */
+  maxAgeMs: number;
+  /** Whether closing the owning context ends the journey for everyone. */
+  endOnOwnerClose: boolean;
+  /** Query parameter checked at boot for a seeded journey token. */
+  urlParam: string;
+}
+
+/** Journey lifetime policy in force. Tests build an engine with shorter values. */
+export const JOURNEY_OPTIONS: JourneyOptions = {
+  maxAgeMs: JOURNEY_MAX_AGE_MS,
+  endOnOwnerClose: JOURNEY_END_ON_OWNER_CLOSE,
+  urlParam: JOURNEY_URL_PARAM,
+};
 
 /** User journey workflow context shared across windows and applications. */
 export interface Journey {

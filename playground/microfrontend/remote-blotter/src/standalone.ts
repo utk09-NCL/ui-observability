@@ -13,7 +13,7 @@ configure({
   serviceName: "example-blotter-standalone",
   environment: "local",
   minLevel: "TRACE",
-  console: { enabled: true },
+  console: true,
 });
 
 const { mount } = await import("./mount");

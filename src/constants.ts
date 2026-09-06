@@ -5,6 +5,7 @@
 
 import type { ResolvedConfig } from "./models/config";
 import type { LogLevel, LogType } from "./models/log-record";
+import type { StorageLimits } from "./models/storage";
 
 // ----------------------------------
 // Library-wide
@@ -499,9 +500,6 @@ export const UINT32_MAX = 0xffffffff;
 /** Record kind routed to the metric stream. */
 export const LOG_TYPE_METRIC: LogType = "metric";
 
-/** Batches held per stream buffer before the oldest is dropped. */
-export const PENDING_BUFFER_BATCHES = 10;
-
 // ----------------------------------
 // Bus
 // ----------------------------------
@@ -585,17 +583,7 @@ export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers", "se
  * Nested config section keys.
  * @see {@link ResolvedConfig}
  */
-export const CONFIG_SECTIONS = [
-  "streams",
-  "storage",
-  "retry",
-  "sampling",
-  "journey",
-  "bus",
-  "capture",
-  "limits",
-  "console",
-] as const;
+export const CONFIG_SECTIONS = ["sampling", "bus", "capture"] as const;
 
 /**
  * Default runtime config, before a consumer's `configure()` call.
@@ -610,41 +598,11 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   environment: "",
   enabled: true,
   minLevel: "INFO",
-  streams: {
-    logs: { flushIntervalMs: 2000, batchSize: 100 },
-    // Metrics batch harder than logs: higher volume, nothing waits on them.
-    metrics: { flushIntervalMs: 10_000, batchSize: 500 },
-  },
-  maxConcurrentRequests: 2,
-  requestTimeoutMs: 15000,
   compression: "gzip",
-  compressionThresholdBytes: 1024,
   credentials: "include",
-  storage: {
-    strategy: "auto",
-    dbName: "UiObservability",
-    maxBatches: 500,
-    maxAgeMs: 24 * 60 * 60 * 1000,
-    maxAttempts: 5,
-  },
-  retry: { baseDelayMs: 2000, maxDelayMs: 60000, idleDelayMs: 30000 },
+  storage: "auto",
   sampling: { defaultRate: 1, rates: {}, alwaysSampleTypes: ["action"] },
-  journey: {
-    maxAgeMs: 30 * 60 * 1000,
-    endOnOwnerClose: false,
-    urlParam: "__uiobs_journey",
-  },
-  bus: {
-    mode: "auto",
-    channelName: "ui_observability_control",
-    trustedOrigins: [],
-    handshakeTimeoutMs: 1500,
-    openFinHost: "provider",
-    openFinRole: "auto",
-    maxBootBufferRecords: 500,
-    orphanPolicy: "auto",
-    maxHandshakeAttempts: 3,
-  },
+  bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
   capture: {
     errors: true,
     rejections: true,
@@ -654,19 +612,121 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     interactions: false,
     navigation: false,
     webVitals: false,
-    maxBreadcrumbs: 50,
     ignoreUrls: [],
     propagateTraceHeaderTo: [],
-    errorDedupeMs: 5000,
   },
-  limits: {
-    maxBodyChars: 4096,
-    maxAttributeChars: 8192,
-    maxAttributeCount: 128,
-    maxStackChars: 8192,
-    maxDepth: 6,
-    maxArrayLength: 100,
-    maxRecordBytes: 32768,
-  },
-  console: { enabled: false, level: "DEBUG" },
+  console: null,
+};
+
+/** Console mirroring level used when a consumer passes `console: true`. */
+export const CONSOLE_DEFAULT_LEVEL: LogLevel = "DEBUG";
+
+// ----------------------------------
+// Batching
+// ----------------------------------
+
+/** Max time a partial log batch waits before it is sent, in milliseconds. */
+export const LOG_FLUSH_INTERVAL_MS = 2000;
+
+/** Max records per log batch before it is sent early. */
+export const LOG_BATCH_SIZE = 100;
+
+/** Max time a partial metric batch waits before it is sent, in milliseconds. Metrics batch harder than logs: higher volume, nothing waits on them. */
+export const METRIC_FLUSH_INTERVAL_MS = 10_000;
+
+/** Max records per metric batch before it is sent early. */
+export const METRIC_BATCH_SIZE = 500;
+
+/** Max concurrent ingest requests, across both streams. */
+export const MAX_CONCURRENT_REQUESTS = 2;
+
+// ----------------------------------
+// HTTP transport
+// ----------------------------------
+
+/** Max time one ingest request may take before it is aborted and retried, in milliseconds. */
+export const REQUEST_TIMEOUT_MS = 15_000;
+
+/** Min payload size to compress, in bytes. */
+export const COMPRESSION_THRESHOLD_BYTES = 1024;
+
+// ----------------------------------
+// Storage retention
+// ----------------------------------
+
+/** IndexedDB database name. */
+export const STORAGE_DB_NAME = "UiObservability";
+
+/** Capacity and retention thresholds every storage adapter enforces. */
+export const STORAGE_LIMITS: StorageLimits = {
+  maxBatches: 500,
+  maxAgeMs: 24 * 60 * 60 * 1000,
+  maxAttempts: 5,
+};
+
+// ----------------------------------
+// Retry backoff
+// ----------------------------------
+
+/** First backoff step, in milliseconds. Each attempt doubles it. */
+export const RETRY_BASE_DELAY_MS = 2000;
+
+/** Backoff ceiling, in milliseconds. */
+export const RETRY_MAX_DELAY_MS = 60_000;
+
+/** How often to check for stored work when nothing has failed recently, in milliseconds. */
+export const RETRY_IDLE_DELAY_MS = 30_000;
+
+// ----------------------------------
+// Journey lifetime
+// ----------------------------------
+
+/** Max time a journey stays open before it is treated as abandoned, in milliseconds. */
+export const JOURNEY_MAX_AGE_MS = 30 * 60 * 1000;
+
+/** Whether closing the owning context ends the journey for everyone. */
+export const JOURNEY_END_ON_OWNER_CLOSE = false;
+
+/** Query parameter checked at boot for a seeded journey token. */
+export const JOURNEY_URL_PARAM = "__uiobs_journey";
+
+// ----------------------------------
+// Bus handshake
+// ----------------------------------
+
+/** BroadcastChannel name for the control plane. */
+export const BUS_CHANNEL_NAME = "ui_observability_control";
+
+/** Max time a forwarder waits for an owner to answer before it promotes itself, in milliseconds. */
+export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
+
+/** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
+export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
+
+/** Max records a context buffers before its bus role is determined. */
+export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
+
+// ----------------------------------
+// Capture
+// ----------------------------------
+
+/** Breadcrumbs kept as context for the next error. */
+export const MAX_BREADCRUMBS = 50;
+
+/** Window within which identical errors are counted but not re-sent, in milliseconds. */
+export const ERROR_DEDUPE_MS = 5000;
+
+// ----------------------------------
+// Per-record size caps
+// ----------------------------------
+
+/** Size caps applied to every record, enforced after sanitize and after redact. */
+export const RECORD_LIMITS = {
+  maxBodyChars: 4096,
+  maxAttributeChars: 8192,
+  maxAttributeCount: 128,
+  maxStackChars: 8192,
+  maxDepth: 6,
+  maxArrayLength: 100,
+  maxRecordBytes: 32_768,
 };

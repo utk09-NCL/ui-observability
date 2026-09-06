@@ -6,6 +6,7 @@ import { matchesAny } from "../src/capture/types";
 import type { CaptureContext, CaptureLogger } from "../src/capture/types";
 import { WebVitalsCapture } from "../src/capture/web-vitals";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
+import { ERROR_DEDUPE_MS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
@@ -96,7 +97,7 @@ describe("ErrorCapture", () => {
 
   it("reports how many repeats it swallowed once the dedupe window rolls over", () => {
     vi.useFakeTimers();
-    const { ctx: c, logger } = ctx({ errorDedupeMs: 50 });
+    const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
 
@@ -105,7 +106,7 @@ describe("ErrorCapture", () => {
     for (let i = 0; i < 4; i++) {
       dispatchEvent(new ErrorEvent("error", { error: boom, message: "boom" }));
     }
-    vi.setSystemTime(Date.now() + 100);
+    vi.setSystemTime(Date.now() + ERROR_DEDUPE_MS + 1);
     dispatchEvent(new ErrorEvent("error", { error: boom, message: "boom" }));
 
     expect(logger.error).toHaveBeenCalledTimes(2);
@@ -211,7 +212,7 @@ describe("ErrorCapture", () => {
   });
 
   it("captures an unhandled rejection, including one that rejected with a string", () => {
-    const { ctx: c, logger } = ctx({ errorDedupeMs: 0 });
+    const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
 
@@ -224,7 +225,7 @@ describe("ErrorCapture", () => {
   });
 
   it("bounds the deduplication map, so a fresh message per render cannot grow it forever", () => {
-    const { ctx: c, logger } = ctx({ errorDedupeMs: 60_000 });
+    const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
 
@@ -248,7 +249,7 @@ describe("ErrorCapture", () => {
   });
 
   it("builds a signature from an error with no stack, and from a one-line stack", () => {
-    const { ctx: c, logger } = ctx({ errorDedupeMs: 0 });
+    const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
 
@@ -267,7 +268,7 @@ describe("ErrorCapture", () => {
   });
 
   it("rate limits an error storm instead of amplifying it", () => {
-    const { ctx: c, logger } = ctx({ errorDedupeMs: 0 });
+    const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
 

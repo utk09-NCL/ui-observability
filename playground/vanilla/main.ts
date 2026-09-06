@@ -77,11 +77,10 @@ configure({
   serviceVersion: "0.0.0-dev",
   environment: "local",
   minLevel: "DEBUG",
-  // Mirrors every record to the devtools console at its own level.
-  console: { enabled: true, level: "DEBUG" },
+  // Mirrors every record to the devtools console from DEBUG up.
+  console: "DEBUG",
   // Origins allowed to transmit records over the window bus.
   bus: { trustedOrigins: [location.origin, "http://localhost:5174"] },
-  journey: { urlParam: JOURNEY_PARAM },
   capture: {
     errors: true,
     rejections: true,

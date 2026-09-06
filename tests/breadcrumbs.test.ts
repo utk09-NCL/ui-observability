@@ -47,66 +47,6 @@ describe("BreadcrumbBuffer", () => {
     expect(messages(buffer)).toEqual(["C", "D", "E"]);
   });
 
-  it("keeps the newest crumbs and forgets the rest when shrunk", () => {
-    const buffer = new BreadcrumbBuffer(5);
-    for (const message of ["A", "B", "C", "D"]) {
-      buffer.push(crumb(message));
-    }
-
-    buffer.resize(2);
-
-    expect(messages(buffer)).toEqual(["C", "D"]);
-    buffer.push(crumb("E"));
-    expect(messages(buffer)).toEqual(["D", "E"]);
-  });
-
-  it("keeps every existing crumb, in order, when grown", () => {
-    const buffer = new BreadcrumbBuffer(2);
-    buffer.push(crumb("A"));
-    buffer.push(crumb("B"));
-
-    buffer.resize(5);
-
-    expect(messages(buffer)).toEqual(["A", "B"]);
-
-    // The new capacity has to be real, not cosmetic: three more pushes must
-    // not wrap a ring that is genuinely five wide.
-    buffer.push(crumb("C"));
-    buffer.push(crumb("D"));
-    buffer.push(crumb("E"));
-
-    expect(messages(buffer)).toEqual(["A", "B", "C", "D", "E"]);
-  });
-
-  it("treats a resize to its current capacity as a no-op", () => {
-    // clamped === this.capacity, taken with no clamping in play: the
-    // requested capacity already equals the stored one.
-    const buffer = new BreadcrumbBuffer(5);
-    for (const message of ["A", "B", "C"]) {
-      buffer.push(crumb(message));
-    }
-
-    buffer.resize(5);
-
-    expect(messages(buffer)).toEqual(["A", "B", "C"]);
-  });
-
-  it("short-circuits a below-minimum resize when already at the minimum", () => {
-    // clamped === this.capacity taken by way of the clamp instead of by
-    // matching input: resize(0) clamps to 1, which is what a buffer built
-    // with capacity 1 already holds.
-    const buffer = new BreadcrumbBuffer(1);
-    buffer.push(crumb("A"));
-
-    buffer.resize(0);
-
-    expect(messages(buffer)).toEqual(["A"]);
-    // The early return has to leave the ring itself usable, not just its
-    // last snapshot: the next push must behave as an ordinary capacity-1 ring.
-    buffer.push(crumb("B"));
-    expect(messages(buffer)).toEqual(["B"]);
-  });
-
   it("clamps a zero capacity up to one instead of storing nothing or throwing", () => {
     // The guide's version threw on this input. This constructor runs inside
     // configure(), where a thrown error would take the host application down
@@ -125,7 +65,7 @@ describe("BreadcrumbBuffer", () => {
     expect(messages(buffer)).toEqual(["B"]);
   });
 
-  it("empties the ring directly, not only as a side effect of resize", () => {
+  it("empties the ring and leaves it usable", () => {
     const buffer = new BreadcrumbBuffer(3);
     buffer.push(crumb("A"));
     buffer.push(crumb("B"));

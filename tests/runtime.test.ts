@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
+import { BUS_MAX_BOOT_BUFFER_RECORDS } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type { LogRecord } from "../src/models/log-record";
@@ -176,17 +177,17 @@ describe("runtime lifecycle", () => {
   });
 
   it("drops the oldest buffered record once the boot buffer is full", () => {
-    configure({ ...base, bus: { maxBootBufferRecords: 2 } });
+    configure(base);
     const log = getLogger("test");
 
-    log.info("first");
-    log.info("second");
-    log.info("third");
+    for (let i = 0; i <= BUS_MAX_BOOT_BUFFER_RECORDS; i++) {
+      log.info(`record ${String(i)}`);
+    }
 
-    expect(runtime()["bootBuffer"].map((record: LogRecord) => record.body)).toEqual([
-      "second",
-      "third",
-    ]);
+    const bodies = runtime()["bootBuffer"].map((record: LogRecord) => record.body);
+    expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
+    // The first record was evicted, so the oldest survivor is the second.
+    expect(bodies[0]).toBe("record 1");
     expect(runtime().diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
   });
 
