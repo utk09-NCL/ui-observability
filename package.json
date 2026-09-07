@@ -76,8 +76,7 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
-    "dexie": "4.4.5",
-    "rxjs": "7.8.2"
+    "dexie": "4.4.5"
   },
   "peerDependencies": {
     "web-vitals": "^4 || ^5 || ^6"

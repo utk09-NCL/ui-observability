@@ -230,7 +230,6 @@ export class ObservabilityRuntime {
 
     this.builder.invalidateResource();
     this.console.update(this.config.console);
-    this.pipeline?.refresh();
 
     if (this.ready) {
       this.reinstallCaptures();

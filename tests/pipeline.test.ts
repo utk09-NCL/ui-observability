@@ -202,9 +202,9 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("contains a dispatch that rejects instead of killing the stream", async () => {
-    // The inner catchError. On the outer chain the second record never arrives,
-    // because the stream would have completed.
+  it("contains a dispatch that rejects instead of stopping delivery", async () => {
+    // dispatch is written never to reject. When it does anyway, the batch is
+    // lost and reported, and the records behind it still go out.
     const { pipeline, send, throttledForMs, diagnostics } = setup();
     throttledForMs.mockImplementationOnce(() => {
       throw new Error("clock gone");
@@ -221,7 +221,7 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("restarts the stream when an operator throws", async () => {
+  it("drops only the record that threw on its way into a stream", async () => {
     const { pipeline, send, diagnostics } = setup();
 
     pipeline.push(record({ attributes: undefined as unknown as Record<string, unknown> }));
@@ -294,23 +294,10 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("keeps the buffers across a refresh", async () => {
-    const { pipeline, send } = setup();
-    pipeline.push(record({ body: "buffered" }));
-
-    pipeline.refresh();
-    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
-
-    expect(send).toHaveBeenCalledOnce();
-    expect(bodiesOf(send.mock.calls[0][0])).toEqual(["buffered"]);
-    pipeline.destroy();
-  });
-
-  it("accepts nothing and resubscribes to nothing once destroyed", async () => {
+  it("accepts nothing once destroyed", async () => {
     const { pipeline, send } = setup();
     pipeline.destroy();
 
-    pipeline.refresh();
     pipeline.push(record());
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
 

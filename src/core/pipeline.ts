@@ -1,26 +1,10 @@
 // src/core/pipeline.ts
 //
-// Stream buffering, batch formation, and delivery pipeline for logs and metrics.
+// Stream buffering, batch formation, and delivery for logs and metrics.
 //
-// Each stream owns its buffer. The exit flush cannot drain bufferTime's array.
+// Each stream owns its buffer and its own flush timer, so the exit flush can
+// take every record that has not reached the transport yet.
 
-import {
-  asapScheduler,
-  bufferTime,
-  catchError,
-  EMPTY,
-  filter,
-  from,
-  map,
-  merge,
-  mergeMap,
-  type Observable,
-  observeOn,
-  partition,
-  Subject,
-  type Subscription,
-  tap,
-} from "rxjs";
 import {
   ATTR_LOG_TYPE,
   LOG_BATCH_SIZE,
@@ -37,6 +21,7 @@ import type { StorageAdapter } from "../models/storage";
 import type { HttpTransport } from "../transport/http-transport";
 import type { RetryEngine } from "../transport/retry-engine";
 import { newId } from "../utils/identity";
+import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 import { shouldSample } from "./sampling";
 
@@ -66,54 +51,98 @@ export const STREAM_OPTIONS: Record<StreamName, StreamOptions> = {
   metrics: { flushIntervalMs: METRIC_FLUSH_INTERVAL_MS, batchSize: METRIC_BATCH_SIZE },
 };
 
-/** Dedicated stream buffer accumulating records until flushed by timer, capacity, or exit flush. */
+/** One stream's pending records and the timer that closes a partial batch. */
 class RecordStream {
   /** Pending records waiting in chronological order. */
   private pending: LogRecord[] = [];
 
+  /** Handle of the armed flush timer, or null when none is pending. */
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
   /**
    * @param options Batching policy for this stream.
-   * @param name Target stream name.
+   * @param onFlush Called with this stream when a batch is ready to close.
    */
   constructor(
     readonly options: StreamOptions,
-    readonly name: StreamName,
+    private readonly onFlush: (stream: RecordStream) => void,
   ) {}
 
   /**
-   * Buffers a record. bufferTime emits on the batchSize-th record and `claim`
-   * drains synchronously, so this never holds more than one batch.
+   * Buffers a record, closing the batch at once on the batchSize-th and arming
+   * the interval timer on the first. Without the timer a batch below batchSize
+   * waits for the next record, which on a quiet page never comes.
    * @param record Record to enqueue.
    */
   add(record: LogRecord): void {
     this.pending.push(record);
+
+    if (this.pending.length >= this.options.batchSize) {
+      this.onFlush(this);
+      return;
+    }
+
+    this.arm();
   }
 
   /**
-   * Drains and returns all buffered records in an atomic operation.
+   * Drains and returns all buffered records, disarming the flush timer.
    * @returns Array of buffered records.
    */
   take(): LogRecord[] {
+    this.clearTimer();
+
     const records = this.pending;
     this.pending = [];
 
     return records;
   }
+
+  /** Disarms the flush timer, leaving buffered records in place. */
+  stop(): void {
+    this.clearTimer();
+  }
+
+  /** Arms the flush timer unless one is already pending. */
+  private arm(): void {
+    if (this.timer !== null) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.timer = null;
+      this.onFlush(this);
+    }, this.options.flushIntervalMs);
+
+    this.timer = timer;
+    unrefTimer(timer);
+  }
+
+  /** Clears the pending timer handle if armed. */
+  private clearTimer(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
 }
 
 /** Pipeline orchestrating log and metric stream buffering, batch creation, and HTTP dispatch. */
 export class LogPipeline {
-  /** Ingress Subject receiving records pushed into the pipeline. */
-  readonly records$ = new Subject<LogRecord>();
-
   /** Buffer instances for logs and metrics streams. */
   private readonly streams: Record<StreamName, RecordStream>;
 
-  /** Active RxJS subscription managing the pipeline stream. */
-  private subscription: Subscription | null = null;
-
   /** Unconfirmed in-flight batches tracked for exit flush recovery. */
   private readonly unconfirmed = new Map<string, LogBatch>();
+
+  /** Closed batches waiting for a free dispatch slot. */
+  private readonly queue: LogBatch[] = [];
+
+  /** Dispatches currently in flight, capped at MAX_CONCURRENT_REQUESTS. */
+  private inFlight = 0;
+
+  /** Indicates a pump is already queued, so one microtask drains a burst. */
+  private pumpScheduled = false;
 
   /** Indicates whether the pipeline has been destroyed. */
   private stopped = false;
@@ -134,12 +163,14 @@ export class LogPipeline {
     private readonly diagnostics: Diagnostics,
     streamOptions: Record<StreamName, StreamOptions> = STREAM_OPTIONS,
   ) {
-    this.streams = {
-      logs: new RecordStream(streamOptions.logs, "logs"),
-      metrics: new RecordStream(streamOptions.metrics, "metrics"),
+    const flush = (stream: RecordStream): void => {
+      this.claim(stream);
     };
 
-    this.subscribe();
+    this.streams = {
+      logs: new RecordStream(streamOptions.logs, flush),
+      metrics: new RecordStream(streamOptions.metrics, flush),
+    };
   }
 
   /**
@@ -152,7 +183,7 @@ export class LogPipeline {
     }
 
     record.observedTimeUnixNano = nowUnixNano();
-    this.records$.next(record);
+    this.route(record);
   }
 
   /**
@@ -177,116 +208,48 @@ export class LogPipeline {
     return { id: newId(), records, createdAt: Date.now(), attempts: 0 };
   }
 
-  /** Re-subscribes RxJS pipeline stream to apply updated interval and batch size settings. */
-  refresh(): void {
-    this.subscription?.unsubscribe();
-    this.subscribe();
-  }
-
-  /** Terminates pipeline subscriptions and completes the ingress stream. */
+  /** Stops the flush timers and refuses further records. */
   destroy(): void {
     this.stopped = true;
-    this.subscription?.unsubscribe();
-    this.subscription = null;
-    this.records$.complete();
-  }
-
-  /** Assembles and subscribes the partitioned RxJS stream pipeline. */
-  private subscribe(): void {
-    if (this.stopped) {
-      return;
-    }
-
-    // Partitions records by type before sampling to evaluate hash once per record.
-    const [metric$, log$] = partition(this.records$, isMetric);
-
-    this.subscription = merge(
-      this.batches(metric$, this.streams.metrics),
-      this.batches(log$, this.streams.logs),
-    )
-      .pipe(
-        // Catches pipeline errors and restarts subscription on failure.
-        // Stays ahead of observeOn. Behind it the restart runs a microtask late
-        // and records pushed in between reach a Subject with no subscriber.
-        catchError((error: unknown) => {
-          this.diagnostics.report(
-            "pipeline.crashed",
-            "the pipeline errored and was restarted",
-            undefined,
-            error,
-          );
-          this.subscribe();
-
-          return EMPTY;
-        }),
-
-        // Dispatches batch processing on microtask boundary after buffering.
-        // Ahead of it, records sit in a microtask queue an unloading document
-        // never drains.
-        observeOn(asapScheduler),
-        mergeMap(
-          (batch) =>
-            from(this.dispatch(batch)).pipe(
-              // Inner catchError isolates individual batch delivery rejections.
-              // On the outer chain it completes the stream and logging stops.
-              catchError((error: unknown) => {
-                this.diagnostics.report(
-                  "pipeline.crashed",
-                  "dispatch rejected, which it is written never to do",
-                  { batchId: batch.id },
-                  error,
-                );
-
-                return EMPTY;
-              }),
-            ),
-          MAX_CONCURRENT_REQUESTS,
-        ),
-      )
-      .subscribe();
+    this.streams.logs.stop();
+    this.streams.metrics.stop();
+    this.queue.length = 0;
   }
 
   /**
-   * Applies sampling, buffers stream records, and triggers timed batch emissions.
-   * @param source$ Stream observable emitting records.
-   * @param stream Stream buffer managing pending records.
-   * @returns Observable emitting closed LogBatch objects.
+   * Sorts a record into its stream, after sampling. Every fault is contained
+   * here: a record carrying no `attributes` makes isMetric throw, and a throw
+   * escaping this method would surface inside the caller's own log call.
+   * @param record Record to sort.
    */
-  private batches(source$: Observable<LogRecord>, stream: RecordStream): Observable<LogBatch> {
-    return source$.pipe(
-      filter((record) => {
-        if (shouldSample(record, this.config)) {
-          return true;
-        }
+  private route(record: LogRecord): void {
+    try {
+      const stream = isMetric(record) ? this.streams.metrics : this.streams.logs;
 
+      if (!shouldSample(record, this.config)) {
         this.diagnostics.count("record.dropped_by_sampling");
-        return false;
-      }),
+        return;
+      }
 
-      // Buffers records after sampling evaluation. The reverse order buffers
-      // dropped records for the life of the tab and beacons them on exit.
-      tap((record) => {
-        stream.add(record);
-      }),
-
-      // Uses bufferTime for trigger cadence while RecordStream owns record
-      // retention. The array bufferTime emits is discarded.
-      bufferTime(stream.options.flushIntervalMs, null, stream.options.batchSize),
-      map(() => this.claim(stream)),
-      filter((batch): batch is LogBatch => batch !== null),
-    );
+      stream.add(record);
+    } catch (error) {
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "a record was dropped on its way into a stream",
+        undefined,
+        error,
+      );
+    }
   }
 
   /**
-   * Drains the stream buffer into a new LogBatch and tracks it in unconfirmed storage.
+   * Drains a stream buffer into a new batch and queues it for dispatch. The
+   * buffer always holds at least one record here: a timer is armed only by a
+   * push, and every `take` disarms the timer that would have called this.
    * @param stream Stream buffer to drain.
-   * @returns Created LogBatch or null if stream was empty.
    */
-  private claim(stream: RecordStream): LogBatch | null {
+  private claim(stream: RecordStream): void {
     const records = stream.take();
-    if (records.length === 0) {
-      return null;
-    }
 
     const batch: LogBatch = {
       id: newId(),
@@ -295,8 +258,59 @@ export class LogPipeline {
       attempts: 0,
     };
     this.unconfirmed.set(batch.id, batch);
+    this.enqueue(batch);
+  }
 
-    return batch;
+  /**
+   * Queues a batch and schedules the pump on a microtask. Dispatching inline
+   * would start a fetch inside the application's own log call.
+   * @param batch Batch ready for delivery.
+   */
+  private enqueue(batch: LogBatch): void {
+    this.queue.push(batch);
+
+    if (this.pumpScheduled) {
+      return;
+    }
+
+    this.pumpScheduled = true;
+    queueMicrotask(() => {
+      this.pumpScheduled = false;
+      this.pump();
+    });
+  }
+
+  /** Starts queued dispatches up to the concurrency limit. */
+  private pump(): void {
+    while (this.inFlight < MAX_CONCURRENT_REQUESTS) {
+      const batch = this.queue.shift();
+      if (!batch) {
+        return;
+      }
+
+      this.inFlight++;
+      void this.run(batch);
+    }
+  }
+
+  /**
+   * Delivers one batch and frees its concurrency slot.
+   * @param batch Batch to deliver.
+   */
+  private async run(batch: LogBatch): Promise<void> {
+    try {
+      await this.dispatch(batch);
+    } catch (error) {
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "dispatch rejected, which it is written never to do",
+        { batchId: batch.id },
+        error,
+      );
+    } finally {
+      this.inFlight--;
+      this.pump();
+    }
   }
 
   /**
