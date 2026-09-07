@@ -12,7 +12,7 @@ export default defineConfig({
       // Every entry here is either a real dependency or the one optional peer.
       // If a framework name ever appears in this array, something under src/
       // has started importing one, and the fix is in src/ rather than here.
-      external: ["dexie", "@opentelemetry/api", "web-vitals"],
+      external: ["@opentelemetry/api", "web-vitals"],
     },
     sourcemap: true,
     target: "es2022",

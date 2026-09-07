@@ -361,8 +361,19 @@ export const QUOTA_EVICTION_DIVISOR = 4;
 /** DOMException name for a full store. */
 export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
 
-/** IndexedDB schema version. Bumping it requires a matching Dexie migration. */
-export const INDEXEDDB_SCHEMA_VERSION = 1;
+/**
+ * Native IndexedDB version. It starts at 11 because Dexie, which this replaced,
+ * opened the same database at ten times its own declared version. Anything below
+ * 11 makes open() fail with VersionError for an existing installation and every
+ * batch already stored there is stranded.
+ */
+export const INDEXEDDB_SCHEMA_VERSION = 11;
+
+/** IndexedDB object store holding batches. Named by Dexie before it was removed. */
+export const INDEXEDDB_STORE_NAME = "batches";
+
+/** Index on the batch store that orders reads by creation time. */
+export const INDEXEDDB_CREATED_AT_INDEX = "createdAt";
 
 /** IndexedDB adapter/strategy name. */
 export const STORAGE_NAME_INDEXEDDB = "indexeddb";

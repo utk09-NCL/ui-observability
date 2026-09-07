@@ -75,8 +75,7 @@
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@opentelemetry/api": "1.9.1",
-    "dexie": "4.4.5"
+    "@opentelemetry/api": "1.9.1"
   },
   "peerDependencies": {
     "web-vitals": "^4 || ^5 || ^6"

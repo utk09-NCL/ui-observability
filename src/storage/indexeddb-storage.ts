@@ -1,17 +1,12 @@
 // src/storage/indexeddb-storage.ts
 //
-// Persistent storage adapter backed by IndexedDB and Dexie with time-ordered indexing.
+// Persistent storage adapter backed by IndexedDB with time-ordered indexing.
 
-import Dexie, { type Table } from "dexie";
-import {
-  INDEXEDDB_SCHEMA_VERSION,
-  QUOTA_EVICTION_DIVISOR,
-  QUOTA_EXCEEDED_ERROR,
-  STORAGE_NAME_INDEXEDDB,
-} from "../constants";
+import { QUOTA_EVICTION_DIVISOR, QUOTA_EXCEEDED_ERROR, STORAGE_NAME_INDEXEDDB } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
+import { IdbDriver } from "./idb-driver";
 
 /**
  * Sums the total count of records contained across an array of batches.
@@ -22,27 +17,13 @@ function countRecords(batches: LogBatch[]): number {
   return batches.reduce((total, batch) => total + batch.records.length, 0);
 }
 
-/** Dexie database instance schema definition for log batch storage. */
-class ObservabilityDb extends Dexie {
-  /** Table storing LogBatch entities keyed by id and indexed by createdAt. */
-  batches!: Table<LogBatch, string>;
-
-  /**
-   * @param name IndexedDB database name.
-   */
-  constructor(name: string) {
-    super(name);
-    this.version(INDEXEDDB_SCHEMA_VERSION).stores({ batches: "id, createdAt" });
-  }
-}
-
 /** Persistent StorageAdapter implementation backed by IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
   /** Storage adapter strategy name. */
   readonly name = STORAGE_NAME_INDEXEDDB;
 
-  /** Underlying Dexie database instance. */
-  private readonly db: ObservabilityDb;
+  /** IndexedDB mechanics for the batch store. */
+  private readonly db: IdbDriver;
 
   /**
    * @param dbName Database name.
@@ -56,7 +37,7 @@ export class IndexedDbStorage implements StorageAdapter {
     private readonly diagnostics: Diagnostics,
     private readonly onGap?: GapReporter,
   ) {
-    this.db = new ObservabilityDb(dbName);
+    this.db = new IdbDriver(dbName);
   }
 
   /**
@@ -65,7 +46,7 @@ export class IndexedDbStorage implements StorageAdapter {
    */
   async save(batch: LogBatch): Promise<void> {
     try {
-      await this.db.batches.put(batch);
+      await this.db.put(batch);
       await this.prune();
     } catch (error) {
       if (error instanceof Error && error.name === QUOTA_EXCEEDED_ERROR) {
@@ -99,7 +80,7 @@ export class IndexedDbStorage implements StorageAdapter {
     const batches = await this.diagnostics.guardAsync(
       "storage.degraded",
       "reading stored batches",
-      () => this.db.batches.orderBy("createdAt").limit(limit).toArray(),
+      () => this.db.takeOldest(limit),
     );
     return batches ?? [];
   }
@@ -110,7 +91,7 @@ export class IndexedDbStorage implements StorageAdapter {
    */
   async remove(id: string): Promise<void> {
     await this.diagnostics.guardAsync("storage.degraded", "deleting a batch", () =>
-      this.db.batches.delete(id),
+      this.db.delete(id),
     );
   }
 
@@ -121,7 +102,7 @@ export class IndexedDbStorage implements StorageAdapter {
    */
   async bumpAttempts(id: string, attempts: number): Promise<void> {
     await this.diagnostics.guardAsync("storage.degraded", "updating attempts", () =>
-      this.db.batches.update(id, { attempts }),
+      this.db.bumpAttempts(id, attempts),
     );
   }
 
@@ -134,14 +115,14 @@ export class IndexedDbStorage implements StorageAdapter {
 
     await this.diagnostics.guardAsync("storage.degraded", "pruning", async () => {
       const cutoff = Date.now() - this.limits.maxAgeMs;
-      const expired = await this.db.batches.where("createdAt").below(cutoff).toArray();
+      const expired = await this.db.takeBefore(cutoff);
       if (expired.length > 0) {
-        await this.db.batches.bulkDelete(expired.map((batch) => batch.id));
+        await this.db.deleteMany(expired.map((batch) => batch.id));
         result.batches += expired.length;
         result.records += countRecords(expired);
       }
 
-      const total = await this.db.batches.count();
+      const total = await this.db.count();
       if (total > this.limits.maxBatches) {
         result.reason = "over_capacity";
         const evicted = await this.evictOldest(total - this.limits.maxBatches);
@@ -160,24 +141,21 @@ export class IndexedDbStorage implements StorageAdapter {
    */
   async count(): Promise<number> {
     const total = await this.diagnostics.guardAsync("storage.degraded", "counting", () =>
-      this.db.batches.count(),
+      this.db.count(),
     );
     return total ?? 0;
   }
 
   /** Deletes all stored batches from the database. */
   async clear(): Promise<void> {
-    await this.diagnostics.guardAsync("storage.degraded", "clearing", () =>
-      this.db.batches.clear(),
-    );
+    await this.diagnostics.guardAsync("storage.degraded", "clearing", () => this.db.clear());
   }
 
   /** Closes the active IndexedDB connection. */
-  close(): Promise<void> {
-    this.diagnostics.guard("storage.degraded", "closing the database", () => {
-      this.db.close();
-    });
-    return Promise.resolve();
+  async close(): Promise<void> {
+    await this.diagnostics.guardAsync("storage.degraded", "closing the database", () =>
+      this.db.close(),
+    );
   }
 
   /**
@@ -205,8 +183,8 @@ export class IndexedDbStorage implements StorageAdapter {
    * @returns Metrics of evicted batches and records.
    */
   private async evictOldest(howMany: number): Promise<Omit<PruneResult, "reason">> {
-    const doomed = await this.db.batches.orderBy("createdAt").limit(howMany).toArray();
-    await this.db.batches.bulkDelete(doomed.map((batch) => batch.id));
+    const doomed = await this.db.takeOldest(howMany);
+    await this.db.deleteMany(doomed.map((batch) => batch.id));
 
     return { batches: doomed.length, records: countRecords(doomed) };
   }

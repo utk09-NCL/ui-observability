@@ -3,6 +3,7 @@ import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { PruneResult } from "../src/models/storage";
 import { createStorage } from "../src/storage/factory";
+import { IdbDriver } from "../src/storage/idb-driver";
 import { LocalStorageStorage } from "../src/storage/local-storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { useFakeLocalStorage } from "./fake-storage";
@@ -38,13 +39,13 @@ describe("storage factory", () => {
     await adapter.close();
   });
 
-  it("uses IndexedDB when it is there, and never imports Dexie when it is not asked to", async () => {
+  it("uses IndexedDB when it is there, and never loads the chunk when it is not asked to", async () => {
     const indexeddb = await createStorage("auto", "db-auto", limits, quiet());
     expect(indexeddb.name).toBe("indexeddb");
     await indexeddb.close();
 
     // The whole reason the import is dynamic: a consumer who asked for memory
-    // must not pay for the heaviest dependency in the library.
+    // must not pay to parse the IndexedDB driver.
     const memory = await createStorage("memory", "db", limits, quiet());
     expect(memory.name).toBe("memory");
   });
@@ -369,7 +370,7 @@ describe("LocalStorageStorage", () => {
 });
 
 describe("IndexedDbStorage", () => {
-  // fake-indexeddb is loaded by tests/setup.ts, so Dexie has a real store here.
+  // fake-indexeddb is loaded by tests/setup.ts, so the driver has a real store here.
   // A fresh database name per test, because the store outlives the adapter.
   const idbLimits = { maxBatches: 3, maxAgeMs: 60_000, maxAttempts: 5 };
   let counter = 0;
@@ -444,7 +445,7 @@ describe("IndexedDbStorage", () => {
       await storage.save(batch(`b${String(i)}`, now - i * 1000));
     }
 
-    vi.spyOn(storage["db"].batches, "put").mockRejectedValueOnce(
+    vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
     await storage.save(batch("overflow", now));
@@ -460,10 +461,10 @@ describe("IndexedDbStorage", () => {
     const { storage, handler } = await make();
     await storage.save(batch("b1"));
 
-    vi.spyOn(storage["db"].batches, "put").mockRejectedValueOnce(
+    vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
-    vi.spyOn(storage["db"].batches, "orderBy").mockImplementation(() => {
+    vi.spyOn(storage["db"], "takeOldest").mockImplementation(() => {
       throw new Error("database is closing");
     });
 
@@ -473,7 +474,7 @@ describe("IndexedDbStorage", () => {
 
   it("reports any other write failure as degraded, not as a quota problem", async () => {
     const { storage, handler } = await make();
-    vi.spyOn(storage["db"].batches, "put")
+    vi.spyOn(storage["db"], "put")
       .mockRejectedValueOnce(new Error("boom"))
       // Not every store rejects with an Error, and `error.name` on a string is
       // undefined rather than a throw.
@@ -491,7 +492,7 @@ describe("IndexedDbStorage", () => {
 
   it("hands back an empty list rather than throwing when a read fails", async () => {
     const { storage, handler } = await make();
-    vi.spyOn(storage["db"].batches, "orderBy").mockImplementation(() => {
+    vi.spyOn(storage["db"], "takeOldest").mockImplementation(() => {
       throw new Error("database is closing");
     });
 
@@ -501,7 +502,7 @@ describe("IndexedDbStorage", () => {
 
   it("counts zero rather than throwing when the database cannot answer", async () => {
     const { storage, handler } = await make();
-    vi.spyOn(storage["db"].batches, "count").mockImplementation(() => {
+    vi.spyOn(storage["db"], "count").mockImplementation(() => {
       throw new Error("database is closing");
     });
 
@@ -516,5 +517,127 @@ describe("IndexedDbStorage", () => {
 
     expect(await storage.count()).toBe(0);
     await storage.close();
+  });
+});
+
+describe("IdbDriver", () => {
+  // A fresh database name per test, because a store outlives the driver holding it.
+  let counter = 0;
+  const name = (): string => `uiobs-driver-${String(++counter)}`;
+
+  // Stands in for a request that fails. fake-indexeddb has no way to make a real
+  // one fail, and every driver method funnels its failure through onerror.
+  //
+  // Build it inside mockImplementationOnce, never as a mockReturnValueOnce
+  // argument. The microtask below is queued the moment the request is built, and
+  // one built at setup time fires while the test is still awaiting something
+  // else, long before promisify has assigned onerror. Nothing then settles and
+  // the test times out.
+  const failingRequest = <T>(error: Error | null): IDBRequest<T> => {
+    const request = { error, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
+    queueMicrotask(() => {
+      request.onerror?.call(request, new Event("error"));
+    });
+    return request;
+  };
+
+  // Writes a store the way an earlier release did, at the native version Dexie used.
+  const openLegacy = (dbName: string): Promise<IDBDatabase> =>
+    new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName, 10);
+      request.onupgradeneeded = () => {
+        request.result
+          .createObjectStore("batches", { keyPath: "id" })
+          .createIndex("createdAt", "createdAt");
+      };
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        reject(new Error("the legacy database would not open"));
+      };
+    });
+
+  it("opens the database once and hands the same connection to every call", async () => {
+    const driver = new IdbDriver(name());
+    const open = vi.spyOn(indexedDB, "open");
+
+    await driver.put(batch("b1"));
+    await driver.put(batch("b2"));
+
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(await driver.count()).toBe(2);
+    await driver.close();
+  });
+
+  it("adopts a database left by an earlier release rather than recreating its store", async () => {
+    // Dexie opened this database at ten times its declared version, so an
+    // installation upgrading from it is at native version 10 with data in it.
+    const dbName = name();
+    const legacy = await openLegacy(dbName);
+    await new Promise<void>((resolve, reject) => {
+      const tx = legacy.transaction("batches", "readwrite");
+      tx.objectStore("batches").put(batch("kept", 1000));
+      tx.oncomplete = () => {
+        resolve();
+      };
+      tx.onerror = () => {
+        reject(new Error("the legacy write failed"));
+      };
+    });
+    legacy.close();
+
+    const driver = new IdbDriver(dbName);
+
+    expect((await driver.takeOldest(10)).map((b) => b.id)).toEqual(["kept"]);
+    await driver.close();
+  });
+
+  it("rejects with the request error when a read fails", async () => {
+    const driver = new IdbDriver(name());
+    await driver.put(batch("b1"));
+
+    vi.spyOn(IDBObjectStore.prototype, "count").mockImplementationOnce(() =>
+      failingRequest<number>(new Error("database is closing")),
+    );
+
+    await expect(driver.count()).rejects.toThrow("database is closing");
+    await driver.close();
+  });
+
+  it("rejects with a stand-in when a request fails carrying no error", async () => {
+    const driver = new IdbDriver(name());
+    await driver.put(batch("b1"));
+
+    vi.spyOn(IDBObjectStore.prototype, "count").mockImplementationOnce(() =>
+      failingRequest<number>(null),
+    );
+
+    await expect(driver.count()).rejects.toThrow("the IndexedDB request failed");
+    await driver.close();
+  });
+
+  it("rejects when the database cannot be opened at all", async () => {
+    vi.spyOn(indexedDB, "open").mockImplementationOnce(
+      () => failingRequest<IDBDatabase>(new Error("blocked")) as unknown as IDBOpenDBRequest,
+    );
+
+    await expect(new IdbDriver(name()).count()).rejects.toThrow("blocked");
+  });
+
+  it("leaves an id it is not holding alone rather than storing it", async () => {
+    const driver = new IdbDriver(name());
+    await driver.bumpAttempts("never-stored", 3);
+
+    expect(await driver.count()).toBe(0);
+    await driver.close();
+  });
+
+  it("closes without opening a database it never touched", async () => {
+    const open = vi.spyOn(indexedDB, "open");
+
+    await new IdbDriver(name()).close();
+
+    expect(open).not.toHaveBeenCalled();
   });
 });
