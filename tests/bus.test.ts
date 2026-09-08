@@ -24,7 +24,7 @@ import {
 } from "../src/models/bus";
 import type { BusOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
-import { BUS_PROTOCOL } from "../src/constants";
+import { BUS_CHANNEL_NAME, BUS_PROTOCOL } from "../src/constants";
 
 /** Matches the parent-runtime lookup key in src/bus/links.ts. */
 const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
@@ -75,6 +75,7 @@ const handlers = () => ({
 
 const platform = (over = {}) => ({
   platform: "browser" as const,
+  openfinUuid: "app-1",
   userAgent: "test",
   isWorker: false,
   isTopLevelDocument: true,
@@ -616,19 +617,35 @@ describe("createBroadcastLink", () => {
 
 describe("createOpenFinLink", () => {
   it("returns null when there is no fin.InterApplicationBus", () => {
-    expect(createOpenFinLink("topic", vi.fn<Receive>(), diag())).toBeNull();
+    expect(createOpenFinLink("topic", "app-1", vi.fn<Receive>(), diag())).toBeNull();
     vi.stubGlobal("fin", {});
-    expect(createOpenFinLink("topic", vi.fn<Receive>(), diag())).toBeNull();
+    expect(createOpenFinLink("topic", "app-1", vi.fn<Receive>(), diag())).toBeNull();
   });
 
-  it("subscribes across every application and delivers a message to receive", async () => {
+  it("returns null and reports when the application uuid is unknown", () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+
+    expect(
+      createOpenFinLink("topic", undefined, vi.fn<Receive>(), new Diagnostics(handler, 0)),
+    ).toBeNull();
+    expect(iab.subscribe).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "openfin.unavailable" }));
+  });
+
+  it("scopes the topic and the subscriber identity to one application", async () => {
     const iab = fakeIab();
     vi.stubGlobal("fin", { InterApplicationBus: iab });
     const receive = vi.fn<Receive>();
 
-    createOpenFinLink("topic", receive, diag());
+    createOpenFinLink("topic", "app-1", receive, diag());
     await vi.waitFor(() => {
-      expect(iab.subscribe).toHaveBeenCalledWith({ uuid: "*" }, "topic", expect.any(Function));
+      expect(iab.subscribe).toHaveBeenCalledWith(
+        { uuid: "app-1" },
+        "topic.app-1",
+        expect.any(Function),
+      );
     });
 
     const listener = iab.subscribe.mock.calls[0][2] as (raw: unknown) => void;
@@ -650,22 +667,22 @@ describe("createOpenFinLink", () => {
     });
     vi.stubGlobal("fin", { InterApplicationBus: iab });
 
-    createOpenFinLink("topic", vi.fn<Receive>(), new Diagnostics(handler, 0));
+    createOpenFinLink("topic", "app-1", vi.fn<Receive>(), new Diagnostics(handler, 0));
     await vi.waitFor(() => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
     });
   });
 
-  it("publishes through the bus, and reports rather than throwing when it rejects", async () => {
+  it("publishes on the scoped topic, and reports rather than throwing when it rejects", async () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const iab = fakeIab();
     vi.stubGlobal("fin", { InterApplicationBus: iab });
-    const link = createOpenFinLink("topic", vi.fn<Receive>(), new Diagnostics(handler, 0));
+    const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), new Diagnostics(handler, 0));
 
     link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
     await vi.waitFor(() => {
       expect(iab.publish).toHaveBeenCalledWith(
-        "topic",
+        "topic.app-1",
         envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
       );
     });
@@ -1532,6 +1549,33 @@ describe("Bus internals: ensureOpenFinLink", () => {
 
     expect(first).toBe(second);
     expect(iab.subscribe).toHaveBeenCalledOnce();
+  });
+
+  it("scopes the link to the application uuid detected for this context", async () => {
+    const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const { bus } = make({}, { platform: "openfin", openfinUuid: "app-2" });
+
+    (bus as unknown as { ensureOpenFinLink: () => Link | null }).ensureOpenFinLink();
+
+    await vi.waitFor(() => {
+      expect(iab.subscribe).toHaveBeenCalledWith(
+        { uuid: "app-2" },
+        `${BUS_CHANNEL_NAME}.app-2`,
+        expect.any(Function),
+      );
+    });
+  });
+
+  it("opens no link when the OpenFin identity is unknown", () => {
+    const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const { bus } = make({}, { platform: "openfin", openfinUuid: undefined });
+
+    expect(
+      (bus as unknown as { ensureOpenFinLink: () => Link | null }).ensureOpenFinLink(),
+    ).toBeNull();
+    expect(iab.subscribe).not.toHaveBeenCalled();
   });
 });
 

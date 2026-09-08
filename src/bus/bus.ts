@@ -444,7 +444,12 @@ export class Bus {
 
   /** Returns the singleton OpenFin InterApplicationBus link. */
   private ensureOpenFinLink(): Link | null {
-    this.openFinLink ??= createOpenFinLink(BUS_CHANNEL_NAME, this.receive, this.diagnostics);
+    this.openFinLink ??= createOpenFinLink(
+      BUS_CHANNEL_NAME,
+      this.platform.openfinUuid,
+      this.receive,
+      this.diagnostics,
+    );
     return this.openFinLink;
   }
 

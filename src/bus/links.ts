@@ -289,14 +289,16 @@ interface FinIab {
 }
 
 /**
- * Creates an OpenFin InterApplicationBus link across desktop views and applications.
- * @param topic InterApplicationBus topic identifier.
+ * Creates an OpenFin InterApplicationBus link scoped to one application.
+ * @param topic InterApplicationBus topic prefix.
+ * @param appUuid OpenFin application uuid owning this context.
  * @param receive Callback for received topic messages.
  * @param diagnostics Diagnostics reporter.
- * @returns OpenFin link, or null if InterApplicationBus is unavailable.
+ * @returns OpenFin link, or null if InterApplicationBus or the identity is unavailable.
  */
 export function createOpenFinLink(
   topic: string,
+  appUuid: string | undefined,
   receive: Receive,
   diagnostics: Diagnostics,
 ): Link | null {
@@ -305,9 +307,22 @@ export function createOpenFinLink(
   if (!iab) {
     return null;
   }
+  if (!appUuid) {
+    // publish() reaches every subscriber on the runtime. Without an identity to
+    // scope it, opening the link would share this app's bus with every other.
+    diagnostics.report(
+      "openfin.unavailable",
+      "no OpenFin application uuid, so the InterApplicationBus link stays closed",
+    );
+    return null;
+  }
+
+  // Both halves carry the uuid: the topic keeps this app's messages away from
+  // other applications, the subscriber identity rejects theirs.
+  const scoped = `${topic}.${appUuid}`;
 
   void diagnostics.guardAsync("bus.send_failed", "InterApplicationBus.subscribe", () =>
-    iab.subscribe({ uuid: "*" }, topic, (raw) => {
+    iab.subscribe({ uuid: appUuid }, scoped, (raw) => {
       const message = unwrap(raw);
       if (message) {
         receive(message, { link: "openfin", origin: "openfin" });
@@ -319,7 +334,7 @@ export function createOpenFinLink(
     kind: "openfin",
     post(message) {
       void diagnostics.guardAsync("bus.send_failed", "InterApplicationBus.publish", () =>
-        iab.publish(topic, envelope(message)),
+        iab.publish(scoped, envelope(message)),
       );
     },
     close() {
