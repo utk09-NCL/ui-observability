@@ -189,6 +189,36 @@ describe("ErrorCapture", () => {
     capture.uninstall();
   });
 
+  it("records a failed resource without its query string", () => {
+    const { ctx: c, logger } = ctx({ resourceErrors: true });
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    document.body.innerHTML = `<img id="shot" src="https://cdn.example/a.png?sig=secret" />`;
+    document.querySelector("#shot")!.dispatchEvent(new Event("error"));
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "resource failed to load",
+      expect.objectContaining({ "resource.url": "https://cdn.example/a.png" }),
+    );
+    capture.uninstall();
+  });
+
+  it("keeps the whole resource URL when the consumer asks for it", () => {
+    const { ctx: c, logger } = ctx({ resourceErrors: true, fullUrls: true });
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    document.body.innerHTML = `<img id="kept" src="https://cdn.example/b.png?sig=secret" />`;
+    document.querySelector("#kept")!.dispatchEvent(new Event("error"));
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "resource failed to load",
+      expect.objectContaining({ "resource.url": "https://cdn.example/b.png?sig=secret" }),
+    );
+    capture.uninstall();
+  });
+
   it("stays quiet when errors are switched off", () => {
     const { ctx: c, logger } = ctx({ errors: false });
     const capture = new ErrorCapture(c);
@@ -338,6 +368,37 @@ describe("NetworkCapture: fetch", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ "url.full": "https://api.internal/orders" }),
+    );
+    capture.uninstall();
+  });
+
+  it("records the request path without its query string", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal/orders?token=secret");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.not.stringContaining("token=secret"),
+      expect.objectContaining({ "url.full": "https://api.internal/orders" }),
+    );
+    expect(c.breadcrumbs.snapshot().at(-1)?.message).not.toContain("token=secret");
+    capture.uninstall();
+  });
+
+  it("keeps the whole request URL when the consumer asks for it", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true, fullUrls: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal/orders?token=secret");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ "url.full": "https://api.internal/orders?token=secret" }),
     );
     capture.uninstall();
   });
@@ -725,6 +786,37 @@ describe("InteractionCapture", () => {
 
     capture.uninstall();
     expect(history.pushState).toBe(original);
+  });
+
+  it("reports the previous route without its query string", async () => {
+    history.replaceState({}, "", "/seed?token=secret");
+    const { ctx: c, logger } = ctx({ navigation: true });
+    const capture = new InteractionCapture(c);
+    capture.install();
+
+    history.pushState({}, "", "/orders/1");
+    await Promise.resolve();
+
+    expect(logger.logEvent).toHaveBeenCalledWith("NAVIGATION", {
+      "page.url.previous": `${location.origin}/seed`,
+    });
+    expect(c.breadcrumbs.snapshot().at(-1)?.message).not.toContain("token=secret");
+    capture.uninstall();
+  });
+
+  it("keeps the whole previous route when the consumer asks for it", async () => {
+    history.replaceState({}, "", "/kept?token=secret");
+    const { ctx: c, logger } = ctx({ navigation: true, fullUrls: true });
+    const capture = new InteractionCapture(c);
+    capture.install();
+
+    history.pushState({}, "", "/orders/2");
+    await Promise.resolve();
+
+    expect(logger.logEvent).toHaveBeenCalledWith("NAVIGATION", {
+      "page.url.previous": `${location.origin}/kept?token=secret`,
+    });
+    capture.uninstall();
   });
 
   it("logs a replaceState that moved the URL", async () => {

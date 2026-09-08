@@ -1,7 +1,13 @@
 // tests/platform.test.ts
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
-import { currentUrl, detectPlatform, isTopLevel, resetPlatformCache } from "../src/utils/platform";
+import {
+  currentUrl,
+  detectPlatform,
+  isTopLevel,
+  resetPlatformCache,
+  stripUrlQuery,
+} from "../src/utils/platform";
 
 const diag = (): Diagnostics => new Diagnostics(vi.fn(), 0);
 
@@ -199,5 +205,34 @@ describe("currentUrl", () => {
     });
 
     expect(currentUrl()).toBe("");
+  });
+});
+
+describe("stripUrlQuery", () => {
+  it("drops the query string, which is where tokens and user input travel", () => {
+    expect(stripUrlQuery("https://app.test/checkout?token=secret&q=me")).toBe(
+      "https://app.test/checkout",
+    );
+  });
+
+  it("drops the fragment", () => {
+    expect(stripUrlQuery("https://app.test/checkout#step2")).toBe("https://app.test/checkout");
+  });
+
+  it("cuts at whichever of query and fragment comes first", () => {
+    expect(stripUrlQuery("https://app.test/a#b?c=1")).toBe("https://app.test/a");
+    expect(stripUrlQuery("https://app.test/a?c=1#b")).toBe("https://app.test/a");
+  });
+
+  it("leaves a URL that carries neither alone", () => {
+    expect(stripUrlQuery("https://app.test/checkout")).toBe("https://app.test/checkout");
+  });
+
+  it("handles a relative request target, which has no base to parse against", () => {
+    expect(stripUrlQuery("/api/orders?token=secret")).toBe("/api/orders");
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(stripUrlQuery("")).toBe("");
   });
 });

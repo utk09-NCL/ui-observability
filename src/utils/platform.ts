@@ -166,6 +166,18 @@ export function currentUrl(): string {
   }
 }
 
+/**
+ * Drops the query string and fragment from a URL.
+ * A string cut, not a URL parse: a relative request target has no base to parse against.
+ * @param url Absolute or relative URL.
+ * @returns The URL up to the first "?" or "#".
+ */
+export function stripUrlQuery(url: string): string {
+  const cut = url.search(/[?#]/);
+
+  return cut === -1 ? url : url.slice(0, cut);
+}
+
 /** Resets the cached platform metadata for testing. */
 export function resetPlatformCache(): void {
   cached = null;

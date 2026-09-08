@@ -2,6 +2,7 @@
 //
 // Instruments fetch and XMLHttpRequest to record network request outcomes and timing.
 
+import { stripUrlQuery } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
 /** Signature of the global fetch function. */
@@ -202,18 +203,22 @@ export class NetworkCapture implements Capture {
   /**
    * Records request outcome attributes and breadcrumb entry.
    * @param method Uppercase HTTP method.
-   * @param url Request target URL.
+   * @param target Request target URL, scrubbed before it is recorded.
    * @param status HTTP response status code, or 0 on failure.
    * @param durationMs Request duration in milliseconds.
    * @param error Caught error instance on failed requests.
    */
   private record(
     method: string,
-    url: string,
+    target: string,
     status: number,
     durationMs: number,
     error: unknown,
   ): void {
+    // Scrubbed here, not at the call sites: ignoreUrls and propagateTraceHeaderTo
+    // match on the whole URL, so only what is recorded loses the query string.
+    const url = this.ctx.config.capture.fullUrls ? target : stripUrlQuery(target);
+
     // A throw here runs inside the caller's own fetch. Breaking their request
     // to record that their request broke is the one unacceptable outcome.
     this.ctx.diagnostics.guard("capture.record_failed", `recording ${method} ${url}`, () => {

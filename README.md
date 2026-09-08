@@ -148,10 +148,15 @@ capture: {
   interactions: false,   // Element click breadcrumbs
   navigation: false,     // Single-page navigation URL changes
   webVitals: false,      // Core Web Vitals (LCP, CLS, INP, FCP, TTFB)
+  fullUrls: false,       // Keep query strings and fragments on recorded URLs
   ignoreUrls: [],        // URL patterns excluded from network capture
   propagateTraceHeaderTo: [], // Target origins allowed to receive traceparent
 }
 ```
+
+`fullUrls` is off, so page URLs, request targets and failed resource URLs are
+recorded up to the first `?` or `#`. `ignoreUrls` and `propagateTraceHeaderTo`
+still match against the whole URL.
 
 ---
 

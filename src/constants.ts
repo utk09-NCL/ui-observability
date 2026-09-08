@@ -623,6 +623,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     interactions: false,
     navigation: false,
     webVitals: false,
+    fullUrls: false,
     ignoreUrls: [],
     propagateTraceHeaderTo: [],
   },

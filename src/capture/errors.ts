@@ -8,6 +8,7 @@ import {
   ERROR_STORM_WINDOW_MS,
   MAX_TRACKED_ERROR_SIGNATURES,
 } from "../constants";
+import { stripUrlQuery } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
 /** Tracking metadata for a deduplicated error signature. */
@@ -79,14 +80,17 @@ export class ErrorCapture implements Capture {
         return;
       }
 
+      // A cache buster is noise; a signed URL is a credential. Neither is recorded.
+      const url = this.ctx.config.capture.fullUrls ? resourceUrl : stripUrlQuery(resourceUrl);
+
       this.ctx.breadcrumbs.push({
         t: Date.now(),
         category: "http",
-        message: `resource failed: ${resourceUrl}`,
+        message: `resource failed: ${url}`,
       });
       this.ctx.logger.warn("resource failed to load", {
         "error.type": "resource",
-        "resource.url": resourceUrl,
+        "resource.url": url,
         "resource.tag": target.tagName.toLowerCase(),
       });
       return;

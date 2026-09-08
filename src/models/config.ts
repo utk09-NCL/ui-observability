@@ -146,6 +146,12 @@ export interface CaptureOptions {
    */
   webVitals: boolean;
   /**
+   * Keep the query string and fragment on every URL the library records.
+   * Off strips them from page URLs, request targets and failed resource URLs.
+   * @default false
+   */
+  fullUrls: boolean;
+  /**
    * URLs excluded from logging. The ingest endpoint is always included.
    * @default []
    */

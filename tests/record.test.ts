@@ -188,6 +188,22 @@ describe("attributes", () => {
     expect(record.attributes["page.url"]).toBeTypeOf("string");
   });
 
+  it("stamps page.url without its query string, which carries tokens and user input", () => {
+    vi.stubGlobal("location", { href: "https://app.test/checkout?token=secret#step2" });
+    const { builder } = makeBuilder();
+
+    expect(built(builder).attributes["page.url"]).toBe("https://app.test/checkout");
+  });
+
+  it("keeps the whole page URL when the consumer asks for it", () => {
+    vi.stubGlobal("location", { href: "https://app.test/checkout?token=secret#step2" });
+    const { builder } = makeBuilder({ capture: { fullUrls: true } });
+
+    expect(built(builder).attributes["page.url"]).toBe(
+      "https://app.test/checkout?token=secret#step2",
+    );
+  });
+
   it("builds a serializable record from a circular payload instead of throwing", () => {
     const { builder } = makeBuilder();
     const circular: Record<string, unknown> = { a: 1 };

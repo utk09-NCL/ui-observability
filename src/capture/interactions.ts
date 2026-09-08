@@ -3,6 +3,7 @@
 // Captures clicks and in-page navigations as breadcrumbs and trace boundaries.
 
 import { ARIA_LABEL_MAX_CHARS, CLICK_TEXT_MAX_CHARS, SELECTOR_MAX_CLASSES } from "../constants";
+import { stripUrlQuery } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
 /**
@@ -150,17 +151,23 @@ export class InteractionCapture implements Capture {
     }
     this.lastUrl = to;
 
+    // Compared on the whole URL above, recorded without it: a move that only
+    // changes the query is still a navigation, but the query is not recorded.
+    const full = this.ctx.config.capture.fullUrls;
+    const fromUrl = full ? from : stripUrlQuery(from);
+    const toUrl = full ? to : stripUrlQuery(to);
+
     this.ctx.tracing.rotate("navigation");
     this.ctx.breadcrumbs.push({
       t: Date.now(),
       category: "navigation",
-      message: `${from} -> ${to}`,
+      message: `${fromUrl} -> ${toUrl}`,
     });
 
     // Only the previous URL is carried: the record builder stamps the current
     // one as `page.url`. Sending the new URL as `url.full` would make a
     // navigation look like an HTTP request to that address.
-    this.ctx.logger.logEvent("NAVIGATION", { "page.url.previous": from });
+    this.ctx.logger.logEvent("NAVIGATION", { "page.url.previous": fromUrl });
   };
 
   /** Patches History.pushState and replaceState to observe programmatic navigations. */

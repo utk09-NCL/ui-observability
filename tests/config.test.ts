@@ -46,6 +46,7 @@ describe("resolveConfig", () => {
     expect(resolved.sampling.alwaysSampleTypes).toEqual(["action"]);
     expect(resolved.bus.mode).toBe("auto");
     expect(resolved.capture.errors).toBe(true);
+    expect(resolved.capture.fullUrls).toBe(false);
     expect(resolved.console).toBeNull();
 
     // The only complaint should be the absent serviceName.

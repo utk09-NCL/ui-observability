@@ -43,7 +43,7 @@ import {
   nowUnixNano,
 } from "../models/log-record";
 import type { Identity } from "../utils/identity";
-import { currentUrl, type PlatformMetadata } from "../utils/platform";
+import { currentUrl, type PlatformMetadata, stripUrlQuery } from "../utils/platform";
 import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
 import type { Sequence } from "../utils/sequence";
 import type { TraceEngine } from "../utils/tracing";
@@ -150,7 +150,9 @@ export class RecordBuilder {
     const traceCtx = tracing.resolve();
     const activeJourney = journey.current();
     const seq = sequence.next();
-    const pageUrl = currentUrl();
+    // Query and fragment carry tokens and user input. The path is the grouping signal.
+    const url = currentUrl();
+    const pageUrl = config.capture.fullUrls ? url : stripUrlQuery(url);
 
     let attributes: Record<string, unknown>;
     let bytes = 0;
