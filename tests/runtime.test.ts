@@ -201,6 +201,13 @@ describe("runtime lifecycle", () => {
     );
   });
 
+  it("does not cache a scoped logger, so a per-call context cannot leak", () => {
+    configure(base);
+    const options = { scopedContext: { orderId: "o-1" } };
+
+    expect(getLogger("trading.blotter", options)).not.toBe(getLogger("trading.blotter", options));
+  });
+
   it("configures implicitly when something logs before configure() was called", () => {
     expect(ObservabilityRuntime.current()).toBeNull();
 

@@ -17,7 +17,7 @@ export type { LogLevel, LogRecord, LogType, MetricType } from "./models/log-reco
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
 export type { StorageAdapter } from "./models/storage";
 
-/** Cached logger instances keyed by namespace and options. */
+/** Cached logger instances keyed by namespace. Scoped loggers are never cached. */
 const loggers = new Map<string, OneLogger>();
 
 /**
@@ -45,18 +45,22 @@ export function configure(config: Partial<ObservabilityConfig>): void {
 }
 
 /**
- * Retrieves or creates a cached logger instance for a namespace.
+ * Retrieves a cached logger for a namespace, or builds an uncached scoped logger.
  * @param namespace Application subsystem or module namespace.
  * @param options Scoped context merged into records emitted by this logger.
- * @returns Cached OneLogger instance.
+ * @returns Cached OneLogger instance, or a new one when options are given.
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
-  const key = options ? `${namespace}::${JSON.stringify(options)}` : namespace;
-  let logger = loggers.get(key);
+  // Caching a per-call scopedContext would hold it for the document lifetime.
+  if (options) {
+    return new OneLogger(requireRuntime(), namespace, options);
+  }
+
+  let logger = loggers.get(namespace);
 
   if (!logger) {
-    logger = new OneLogger(requireRuntime(), namespace, options);
-    loggers.set(key, logger);
+    logger = new OneLogger(requireRuntime(), namespace);
+    loggers.set(namespace, logger);
   }
 
   return logger;

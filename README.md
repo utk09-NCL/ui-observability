@@ -68,19 +68,19 @@ log.error("pricing call failed", caughtError);
 
 ### Logging Methods
 
-| Function                                       | Description                                                       |
-| ---------------------------------------------- | ----------------------------------------------------------------- |
-| `getLogger(namespace, options?)`               | Returns a cached `OneLogger` scoped to a namespace.               |
-| `trace(msg, payload?)`                         | Logs a TRACE level record.                                        |
-| `debug(msg, payload?)`                         | Logs a DEBUG level record.                                        |
-| `info(msg, payload?)`                          | Logs an INFO level record.                                        |
-| `warn(msg, payload?)`                          | Logs a WARN level record.                                         |
-| `error(msg, err?, payload?)`                   | Logs an ERROR record with error instance and breadcrumb snapshot. |
-| `logAction(name, payload?)`                    | Logs a discrete user action.                                      |
-| `logEvent(name, payload?)`                     | Logs a domain or lifecycle event.                                 |
-| `logMetric(name, value, unit?, type?, attrs?)` | Logs a metric measurement (`gauge`, `counter`, `histogram`).      |
-| `timeSync(label, fn, attrs?)`                  | Times a synchronous function and emits a duration histogram.      |
-| `timeAsync(label, fn, attrs?)`                 | Times an asynchronous promise and emits a duration histogram.     |
+| Function                                       | Description                                                                               |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `getLogger(namespace, options?)`               | Returns a cached `OneLogger` for a namespace. With `options`, returns a new uncached one. |
+| `trace(msg, payload?)`                         | Logs a TRACE level record.                                                                |
+| `debug(msg, payload?)`                         | Logs a DEBUG level record.                                                                |
+| `info(msg, payload?)`                          | Logs an INFO level record.                                                                |
+| `warn(msg, payload?)`                          | Logs a WARN level record.                                                                 |
+| `error(msg, err?, payload?)`                   | Logs an ERROR record with error instance and breadcrumb snapshot.                         |
+| `logAction(name, payload?)`                    | Logs a discrete user action.                                                              |
+| `logEvent(name, payload?)`                     | Logs a domain or lifecycle event.                                                         |
+| `logMetric(name, value, unit?, type?, attrs?)` | Logs a metric measurement (`gauge`, `counter`, `histogram`).                              |
+| `timeSync(label, fn, attrs?)`                  | Times a synchronous function and emits a duration histogram.                              |
+| `timeAsync(label, fn, attrs?)`                 | Times an asynchronous promise and emits a duration histogram.                             |
 
 ### Context & Correlation
 
