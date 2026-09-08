@@ -133,10 +133,10 @@ describe("LogPipeline", () => {
     pipeline.push(record({ body: "log" }));
     pipeline.push(metric({ body: "metric" }));
 
-    const batch = pipeline.drainPending();
+    const batch = pipeline.drainForExit();
 
     expect(batch?.records.map((one) => one.body).sort()).toEqual(["log", "metric"]);
-    expect(pipeline.drainPending()).toBeNull();
+    expect(pipeline.drainForExit()).toBeNull();
     pipeline.destroy();
   });
 
@@ -251,7 +251,7 @@ describe("LogPipeline", () => {
     pipeline.push(record());
     pipeline.push(record());
 
-    const flushed = pipeline.drainPending();
+    const flushed = pipeline.drainForExit();
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
 
     expect(flushed?.records).toHaveLength(2);
@@ -262,13 +262,32 @@ describe("LogPipeline", () => {
   it("keeps records that arrived after the exit flush, and sends only those", async () => {
     const { pipeline, send } = setup();
     pipeline.push(record({ body: "before" }));
-    pipeline.drainPending();
+    pipeline.drainForExit();
     pipeline.push(record({ body: "after" }));
 
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
 
     expect(send).toHaveBeenCalledOnce();
     expect(bodiesOf(send.mock.calls[0][0])).toEqual(["after"]);
+    pipeline.destroy();
+  });
+
+  it("leaves in-flight batches alone on an explicit flush", async () => {
+    // A send that never settles holds a claimed batch unconfirmed. An explicit
+    // flush that takes it resends those records under a fresh batch id, which
+    // the server cannot deduplicate against the id still in flight.
+    const { pipeline, send } = setup({}, undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+    });
+    send.mockImplementation(() => new Promise<void>(() => undefined));
+
+    pipeline.push(record({ body: "in-flight" }));
+    pipeline.push(record({ body: "in-flight" }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(pipeline.drainPending()).toBeNull();
     pipeline.destroy();
   });
 
@@ -287,7 +306,7 @@ describe("LogPipeline", () => {
     }
     await vi.advanceTimersByTimeAsync(0);
 
-    const batch = pipeline.drainPending();
+    const batch = pipeline.drainForExit();
 
     expect(send).toHaveBeenCalledTimes(2);
     expect(batch?.records).toHaveLength(6);

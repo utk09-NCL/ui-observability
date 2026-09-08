@@ -3,7 +3,11 @@ import { getLogger } from "@utk09/ui-observability";
 // A namespace, never a second configure(). A remote that calls configure()
 // reconfigures the one runtime in the document, which renames service.name on
 // every record the shell and the other remote emit from then on.
-const log = getLogger("blotter.grid");
+// scopedContext carries the remote's own identity instead, so this team filters
+// on module without a per-remote service.name.
+const log = getLogger("blotter.grid", {
+  scopedContext: { module: "remote-blotter", moduleVersion: "0.0.0" },
+});
 
 /**
  * Renders the blotter panel.

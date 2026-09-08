@@ -62,7 +62,7 @@ function setup({ records = [], config = {}, drain }: Options = {}) {
   const flush = new ExitFlush({
     config: resolved,
     diagnostics,
-    drainPending:
+    drainForExit:
       drain ??
       (() =>
         pending.length === 0

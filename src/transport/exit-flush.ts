@@ -40,7 +40,7 @@ export interface ExitFlushDeps {
   /** Diagnostics reporter instance. */
   diagnostics: Diagnostics;
   /** Callback draining all pending buffered and unconfirmed batches into a single LogBatch. */
-  drainPending: () => LogBatch | null;
+  drainForExit: () => LogBatch | null;
 }
 
 /** Flushes pending telemetry on document unload using sendBeacon, keepalive fetch, or emergency storage. */
@@ -130,7 +130,7 @@ export class ExitFlush {
       return;
     }
 
-    const batch = this.deps.drainPending();
+    const batch = this.deps.drainForExit();
     if (!batch || batch.records.length === 0) {
       return;
     }

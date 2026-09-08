@@ -289,7 +289,7 @@ export class ObservabilityRuntime {
     this.exitFlush = new ExitFlush({
       config: this.config,
       diagnostics: this.diagnostics,
-      drainPending: () => this.pipeline?.drainPending() ?? null,
+      drainForExit: () => this.pipeline?.drainForExit() ?? null,
     });
 
     await drainEmergencyQueue(this.storage, this.diagnostics);

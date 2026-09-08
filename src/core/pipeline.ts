@@ -187,25 +187,27 @@ export class LogPipeline {
   }
 
   /**
+   * Drains the stream buffers into one batch. In-flight batches stay where they
+   * are. They carry their own ids and are still on their way, so taking them here
+   * resends every record under an id the server cannot deduplicate against.
+   * @returns Combined LogBatch or null if no records are buffered.
+   */
+  drainPending(): LogBatch | null {
+    return this.toBatch([...this.streams.metrics.take(), ...this.streams.logs.take()]);
+  }
+
+  /**
    * Atomically drains all buffered and unconfirmed in-flight records into a single
    * exit batch. Records already handed to fetch go out again under a new batch id,
    * so the server cannot deduplicate them and the exit flush can deliver duplicates.
    * A document being closed cannot confirm delivery, so this is by design.
    * @returns Combined LogBatch or null if no records are pending.
    */
-  drainPending(): LogBatch | null {
-    const records = [
-      ...[...this.unconfirmed.values()].flatMap((batch) => batch.records),
-      ...this.streams.metrics.take(),
-      ...this.streams.logs.take(),
-    ];
+  drainForExit(): LogBatch | null {
+    const inFlight = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
     this.unconfirmed.clear();
 
-    if (records.length === 0) {
-      return null;
-    }
-
-    return { id: newId(), records, createdAt: Date.now(), attempts: 0 };
+    return this.toBatch([...inFlight, ...this.streams.metrics.take(), ...this.streams.logs.take()]);
   }
 
   /** Stops the flush timers and refuses further records. */
@@ -214,6 +216,19 @@ export class LogPipeline {
     this.streams.logs.stop();
     this.streams.metrics.stop();
     this.queue.length = 0;
+  }
+
+  /**
+   * Wraps drained records in a batch.
+   * @param records Records taken from the buffers, in delivery order.
+   * @returns New LogBatch, or null when nothing was drained.
+   */
+  private toBatch(records: LogRecord[]): LogBatch | null {
+    if (records.length === 0) {
+      return null;
+    }
+
+    return { id: newId(), records, createdAt: Date.now(), attempts: 0 };
   }
 
   /**
