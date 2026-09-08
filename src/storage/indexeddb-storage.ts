@@ -59,6 +59,20 @@ export class IndexedDbStorage implements StorageAdapter {
         if (evicted) {
           this.reportGap({ ...evicted, reason: "quota" });
         }
+
+        // The eviction exists to make room for this batch. Without a second
+        // attempt save() resolves while the batch is gone and uncounted.
+        const stored = await this.diagnostics.guardAsync(
+          "storage.degraded",
+          "writing a batch after evicting",
+          async () => {
+            await this.db.put(batch);
+            return true;
+          },
+        );
+        if (stored !== true) {
+          this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" });
+        }
         return;
       }
 

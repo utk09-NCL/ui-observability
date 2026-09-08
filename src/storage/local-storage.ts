@@ -48,22 +48,18 @@ export class LocalStorageStorage implements StorageAdapter {
    * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
-    const written = this.diagnostics.guard(
-      "storage.quota_exceeded",
-      "localStorage refused a batch, evicting the oldest",
-      () => {
-        localStorage.setItem(keyFor(batch), JSON.stringify(batch));
-        return true;
-      },
-    );
-
-    if (written !== true) {
-      const keys = this.keys();
-      this.evict(keys.slice(0, Math.ceil(keys.length / QUOTA_EVICTION_DIVISOR)));
+    if (this.write(batch, "localStorage refused a batch, evicting the oldest")) {
+      await this.prune();
       return;
     }
 
-    await this.prune();
+    this.evictForQuota();
+
+    // The eviction exists to make room for this batch. Without a second attempt
+    // save() resolves while the batch is gone and uncounted.
+    if (!this.write(batch, "localStorage refused a batch even after evicting")) {
+      this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" });
+    }
   }
 
   /**
@@ -161,14 +157,7 @@ export class LocalStorageStorage implements StorageAdapter {
       }
     }
 
-    if (result.batches > 0) {
-      this.diagnostics.report(
-        "storage.evicted",
-        `dropped ${String(result.batches)} stored batches (${String(result.records)} records)`,
-        { ...result },
-      );
-      this.onGap?.(result);
-    }
+    this.reportGap(result);
 
     return Promise.resolve(result);
   }
@@ -190,6 +179,53 @@ export class LocalStorageStorage implements StorageAdapter {
   /** No-op storage teardown method. */
   close(): Promise<void> {
     return Promise.resolve();
+  }
+
+  /**
+   * Writes a batch to localStorage.
+   * @param batch Batch to store.
+   * @param context Description reported if the write is refused.
+   * @returns True if the write succeeded.
+   */
+  private write(batch: LogBatch, context: string): boolean {
+    const written = this.diagnostics.guard("storage.quota_exceeded", context, () => {
+      localStorage.setItem(keyFor(batch), JSON.stringify(batch));
+      return true;
+    });
+
+    return written === true;
+  }
+
+  /** Drops the oldest quarter of the store to free quota, counting the loss. */
+  private evictForQuota(): void {
+    const keys = this.keys();
+    const result: PruneResult = { batches: 0, records: 0, reason: "quota" };
+
+    for (const key of keys.slice(0, Math.ceil(keys.length / QUOTA_EVICTION_DIVISOR))) {
+      const stored = this.read(key);
+      this.removeKey(key);
+      result.batches++;
+      result.records += stored?.records.length ?? 0;
+    }
+
+    this.reportGap(result);
+  }
+
+  /**
+   * Reports dropped records to diagnostics and registered gap handlers.
+   * @param result Eviction metrics.
+   */
+  private reportGap(result: PruneResult): void {
+    if (result.batches === 0) {
+      return;
+    }
+
+    this.diagnostics.report(
+      "storage.evicted",
+      `dropped ${String(result.batches)} stored batches (${String(result.records)} records)`,
+      { ...result },
+    );
+    this.onGap?.(result);
   }
 
   /**

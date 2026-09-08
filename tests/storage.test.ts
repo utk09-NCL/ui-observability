@@ -322,17 +322,59 @@ describe("LocalStorageStorage", () => {
   it("evicts a quarter of the store when localStorage rejects a write", async () => {
     // Installed before the seeding writes, or the adapter reads an empty store.
     const blocked = useFakeLocalStorage();
-    const s = make();
+    const gaps: PruneResult[] = [];
+    const s = make((result) => gaps.push(result));
     const now = Date.now();
     for (let i = 0; i < 3; i++) {
-      await s.save(batch(`b${String(i)}`, now - i * 1000));
+      await s.save(batch(`b${String(i)}`, now - i * 1000, 2));
     }
 
     blocked.add("setItem");
-    await s.save(batch("overflow", now));
+    await s.save(batch("overflow", now, 4));
     blocked.delete("setItem");
 
     expect(await s.count()).toBe(2);
+    // The eviction, then the batch that could not be written even after it.
+    expect(gaps.at(-2)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
+    expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 4, reason: "quota" });
+  });
+
+  it("retries the write after evicting, so the batch that hit the ceiling survives", async () => {
+    useFakeLocalStorage();
+    const gaps: PruneResult[] = [];
+    const s = make((result) => gaps.push(result));
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      await s.save(batch(`b${String(i)}`, now - (3 - i) * 1000, 2));
+    }
+
+    const setItem = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    await s.save(batch("overflow", now, 2));
+    setItem.mockRestore();
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["b1", "b2", "overflow"]);
+    expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
+  });
+
+  it("counts a corrupt entry evicted for quota as a batch holding no records", async () => {
+    useFakeLocalStorage();
+    const gaps: PruneResult[] = [];
+    const s = make((result) => gaps.push(result));
+    await s.save(batch("b1", Date.now(), 2));
+    // Oldest by key, so the quota eviction reaches it first. Planted after the
+    // save above, which would have pruned it.
+    localStorage.setItem("ui-observability.batch.00000000000001.corrupt", "not json");
+
+    const setItem = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    await s.save(batch("overflow", Date.now(), 2));
+    setItem.mockRestore();
+
+    expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 0, reason: "quota" });
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["b1", "overflow"]);
   });
 
   it("returns nothing rather than throwing when storage refuses enumeration", async () => {
@@ -438,7 +480,7 @@ describe("IndexedDbStorage", () => {
     await storage.close();
   });
 
-  it("evicts rather than giving up when the disk is full", async () => {
+  it("evicts and then retries the write when the disk is full", async () => {
     const { storage, handler } = await make();
     const now = Date.now();
     for (let i = 0; i < 3; i++) {
@@ -453,7 +495,23 @@ describe("IndexedDbStorage", () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "storage.quota_exceeded" }),
     );
-    expect(await storage.count()).toBe(2);
+    // The eviction freed room for this batch, so the batch has to be in it.
+    expect((await storage.take(10)).map((b) => b.id)).toContain("overflow");
+    expect(await storage.count()).toBe(3);
+    await storage.close();
+  });
+
+  it("counts a gap when the write after eviction is refused too", async () => {
+    const gaps: PruneResult[] = [];
+    const { storage } = await make({}, vi.fn(), (result) => gaps.push(result));
+    await storage.save(batch("b1", Date.now(), 3));
+
+    vi.spyOn(storage["db"], "put").mockRejectedValue(
+      Object.assign(new Error("full"), { name: "QuotaExceededError" }),
+    );
+    await storage.save(batch("overflow", Date.now(), 7));
+
+    expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 7, reason: "quota" });
     await storage.close();
   });
 
