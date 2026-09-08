@@ -76,7 +76,7 @@ const input: BuildInput = { level: "INFO", type: "event", body: "hello", namespa
 
 /** Build and assert a record came back, so each test can read fields without repeating the check. */
 const built = (builder: RecordBuilder, overrides: Partial<BuildInput> = {}): LogRecord => {
-  const record = builder.build({ ...input, ...overrides });
+  const { record } = builder.build({ ...input, ...overrides });
   expect(record).not.toBeNull();
   return record!;
 };
@@ -85,7 +85,10 @@ describe("the level gate", () => {
   it("drops a record below the configured minimum and counts the drop", () => {
     const { builder, diagnostics } = makeBuilder();
 
-    expect(builder.build({ ...input, level: "DEBUG" })).toBeNull();
+    expect(builder.build({ ...input, level: "DEBUG" })).toEqual({
+      record: null,
+      dropped: "level",
+    });
     expect(diagnostics.snapshot()["record.dropped_by_level"]).toBe(1);
   });
 
@@ -102,7 +105,7 @@ describe("the level gate", () => {
     const { builder } = makeBuilder({ enabled: false });
 
     expect(builder.isEnabled("FATAL")).toBe(false);
-    expect(builder.build({ ...input, level: "FATAL" })).toBeNull();
+    expect(builder.build({ ...input, level: "FATAL" }).record).toBeNull();
   });
 
   it("rejects before allocating, which is what makes a hot-loop debug call cheap", () => {
@@ -127,7 +130,10 @@ describe("the level gate", () => {
       },
     };
 
-    expect(builder.build({ ...input, payload })).toBeNull();
+    expect(builder.build({ ...input, payload })).toEqual({
+      record: null,
+      dropped: "sampling",
+    });
 
     expect(reads).toBe(0);
     expect(diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
@@ -279,7 +285,7 @@ describe("the redact hook", () => {
   it("lets the hook drop a record entirely", () => {
     const { builder, diagnostics } = makeBuilder({ redact: () => null });
 
-    expect(builder.build(input)).toBeNull();
+    expect(builder.build(input)).toEqual({ record: null, dropped: "redact" });
     expect(diagnostics.snapshot()["record.dropped_by_redact"]).toBe(1);
   });
 

@@ -221,7 +221,7 @@ export class OneLogger {
       return;
     }
 
-    const record = this.runtime.builder.build({
+    const { record, dropped } = this.runtime.builder.build({
       level,
       type,
       body,
@@ -230,7 +230,10 @@ export class OneLogger {
       payload,
     });
 
-    if (record && type !== "metric") {
+    // Crumbs are memory-only and never billed, so a record sampling dropped still
+    // leaves its trail for the next error. A redact hook that dropped the record
+    // wanted the body gone, and a crumb would ship it on the next error anyway.
+    if (type !== "metric" && dropped !== "redact") {
       this.runtime.breadcrumbs.push({
         t: Date.now(),
         category: type === "action" ? "action" : type === "event" ? "event" : "log",
@@ -268,7 +271,7 @@ export class OneLogger {
     const asError =
       asPayload || error === undefined ? undefined : toError(error, this.runtime.diagnostics);
 
-    const record = this.runtime.builder.build({
+    const { record } = this.runtime.builder.build({
       level,
       type: "system",
       body: message,

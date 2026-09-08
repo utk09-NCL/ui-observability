@@ -82,6 +82,17 @@ export interface RecordLimits extends SanitizeLimits {
   maxRecordBytes: number;
 }
 
+/** Reason a record was not built. */
+export type DropReason = "level" | "sampling" | "redact";
+
+/** Outcome of one build call. */
+export interface BuildResult {
+  /** Completed record, or null when it was dropped. */
+  record: LogRecord | null;
+  /** Why it was dropped. Absent when a record was built. */
+  dropped?: DropReason;
+}
+
 /** Input parameters for constructing a single log record. */
 export interface BuildInput {
   /** Severity level of the log entry. */
@@ -138,14 +149,14 @@ export class RecordBuilder {
   /**
    * Builds a structured LogRecord from input attributes, applying sanitization and size budgeting.
    * @param input Logger call input parameters.
-   * @returns Completed LogRecord or null if dropped by severity or redaction.
+   * @returns The record, or null with the reason it was dropped.
    */
-  build(input: BuildInput): LogRecord | null {
+  build(input: BuildInput): BuildResult {
     const { config, diagnostics, tracing, journey, sequence, limits } = this.deps;
 
     if (!this.isEnabled(input.level)) {
       diagnostics.count("record.dropped_by_level");
-      return null;
+      return { record: null, dropped: "level" };
     }
 
     const traceCtx = tracing.resolve();
@@ -165,7 +176,7 @@ export class RecordBuilder {
     );
     if (!sampled) {
       diagnostics.count("record.dropped_by_sampling");
-      return null;
+      return { record: null, dropped: "sampling" };
     }
 
     const seq = sequence.next();
@@ -236,7 +247,7 @@ export class RecordBuilder {
       );
       if (redacted === null) {
         diagnostics.count("record.dropped_by_redact");
-        return null;
+        return { record: null, dropped: "redact" };
       }
 
       if (redacted !== undefined && redacted !== record) {
@@ -280,7 +291,7 @@ export class RecordBuilder {
       record.attributes = kept;
     }
 
-    return record;
+    return { record };
   }
 
   /**

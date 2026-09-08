@@ -418,7 +418,7 @@ describe("runtime lifecycle", () => {
     configure(base);
     await ready();
     const held = runtime();
-    const record = held.builder.build({
+    const { record } = held.builder.build({
       level: "INFO",
       type: "event",
       body: "after the end",
@@ -704,6 +704,28 @@ describe("OneLogger", () => {
     expect(emit.mock.calls[0][0]?.attributes["error.message"]).toBe("just a string");
     expect(emit.mock.calls[1][0]?.severityText).toBe("FATAL");
     expect(emit.mock.calls[1][0]?.attributes["error.type"]).toBeUndefined();
+  });
+
+  it("keeps the breadcrumb trail of records that sampling dropped", () => {
+    // Breadcrumbs are memory-only and never billed. A noisy namespace on a low
+    // sampling rate is exactly where pre-error context matters most.
+    configure({ ...base, sampling: { defaultRate: 0 } });
+    const log = getLogger("trading");
+    log.logAction("ORDER_SUBMIT");
+    log.info("priced");
+
+    const trail = runtime().breadcrumbs.snapshot();
+
+    expect(trail.map((crumb) => crumb.message)).toEqual(["ORDER_SUBMIT", "priced"]);
+  });
+
+  it("keeps no breadcrumb for a record the redact hook dropped", () => {
+    // The hook asked for the record gone. Its body must not travel inside the
+    // next error record's breadcrumb list either.
+    configure({ ...base, redact: () => null });
+    getLogger("trading").info("card 4111111111111111");
+
+    expect(runtime().breadcrumbs.snapshot()).toEqual([]);
   });
 
   it("reads a plain object in the error slot as the payload, like every sibling method", () => {
