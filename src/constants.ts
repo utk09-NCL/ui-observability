@@ -531,6 +531,13 @@ export const ERROR_STORM_MAX_PER_WINDOW = 20;
 /** Error rate-limiting window duration in milliseconds. */
 export const ERROR_STORM_WINDOW_MS = 10_000;
 
+/**
+ * Max ERROR and FATAL records admitted to the pipeline per storm window.
+ * A backstop against a render loop, not a shaper: ERROR and FATAL bypass sampling,
+ * and a direct logger.error call has no other limit.
+ */
+export const ERROR_CEILING_MAX_PER_WINDOW = 500;
+
 /** Maximum distinct error signatures tracked for deduplication before LRU eviction. */
 export const MAX_TRACKED_ERROR_SIGNATURES = 200;
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ERROR_CEILING_MAX_PER_WINDOW } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { LogPipeline, type StreamOptions } from "../src/core/pipeline";
@@ -243,6 +244,26 @@ describe("LogPipeline", () => {
 
     expect(pipeline.drainPending()).toBeNull();
     expect(diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(100);
+    pipeline.destroy();
+  });
+
+  it("caps an ERROR storm that sampling would let through whole", () => {
+    // ERROR and FATAL bypass sampling by design. Application code calling
+    // logger.error in a render loop is the case with no other limit.
+    // A batch size past the ceiling, so the assertion reads the buffer rather
+    // than whatever an early batch already took.
+    const { pipeline, diagnostics } = setup({ sampling: { defaultRate: 0 } }, undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: ERROR_CEILING_MAX_PER_WINDOW * 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+    });
+    const over = 10;
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW + over; i++) {
+      pipeline.push(record({ severityText: "ERROR" }));
+    }
+
+    expect(diagnostics.snapshot()["record.dropped_by_ceiling"]).toBe(over);
+    expect(pipeline.drainPending()?.records).toHaveLength(ERROR_CEILING_MAX_PER_WINDOW);
     pipeline.destroy();
   });
 

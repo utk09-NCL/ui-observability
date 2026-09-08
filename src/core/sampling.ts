@@ -8,6 +8,8 @@ import {
   ATTR_APP_NAMESPACE,
   ATTR_JOURNEY_ID,
   ATTR_LOG_TYPE,
+  ERROR_CEILING_MAX_PER_WINDOW,
+  ERROR_STORM_WINDOW_MS,
   FNV_OFFSET_BASIS,
   FNV_PRIME,
   SAMPLING_RATE_MAX,
@@ -98,4 +100,40 @@ export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean
   const key = readAttr(record, ATTR_JOURNEY_ID) || record.traceId;
 
   return hash(key) / UINT32_MAX < rate;
+}
+
+/**
+ * Fixed-window ceiling on the ERROR and FATAL records that bypass sampling.
+ *
+ * Auto-captured errors are already limited inside ErrorCapture. This covers the
+ * case nothing else does: application code calling logger.error in a render loop.
+ */
+export class ErrorCeiling {
+  /** Start of the window currently counting, in epoch milliseconds. */
+  private windowStart = 0;
+
+  /** ERROR and FATAL records admitted in the current window. */
+  private count = 0;
+
+  /**
+   * Admits a record against the ceiling, counting only ERROR and FATAL.
+   * @param record Record about to enter a stream.
+   * @returns False when the window is spent and the record must be dropped.
+   */
+  allow(record: LogRecord): boolean {
+    if (record.severityText !== "ERROR" && record.severityText !== "FATAL") {
+      return true;
+    }
+
+    const now = Date.now();
+    // Fixed window, not a sliding one: a quiet spell banks no allowance.
+    if (now - this.windowStart > ERROR_STORM_WINDOW_MS) {
+      this.windowStart = now;
+      this.count = 0;
+    }
+
+    this.count++;
+
+    return this.count <= ERROR_CEILING_MAX_PER_WINDOW;
+  }
 }

@@ -23,7 +23,7 @@ import type { RetryEngine } from "../transport/retry-engine";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
-import { shouldSample } from "./sampling";
+import { ErrorCeiling, shouldSample } from "./sampling";
 
 /** Pipeline stream classification for logs versus metrics. */
 export type StreamName = "logs" | "metrics";
@@ -138,6 +138,9 @@ export class LogPipeline {
   /** Closed batches waiting for a free dispatch slot. */
   private readonly queue: LogBatch[] = [];
 
+  /** Ceiling on the ERROR and FATAL records that bypass sampling. */
+  private readonly ceiling = new ErrorCeiling();
+
   /** Dispatches currently in flight, capped at MAX_CONCURRENT_REQUESTS. */
   private inFlight = 0;
 
@@ -240,6 +243,13 @@ export class LogPipeline {
   private route(record: LogRecord): void {
     try {
       const stream = isMetric(record) ? this.streams.metrics : this.streams.logs;
+
+      // Before sampling: ERROR and FATAL never reach the rate below, so the
+      // ceiling is the only limit on them.
+      if (!this.ceiling.allow(record)) {
+        this.diagnostics.count("record.dropped_by_ceiling");
+        return;
+      }
 
       if (!shouldSample(record, this.config)) {
         this.diagnostics.count("record.dropped_by_sampling");

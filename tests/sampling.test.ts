@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { ATTR_APP_NAMESPACE, ATTR_JOURNEY_ID, ATTR_LOG_TYPE } from "../src/constants";
+import {
+  ATTR_APP_NAMESPACE,
+  ATTR_JOURNEY_ID,
+  ATTR_LOG_TYPE,
+  ERROR_CEILING_MAX_PER_WINDOW,
+  ERROR_STORM_WINDOW_MS,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
-import { shouldSample } from "../src/core/sampling";
+import { ErrorCeiling, shouldSample } from "../src/core/sampling";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 
@@ -149,5 +155,68 @@ describe("shouldSample on attributes it cannot read", () => {
     const rates = config({ defaultRate: 0, rates: { app: 1 } });
 
     expect(shouldSample(record({ [ATTR_APP_NAMESPACE]: 42 }), rates)).toBe(false);
+  });
+});
+
+describe("ErrorCeiling", () => {
+  const err = (): LogRecord => record({}, { severityText: "ERROR" });
+
+  it("allows records up to the ceiling and refuses the one past it", () => {
+    const ceiling = new ErrorCeiling();
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW; i++) {
+      expect(ceiling.allow(err())).toBe(true);
+    }
+
+    expect(ceiling.allow(err())).toBe(false);
+  });
+
+  it("counts FATAL against the same ceiling", () => {
+    const ceiling = new ErrorCeiling();
+    const fatal = record({}, { severityText: "FATAL" });
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW; i++) {
+      ceiling.allow(fatal);
+    }
+
+    expect(ceiling.allow(fatal)).toBe(false);
+  });
+
+  it("never refuses a record below ERROR, which sampling already governs", () => {
+    const ceiling = new ErrorCeiling();
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW * 2; i++) {
+      ceiling.allow(err());
+    }
+
+    expect(ceiling.allow(record())).toBe(true);
+    expect(ceiling.allow(record({}, { severityText: "WARN" }))).toBe(true);
+  });
+
+  it("opens again once the window has passed", () => {
+    vi.useFakeTimers();
+    const ceiling = new ErrorCeiling();
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW; i++) {
+      ceiling.allow(err());
+    }
+    expect(ceiling.allow(err())).toBe(false);
+
+    vi.advanceTimersByTime(ERROR_STORM_WINDOW_MS + 1);
+
+    expect(ceiling.allow(err())).toBe(true);
+  });
+
+  it("does not let a quiet spell bank allowance for a later storm", () => {
+    vi.useFakeTimers();
+    const ceiling = new ErrorCeiling();
+
+    ceiling.allow(err());
+    vi.advanceTimersByTime(ERROR_STORM_WINDOW_MS * 5);
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW; i++) {
+      expect(ceiling.allow(err())).toBe(true);
+    }
+    expect(ceiling.allow(err())).toBe(false);
   });
 });
