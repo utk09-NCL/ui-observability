@@ -40,7 +40,7 @@ describe("resolveConfig", () => {
     expect(resolved.enabled).toBe(true);
     expect(resolved.minLevel).toBe("INFO");
     expect(resolved.compression).toBe("gzip");
-    expect(resolved.credentials).toBe("include");
+    expect(resolved.credentials).toBe("omit");
     expect(resolved.storage).toBe("auto");
     expect(resolved.sampling.defaultRate).toBe(1);
     expect(resolved.sampling.alwaysSampleTypes).toEqual(["action"]);
@@ -103,6 +103,15 @@ describe("resolveConfig", () => {
     const resolved = resolveConfig(valid(), diagnostics);
 
     expect(resolved.serviceName).toBe("checkout");
+    expect(events).toEqual([]);
+  });
+
+  it("keeps a consumer's credentials, so sending cookies stays opt-in", () => {
+    const { events, diagnostics } = collect();
+
+    const resolved = resolveConfig({ ...valid(), credentials: "include" }, diagnostics);
+
+    expect(resolved.credentials).toBe("include");
     expect(events).toEqual([]);
   });
 

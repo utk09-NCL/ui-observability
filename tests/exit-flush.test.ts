@@ -386,7 +386,7 @@ describe("ExitFlush keepalive fallback", () => {
     const init = fetchMock.mock.calls[0][1];
     const headers = init.headers as Record<string, string>;
     expect(init.keepalive).toBe(true);
-    expect(init.credentials).toBe("include");
+    expect(init.credentials).toBe("omit");
     expect(headers["Content-Type"]).toBe("text/plain;charset=UTF-8");
   });
 

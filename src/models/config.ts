@@ -208,8 +208,8 @@ export interface ObservabilityConfig {
    */
   serializer?: "otlp" | "ecs" | LogSerializer;
   /**
-   * Passed to `fetch`.
-   * @default "include"
+   * Passed to `fetch`. Set "include" for an ingest endpoint that authenticates with cookies.
+   * @default "omit"
    */
   credentials?: RequestCredentials;
   /** Extra request headers, or a function returning them. */

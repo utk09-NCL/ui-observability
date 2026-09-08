@@ -122,7 +122,7 @@ log.error("pricing call failed", caughtError);
 | `minLevel`                   | `"INFO"`     | Minimum severity threshold (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`). |
 | `compression`                | `"gzip"`     | Compression algorithm (`gzip`, `none`). Applies to payloads over 1 KB.           |
 | `serializer`                 | `"otlp"`     | Wire format (`otlp`, `ecs`, or custom `LogSerializer`).                          |
-| `credentials`                | `"include"`  | Fetch credentials policy.                                                        |
+| `credentials`                | `"omit"`     | Fetch credentials policy. Set `"include"` for cookie auth.                       |
 | `headers`                    | `{}`         | Static headers or dynamic header resolver function.                              |
 | `storage`                    | `"auto"`     | Persistence engine (`auto`, `indexeddb`, `localstorage`, `memory`, `none`).      |
 | `sampling.defaultRate`       | `1`          | Keep rate applied when no namespace rule matches.                                |

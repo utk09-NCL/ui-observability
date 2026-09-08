@@ -135,7 +135,7 @@ describe("HttpTransport", () => {
 
     expect(headersOf(fetchMock).get("X-UiObs-Batch-Id")).toBe("batch-1");
     expect(headersOf(fetchMock).get("X-UiObs-Attempt")).toBe("0");
-    expect(initOf(fetchMock).credentials).toBe("include");
+    expect(initOf(fetchMock).credentials).toBe("omit");
   });
 
   it("reports a timeout rather than hanging forever", async () => {
