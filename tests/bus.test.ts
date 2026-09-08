@@ -420,13 +420,66 @@ describe("createChildrenLink", () => {
       ),
     );
     link?.post({ t: "journey?", from: "ctx-1" });
-    expect(child.postMessage).toHaveBeenCalledWith(envelope({ t: "journey?", from: "ctx-1" }), "*");
+    expect(child.postMessage).toHaveBeenCalledWith(
+      envelope({ t: "journey?", from: "ctx-1" }),
+      window.location.origin,
+    );
 
     child.closed = true;
     child.postMessage.mockClear();
     link?.post({ t: "journey?", from: "ctx-1" });
     expect(child.postMessage).not.toHaveBeenCalled();
 
+    link?.close();
+  });
+
+  it("posts to the origin a child spoke from, never a wildcard", () => {
+    const link = createChildrenLink(vi.fn<Receive>(), ["https://trusted.example"], diag());
+    const child = { closed: false, postMessage: vi.fn() };
+
+    dispatchEvent(
+      Object.assign(
+        new MessageEvent("message", {
+          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+        }),
+        {
+          origin: "https://trusted.example",
+          source: child,
+        },
+      ),
+    );
+    link?.post({ t: "journey?", from: "ctx-1" });
+
+    expect(child.postMessage).toHaveBeenCalledWith(
+      envelope({ t: "journey?", from: "ctx-1" }),
+      "https://trusted.example",
+    );
+    link?.close();
+  });
+
+  it("retargets a source that moved to another trusted origin", () => {
+    const link = createChildrenLink(vi.fn<Receive>(), ["https://trusted.example"], diag());
+    const child = { closed: false, postMessage: vi.fn() };
+    const hello = (origin: string): void => {
+      dispatchEvent(
+        Object.assign(
+          new MessageEvent("message", {
+            data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          }),
+          { origin, source: child },
+        ),
+      );
+    };
+
+    hello("https://trusted.example");
+    hello(window.location.origin);
+    link?.post({ t: "journey?", from: "ctx-1" });
+
+    expect(child.postMessage).toHaveBeenCalledOnce();
+    expect(child.postMessage).toHaveBeenCalledWith(
+      envelope({ t: "journey?", from: "ctx-1" }),
+      window.location.origin,
+    );
     link?.close();
   });
 

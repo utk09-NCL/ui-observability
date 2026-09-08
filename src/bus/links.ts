@@ -170,7 +170,8 @@ export function createChildrenLink(
   }
 
   const trusted = new Set([window.location.origin, ...trustedOrigins]);
-  const sources = new Set<MessageEventSource>();
+  // Origin per source: a child that navigates must not receive the previous origin's ids.
+  const sources = new Map<MessageEventSource, string>();
 
   const onMessage = (event: MessageEvent): void => {
     const message = unwrap(event.data);
@@ -187,7 +188,7 @@ export function createChildrenLink(
     }
 
     if (event.source) {
-      sources.add(event.source);
+      sources.set(event.source, event.origin);
     }
     receive(message, { link: "children", origin: event.origin });
   };
@@ -196,7 +197,7 @@ export function createChildrenLink(
   return {
     kind: "children",
     post(message) {
-      for (const source of sources) {
+      for (const [source, origin] of sources) {
         const target = source as Window;
         // Evicts closed child windows to prevent memory leaks.
         if (target.closed) {
@@ -204,7 +205,9 @@ export function createChildrenLink(
           continue;
         }
         diagnostics.guard("bus.send_failed", "postMessage to child", () => {
-          target.postMessage(envelope(message), "*");
+          // Targets the origin the child last spoke from. The browser drops the
+          // message if the child has since navigated elsewhere.
+          target.postMessage(envelope(message), origin);
         });
       }
     },
