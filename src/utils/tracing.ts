@@ -5,12 +5,6 @@
 // trace exactly one span.
 
 import {
-  isSpanContextValid,
-  context as otelContext,
-  trace as otelTrace,
-  propagation,
-} from "@opentelemetry/api";
-import {
   SPAN_ID_BYTES,
   TRACE_FLAGS_MASK,
   TRACE_FLAGS_SAMPLED,
@@ -20,7 +14,41 @@ import {
   TRACEPARENT_VERSION,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import type { OtelApi, OtelLoader, OtelSpanContext } from "../models/config";
 import { randomHex } from "./identity";
+
+/** Hex widths the W3C format fixes. A span context of another width is unusable. */
+const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
+const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
+
+/** Any digit other than zero. An all-zero id is what an unstarted span reports. */
+const NON_ZERO = /[1-9a-f]/;
+
+/**
+ * Loads the optional `@opentelemetry/api` peer. Dynamic specifier prevents
+ * bundlers from failing statically when the peer is uninstalled.
+ * @returns Promise resolving to the OpenTelemetry API.
+ */
+function defaultLoader(): Promise<OtelApi> {
+  const specifier = "@opentelemetry/api";
+  return import(/* @vite-ignore */ specifier) as Promise<OtelApi>;
+}
+
+/**
+ * Evaluates whether a span context can carry correlation. Replaces the
+ * package's own isSpanContextValid, which is not available when the peer is not
+ * installed.
+ * @param context Span context reported by the host.
+ * @returns True if both ids have the W3C width and neither is all zeros.
+ */
+function isUsableSpanContext(context: OtelSpanContext): boolean {
+  return (
+    TRACE_ID_PATTERN.test(context.traceId) &&
+    NON_ZERO.test(context.traceId) &&
+    SPAN_ID_PATTERN.test(context.spanId) &&
+    NON_ZERO.test(context.spanId)
+  );
+}
 
 /** W3C trace context fields attached to log records and network headers. */
 export interface TraceContext {
@@ -94,39 +122,44 @@ export class TraceEngine {
    */
   private ambient: AmbientTrace = mintAmbient();
 
+  /** The optional peer once loaded. Undefined while it loads, and forever if it is absent. */
+  private otel: OtelApi | undefined;
+
   /**
    * @param diagnostics Diagnostics reporter.
    * @param maxAgeMs Maximum lifetime of an un-rotated ambient trace in milliseconds.
+   * @param load Supplies the OpenTelemetry API.
    */
   constructor(
     private readonly diagnostics: Diagnostics,
     private readonly maxAgeMs = TRACE_MAX_AGE_MS,
+    private readonly load: OtelLoader = defaultLoader,
   ) {}
+
+  /**
+   * Loads the OpenTelemetry API. Records built before this resolves, and every
+   * record when the package is absent, carry the ambient trace instead.
+   * @returns Promise resolving once the attempt has settled.
+   */
+  async loadOtel(): Promise<void> {
+    try {
+      this.otel = await this.load();
+    } catch (error) {
+      this.diagnostics.report(
+        "trace.otel_failed",
+        "@opentelemetry/api is not available, so records carry this library's own trace ids",
+        undefined,
+        error,
+      );
+    }
+  }
 
   /**
    * Resolves trace context, prioritizing active OpenTelemetry spans over the ambient trace.
    * @returns Active TraceContext.
    */
   resolve(): TraceContext {
-    const fromOtel = this.diagnostics.guard(
-      "trace.otel_failed",
-      "reading the active OpenTelemetry span",
-      (): TraceContext | undefined => {
-        const span = otelTrace.getActiveSpan();
-        if (span === undefined) {
-          return undefined;
-        }
-        const spanContext = span.spanContext();
-        if (!isSpanContextValid(spanContext)) {
-          return undefined;
-        }
-        return {
-          traceId: spanContext.traceId,
-          spanId: spanContext.spanId,
-          traceFlags: spanContext.traceFlags,
-        };
-      },
-    );
+    const fromOtel = this.activeSpanContext();
     if (fromOtel !== undefined) {
       return fromOtel;
     }
@@ -137,6 +170,37 @@ export class TraceEngine {
       this.rotate("maxAge");
     }
     return toTraceContext(this.ambient);
+  }
+
+  /**
+   * Reads the host's active span, if the peer is loaded and a span is running.
+   * @returns Trace context of the active span, or undefined.
+   */
+  private activeSpanContext(): TraceContext | undefined {
+    const otel = this.otel;
+    if (!otel) {
+      return undefined;
+    }
+
+    return this.diagnostics.guard(
+      "trace.otel_failed",
+      "reading the active OpenTelemetry span",
+      (): TraceContext | undefined => {
+        const span = otel.trace.getActiveSpan();
+        if (span === undefined) {
+          return undefined;
+        }
+        const spanContext = span.spanContext();
+        if (!isUsableSpanContext(spanContext)) {
+          return undefined;
+        }
+        return {
+          traceId: spanContext.traceId,
+          spanId: spanContext.spanId,
+          traceFlags: spanContext.traceFlags,
+        };
+      },
+    );
   }
 
   /**
@@ -155,9 +219,12 @@ export class TraceEngine {
    */
   headers(): Record<string, string> {
     const carrier: Record<string, string> = {};
-    this.diagnostics.guard("trace.otel_failed", "injecting OpenTelemetry headers", () => {
-      propagation.inject(otelContext.active(), carrier);
-    });
+    const otel = this.otel;
+    if (otel) {
+      this.diagnostics.guard("trace.otel_failed", "injecting OpenTelemetry headers", () => {
+        otel.propagation.inject(otel.context.active(), carrier);
+      });
+    }
     if (!carrier[TRACEPARENT_HEADER]) {
       const ctx = this.resolve();
       // Masks trace flags to 2-digit hex byte per W3C specification. trace-flags is

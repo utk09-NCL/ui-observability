@@ -235,7 +235,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.2.0";
+export const TELEMETRY_SDK_VERSION = "0.3.0";
 
 /**
  * Value of `telemetry.sdk.language`.
@@ -595,7 +595,13 @@ export const SAMPLING_RATE_FALLBACK = 1;
  * Config keys with no default, excluded from `DEFAULT_CONFIG`.
  * @see {@link DEFAULT_CONFIG}
  */
-export const UNDEFAULTED_CONFIG_KEYS = ["redact", "onDiagnostic", "headers", "serializer"] as const;
+export const UNDEFAULTED_CONFIG_KEYS = [
+  "redact",
+  "onDiagnostic",
+  "headers",
+  "serializer",
+  "otelLoader",
+] as const;
 
 /**
  * Nested config section keys.

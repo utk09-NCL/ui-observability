@@ -62,6 +62,63 @@ export interface WebVitalsModule {
   onTTFB: (report: WebVitalsReporter) => void;
 }
 
+/** W3C context an active OpenTelemetry span reports. */
+export interface OtelSpanContext {
+  /** Hexadecimal 32-character W3C trace identifier. */
+  traceId: string;
+  /** Hexadecimal 16-character W3C span identifier. */
+  spanId: string;
+  /** Bitfield byte containing W3C trace flags. */
+  traceFlags: number;
+}
+
+/** The span the host has made active. */
+export interface OtelSpan {
+  /**
+   * Reads this span's W3C context.
+   * @returns Trace and span ids with their flags.
+   */
+  spanContext(): OtelSpanContext;
+}
+
+/**
+ * The three `@opentelemetry/api` entry points this library uses, typed
+ * structurally so the package stays an optional peer.
+ */
+export interface OtelApi {
+  /** Span lookup. */
+  trace: {
+    /**
+     * Reads the span the host has made active.
+     * @returns Active span, or undefined when there is none.
+     */
+    getActiveSpan(): OtelSpan | undefined;
+  };
+  /** Ambient context lookup. */
+  context: {
+    /**
+     * Reads the active context.
+     * @returns Context, opaque to this library, understood by the propagator.
+     */
+    active(): unknown;
+  };
+  /** Header propagation. */
+  propagation: {
+    /**
+     * Writes the host's trace headers into a carrier.
+     * @param context Context to propagate.
+     * @param carrier Header map written in place.
+     */
+    inject(context: unknown, carrier: Record<string, string>): void;
+  };
+}
+
+/**
+ * Supplies the `@opentelemetry/api` module without a hard dependency on it.
+ * @returns A promise resolving to the module.
+ */
+export type OtelLoader = () => Promise<OtelApi>;
+
 /** Sampling policy: which records survive. */
 export interface SamplingOptions {
   /**
@@ -249,6 +306,13 @@ export interface ObservabilityConfig {
   console?: ConsoleOption;
 
   /**
+   * Supplies the `@opentelemetry/api` module. Omit it and the library imports
+   * the package itself when it is installed.
+   * @see {@link OtelLoader}
+   */
+  otelLoader?: OtelLoader;
+
+  /**
    * Rewrites or drops a record before it's sent.
    * @param record The record about to be sent.
    * @returns The record to send, or `null` to drop it.
@@ -303,6 +367,8 @@ export interface ResolvedConfig {
   serializer: LogSerializer;
   /** Extra request headers, or a function returning them. */
   headers?: ObservabilityConfig["headers"];
+  /** Supplies the `@opentelemetry/api` module in place of importing it. */
+  otelLoader?: OtelLoader;
   /**
    * Rewrites or drops a record before it's sent.
    * @param record The record about to be sent.

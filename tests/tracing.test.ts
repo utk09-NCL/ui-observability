@@ -1,6 +1,7 @@
 import { trace as otelTrace, propagation, type Span, type SpanContext } from "@opentelemetry/api";
 import { describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
+import type { OtelApi, OtelSpan } from "../src/models/config";
 import { newSpanId, newTraceId, TraceEngine } from "../src/utils/tracing";
 
 /** Zero throttle, so a count can be read back on the same tick it was reported. */
@@ -21,6 +22,23 @@ const spanReporting = (spanContext: SpanContext): Span =>
 const activeSpan = (span: Span): void => {
   vi.spyOn(otelTrace, "getActiveSpan").mockReturnValue(span);
 };
+
+/** An engine holding the real API, which is what the default loader finds in this suite. */
+const loaded = async (
+  reporter: Diagnostics = diagnostics(),
+  maxAgeMs?: number,
+): Promise<TraceEngine> => {
+  const engine = new TraceEngine(reporter, maxAgeMs);
+  await engine.loadOtel();
+  return engine;
+};
+
+/** A structural stand-in for the optional peer, so a test needs nothing installed. */
+const fakeApi = (span: OtelSpan | undefined): OtelApi => ({
+  trace: { getActiveSpan: () => span },
+  context: { active: () => ({}) },
+  propagation: { inject: () => undefined },
+});
 
 describe("newTraceId and newSpanId", () => {
   it("mint the widths the W3C format fixes, in lower-case hex", () => {
@@ -53,8 +71,8 @@ describe("TraceEngine.resolve", () => {
     expect(engine.resolve().traceId).not.toBe(first.traceId);
   });
 
-  it("prefers an active OpenTelemetry span over the ambient trace", () => {
-    const engine = new TraceEngine(diagnostics());
+  it("prefers an active OpenTelemetry span over the ambient trace", async () => {
+    const engine = await loaded();
     const ambient = engine.resolve().traceId;
     activeSpan(
       spanReporting({
@@ -71,8 +89,8 @@ describe("TraceEngine.resolve", () => {
     expect(resolved.traceId).not.toBe(ambient);
   });
 
-  it("carries the host span's flags through rather than assuming it was sampled", () => {
-    const engine = new TraceEngine(diagnostics());
+  it("carries the host span's flags through rather than assuming it was sampled", async () => {
+    const engine = await loaded();
     activeSpan(
       spanReporting({
         traceId: VALID_TRACE_ID,
@@ -84,11 +102,11 @@ describe("TraceEngine.resolve", () => {
     expect(engine.resolve().traceFlags).toBe(0);
   });
 
-  it("falls back to the ambient trace when the active span reports an unusable context", () => {
+  it("falls back to the ambient trace when the active span reports an unusable context", async () => {
     // An all-zero id is what a span that was never started reports. Passing it
     // through would put records on a trace that correlates with nothing, which
     // is worse than the ambient trace it would have used anyway.
-    const engine = new TraceEngine(diagnostics());
+    const engine = await loaded();
     const ambient = engine.resolve().traceId;
     activeSpan(
       spanReporting({
@@ -101,11 +119,11 @@ describe("TraceEngine.resolve", () => {
     expect(engine.resolve().traceId).toBe(ambient);
   });
 
-  it("falls back to the ambient trace and reports when reading the span throws", () => {
+  it("falls back to the ambient trace and reports when reading the span throws", async () => {
     // The OTel API is a global somebody else registered. It is guarded rather
     // than trusted, and a fault in it must cost the trace fields, not the record.
     const reporter = diagnostics();
-    const engine = new TraceEngine(reporter);
+    const engine = await loaded(reporter);
     const ambient = engine.resolve().traceId;
     activeSpan({
       spanContext: () => {
@@ -115,6 +133,39 @@ describe("TraceEngine.resolve", () => {
 
     expect(engine.resolve().traceId).toBe(ambient);
     expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
+  });
+
+  it("carries on when the OpenTelemetry package is not installed", async () => {
+    // The package is an optional peer. A consumer who never asked for it must
+    // still get trace ids, and must be told once why they are the library's own.
+    const reporter = diagnostics();
+    const engine = new TraceEngine(reporter, undefined, () =>
+      Promise.reject(new Error("Cannot find module '@opentelemetry/api'")),
+    );
+
+    await engine.loadOtel();
+
+    expect(engine.resolve().traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(engine.headers().traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
+  });
+
+  it("takes the OpenTelemetry API from a supplied loader", async () => {
+    const engine = new TraceEngine(diagnostics(), undefined, () =>
+      Promise.resolve(
+        fakeApi({
+          spanContext: () => ({
+            traceId: VALID_TRACE_ID,
+            spanId: VALID_SPAN_ID,
+            traceFlags: 1,
+          }),
+        }),
+      ),
+    );
+
+    await engine.loadOtel();
+
+    expect(engine.resolve().traceId).toBe(VALID_TRACE_ID);
   });
 
   it("rotates on its own once the ambient trace passes the configured age", () => {
@@ -170,10 +221,10 @@ describe("TraceEngine.headers", () => {
     expect(engine.headers().traceparent).toBe(`00-${ctx.traceId}-${ctx.spanId}-01`);
   });
 
-  it("prints trace-flags as two hex digits, keeping flags a boolean would discard", () => {
+  it("prints trace-flags as two hex digits, keeping flags a boolean would discard", async () => {
     // trace-flags is a bitfield whose further bits are already defined.
     // Collapsing it to sampled or not would pass every other test in this file.
-    const engine = new TraceEngine(diagnostics());
+    const engine = await loaded();
     activeSpan(
       spanReporting({
         traceId: VALID_TRACE_ID,
@@ -185,7 +236,7 @@ describe("TraceEngine.headers", () => {
     expect(engine.headers().traceparent).toBe(`00-${VALID_TRACE_ID}-${VALID_SPAN_ID}-03`);
   });
 
-  it("leaves a header a host propagator wrote exactly as it found it", () => {
+  it("leaves a header a host propagator wrote exactly as it found it", async () => {
     // The host's propagator knows about tracestate, baggage and vendor headers
     // this library has never heard of, so it gets first refusal and its answer
     // is never overwritten.
@@ -193,17 +244,17 @@ describe("TraceEngine.headers", () => {
     vi.spyOn(propagation, "inject").mockImplementation((_context, carrier) => {
       (carrier as Record<string, string>).traceparent = fromHost;
     });
-    const engine = new TraceEngine(diagnostics());
+    const engine = await loaded();
 
     expect(engine.headers().traceparent).toBe(fromHost);
   });
 
-  it("still produces a header when the host propagator throws", () => {
+  it("still produces a header when the host propagator throws", async () => {
     const reporter = diagnostics();
     vi.spyOn(propagation, "inject").mockImplementation(() => {
       throw new Error("propagator exploded");
     });
-    const engine = new TraceEngine(reporter);
+    const engine = await loaded(reporter);
 
     expect(engine.headers().traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);

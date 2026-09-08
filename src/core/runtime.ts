@@ -132,7 +132,9 @@ export class ObservabilityRuntime {
     this.config = resolveConfig(input, this.diagnostics);
     this.identity = resolveIdentity(this.diagnostics);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
-    this.tracing = new TraceEngine(this.diagnostics);
+    this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
+    // Fire and forget: an absent peer costs the host's spans, never the records.
+    void this.tracing.loadOtel();
     this.console = new ConsoleSink(this.config.console);
 
     this.journey = new JourneyEngine(

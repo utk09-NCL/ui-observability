@@ -16,7 +16,9 @@ npm install @utk09/ui-observability
 
 ### Peer Dependencies
 
-`web-vitals` (`^4 || ^5 || ^6`) is optional. Install it only when enabling `capture.webVitals`:
+Both peers are optional. The library has no runtime dependencies.
+
+`web-vitals` (`^4 || ^5 || ^6`). Install it only when enabling `capture.webVitals`:
 
 ```ts
 configure({
@@ -25,6 +27,15 @@ configure({
     webVitals: true,
     webVitalsLoader: () => import("web-vitals"),
   },
+});
+```
+
+`@opentelemetry/api` (`^1`). Install it to put records on the traces your spans carry. Without it, the library mints its own `trace_id` and reports `trace.otel_failed` once. The library imports the package when it is installed. Set `otelLoader` if your bundler cannot resolve the import:
+
+```ts
+configure({
+  endpoint: "https://telemetry.example.com/v1/logs",
+  otelLoader: () => import("@opentelemetry/api"),
 });
 ```
 
@@ -133,6 +144,7 @@ log.error("pricing call failed", caughtError);
 | `bus.openFinRole`            | `"auto"`     | OpenFin context role (`auto`, `provider`, `client`).                             |
 | `capture`                    | See below    | Browser auto-instrumentation settings.                                           |
 | `console`                    | `false`      | Mirrors records to devtools. `true` mirrors from `DEBUG`, or name a level.       |
+| `otelLoader()`               | `undefined`  | Supplies `@opentelemetry/api`. Omit it and the library imports the package.      |
 | `redact(record)`             | `undefined`  | Hook to mutate or drop (`null`) records before ingest.                           |
 | `onDiagnostic(event)`        | `undefined`  | Listener for internal diagnostics and telemetry faults.                          |
 
@@ -154,9 +166,7 @@ capture: {
 }
 ```
 
-`fullUrls` is off, so page URLs, request targets and failed resource URLs are
-recorded up to the first `?` or `#`. `ignoreUrls` and `propagateTraceHeaderTo`
-still match against the whole URL.
+`fullUrls` is off, so page URLs, request targets and failed resource URLs are recorded up to the first `?` or `#`. `ignoreUrls` and `propagateTraceHeaderTo` still match against the whole URL.
 
 ---
 
