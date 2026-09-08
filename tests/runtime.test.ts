@@ -231,6 +231,16 @@ describe("runtime lifecycle", () => {
     expect(runtime().diagnostics.snapshot()["record.dropped_malformed"]).toBe(3);
   });
 
+  it("samples a forwarded record, the first point this context can", async () => {
+    configure({ ...base, sampling: { defaultRate: 0 } });
+    await ready();
+
+    runtime()["ingestForwarded"]([forwardedRecord("from a frame")]);
+
+    expect(runtime()["pipeline"]?.drainPending()).toBeNull();
+    expect(runtime().diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
+  });
+
   it("drops a forwarded payload that is not an array at all", async () => {
     configure(base);
     await ready();

@@ -71,23 +71,39 @@ function rateFor(namespace: string, config: ResolvedConfig): number {
   return best ?? defaultRate;
 }
 
+/** Everything sampling reads, all of it known before a record is built. */
+export interface SampleInput {
+  /** Severity level of the entry. */
+  level: string;
+  /** Telemetry type classification. */
+  type: string;
+  /** Originating application namespace. */
+  namespace: string;
+  /** Active journey id, empty when no journey is running. */
+  journeyId: string;
+  /** Trace id, the sampling key when no journey is running. */
+  traceId: string;
+}
+
 /**
- * Evaluates whether a log record should be sampled for retention.
- * @param record Record to evaluate.
+ * Evaluates whether an entry should be sampled for retention. Takes the fields
+ * rather than a record, so the verdict is available before the attribute walk
+ * a dropped entry must not pay for.
+ * @param input Fields the sampling decision reads.
  * @param config Active configuration instance.
- * @returns True if the record should be retained and transmitted.
+ * @returns True if the entry should be retained and transmitted.
  */
-export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean {
+export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): boolean {
   // Errors and fatal records bypass sampling filters.
-  if (record.severityText === "ERROR" || record.severityText === "FATAL") {
+  if (input.level === "ERROR" || input.level === "FATAL") {
     return true;
   }
 
-  if (config.sampling.alwaysSampleTypes.includes(readAttr(record, ATTR_LOG_TYPE))) {
+  if (config.sampling.alwaysSampleTypes.includes(input.type)) {
     return true;
   }
 
-  const rate = rateFor(readAttr(record, ATTR_APP_NAMESPACE), config);
+  const rate = rateFor(input.namespace, config);
   if (rate >= SAMPLING_RATE_MAX) {
     return true;
   }
@@ -97,9 +113,29 @@ export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean
 
   // Falls back to trace ID when journey ID is absent. The trace still groups one
   // operation.
-  const key = readAttr(record, ATTR_JOURNEY_ID) || record.traceId;
+  const key = input.journeyId || input.traceId;
 
   return hash(key) / UINT32_MAX < rate;
+}
+
+/**
+ * Evaluates whether a built log record should be sampled for retention. Used on
+ * records that arrive already built, from a child context over the bus.
+ * @param record Record to evaluate.
+ * @param config Active configuration instance.
+ * @returns True if the record should be retained and transmitted.
+ */
+export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean {
+  return shouldSampleInput(
+    {
+      level: record.severityText,
+      type: readAttr(record, ATTR_LOG_TYPE),
+      namespace: readAttr(record, ATTR_APP_NAMESPACE),
+      journeyId: readAttr(record, ATTR_JOURNEY_ID),
+      traceId: record.traceId,
+    },
+    config,
+  );
 }
 
 /**

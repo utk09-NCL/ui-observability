@@ -114,6 +114,25 @@ describe("the level gate", () => {
 
     expect(built(builder).attributes["log.seq"]).toBe(1);
   });
+
+  it("drops a sampled-out record before it walks the payload", () => {
+    // Sanitizing attributes for a record nothing will send is the whole cost
+    // this gate exists to avoid, so the getter must never run.
+    const { builder, diagnostics } = makeBuilder({ sampling: { defaultRate: 0 } });
+    let reads = 0;
+    const payload = {
+      get orderId() {
+        reads += 1;
+        return "o-1";
+      },
+    };
+
+    expect(builder.build({ ...input, payload })).toBeNull();
+
+    expect(reads).toBe(0);
+    expect(diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
+    expect(built(builder, { namespace: "kept", type: "action" }).attributes["log.seq"]).toBe(1);
+  });
 });
 
 describe("attributes", () => {

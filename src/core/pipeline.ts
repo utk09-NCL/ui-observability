@@ -15,7 +15,6 @@ import {
   METRIC_FLUSH_INTERVAL_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
-import type { ResolvedConfig } from "../models/config";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
 import type { HttpTransport } from "../transport/http-transport";
@@ -23,7 +22,7 @@ import type { RetryEngine } from "../transport/retry-engine";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
-import { ErrorCeiling, shouldSample } from "./sampling";
+import { ErrorCeiling } from "./sampling";
 
 /** Pipeline stream classification for logs versus metrics. */
 export type StreamName = "logs" | "metrics";
@@ -151,7 +150,6 @@ export class LogPipeline {
   private stopped = false;
 
   /**
-   * @param config Active configuration instance.
    * @param transport HTTP transport for live batch delivery.
    * @param storage Storage adapter for offline batch persistence.
    * @param retry Retry engine for redelivering persisted batches.
@@ -159,7 +157,6 @@ export class LogPipeline {
    * @param streamOptions Batching policy per stream.
    */
   constructor(
-    private readonly config: ResolvedConfig,
     private readonly transport: HttpTransport,
     private readonly storage: StorageAdapter,
     private readonly retry: RetryEngine,
@@ -235,7 +232,8 @@ export class LogPipeline {
   }
 
   /**
-   * Sorts a record into its stream, after sampling. Every fault is contained
+   * Sorts a record into its stream. Sampling already ran, in RecordBuilder for a
+   * local record and in the runtime for a forwarded one. Every fault is contained
    * here: a record carrying no `attributes` makes isMetric throw, and a throw
    * escaping this method would surface inside the caller's own log call.
    * @param record Record to sort.
@@ -244,15 +242,10 @@ export class LogPipeline {
     try {
       const stream = isMetric(record) ? this.streams.metrics : this.streams.logs;
 
-      // Before sampling: ERROR and FATAL never reach the rate below, so the
-      // ceiling is the only limit on them.
+      // ERROR and FATAL bypass sampling upstream, so this is the only limit
+      // on them.
       if (!this.ceiling.allow(record)) {
         this.diagnostics.count("record.dropped_by_ceiling");
-        return;
-      }
-
-      if (!shouldSample(record, this.config)) {
-        this.diagnostics.count("record.dropped_by_sampling");
         return;
       }
 

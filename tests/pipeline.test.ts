@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ERROR_CEILING_MAX_PER_WINDOW } from "../src/constants";
-import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { LogPipeline, type StreamOptions } from "../src/core/pipeline";
 import type { LogBatch } from "../src/models/batch";
-import type { ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import type { StorageAdapter } from "../src/models/storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
@@ -46,20 +44,11 @@ const DEFAULT_STREAMS: Record<"logs" | "metrics", StreamOptions> = {
 };
 
 const setup = (
-  over: Partial<ObservabilityConfig> = {},
   override?: StorageAdapter,
   streams: Record<"logs" | "metrics", StreamOptions> = DEFAULT_STREAMS,
 ) => {
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const diagnostics = new Diagnostics(handler, 0);
-  const config = resolveConfig(
-    {
-      endpoint: "https://x/v1/logs",
-      serviceName: "svc",
-      ...over,
-    },
-    diagnostics,
-  );
 
   const send = vi.fn<Send>(() => Promise.resolve());
   const throttledForMs = vi.fn<() => number>(() => 0);
@@ -67,7 +56,6 @@ const setup = (
   const nudge = vi.fn<() => void>();
 
   const pipeline = new LogPipeline(
-    config,
     { send, throttledForMs } as unknown as HttpTransport,
     storage,
     { nudge } as unknown as RetryEngine,
@@ -191,7 +179,7 @@ describe("LogPipeline", () => {
     const save = vi.fn<(batch: LogBatch) => Promise<void>>(() =>
       Promise.reject(new Error("quota")),
     );
-    const { pipeline, send, nudge, diagnostics } = setup({}, { save } as unknown as StorageAdapter);
+    const { pipeline, send, nudge, diagnostics } = setup({ save } as unknown as StorageAdapter);
     send.mockRejectedValueOnce(new Error("network"));
 
     pipeline.push(record());
@@ -235,24 +223,12 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("does not accumulate records that sampling dropped", () => {
-    const { pipeline, diagnostics } = setup({ sampling: { defaultRate: 0 } });
-
-    for (let i = 0; i < 100; i++) {
-      pipeline.push(record());
-    }
-
-    expect(pipeline.drainPending()).toBeNull();
-    expect(diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(100);
-    pipeline.destroy();
-  });
-
   it("caps an ERROR storm that sampling would let through whole", () => {
     // ERROR and FATAL bypass sampling by design. Application code calling
     // logger.error in a render loop is the case with no other limit.
     // A batch size past the ceiling, so the assertion reads the buffer rather
     // than whatever an early batch already took.
-    const { pipeline, diagnostics } = setup({ sampling: { defaultRate: 0 } }, undefined, {
+    const { pipeline, diagnostics } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: ERROR_CEILING_MAX_PER_WINDOW * 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });
@@ -297,7 +273,7 @@ describe("LogPipeline", () => {
     // A send that never settles holds a claimed batch unconfirmed. An explicit
     // flush that takes it resends those records under a fresh batch id, which
     // the server cannot deduplicate against the id still in flight.
-    const { pipeline, send } = setup({}, undefined, {
+    const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });
@@ -316,7 +292,7 @@ describe("LogPipeline", () => {
     // Requests that never settle, so every claimed batch sits between the claim
     // and the network. Three batches form; MAX_CONCURRENT_REQUESTS lets two go
     // in flight and holds the third. A closing document takes all of them.
-    const { pipeline, send } = setup({}, undefined, {
+    const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });

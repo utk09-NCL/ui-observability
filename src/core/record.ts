@@ -50,6 +50,7 @@ import type { TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
 import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
+import { shouldSampleInput } from "./sampling";
 
 /** Injected dependencies required by RecordBuilder. */
 export interface RecordBuilderDeps {
@@ -149,6 +150,24 @@ export class RecordBuilder {
 
     const traceCtx = tracing.resolve();
     const activeJourney = journey.current();
+
+    // Sampling before the attribute walk below. A record nothing will send must
+    // not pay for sanitize, redact and the resource block.
+    const sampled = shouldSampleInput(
+      {
+        level: input.level,
+        type: input.type,
+        namespace: input.namespace,
+        journeyId: activeJourney?.id ?? "",
+        traceId: traceCtx.traceId,
+      },
+      config,
+    );
+    if (!sampled) {
+      diagnostics.count("record.dropped_by_sampling");
+      return null;
+    }
+
     const seq = sequence.next();
     // Query and fragment carry tokens and user input. The path is the grouping signal.
     const url = currentUrl();

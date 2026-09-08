@@ -43,6 +43,7 @@ import { JourneyEngine, JOURNEY_OPTIONS } from "./journey";
 import { OneLogger } from "./logger";
 import { LogPipeline } from "./pipeline";
 import { RecordBuilder } from "./record";
+import { shouldSample } from "./sampling";
 
 /** Global symbol key pinning the singleton runtime instance across federated bundles. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
@@ -278,13 +279,7 @@ export class ObservabilityRuntime {
     );
     this.transport = new HttpTransport(this.config, this.diagnostics);
     this.retry = new RetryEngine(this.storage, this.transport, this.diagnostics, this.config);
-    this.pipeline = new LogPipeline(
-      this.config,
-      this.transport,
-      this.storage,
-      this.retry,
-      this.diagnostics,
-    );
+    this.pipeline = new LogPipeline(this.transport, this.storage, this.retry, this.diagnostics);
 
     this.exitFlush = new ExitFlush({
       config: this.config,
@@ -438,7 +433,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Validates and enqueues records received from child frames or workers.
+   * Validates, samples and enqueues records received from child frames or workers.
+   * A forwarded record arrives built, so this is the first point in this context
+   * where sampling can run. A local record is sampled in RecordBuilder instead.
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
@@ -450,6 +447,10 @@ export class ObservabilityRuntime {
     for (const record of records) {
       if (!isLogRecord(record)) {
         this.diagnostics.count("record.dropped_malformed");
+        continue;
+      }
+      if (!shouldSample(record, this.config)) {
+        this.diagnostics.count("record.dropped_by_sampling");
         continue;
       }
       this.pipeline?.push(record);
