@@ -706,6 +706,73 @@ describe("OneLogger", () => {
     expect(emit.mock.calls[1][0]?.attributes["error.type"]).toBeUndefined();
   });
 
+  it("reads a plain object in the error slot as the payload, like every sibling method", () => {
+    // log.error("order failed", { orderId }) is the natural call. Stringified
+    // into error.message it becomes "[object Object]" and the fields are gone.
+    configure(base);
+    const emit = vi.spyOn(runtime(), "emit");
+    const log = getLogger("trading");
+
+    log.error("order failed", { orderId: "o-1", reason: "rejected" });
+    log.fatal("order lost", Object.create(null) as Record<string, unknown>);
+
+    const record = emit.mock.calls[0][0];
+    expect(record?.attributes).toMatchObject({ orderId: "o-1", reason: "rejected" });
+    expect(record?.attributes["error.message"]).toBeUndefined();
+    expect(emit.mock.calls[1][0]?.attributes["error.message"]).toBeUndefined();
+  });
+
+  it("keeps the error slot an error when a payload is also given", () => {
+    configure(base);
+    const emit = vi.spyOn(runtime(), "emit");
+
+    getLogger("trading").error("order failed", { code: 500 }, { orderId: "o-1" });
+
+    const record = emit.mock.calls[0][0];
+    expect(record?.attributes["error.message"]).toBe("[object Object]");
+    expect(record?.attributes.orderId).toBe("o-1");
+  });
+
+  it("treats an array and a non-Error class instance in the error slot as a reason", () => {
+    configure(base);
+    const emit = vi.spyOn(runtime(), "emit");
+    class Rejection {
+      toString(): string {
+        return "rejected";
+      }
+    }
+
+    getLogger("trading").error("bad shape", ["a", "b"]);
+    getLogger("trading").error("bad class", new Rejection());
+    getLogger("trading").error("nothing thrown", null);
+
+    expect(emit.mock.calls[0][0]?.attributes["error.message"]).toBe("a,b");
+    expect(emit.mock.calls[1][0]?.attributes["error.message"]).toBe("rejected");
+    expect(emit.mock.calls[2][0]?.attributes["error.message"]).toBe("null");
+  });
+
+  it("names the type rather than throwing when the reason cannot be described", () => {
+    // log.error() runs inside a consumer catch block. A reason whose toString
+    // throws must not throw back out of it.
+    const onDiagnostic = vi.fn();
+    configure({ ...base, onDiagnostic });
+    const emit = vi.spyOn(runtime(), "emit");
+    class Unprintable {
+      toString(): string {
+        throw new Error("nope");
+      }
+    }
+
+    expect(() => {
+      getLogger("trading").error("bad reason", new Unprintable());
+    }).not.toThrow();
+
+    expect(emit.mock.calls[0][0]?.attributes["error.message"]).toBe("object");
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "record.sanitize_failed" }),
+    );
+  });
+
   it("costs one integer compare below minLevel, and builds nothing", () => {
     configure({ ...base, minLevel: "WARN" });
     const emit = vi.spyOn(runtime(), "emit");

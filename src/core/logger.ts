@@ -5,6 +5,7 @@
 import { DEFAULT_METRIC_UNIT } from "../constants";
 import type { LogLevel, LogType, MetricType } from "../models/log-record";
 import { timeAsync, timeSync } from "../utils/timer";
+import type { Diagnostics } from "./diagnostics";
 import type { ObservabilityRuntime } from "./runtime";
 
 /** Configuration options for a scoped OneLogger instance. */
@@ -16,10 +17,40 @@ export interface OneLoggerOptions {
 /**
  * Normalizes an unknown thrown value into an Error instance.
  * @param value Caught error instance or primitive value.
+ * @param diagnostics Diagnostics reporter.
  * @returns Normalized Error instance.
  */
-function toError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
+function toError(value: unknown, diagnostics: Diagnostics): Error {
+  if (value instanceof Error) {
+    return value;
+  }
+
+  // String() throws on a null-prototype object and on a throwing toString.
+  // log.error() runs inside a consumer catch block and must not throw out of it.
+  const text = diagnostics.guard("record.sanitize_failed", "describing an error reason", () =>
+    String(value),
+  );
+
+  return new Error(text ?? typeof value);
+}
+
+/**
+ * Tests whether a value is an attribute bag rather than an error reason.
+ * Cross-realm safe: an object literal from an iframe has that realm's
+ * Object.prototype, whose own prototype is still null.
+ * @param value Value found in the error slot.
+ * @returns True if the value is a plain object.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  if (value instanceof Error) {
+    return false;
+  }
+
+  const proto = Object.getPrototypeOf(value) as object | null;
+  return proto === null || Object.getPrototypeOf(proto) === null;
 }
 
 /** Namespaced logger instance for recording structured events, metrics, and errors. */
@@ -87,9 +118,10 @@ export class OneLogger {
   };
 
   /**
-   * Logs an error record with attached breadcrumb history.
+   * Logs an error record with attached breadcrumb history. A plain object in the
+   * error slot with no payload given is read as the payload.
    * @param message Error description.
-   * @param error Caught error instance or reason.
+   * @param error Caught error instance, reason, or payload.
    * @param payload Optional contextual attributes.
    */
   error = (message: string, error?: unknown, payload?: Record<string, unknown>): void => {
@@ -97,9 +129,10 @@ export class OneLogger {
   };
 
   /**
-   * Logs a fatal unrecoverable error record.
+   * Logs a fatal unrecoverable error record. A plain object in the error slot
+   * with no payload given is read as the payload.
    * @param message Error description.
-   * @param error Caught error instance or reason.
+   * @param error Caught error instance, reason, or payload.
    * @param payload Optional contextual attributes.
    */
   fatal = (message: string, error?: unknown, payload?: Record<string, unknown>): void => {
@@ -214,7 +247,7 @@ export class OneLogger {
    * Builds, logs to console, and emits an error record with attached breadcrumbs.
    * @param level Severity level ("ERROR" or "FATAL").
    * @param message Error description.
-   * @param error Caught error instance or reason.
+   * @param error Caught error instance, reason, or payload.
    * @param payload Optional contextual attributes.
    */
   private writeError(
@@ -227,7 +260,13 @@ export class OneLogger {
       return;
     }
 
-    const asError = error === undefined ? undefined : toError(error);
+    // Every sibling method is (name, payload?), so log.error("failed", { id })
+    // is the natural call. Describing that object as the error reason would put
+    // "[object Object]" in error.message and drop the caller's fields.
+    const asPayload = payload === undefined && isPlainObject(error);
+    const attributes = asPayload ? error : payload;
+    const asError =
+      asPayload || error === undefined ? undefined : toError(error, this.runtime.diagnostics);
 
     const record = this.runtime.builder.build({
       level,
@@ -236,7 +275,7 @@ export class OneLogger {
       namespace: this.namespace,
       scoped: this.options.scopedContext,
       payload: {
-        ...payload,
+        ...attributes,
         ...(asError
           ? {
               "error.type": asError.name,
