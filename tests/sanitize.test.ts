@@ -14,6 +14,7 @@ const limits: SanitizeLimits = {
   maxAttributeChars: 20,
   maxAttributeCount: 3,
   maxStackChars: 100,
+  maxNodes: 1000,
 };
 
 const asRecord = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
@@ -300,5 +301,62 @@ describe("sanitizeWithSize", () => {
     expect(sanitizeWithSize(null, limits).bytes).toBe(4);
     expect(sanitizeWithSize(1, limits).bytes).toBe(8);
     expect(sanitizeWithSize(true, limits).bytes).toBe(5);
+  });
+});
+
+describe("sanitize node budget", () => {
+  /** A tree of `width` keys per level, `depth` levels deep. */
+  const wide = (depth: number, width: number): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < width; i++) {
+      out[`k${String(i)}`] = depth === 1 ? i : wide(depth - 1, width);
+    }
+    return out;
+  };
+
+  it("stops walking once the total node budget is spent", () => {
+    // The per-level limits cannot bound this: 4 keys at 4 levels is already
+    // 340 nodes, and the real limits are 128 keys at 6 levels.
+    const budget: SanitizeLimits = {
+      ...limits,
+      maxArrayLength: 10,
+      maxAttributeCount: 10,
+      maxNodes: 20,
+    };
+
+    const out = JSON.stringify(sanitize(wide(4, 4), budget));
+
+    expect(out).toContain("[MaxNodes]");
+  });
+
+  it("counts the visited nodes across siblings, not per branch", () => {
+    const budget: SanitizeLimits = { ...limits, maxAttributeCount: 10, maxNodes: 4 };
+
+    expect(sanitize({ a: 1, b: 2, c: 3, d: 4, e: 5 }, budget)).toEqual({
+      a: 1,
+      b: 2,
+      c: 3,
+      d: "[MaxNodes]",
+      e: "[MaxNodes]",
+    });
+  });
+
+  it("leaves a payload inside the budget untouched", () => {
+    expect(sanitize({ a: { b: [1, 2] } }, limits)).toEqual({ a: { b: [1, 2] } });
+  });
+
+  it("bounds the walk instead of visiting every node of a wide tree", () => {
+    const budget: SanitizeLimits = {
+      ...limits,
+      maxArrayLength: 12,
+      maxAttributeCount: 12,
+      maxNodes: 50,
+    };
+
+    const { bytes } = sanitizeWithSize(wide(4, 12), budget);
+
+    // 12 keys at 4 levels is 22k nodes, and the shipped limits allow 128 at 6.
+    // Bounded, neither the walk nor the byte estimate runs away with it.
+    expect(bytes).toBeLessThan(2000);
   });
 });

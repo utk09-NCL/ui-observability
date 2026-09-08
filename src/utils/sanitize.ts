@@ -29,6 +29,8 @@ export interface SanitizeLimits {
   maxAttributeCount: number;
   /** Maximum error stack trace length in characters. */
   maxStackChars: number;
+  /** Maximum values visited in one pass, across the whole tree. */
+  maxNodes: number;
 }
 
 /**
@@ -87,9 +89,12 @@ export interface SanitizeResult {
   bytes: number;
 }
 
-/** Mutable byte accumulator passed through recursive sanitization passes. */
-interface SizeState {
+/** Mutable accumulators passed through recursive sanitization passes. */
+interface WalkState {
+  /** Running estimate of the serialized byte count. */
   bytes: number;
+  /** Count of values visited so far. */
+  nodes: number;
 }
 
 /**
@@ -109,7 +114,7 @@ export function sanitize(value: unknown, limits: SanitizeLimits): unknown {
  * @returns SanitizeResult containing sanitized value and byte count.
  */
 export function sanitizeWithSize(value: unknown, limits: SanitizeLimits): SanitizeResult {
-  const state: SizeState = { bytes: 0 };
+  const state: WalkState = { bytes: 0, nodes: 0 };
   const result = walk(value, limits, new WeakSet(), 0, state);
   return { value: result, bytes: state.bytes };
 }
@@ -120,7 +125,7 @@ export function sanitizeWithSize(value: unknown, limits: SanitizeLimits): Saniti
  * @param state Byte size accumulator.
  * @returns Input text unchanged.
  */
-function counted(text: string, state: SizeState): string {
+function counted(text: string, state: WalkState): string {
   state.bytes += estimateBytes(text) + BYTES_PER_QUOTED_STRING;
   return text;
 }
@@ -139,8 +144,15 @@ function walk(
   limits: SanitizeLimits,
   seen: WeakSet<object>,
   depth: number,
-  state: SizeState,
+  state: WalkState,
 ): unknown {
+  state.nodes++;
+  // The per-level limits cannot bound a wide tree: 128 keys over 6 levels is
+  // 128^6 values, all walked synchronously on the main thread.
+  if (state.nodes > limits.maxNodes) {
+    return counted("[MaxNodes]", state);
+  }
+
   if (value === null || value === undefined) {
     state.bytes += BYTES_PER_NULL;
     return value;

@@ -753,5 +753,6 @@ export const RECORD_LIMITS = {
   maxStackChars: 8192,
   maxDepth: 6,
   maxArrayLength: 100,
+  maxNodes: 10_000,
   maxRecordBytes: 32_768,
 };
