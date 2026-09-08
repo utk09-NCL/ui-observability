@@ -203,6 +203,12 @@ npm run example:microfrontend  # Shell on http://localhost:5191, remotes on 5192
 
 ---
 
+## Changelog
+
+Released versions and their breaking changes are in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
