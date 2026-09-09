@@ -6,6 +6,7 @@ import type { LogBatch } from "../src/models/batch";
 import type { LogRecord } from "../src/models/log-record";
 import type { StorageAdapter } from "../src/models/storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
+import { TransportError } from "../src/transport/errors";
 import type { HttpTransport } from "../src/transport/http-transport";
 import type { RetryEngine } from "../src/transport/retry-engine";
 
@@ -55,15 +56,22 @@ const setup = (
   const storage = override ?? new MemoryStorage(limits);
   const nudge = vi.fn<() => void>();
 
+  // Stands in for the engine's classification: the split itself is proved in
+  // retry-engine.test.ts, so here it only has to store and nudge.
+  const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<void>>(async (failed) => {
+    await storage.save(failed);
+    nudge();
+  });
+
   const pipeline = new LogPipeline(
     { send, throttledForMs } as unknown as HttpTransport,
     storage,
-    { nudge } as unknown as RetryEngine,
+    { nudge, storeFailed } as unknown as RetryEngine,
     diagnostics,
     streams,
   );
 
-  return { pipeline, send, throttledForMs, storage, nudge, diagnostics, handler };
+  return { pipeline, send, throttledForMs, storage, nudge, storeFailed, diagnostics, handler };
 };
 
 /** The record bodies of one send, in order. */
@@ -156,6 +164,19 @@ describe("LogPipeline", () => {
     expect(stored[0].attempts).toBe(1);
     expect(nudge).toHaveBeenCalled();
     expect(diagnostics.snapshot()["transport.http_error"]).toBe(1);
+    pipeline.destroy();
+  });
+
+  it("hands a refused batch to the retry engine to classify", async () => {
+    // Storing it here would park an oversized batch that only the drain can split.
+    const { pipeline, send, storeFailed } = setup();
+    const refused = new TransportError("too_large", "413", 413);
+    send.mockRejectedValueOnce(refused);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(storeFailed).toHaveBeenCalledWith(expect.objectContaining({ attempts: 1 }), refused);
     pipeline.destroy();
   });
 

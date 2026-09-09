@@ -357,7 +357,7 @@ export class LogPipeline {
         // Increments attempt count before storing failed live send. Stored at 0,
         // the batch exceeds STORAGE_LIMITS.maxAttempts by one and attempt headers
         // under-report.
-        await this.store({ ...batch, attempts: batch.attempts + 1 });
+        await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         this.diagnostics.report(
           "transport.http_error",
           "batch was stored for retry instead of being delivered",
@@ -368,6 +368,22 @@ export class LogPipeline {
     } finally {
       this.unconfirmed.delete(batch.id);
     }
+  }
+
+  /**
+   * Persists a batch the transport refused, letting the retry engine split a 413
+   * and drop what the server will never accept.
+   * @param batch Batch to persist, with its attempt already counted.
+   * @param error Failure thrown by the transport.
+   */
+  private async storeFailed(batch: LogBatch, error: unknown): Promise<void> {
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "persisting an undelivered batch",
+      async () => {
+        await this.retry.storeFailed(batch, error);
+      },
+    );
   }
 
   /**

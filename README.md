@@ -176,6 +176,8 @@ capture: {
 - **One sender:** Iframes, workers and OpenFin views find the nearest long-lived context. They forward their records to it over the bus. That context batches, stores and sends for all of them.
 - **Five correlation ids:** Each record carries `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
 - **Durability and exit flush:** A failed send persists to IndexedDB or localStorage, then retries with exponential jittered backoff. On `pagehide` or `freeze`, pending records go out with `navigator.sendBeacon` below 60 KB. A larger payload goes to the emergency queue.
+- **Emergency queue:** The emergency queue is best effort. It writes to `localStorage` synchronously. No other storage works while the document unloads. A refused write reports `storage.quota_exceeded`. The library then loses the batch.
+- **Configuration after startup:** A second `configure()` call merges the new options into the live runtime. The `storage` option is the exception. The runtime builds the storage adapter one time. A change leaves the stored batches in the old adapter. The runtime refuses the change. It reports `config.invalid`.
 - **Deterministic sampling:** FNV-1a hashing applies one keep rate to a whole journey. An error and an explicit action bypass sampling.
 
 ---

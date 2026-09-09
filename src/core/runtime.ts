@@ -576,9 +576,10 @@ export class ObservabilityRuntime {
       await this.diagnostics.guardAsync(
         "storage.degraded",
         "persisting the batch drained by flush()",
+        // The retry engine classifies the failure, so a 413 splits here as it does
+        // in the drain rather than parking an oversized batch.
         async () => {
-          await this.storage?.save({ ...batch, attempts: 1 });
-          this.retry?.nudge();
+          await this.retry?.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         },
       );
       this.diagnostics.report(

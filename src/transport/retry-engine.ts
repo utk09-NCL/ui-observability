@@ -74,6 +74,25 @@ export class RetryEngine {
     }
   }
 
+  /**
+   * Persists a batch that failed outside the drain loop, under the same rules the
+   * drain applies. Storing it whole would spend another request on a payload the
+   * server already refused.
+   * @param batch Rejected batch, with its attempt already counted.
+   * @param error Failure thrown by the transport.
+   */
+  async storeFailed(batch: LogBatch, error: unknown): Promise<void> {
+    const parts = this.toStorable(batch, error);
+
+    for (const part of parts) {
+      await this.storage.save(part);
+    }
+
+    if (parts.length > 0) {
+      this.nudge();
+    }
+  }
+
   /** Halts retry execution, removes listeners, and clears pending timers. */
   stop(): void {
     this.stopped = true;
@@ -208,13 +227,8 @@ export class RetryEngine {
     } catch (error) {
       const failure = error instanceof TransportError ? error : undefined;
 
-      if (failure?.kind === "permanent") {
-        await this.storage.remove(batch.id);
-        return true;
-      }
-
-      if (failure?.kind === "too_large") {
-        await this.splitStored(batch, failure.maxBytes);
+      if (failure?.kind === "permanent" || failure?.kind === "too_large") {
+        await this.replaceStored(batch, error);
         return true;
       }
 
@@ -231,13 +245,39 @@ export class RetryEngine {
   }
 
   /**
-   * Splits an oversized batch into two smaller stored batches after a 413 rejection.
-   * @param batch Rejected log batch.
-   * @param serverMaxBytes Optional byte limit reported by the server.
+   * Replaces a stored batch with what survives its failure: the split halves, or
+   * nothing when the server refuses the records for good.
+   * @param batch Rejected log batch, already held in storage.
+   * @param error Failure thrown by the transport.
    */
-  private async splitStored(batch: LogBatch, serverMaxBytes: number | undefined): Promise<void> {
-    const halves = splitBatch(batch);
+  private async replaceStored(batch: LogBatch, error: unknown): Promise<void> {
+    const parts = this.toStorable(batch, error);
     await this.storage.remove(batch.id);
+
+    for (const part of parts) {
+      await this.storage.save(part);
+    }
+  }
+
+  /**
+   * Decides what a failed batch leaves behind. A 413 splits in two, a permanent
+   * refusal keeps nothing, and every other failure keeps the batch whole.
+   * @param batch Rejected log batch.
+   * @param error Failure thrown by the transport.
+   * @returns Batches to persist, empty when the records are dropped.
+   */
+  private toStorable(batch: LogBatch, error: unknown): LogBatch[] {
+    const failure = error instanceof TransportError ? error : undefined;
+
+    if (failure?.kind === "permanent") {
+      return [];
+    }
+
+    if (failure?.kind !== "too_large") {
+      return [batch];
+    }
+
+    const halves = splitBatch(batch);
 
     if (!halves) {
       this.diagnostics.report(
@@ -248,17 +288,15 @@ export class RetryEngine {
           bodies: batch.records.map((record) => record.body),
         },
       );
-      return;
+      return [];
     }
 
     this.diagnostics.report("transport.batch_split", "the server refused the batch as too large", {
       from: batch.records.length,
       to: halves[0].records.length,
-      serverMaxBytes,
+      serverMaxBytes: failure.maxBytes,
     });
 
-    for (const half of halves) {
-      await this.storage.save(half);
-    }
+    return halves;
   }
 }

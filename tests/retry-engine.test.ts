@@ -342,6 +342,30 @@ describe("RetryEngine splitting", () => {
     );
     engine.stop();
   });
+
+  it("splits a batch refused as too large before it reaches storage", async () => {
+    const { engine, storage, handler } = makeEngine();
+    const refused = new TransportError("too_large", "413", 413, undefined, SERVER_MAX_BYTES);
+
+    await engine.storeFailed(batch("big", { records: 4 }), refused);
+
+    const stored = await storage.take(10);
+    expect(stored).toHaveLength(2);
+    expect(stored.every((one) => one.records.length === 2)).toBe(true);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "transport.batch_split" }),
+    );
+    engine.stop();
+  });
+
+  it("stores nothing after a refusal the server will never accept", async () => {
+    const { engine, storage } = makeEngine();
+
+    await engine.storeFailed(batch("gone"), new TransportError("permanent", "400", 400));
+
+    expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
 });
 
 describe("RetryEngine connectivity", () => {

@@ -4,6 +4,7 @@ import { BUS_MAX_BOOT_BUFFER_RECORDS } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type { LogRecord } from "../src/models/log-record";
+import { TransportError } from "../src/transport/errors";
 import {
   adoptJourney,
   configure,
@@ -557,6 +558,28 @@ describe("runtime flush as a sender", () => {
     await expect(flush()).resolves.toBeUndefined();
 
     expect(getDiagnosticCounters()["storage.degraded"]).toBe(1);
+  });
+
+  it("splits the batch the server refused as too large", async () => {
+    configure(base);
+    await ready();
+    const transport = runtime()["transport"];
+    const storage = runtime()["storage"];
+    if (!transport || !storage) {
+      throw new Error("sender was not built");
+    }
+    // fake-indexeddb outlives the test that filled it, so earlier batches count here.
+    for (const stale of await storage.take(100)) {
+      await storage.remove(stale.id);
+    }
+    vi.spyOn(transport, "send").mockRejectedValue(new TransportError("too_large", "413", 413));
+    getLogger("test").info("one");
+    getLogger("test").info("two");
+
+    await flush();
+
+    const stored = await storage.take(10);
+    expect(stored.map((one) => one.records.length)).toEqual([1, 1]);
   });
 
   it("does nothing when there is nothing pending", async () => {
