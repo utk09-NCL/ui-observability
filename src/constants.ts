@@ -617,6 +617,16 @@ export const UNDEFAULTED_CONFIG_KEYS = [
 export const CONFIG_SECTIONS = ["sampling", "bus", "capture"] as const;
 
 /**
+ * Section keys with no default, excluded from their section of `DEFAULT_CONFIG`.
+ * @see {@link UNDEFAULTED_CONFIG_KEYS}
+ */
+export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], string[]> = {
+  sampling: [],
+  bus: [],
+  capture: ["webVitalsLoader"],
+};
+
+/**
  * Default runtime config, before a consumer's `configure()` call.
  * Excludes `serializer`; `resolveConfig` supplies its default to avoid a circular import.
  * @see {@link ResolvedConfig}

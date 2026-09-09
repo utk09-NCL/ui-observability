@@ -300,6 +300,46 @@ describe("resolveConfig", () => {
 
       expect(events).toEqual([]);
     });
+
+    it("reports a typo inside a section, which the top-level guard cannot see", () => {
+      const { events, diagnostics } = collect();
+      // capture.webVitals is the real key. The typo type-checks and does nothing.
+      const input = { ...valid(), capture: { webVital: true } } as Partial<ObservabilityConfig>;
+
+      resolveConfig(input, diagnostics);
+
+      expect(messages(events)[0]).toContain('unknown config key "capture.webVital"');
+    });
+
+    it("treats capture.webVitalsLoader as known despite being absent from the defaults", () => {
+      const { events, diagnostics } = collect();
+      const input = {
+        ...valid(),
+        capture: { webVitalsLoader: () => Promise.resolve({}) },
+      } as unknown as Partial<ObservabilityConfig>;
+
+      resolveConfig(input, diagnostics);
+
+      expect(events).toEqual([]);
+    });
+
+    it("leaves the free-form namespace map under sampling.rates alone", () => {
+      const { events, diagnostics } = collect();
+      const sampling: Partial<SamplingOptions> = { rates: { "checkout.cart": 0.5 } };
+
+      resolveConfig({ ...valid(), sampling }, diagnostics);
+
+      expect(events).toEqual([]);
+    });
+
+    it("ignores a section that is absent or not an object", () => {
+      const { events, diagnostics } = collect();
+      const input = { ...valid(), bus: undefined, capture: null } as unknown;
+
+      resolveConfig(input as Partial<ObservabilityConfig>, diagnostics);
+
+      expect(events).toEqual([]);
+    });
   });
 
   describe("serializer", () => {

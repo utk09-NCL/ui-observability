@@ -17,6 +17,7 @@ import {
   SERIALIZER_NAME_ECS,
   SERIALIZER_NAME_OTLP,
   UNDEFAULTED_CONFIG_KEYS,
+  UNDEFAULTED_SECTION_KEYS,
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
 import type { ConsoleOption, ObservabilityConfig, ResolvedConfig } from "../models/config";
@@ -172,16 +173,49 @@ export function resolveConfig(
     merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, merged.endpoint];
   }
 
-  // Validates top-level keys against known schema to detect configuration typos.
-  // remoteUrl instead of endpoint is otherwise accepted in silence.
+  reportUnknownKeys(input, diagnostics);
+
+  return merged;
+}
+
+/**
+ * Reports a config key that matches nothing in the schema, at the top level and one
+ * level inside each section. A typo type-checks through `Partial` and then does
+ * nothing: `remoteUrl` for `endpoint`, `capture.webVital` for `capture.webVitals`.
+ * Namespace keys under `sampling.rates` are free-form and sit a level deeper.
+ * @param input Partial consumer configuration options.
+ * @param diagnostics Diagnostics reporter.
+ */
+function reportUnknownKeys(input: Partial<ObservabilityConfig>, diagnostics: Diagnostics): void {
   const known = new Set<string>([...Object.keys(DEFAULT_CONFIG), ...UNDEFAULTED_CONFIG_KEYS]);
+
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
       diagnostics.report("config.invalid", `unknown config key "${key}", ignored. Typo?`);
     }
   }
 
-  return merged;
+  for (const section of CONFIG_SECTIONS) {
+    const values: unknown = input[section];
+
+    if (typeof values !== "object" || values === null) {
+      continue;
+    }
+
+    const sectionKeys = new Set<string>([
+      ...Object.keys(DEFAULT_CONFIG[section]),
+      ...UNDEFAULTED_SECTION_KEYS[section],
+    ]);
+
+    for (const key of Object.keys(values)) {
+      if (!sectionKeys.has(key)) {
+        diagnostics.report(
+          "config.invalid",
+          `unknown config key "${section}.${key}", ignored. Typo?`,
+        );
+      }
+    }
+  }
 }
 
 /**
