@@ -164,6 +164,73 @@ describe("ecsSerializer", () => {
     expect(ecs(record({ attributes: both })).url.full).toBe("https://api/orders");
     expect(ecs(record({ attributes: pageOnly })).url.full).toBe("https://app/");
   });
+
+  it("spells the warning level the way ECS does", () => {
+    // ECS writes this level in full. "warn" is the OTel spelling.
+    expect(ecs(record({ severityText: "WARN" })).log.level).toBe("warning");
+    expect(ecs(record({ severityText: "ERROR" })).log.level).toBe("error");
+  });
+
+  it("flattens a nested attribute into dotted label keys", () => {
+    const attributes = { order: { id: "o-1", total: 12 } };
+
+    const labels = ecs(record({ attributes })).labels;
+
+    // An object under labels trips Elasticsearch dynamic mapping.
+    expect(labels.order).toBeUndefined();
+    expect(labels["order.id"]).toBe("o-1");
+    expect(labels["order.total"]).toBe(12);
+  });
+
+  it("keeps an array of scalars as one multi-valued label", () => {
+    // Three elements: the third proves the second value did not replace the array.
+    const attributes = { tags: ["a", "b", "c"] };
+
+    expect(ecs(record({ attributes })).labels.tags).toEqual(["a", "b", "c"]);
+  });
+
+  it("folds an array of objects into one label per leaf", () => {
+    const attributes = { items: [{ id: 1 }, { id: 2 }] };
+
+    expect(ecs(record({ attributes })).labels["items.id"]).toEqual([1, 2]);
+  });
+
+  it("drops a value with no scalar form and writes a bigint as text", () => {
+    // Past exact double range, so the digits also prove it never went through Number.
+    const attributes = { gone: null, absent: undefined, big: 9007199254740993n, kept: "x" };
+
+    const labels = ecs(record({ attributes })).labels;
+
+    expect("gone" in labels).toBe(false);
+    expect("absent" in labels).toBe(false);
+    expect(labels.big).toBe("9007199254740993");
+    expect(labels.kept).toBe("x");
+  });
+
+  it("lets an attribute win over a resource key of the same name", () => {
+    const resource = { "service.name": "svc" };
+    const attributes = { "service.name": "child" };
+
+    expect(ecs(record({ resource, attributes })).labels["service.name"]).toBe("child");
+  });
+
+  it("keeps a __proto__ attribute as a label instead of setting a prototype", () => {
+    const attributes = JSON.parse('{"__proto__":"x"}');
+
+    const labels = ecs(record({ attributes })).labels;
+
+    expect(Object.getOwnPropertyDescriptor(labels, "__proto__")?.value).toBe("x");
+  });
+
+  it("survives a cyclic attribute, which a forwarded record can carry", () => {
+    const cyclic: Record<string, unknown> = { id: "a" };
+    cyclic.self = cyclic;
+
+    const labels = ecs(record({ attributes: { cyclic } })).labels;
+
+    expect(labels["cyclic.id"]).toBe("a");
+    expect(labels["cyclic.self.id"]).toBeUndefined();
+  });
 });
 
 describe("splitBatch", () => {

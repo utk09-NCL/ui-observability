@@ -253,6 +253,13 @@ export const SERIALIZER_NAME_OTLP = "otlp";
 /** ECS serializer name. */
 export const SERIALIZER_NAME_ECS = "ecs";
 
+/**
+ * ECS `log.level` names that differ from the lowercased severity text. ECS spells
+ * the warning level in full; every other level matches once lowercased.
+ * @see {@link SERIALIZER_NAME_ECS}
+ */
+export const ECS_LEVEL_NAMES: Partial<Record<LogLevel, string>> = { WARN: "warning" };
+
 /** Content type for an OTLP/JSON body. */
 export const CONTENT_TYPE_JSON = "application/json";
 
