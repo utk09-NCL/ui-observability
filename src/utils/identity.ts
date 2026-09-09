@@ -133,25 +133,33 @@ export function resolveIdentity(diagnostics: Diagnostics): Identity {
   return { sessionId, tabId, contextId };
 }
 
-/** Timestamp of last recorded session touch in epoch milliseconds. */
-let lastTouchAt = 0;
-
 /**
- * Updates session activity timestamp in localStorage, throttled by SESSION_TOUCH_MS.
- * @param sessionId Active session identifier.
- * @param diagnostics Diagnostics reporter.
+ * Writes the session's last-seen timestamp, throttled by `SESSION_TOUCH_MS`.
+ * The throttle is instance state, not module state: two runtimes in one document
+ * must not silence each other's session writes.
  */
-export function touchSession(sessionId: string, diagnostics: Diagnostics): void {
-  const now = Date.now();
-  if (now - lastTouchAt < SESSION_TOUCH_MS) {
-    return;
-  }
-  lastTouchAt = now;
-  const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
-  safeWrite("local", SESSION_ID_KEY, session, diagnostics);
-}
+export class SessionTouch {
+  /** Epoch milliseconds of the last write this instance made. */
+  private lastTouchAt = 0;
 
-/** Resets the session touch throttle timer state for testing. */
-export function resetSessionTouch(): void {
-  lastTouchAt = 0;
+  /**
+   * @param diagnostics Diagnostics reporter.
+   */
+  constructor(private diagnostics: Diagnostics) {}
+
+  /**
+   * Updates the session activity timestamp in localStorage, at most once per window.
+   * @param sessionId Active session identifier.
+   */
+  touch(sessionId: string): void {
+    const now = Date.now();
+
+    if (now - this.lastTouchAt < SESSION_TOUCH_MS) {
+      return;
+    }
+
+    this.lastTouchAt = now;
+    const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
+    safeWrite("local", SESSION_ID_KEY, session, this.diagnostics);
+  }
 }

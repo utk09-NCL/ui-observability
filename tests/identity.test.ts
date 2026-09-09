@@ -1,7 +1,7 @@
 // tests/identity.test.ts
 import { describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import { newId, resolveIdentity, touchSession } from "../src/utils/identity";
+import { newId, resolveIdentity, SessionTouch } from "../src/utils/identity";
 
 const SESSION_KEY = "ui-observability.session";
 const TAB_KEY = "ui-observability.tab";
@@ -171,12 +171,12 @@ describe("resolveIdentity", () => {
   });
 });
 
-describe("touchSession", () => {
+describe("SessionTouch", () => {
   it("writes the first time it is called", () => {
     const diagnostics = collect().diagnostics;
     const setItem = vi.spyOn(localStorage, "setItem");
 
-    touchSession("s-1", diagnostics);
+    new SessionTouch(diagnostics).touch("s-1");
 
     expect(setItem).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(SESSION_KEY)).toContain("s-1");
@@ -187,10 +187,11 @@ describe("touchSession", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T10:00:00.000Z"));
     const setItem = vi.spyOn(localStorage, "setItem");
+    const touch = new SessionTouch(diagnostics);
 
-    touchSession("s-1", diagnostics);
+    touch.touch("s-1");
     vi.setSystemTime(new Date("2026-08-22T10:00:30.000Z"));
-    touchSession("s-1", diagnostics);
+    touch.touch("s-1");
 
     expect(setItem).toHaveBeenCalledTimes(1);
   });
@@ -200,11 +201,25 @@ describe("touchSession", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T10:00:00.000Z"));
     const setItem = vi.spyOn(localStorage, "setItem");
+    const touch = new SessionTouch(diagnostics);
 
-    touchSession("s-1", diagnostics);
+    touch.touch("s-1");
     vi.setSystemTime(new Date("2026-08-22T10:02:00.000Z"));
-    touchSession("s-1", diagnostics);
+    touch.touch("s-1");
 
     expect(setItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("throttles per instance, so a second runtime in the document still writes", () => {
+    const diagnostics = collect().diagnostics;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-22T10:00:00.000Z"));
+    const setItem = vi.spyOn(localStorage, "setItem");
+
+    new SessionTouch(diagnostics).touch("s-1");
+    new SessionTouch(diagnostics).touch("s-2");
+
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(localStorage.getItem(SESSION_KEY)).toContain("s-2");
   });
 });

@@ -31,7 +31,7 @@ import { ExitFlush } from "../transport/exit-flush";
 import { HttpTransport } from "../transport/http-transport";
 import { RetryEngine } from "../transport/retry-engine";
 import { ConsoleSink } from "../utils/console";
-import { type Identity, newId, resolveIdentity, touchSession } from "../utils/identity";
+import { type Identity, newId, resolveIdentity, SessionTouch } from "../utils/identity";
 import { detectPlatform, type PlatformMetadata } from "../utils/platform";
 import { Sequence } from "../utils/sequence";
 import { TraceEngine } from "../utils/tracing";
@@ -61,6 +61,9 @@ export class ObservabilityRuntime {
 
   /** Identity context containing session, tab, and context identifiers. */
   readonly identity: Identity;
+
+  /** Throttled writer of the session's last-seen timestamp. */
+  private readonly sessionTouch: SessionTouch;
 
   /** Store for ambient application context attributes. */
   readonly context = new ContextStore();
@@ -131,6 +134,7 @@ export class ObservabilityRuntime {
     this.platform = detectPlatform(this.diagnostics);
     this.config = resolveConfig(input, this.diagnostics);
     this.identity = resolveIdentity(this.diagnostics);
+    this.sessionTouch = new SessionTouch(this.diagnostics);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
     this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
     // Fire and forget: an absent peer costs the host's spans, never the records.
@@ -386,7 +390,7 @@ export class ObservabilityRuntime {
       return;
     }
 
-    touchSession(this.identity.sessionId, this.diagnostics);
+    this.sessionTouch.touch(this.identity.sessionId);
 
     if (!this.ready) {
       if (this.bootBuffer.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
