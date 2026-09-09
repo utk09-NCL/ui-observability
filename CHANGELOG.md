@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-09
+
+### Fixed - v0.4.1
+
+- A blocked IndexedDB upgrade never settled. Every storage call in the window waited with it. `IdbDriver` rejects on `onblocked`. An open connection closes on `versionchange`. A failed open is not cached.
+- No storage call had a time limit. A hung adapter held a dispatch slot, the drain flag, or startup. Each call fails after `STORAGE_DEADLINE_MS` and reports `storage.degraded`.
+- A refused beacon lost the batch. The keepalive fetch fallback drew on the same full budget. A refusal writes to the emergency queue. An absent `sendBeacon` still falls back to the fetch.
+- `hidden` sent in-flight batches a second time under a new batch id. It drains the stream buffers only. `pagehide`, `freeze`, `openfin-close` and `shutdown` still take both.
+- A `429` or `503` spent one of the five delivery attempts. A throttled answer schedules from `Retry-After`. The attempt count is unchanged.
+- A same-origin frame two levels deep lost its records. The echo guard compared link kinds, and two direct links share a kind. A forwarder relays records from a direct link.
+- Each `configure()` after startup added another set of web-vitals reporters and repeated the seven navigation timing metrics. `web-vitals` has no unsubscribe. Both run once per document.
+- The IndexedDB probe tested presence, not operation. The factory opens the database before it keeps the adapter. A host that rejects `open()` gets localStorage.
+- `bumpAttempts` read and wrote in two IndexedDB transactions. A prune in another window deleted the batch between them. One transaction holds both.
+- The ingest contract did not list the request headers. A server built from the README failed every CORS preflight and received exit-flush records only. The README names `OPTIONS` and `Access-Control-Allow-Headers`.
+
+### Performance - v0.4.1
+
+- `prune()` parsed every stored batch to read `createdAt`. It reads `createdAt` from the key. Only a batch it drops is parsed.
+- Click capture read `innerText`, which forces style and layout. It reads `textContent`. A click breadcrumb can carry text that CSS hides.
+
 ## [0.4.0] - 2026-09-09
 
 ### Breaking changes - v0.4.0

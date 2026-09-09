@@ -235,7 +235,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.4.0";
+export const TELEMETRY_SDK_VERSION = "0.4.1";
 
 /**
  * Value of `telemetry.sdk.language`.
