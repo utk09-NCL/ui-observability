@@ -59,6 +59,19 @@ export interface CaptureLogger {
   debug(message: string, payload?: Record<string, unknown>): void;
 }
 
+/**
+ * Capture work that runs one time for each document, not one time for each
+ * install. A reconfigure builds new capture instances, so instance state cannot
+ * hold this. web-vitals has no unsubscribe, and a second subscription reports
+ * each metric two times.
+ */
+export interface CaptureOnce {
+  /** True once the web-vitals reporters are subscribed. */
+  webVitals: boolean;
+  /** True once navigation timing has been reported. */
+  navigationTiming: boolean;
+}
+
 /** Shared runtime dependencies provided to auto-capture instances. */
 export interface CaptureContext {
   /** Active runtime configuration. */
@@ -71,6 +84,8 @@ export interface CaptureContext {
   breadcrumbs: BreadcrumbBuffer;
   /** Active trace context provider. */
   tracing: TraceEngine;
+  /** Guards for the capture work that a reinstall must not repeat. */
+  once: CaptureOnce;
 }
 
 /** Lifecycle interface for browser instrumentation modules. */

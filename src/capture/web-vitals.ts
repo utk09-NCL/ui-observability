@@ -36,10 +36,21 @@ export class WebVitalsCapture implements Capture {
     this.installed = true;
 
     this.reportNavigationTiming();
+
+    // Set before the load, not after. Two configure() calls in one turn otherwise
+    // both pass this check and subscribe two times.
+    if (this.ctx.once.webVitals) {
+      return;
+    }
+    this.ctx.once.webVitals = true;
+
     void this.loadWebVitals();
   }
 
-  /** Marks module uninstalled. */
+  /**
+   * Marks module uninstalled. The web-vitals reporters stay subscribed: the
+   * package has no unsubscribe. `ctx.once` prevents a second set.
+   */
   uninstall(): void {
     this.installed = false;
   }
@@ -82,8 +93,15 @@ export class WebVitalsCapture implements Capture {
     module.onTTFB(send("ttfb", "ms"));
   }
 
-  /** Extracts and logs PerformanceNavigationTiming benchmarks. */
+  /** Extracts and logs PerformanceNavigationTiming benchmarks one time for each document. */
   private reportNavigationTiming(): void {
+    // The entry describes the one navigation of this document. Reported again
+    // after a reconfigure, the seven metrics are duplicates.
+    if (this.ctx.once.navigationTiming) {
+      return;
+    }
+    this.ctx.once.navigationTiming = true;
+
     this.ctx.diagnostics.guard("capture.install_failed", "reading navigation timing", () => {
       const nav = performance.getEntriesByType("navigation")[0] as
         PerformanceNavigationTiming | undefined;

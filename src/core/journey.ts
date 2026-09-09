@@ -20,6 +20,7 @@ import {
   JOURNEY_URL_PARAM,
   OPENFIN_OPTIONS_TIMEOUT_MS,
 } from "../constants";
+import { withDeadline } from "../utils/deadline";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
@@ -158,27 +159,6 @@ function encodeToken(journey: Journey): string {
     .replace(BASE64_PLUS_PATTERN, "-")
     .replace(BASE64_SLASH_PATTERN, "_")
     .replace(BASE64_PADDING_PATTERN, "");
-}
-
-/**
- * Rejects when a promise has not settled within a deadline. A stalled OpenFin bridge
- * would otherwise leave `bootstrap()` pending, and with it `init()`, so `ready` is
- * never set and records queue in the boot buffer until it evicts.
- * @param work Promise to bound.
- * @param ms Deadline in milliseconds.
- * @returns The promise's value, or a rejection once the deadline passes.
- */
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-  const deadline = new Promise<never>((_resolve, reject) => {
-    // Not cleared on the happy path. The timer is unreferenced, and the rejection
-    // it raises later is delivered to a race that has already settled.
-    const timer = setTimeout(() => {
-      reject(new Error(`timed out after ${String(ms)}ms`));
-    }, ms);
-    unrefTimer(timer);
-  });
-
-  return Promise.race([work, deadline]);
 }
 
 /** Manages journey lifecycle, cross-window adoption, storage synchronization, and expiration. */

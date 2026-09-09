@@ -187,9 +187,10 @@ capture: {
 The server must obey this contract:
 
 1. **Protocol:** Accept `POST` with `Content-Type: application/json` or `text/plain;charset=UTF-8`. `sendBeacon` sends the second one to avoid a CORS preflight.
-2. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Hold the ids for 24 hours minimum.
-3. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`.
-4. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the client split the batch. Another `4xx` drops the batch.
+2. **Preflight:** Answer `OPTIONS` on the ingest path. The transport sends two headers with each batch: `X-UiObs-Batch-Id` and `X-UiObs-Attempt`. For a payload of more than 1 KiB, the transport also sends `Content-Encoding: gzip`. Each of these headers causes a CORS preflight. Allow the three headers with `Access-Control-Allow-Headers: content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt`. If the server does not allow them, each preflight fails. The transport then gets a `TypeError`. The retry engine sends the batch five more times, then drops the batch. The exit flush sends no headers, so the exit flush continues to work. The server thus receives only the records from the exit flush.
+3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Hold the ids for 24 hours minimum.
+4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`.
+5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the client split the batch. Another `4xx` drops the batch.
 
 ---
 

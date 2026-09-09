@@ -56,6 +56,8 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
       logger,
       breadcrumbs: new BreadcrumbBuffer(10),
       tracing: new TraceEngine(diagnostics),
+      // Fresh per context, as a new runtime gets a fresh set.
+      once: { webVitals: false, navigationTiming: false },
     },
   };
 }
@@ -1019,8 +1021,44 @@ describe("WebVitalsCapture", () => {
 
     expect(logger.logMetric.mock.calls.length).toBe(first);
 
+    // A reconfigure uninstalls and rebuilds. The entry describes the one
+    // navigation this document made, so reporting it again duplicates it.
     capture.uninstall();
     capture.install();
-    expect(logger.logMetric.mock.calls.length).toBeGreaterThan(first);
+    expect(logger.logMetric.mock.calls.length).toBe(first);
+  });
+
+  it("does not subscribe a second set of reporters after a reinstall", async () => {
+    let subscriptions = 0;
+    const subscribe = () => () => {
+      subscriptions++;
+    };
+    const { ctx: c } = ctx({
+      webVitals: true,
+      webVitalsLoader: () =>
+        Promise.resolve({
+          onLCP: subscribe(),
+          onCLS: subscribe(),
+          onINP: subscribe(),
+          onFCP: subscribe(),
+          onTTFB: subscribe(),
+        }),
+    });
+
+    const first = new WebVitalsCapture(c);
+    first.install();
+    await vi.waitFor(() => {
+      expect(subscriptions).toBe(5);
+    });
+
+    // web-vitals offers no unsubscribe, so the rebuilt instance must not call
+    // the reporters again. It would report every LCP twice.
+    first.uninstall();
+    const second = new WebVitalsCapture(c);
+    second.install();
+    await Promise.resolve();
+
+    expect(subscriptions).toBe(5);
+    second.uninstall();
   });
 });

@@ -13,12 +13,14 @@ import {
   MAX_CONCURRENT_REQUESTS,
   METRIC_BATCH_SIZE,
   METRIC_FLUSH_INTERVAL_MS,
+  STORAGE_DEADLINE_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
 import type { HttpTransport } from "../transport/http-transport";
 import type { RetryEngine } from "../transport/retry-engine";
+import { withDeadline } from "../utils/deadline";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
@@ -387,7 +389,9 @@ export class LogPipeline {
   }
 
   /**
-   * Persists an undelivered batch to storage and triggers retry engine.
+   * Persists an undelivered batch to storage and triggers retry engine. Bounded:
+   * a storage call that does not settle holds this dispatch slot. Two of them
+   * stop the pipeline.
    * @param batch Batch to persist.
    */
   private async store(batch: LogBatch): Promise<void> {
@@ -395,7 +399,7 @@ export class LogPipeline {
       "storage.degraded",
       "persisting an undelivered batch",
       async () => {
-        await this.storage.save(batch);
+        await withDeadline(this.storage.save(batch), STORAGE_DEADLINE_MS);
         this.retry.nudge();
       },
     );

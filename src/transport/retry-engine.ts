@@ -10,12 +10,14 @@ import {
   RETRY_BASE_DELAY_MS,
   RETRY_IDLE_DELAY_MS,
   RETRY_MAX_DELAY_MS,
+  STORAGE_DEADLINE_MS,
   STORAGE_LIMITS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { StorageAdapter } from "../models/storage";
+import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
 import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
@@ -85,7 +87,7 @@ export class RetryEngine {
     const parts = this.toStorable(batch, error);
 
     for (const part of parts) {
-      await this.storage.save(part);
+      await this.bounded(this.storage.save(part));
     }
 
     if (parts.length > 0) {
@@ -121,6 +123,16 @@ export class RetryEngine {
 
     this.timer = timer;
     unrefTimer(timer);
+  }
+
+  /**
+   * Bounds a storage call. A call that does not settle keeps `draining` set, and
+   * this window then runs no more drains.
+   * @param work Storage promise to bound.
+   * @returns The value of the promise, or a rejection after the deadline.
+   */
+  private bounded<T>(work: Promise<T>): Promise<T> {
+    return withDeadline(work, STORAGE_DEADLINE_MS);
   }
 
   /** Clears the pending timer handle if active. */
@@ -175,7 +187,7 @@ export class RetryEngine {
         return true;
       }
 
-      const batches = await this.storage.take(this.batchesPerDrain);
+      const batches = await this.bounded(this.storage.take(this.batchesPerDrain));
 
       if (batches.length === 0) {
         this.schedule(RETRY_IDLE_DELAY_MS);
@@ -215,13 +227,13 @@ export class RetryEngine {
         `giving up on a batch after ${batch.attempts.toString()} attempts`,
         { batchId: batch.id, records: batch.records.length },
       );
-      await this.storage.remove(batch.id);
+      await this.bounded(this.storage.remove(batch.id));
       return true;
     }
 
     try {
       await this.transport.send(batch);
-      await this.storage.remove(batch.id);
+      await this.bounded(this.storage.remove(batch.id));
       this.attempt = 0;
       return true;
     } catch (error) {
@@ -237,7 +249,15 @@ export class RetryEngine {
         return false;
       }
 
-      await this.storage.bumpAttempts(batch.id, batch.attempts + 1);
+      // A throttle rejects no records: the server asks for the batch later. An
+      // attempt counted here dead-letters the batch after five throttled answers.
+      if (failure?.kind === "throttled") {
+        this.attempt++;
+        this.schedule(failure.retryAfterMs ?? this.backoffMs());
+        return false;
+      }
+
+      await this.bounded(this.storage.bumpAttempts(batch.id, batch.attempts + 1));
       this.attempt++;
       this.schedule(failure?.retryAfterMs ?? this.backoffMs());
       return false;
@@ -252,10 +272,10 @@ export class RetryEngine {
    */
   private async replaceStored(batch: LogBatch, error: unknown): Promise<void> {
     const parts = this.toStorable(batch, error);
-    await this.storage.remove(batch.id);
+    await this.bounded(this.storage.remove(batch.id));
 
     for (const part of parts) {
-      await this.storage.save(part);
+      await this.bounded(this.storage.save(part));
     }
   }
 

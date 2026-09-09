@@ -7,7 +7,7 @@ import type { Receive, WorkerLike } from "../bus/links";
 import { ErrorCapture } from "../capture/errors";
 import { InteractionCapture } from "../capture/interactions";
 import { NetworkCapture } from "../capture/network";
-import type { Capture } from "../capture/types";
+import type { Capture, CaptureOnce } from "../capture/types";
 import { WebVitalsCapture } from "../capture/web-vitals";
 import {
   BUS_MAX_BOOT_BUFFER_RECORDS,
@@ -109,6 +109,9 @@ export class ObservabilityRuntime {
 
   /** Active auto-capture instrumentation modules. */
   private readonly captures: Capture[] = [];
+
+  /** Capture work that a rebuild of the capture modules must not repeat. */
+  private readonly captureOnce: CaptureOnce = { webVitals: false, navigationTiming: false };
 
   /** Queue buffering records created before bus role resolution. */
   private bootBuffer: LogRecord[] = [];
@@ -316,6 +319,7 @@ export class ObservabilityRuntime {
       config: this.config,
       diagnostics: this.diagnostics,
       drainForExit: () => this.pipeline?.drainForExit() ?? null,
+      drainPending: () => this.pipeline?.drainPending() ?? null,
     });
 
     await drainEmergencyQueue(this.storage, this.diagnostics);
@@ -332,6 +336,7 @@ export class ObservabilityRuntime {
       breadcrumbs: this.breadcrumbs,
       tracing: this.tracing,
       logger: new OneLogger(this, CAPTURE_NAMESPACE),
+      once: this.captureOnce,
     };
     const settings = this.config.capture;
 

@@ -100,18 +100,19 @@ export class IdbDriver {
   /**
    * Rewrites the attempt count of a stored batch. An id that is not stored is
    * left alone: a batch already delivered and deleted must not be resurrected.
+   * One transaction for the get and the put. Across two transactions, a prune in
+   * another window deletes the batch between them, and the put restores it.
    * @param id Batch identifier.
    * @param attempts New absolute attempt count.
    */
   async bumpAttempts(id: string, attempts: number): Promise<void> {
-    const read = await this.store("readonly");
-    const batch = await promisify<LogBatch | undefined>(read.get(id));
+    const store = await this.store("readwrite");
+    const batch = await promisify<LogBatch | undefined>(store.get(id));
     if (batch === undefined) {
       return;
     }
 
-    const write = await this.store("readwrite");
-    await promisify(write.put({ ...batch, attempts }));
+    await promisify(store.put({ ...batch, attempts }));
   }
 
   /**
@@ -127,6 +128,14 @@ export class IdbDriver {
   async clear(): Promise<void> {
     const store = await this.store("readwrite");
     await promisify(store.clear());
+  }
+
+  /**
+   * Opens the connection. A host that defines indexedDB but rejects open() fails
+   * here, where the factory can select a different adapter.
+   */
+  async ready(): Promise<void> {
+    await this.open();
   }
 
   /** Closes the connection, if one was ever opened. */
@@ -153,7 +162,8 @@ export class IdbDriver {
   }
 
   /**
-   * Opens the database once and hands the same connection to every later call.
+   * Opens the database one time and gives the same connection to each later call.
+   * A failed open is not kept: the next call opens again.
    * @returns The open database.
    */
   private open(): Promise<IDBDatabase> {
@@ -164,6 +174,7 @@ export class IdbDriver {
 
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(this.name, INDEXEDDB_SCHEMA_VERSION);
+      let abandoned = false;
 
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -176,14 +187,39 @@ export class IdbDriver {
       };
 
       request.onsuccess = () => {
-        resolve(request.result);
+        const db = request.result;
+
+        if (abandoned) {
+          // The blocked handler rejected already. No reference to this connection
+          // remains, and an open connection blocks the next upgrade.
+          db.close();
+          return;
+        }
+
+        // Another window upgrades the schema. That upgrade blocks until this
+        // connection closes.
+        db.onversionchange = () => {
+          db.close();
+          this.connection = null;
+        };
+        resolve(db);
       };
       request.onerror = () => {
         reject(failureOf(request));
       };
+      request.onblocked = () => {
+        // An older window holds the previous schema version. This open does not
+        // settle until that window closes, and each storage call waits with it.
+        abandoned = true;
+        reject(new Error("another connection is blocking the IndexedDB upgrade"));
+      };
     });
 
-    this.connection = opening;
-    return opening;
+    this.connection = opening.catch((error: unknown) => {
+      this.connection = null;
+      throw error;
+    });
+
+    return this.connection;
   }
 }

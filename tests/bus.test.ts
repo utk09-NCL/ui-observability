@@ -1356,6 +1356,25 @@ describe("Bus receive: welcome, records and journey", () => {
     expect(h.onRecords).not.toHaveBeenCalled();
   });
 
+  it("relays a grandchild's records when both links in the chain are direct", () => {
+    // A same-origin frame holding another same-origin frame. Both attach by a
+    // direct call, so the two links share a kind while being different links.
+    const { bus, handlers: h } = make();
+    const upstream = fakeLink("direct");
+    const internals = bus as unknown as { role: string; upstream: Link | null };
+    internals.role = "forwarder";
+    internals.upstream = upstream;
+
+    deliver(
+      bus,
+      { t: "records", from: "grandchild", records: oneRecord() },
+      { link: "direct", origin: "same-origin" },
+    );
+
+    expect(h.onRecords).not.toHaveBeenCalled();
+    expect(upstream.post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
+  });
+
   it("does not echo records back to the link they arrived from as an upstream", () => {
     const { bus, handlers: h } = make();
     const upstream = fakeLink("parent");

@@ -270,6 +270,41 @@ describe("RetryEngine failure handling", () => {
     engine.stop();
   });
 
+  it("backs off on its own when a throttle carries no Retry-After", async () => {
+    const { engine, storage, send } = makeEngine({
+      send: () => Promise.reject(new TransportError("throttled", "503", 503)),
+    });
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledOnce();
+
+    // Full jitter caps the wait at the backoff ceiling, so a second send is due
+    // inside it.
+    await tick(MAX_DELAY_MS);
+    expect(send.mock.calls.length).toBeGreaterThan(1);
+    engine.stop();
+  });
+
+  it("does not spend an attempt on a batch the server only throttled", async () => {
+    // Load shedding is the moment the store exists for. Counting an attempt per
+    // 429 dead-letters the batch after five of them.
+    const { engine, storage } = makeEngine({
+      send: () => Promise.reject(new TransportError("throttled", "429", 429, 50)),
+    });
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    const [stored] = await storage.take(1);
+    expect(stored.attempts).toBe(0);
+    engine.stop();
+  });
+
   it("does not count an attempt against a batch it never sent", async () => {
     const { engine, storage } = makeEngine({
       send: () => Promise.reject(new TransportError("offline", "no connection")),

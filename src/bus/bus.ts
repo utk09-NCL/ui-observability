@@ -327,9 +327,8 @@ export class Bus {
       case "records":
         if (this.role === "sender") {
           this.handlers.onRecords(message.records);
-        } else if (this.upstream && source.link !== this.upstream.kind) {
-          // Relays records upstream in nested frame chains. Posting back onto
-          // the link they arrived on would echo them to their sender.
+        } else if (this.upstream && this.canRelay(source.link)) {
+          // Relays records upstream in nested frame chains.
           this.upstream.post(message);
         }
         break;
@@ -364,6 +363,18 @@ export class Bus {
         break;
     }
   };
+
+  /**
+   * Tells whether records from a link can go upstream. Posted back on the link
+   * they arrived on, the records echo to their sender. A direct link is an
+   * exception: it is one call into one parent, so two direct links in a chain are
+   * different links.
+   * @param link Kind of the link the records arrived on.
+   * @returns True if the relay is safe.
+   */
+  private canRelay(link: LinkKind): boolean {
+    return link === "direct" || link !== this.upstream?.kind;
+  }
 
   /** Returns whether this context can accept ownership over the given link type. */
   private canOwn(link: LinkKind): boolean {

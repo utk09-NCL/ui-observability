@@ -127,8 +127,10 @@ export class InteractionCapture implements Capture {
   private readonly onClick = (event: Event): void => {
     const target = event.target;
     const selector = describeElement(target instanceof Element ? target : null);
+    // textContent, not innerText: layout defines innerText, so a read of it
+    // causes style and layout work at each click.
     const text =
-      target instanceof HTMLElement ? target.innerText.trim().slice(0, CLICK_TEXT_MAX_CHARS) : "";
+      target instanceof HTMLElement ? target.textContent.trim().slice(0, CLICK_TEXT_MAX_CHARS) : "";
 
     // A click starts a new logical operation, so everything it causes shares one
     // trace id. Without the rotation a click and its five API calls cannot be

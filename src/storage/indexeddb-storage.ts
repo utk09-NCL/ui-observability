@@ -41,6 +41,14 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
+   * Opens the database. Not guarded: the factory needs the rejection to select the
+   * next adapter.
+   */
+  async open(): Promise<void> {
+    await this.db.ready();
+  }
+
+  /**
    * Persists a batch to IndexedDB and triggers storage pruning.
    * @param batch Batch to store.
    */

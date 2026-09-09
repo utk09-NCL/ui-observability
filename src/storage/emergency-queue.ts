@@ -9,10 +9,12 @@ import {
   EMERGENCY_LOCK_NAME,
   EMERGENCY_MAX_ENTRIES,
   EMERGENCY_STORAGE_KEY_PREFIX,
+  STORAGE_DEADLINE_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { isLogBatch, type LogBatch } from "../models/batch";
 import type { StorageAdapter } from "../models/storage";
+import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
 import { keysWithPrefix } from "./keys";
 
@@ -80,7 +82,9 @@ async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Pro
     }
 
     try {
-      await storage.save(batch);
+      // Bounded: this runs during startup. A save that does not settle keeps the
+      // runtime not ready, and each record then goes to the boot buffer.
+      await withDeadline(storage.save(batch), STORAGE_DEADLINE_MS);
       moved++;
     } catch (error) {
       diagnostics.report(

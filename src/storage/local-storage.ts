@@ -27,6 +27,19 @@ function keyFor(batch: LogBatch): string {
   return `${BATCH_STORAGE_KEY_PREFIX}${at}.${batch.id}`;
 }
 
+/**
+ * Reads the creation time from a storage key. prune() runs after each save. Read
+ * from the batch, this field costs one parse of the full store for each save.
+ * @param key Prefixed storage key.
+ * @returns Creation time in epoch milliseconds, or null if the key is malformed.
+ */
+function createdAtOf(key: string): number | null {
+  const start = BATCH_STORAGE_KEY_PREFIX.length;
+  const at = Number(key.slice(start, start + BATCH_KEY_TIME_WIDTH));
+
+  return Number.isFinite(at) ? at : null;
+}
+
 /** Persistent StorageAdapter implementation backed by localStorage. */
 export class LocalStorageStorage implements StorageAdapter {
   /** Storage adapter strategy name. */
@@ -128,32 +141,32 @@ export class LocalStorageStorage implements StorageAdapter {
     const cutoff = Date.now() - this.limits.maxAgeMs;
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
 
-    const drop = (key: string, records: number): void => {
+    // Parses only the batches it deletes. The record count is the one field the
+    // key does not carry.
+    const drop = (key: string): void => {
+      const batch = this.read(key);
       this.removeKey(key);
       result.batches++;
-      result.records += records;
+      result.records += batch?.records.length ?? 0;
     };
 
-    const alive: { key: string; records: number }[] = [];
+    const alive: string[] = [];
 
     for (const key of this.keys()) {
-      const batch = this.read(key);
-      if (batch === null) {
-        drop(key, 0);
+      const createdAt = createdAtOf(key);
+      // A key with no readable time also has no position in the sort order.
+      if (createdAt === null || createdAt < cutoff) {
+        drop(key);
         continue;
       }
-      if (batch.createdAt < cutoff) {
-        drop(key, batch.records.length);
-        continue;
-      }
-      alive.push({ key, records: batch.records.length });
+      alive.push(key);
     }
 
     const excess = alive.length - this.limits.maxBatches;
     if (excess > 0) {
       result.reason = "over_capacity";
-      for (const entry of alive.slice(0, excess)) {
-        drop(entry.key, entry.records);
+      for (const key of alive.slice(0, excess)) {
+        drop(key);
       }
     }
 

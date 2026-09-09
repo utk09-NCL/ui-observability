@@ -59,24 +59,35 @@ function setup({ records = [], config = {}, drain }: Options = {}) {
   const pending = [...records];
   let drains = 0;
 
+  const take = (): LogBatch | null =>
+    pending.length === 0
+      ? null
+      : {
+          id: `b${String(++drains)}`,
+          createdAt: Date.now(),
+          attempts: 0,
+          records: pending.splice(0),
+        };
+
+  const drainForExit = vi.fn<() => LogBatch | null>(drain ?? take);
+  const drainPending = vi.fn<() => LogBatch | null>(take);
+
   const flush = new ExitFlush({
     config: resolved,
     diagnostics,
-    drainForExit:
-      drain ??
-      (() =>
-        pending.length === 0
-          ? null
-          : {
-              id: `b${String(++drains)}`,
-              createdAt: Date.now(),
-              attempts: 0,
-              records: pending.splice(0),
-            }),
+    drainForExit,
+    drainPending,
   });
 
   built.push(flush);
-  return { flush, pending, events, codes: () => events.map((event) => event.code) };
+  return {
+    flush,
+    pending,
+    events,
+    drainForExit,
+    drainPending,
+    codes: () => events.map((event) => event.code),
+  };
 }
 
 const stubBeacon = (impl: (url: string, data: Blob) => boolean = () => true) => {
@@ -309,6 +320,29 @@ describe("ExitFlush flush", () => {
     expect(beacon).toHaveBeenCalledTimes(2);
   });
 
+  it("leaves the in-flight batches alone when the tab is only hidden", () => {
+    stubBeacon();
+    const { flush, drainForExit, drainPending } = setup({ records: [record("bye")] });
+
+    // hidden fires on every tab switch and minimise. The document keeps running
+    // and its in-flight sends still complete, so taking them here delivers the
+    // same records twice under an id the server cannot deduplicate.
+    flush.flush("hidden");
+
+    expect(drainPending).toHaveBeenCalledOnce();
+    expect(drainForExit).not.toHaveBeenCalled();
+  });
+
+  it("takes the in-flight batches when the document is closing", () => {
+    stubBeacon();
+    const { flush, drainForExit, drainPending } = setup({ records: [record("bye")] });
+
+    flush.flush("pagehide");
+
+    expect(drainForExit).toHaveBeenCalledOnce();
+    expect(drainPending).not.toHaveBeenCalled();
+  });
+
   it("sends nothing when there is no endpoint to send to", () => {
     const beacon = stubBeacon();
 
@@ -390,13 +424,16 @@ describe("ExitFlush keepalive fallback", () => {
     expect(headers["Content-Type"]).toBe("text/plain;charset=UTF-8");
   });
 
-  it("falls back when the browser refuses the beacon", () => {
+  it("parks the batch when the browser refuses the beacon", () => {
+    // A refusal is a full in-flight budget. A keepalive fetch draws on the same
+    // budget, so trying one here loses the batch as the document goes.
     stubBeacon(() => false);
     const fetchMock = stubFetch();
 
     setup({ records: [record("bye")] }).flush.flush("pagehide");
 
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
   });
 
   it("falls back when sendBeacon itself throws, and reports it", () => {

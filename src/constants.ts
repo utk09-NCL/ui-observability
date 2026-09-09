@@ -706,6 +706,12 @@ export const STORAGE_LIMITS: StorageLimits = {
   maxAttempts: 5,
 };
 
+/**
+ * Max time one storage call may take before it is treated as failed, in milliseconds.
+ * A call that does not settle holds a dispatch slot or the drain flag.
+ */
+export const STORAGE_DEADLINE_MS = 10_000;
+
 // ----------------------------------
 // Retry backoff
 // ----------------------------------

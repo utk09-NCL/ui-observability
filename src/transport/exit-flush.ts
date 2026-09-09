@@ -19,6 +19,12 @@ import { estimateBytes } from "../utils/sanitize";
 /** Document lifecycle event or manual action that triggered an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
+/**
+ * The answer of the browser to a beacon. `refused` means the in-flight budget is
+ * full. `unavailable` means the host has no usable sendBeacon.
+ */
+type BeaconOutcome = "sent" | "refused" | "unavailable";
+
 /** Structural interface for OpenFin window event subscription. */
 interface FinMeLike {
   on?: (event: string, listener: () => void) => void;
@@ -41,6 +47,8 @@ export interface ExitFlushDeps {
   diagnostics: Diagnostics;
   /** Callback draining all pending buffered and unconfirmed batches into a single LogBatch. */
   drainForExit: () => LogBatch | null;
+  /** Callback draining the buffered records only. An in-flight batch stays where it is. */
+  drainPending: () => LogBatch | null;
 }
 
 /** Flushes pending telemetry on document unload using sendBeacon, keepalive fetch, or emergency storage. */
@@ -130,7 +138,7 @@ export class ExitFlush {
       return;
     }
 
-    const batch = this.deps.drainForExit();
+    const batch = this.drain(reason);
     if (!batch || batch.records.length === 0) {
       return;
     }
@@ -157,11 +165,30 @@ export class ExitFlush {
     url.searchParams.set(QUERY_PARAM_EXIT_REASON, reason);
 
     const target = url.toString();
-    if (this.beacon(target, serialized.body)) {
+    const outcome = this.beacon(target, serialized.body);
+    if (outcome === "sent") {
+      return;
+    }
+
+    // A refusal means the in-flight budget is full. A keepalive fetch uses the
+    // same budget and fails the same way. The document closes, so nothing retries.
+    if (outcome === "refused") {
+      saveToEmergencyQueue(batch, diagnostics);
       return;
     }
 
     this.keepaliveFetch(target, serialized.body, reason);
+  }
+
+  /**
+   * Selects the drain for the reason. `hidden` occurs at each tab switch, and the
+   * document continues to run. Taken here, an in-flight batch goes out a second
+   * time under a new id, which the server cannot deduplicate.
+   * @param reason Trigger reason code.
+   * @returns Combined LogBatch, or null if no records are pending.
+   */
+  private drain(reason: ExitReason): LogBatch | null {
+    return reason === "hidden" ? this.deps.drainPending() : this.deps.drainForExit();
   }
 
   /**
@@ -187,23 +214,30 @@ export class ExitFlush {
    * Attempts transmission via navigator.sendBeacon with text/plain payload.
    * @param url Target endpoint URL with query parameters.
    * @param body Serialized payload string.
-   * @returns True if the beacon was accepted by the browser.
+   * @returns The answer of the browser.
    */
-  private beacon(url: string, body: string): boolean {
-    const sent = this.deps.diagnostics.guard("transport.http_error", "sendBeacon", () => {
-      // Invokes sendBeacon directly on navigator to preserve receiver context. A
-      // detached sendBeacon throws on invocation.
-      const nav = (globalThis as BeaconGlobal).navigator;
-      if (!nav?.sendBeacon) {
-        return false;
-      }
+  private beacon(url: string, body: string): BeaconOutcome {
+    const outcome = this.deps.diagnostics.guard<BeaconOutcome>(
+      "transport.http_error",
+      "sendBeacon",
+      () => {
+        // Invokes sendBeacon directly on navigator to preserve receiver context. A
+        // detached sendBeacon throws on invocation.
+        const nav = (globalThis as BeaconGlobal).navigator;
+        if (!nav?.sendBeacon) {
+          return "unavailable";
+        }
 
-      // Uses text/plain to avoid CORS preflights during document unload. A preflight
-      // started during unload rarely completes, dropping the beacon silently.
-      return nav.sendBeacon(url, new Blob([body], { type: CONTENT_TYPE_TEXT_PLAIN }));
-    });
+        // Uses text/plain to avoid CORS preflights during document unload. A preflight
+        // started during unload rarely completes, dropping the beacon silently.
+        const accepted = nav.sendBeacon(url, new Blob([body], { type: CONTENT_TYPE_TEXT_PLAIN }));
+        return accepted ? "sent" : "refused";
+      },
+    );
 
-    return sent === true;
+    // A throw is not a refusal: the method is present but unusable. The keepalive
+    // fetch can still succeed.
+    return outcome ?? "unavailable";
   }
 
   /**

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { BATCH_STORAGE_KEY_PREFIX, INDEXEDDB_SCHEMA_VERSION } from "../src/constants";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { PruneResult } from "../src/models/storage";
@@ -18,6 +19,27 @@ const batch = (id: string, createdAt = Date.now(), records = 0): LogBatch => ({
 });
 
 const quiet = () => new Diagnostics(vi.fn(), 0);
+
+/**
+ * Stands in for a request that fails. fake-indexeddb has no way to make a real one
+ * fail, and every driver method funnels its failure through onerror.
+ *
+ * Build it inside mockImplementationOnce, never as a mockReturnValueOnce argument.
+ * The microtask below is queued the moment the request is built, and one built at
+ * setup time fires while the test is still awaiting something else, long before
+ * promisify has assigned onerror. Nothing then settles and the test times out.
+ */
+const failingRequest = <T>(error: Error | null): IDBRequest<T> => {
+  const request = { error, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
+  queueMicrotask(() => {
+    request.onerror?.call(request, new Event("error"));
+  });
+  return request;
+};
+
+/** The same, typed as the open request indexedDB.open answers with. */
+const failingOpen = (message: string): IDBOpenDBRequest =>
+  failingRequest<IDBDatabase>(new Error(message)) as unknown as IDBOpenDBRequest;
 
 beforeEach(() => {
   localStorage.clear();
@@ -105,6 +127,18 @@ describe("storage factory", () => {
 
     vi.doUnmock("../src/storage/indexeddb-storage");
     vi.resetModules();
+  });
+
+  it("falls through when the host defines indexedDB but refuses to open it", async () => {
+    // Private mode, a corrupt profile and some WebViews do exactly this. Probing
+    // for the object alone pins the adapter and every later call then degrades.
+    const handler = vi.fn();
+    vi.spyOn(indexedDB, "open").mockImplementationOnce(() => failingOpen("the profile is corrupt"));
+
+    const adapter = await createStorage("auto", "db-refused", limits, new Diagnostics(handler, 0));
+
+    expect(adapter.name).toBe("localstorage");
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.unavailable" }));
   });
 
   it("takes localStorage when that is what was asked for", async () => {
@@ -215,6 +249,30 @@ describe("LocalStorageStorage", () => {
     await s.save(batch("aaa-newest", now - 1000));
 
     expect((await s.take(10)).map((b) => b.id)).toEqual(["zzz-oldest", "aaa-newest"]);
+  });
+
+  it("prunes from the key without reading the batches that survive", async () => {
+    useFakeLocalStorage();
+    const s = make();
+    const now = Date.now();
+    await s.save(batch("keep-1", now, 2));
+    await s.save(batch("keep-2", now, 2));
+
+    const getItem = vi.spyOn(localStorage, "getItem");
+    await s.prune();
+
+    // The key carries createdAt zero-padded. Reading it off the batch instead is
+    // a parse of the whole store on every failed send.
+    expect(getItem).not.toHaveBeenCalled();
+  });
+
+  it("drops an entry whose key carries no readable time", async () => {
+    const s = make();
+    localStorage.setItem(`${BATCH_STORAGE_KEY_PREFIX}not-a-time.x`, JSON.stringify(batch("x")));
+
+    await s.prune();
+
+    expect(await s.count()).toBe(0);
   });
 
   it("finds a batch by id for remove and bumpAttempts, since the key is not the id", async () => {
@@ -583,22 +641,6 @@ describe("IdbDriver", () => {
   let counter = 0;
   const name = (): string => `uiobs-driver-${String(++counter)}`;
 
-  // Stands in for a request that fails. fake-indexeddb has no way to make a real
-  // one fail, and every driver method funnels its failure through onerror.
-  //
-  // Build it inside mockImplementationOnce, never as a mockReturnValueOnce
-  // argument. The microtask below is queued the moment the request is built, and
-  // one built at setup time fires while the test is still awaiting something
-  // else, long before promisify has assigned onerror. Nothing then settles and
-  // the test times out.
-  const failingRequest = <T>(error: Error | null): IDBRequest<T> => {
-    const request = { error, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
-    queueMicrotask(() => {
-      request.onerror?.call(request, new Event("error"));
-    });
-    return request;
-  };
-
   // Writes a store the way an earlier release did, at the native version Dexie used.
   const openLegacy = (dbName: string): Promise<IDBDatabase> =>
     new Promise((resolve, reject) => {
@@ -676,11 +718,86 @@ describe("IdbDriver", () => {
   });
 
   it("rejects when the database cannot be opened at all", async () => {
-    vi.spyOn(indexedDB, "open").mockImplementationOnce(
-      () => failingRequest<IDBDatabase>(new Error("blocked")) as unknown as IDBOpenDBRequest,
-    );
+    vi.spyOn(indexedDB, "open").mockImplementationOnce(() => failingOpen("blocked"));
 
     await expect(new IdbDriver(name()).count()).rejects.toThrow("blocked");
+  });
+
+  it("rejects rather than waiting when another connection blocks the upgrade", async () => {
+    // Waiting for the older window to close never settles, and every storage
+    // call in this window waits with it.
+    vi.spyOn(indexedDB, "open").mockImplementationOnce(() => {
+      const request = { onblocked: null } as unknown as IDBOpenDBRequest;
+      queueMicrotask(() => {
+        request.onblocked?.call(request, new Event("blocked") as IDBVersionChangeEvent);
+      });
+      return request;
+    });
+
+    await expect(new IdbDriver(name()).ready()).rejects.toThrow(
+      "another connection is blocking the IndexedDB upgrade",
+    );
+  });
+
+  it("closes a connection handed over after the blocked open gave up", async () => {
+    const close = vi.fn();
+    vi.spyOn(indexedDB, "open").mockImplementationOnce(() => {
+      const request = {
+        result: { close, objectStoreNames: { contains: () => true } },
+        onblocked: null,
+        onsuccess: null,
+      } as unknown as IDBOpenDBRequest;
+      queueMicrotask(() => {
+        request.onblocked?.call(request, new Event("blocked") as IDBVersionChangeEvent);
+        request.onsuccess?.call(request, new Event("success"));
+      });
+      return request;
+    });
+
+    await expect(new IdbDriver(name()).ready()).rejects.toThrow("blocking");
+
+    // Nothing holds a reference to it. Left open, it blocks the next upgrade for
+    // the life of the document.
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes its connection so another window can upgrade the schema", async () => {
+    const dbName = name();
+    const driver = new IdbDriver(dbName);
+    await driver.put(batch("b1"));
+
+    // A newer release opening at a higher version. The upgrade blocks until this
+    // driver's connection closes.
+    const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(dbName, INDEXEDDB_SCHEMA_VERSION + 1);
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        reject(new Error("the upgrade failed"));
+      };
+      request.onblocked = () => {
+        reject(new Error("the old connection never closed"));
+      };
+    });
+
+    expect(upgraded.version).toBe(INDEXEDDB_SCHEMA_VERSION + 1);
+    upgraded.close();
+  });
+
+  it("opens again after an open that failed", async () => {
+    const open = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementationOnce(() => failingOpen("the profile is corrupt"));
+    const driver = new IdbDriver(name());
+
+    await expect(driver.ready()).rejects.toThrow("the profile is corrupt");
+
+    // A cached rejection makes every later call fail with the first error.
+    await driver.ready();
+
+    expect(open).toHaveBeenCalledTimes(2);
+    await driver.close();
   });
 
   it("leaves an id it is not holding alone rather than storing it", async () => {

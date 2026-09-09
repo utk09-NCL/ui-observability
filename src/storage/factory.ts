@@ -93,7 +93,12 @@ export async function createStorage(
         "opening IndexedDB",
         async () => {
           const { IndexedDbStorage } = await import("./indexeddb-storage");
-          return new IndexedDbStorage(dbName, limits, diagnostics, onGap);
+          const storage = new IndexedDbStorage(dbName, limits, diagnostics, onGap);
+          // Opened here, not on first use. Private mode, a corrupt profile and
+          // some WebViews define indexedDB and then reject open(). Only a
+          // rejection in this block selects the next adapter.
+          await storage.open();
+          return storage;
         },
       );
       if (adapter) {

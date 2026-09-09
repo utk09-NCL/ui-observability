@@ -451,6 +451,29 @@ describe("runtime lifecycle", () => {
     }).not.toThrow();
   });
 
+  it("drains the buffers only when the document is hidden", async () => {
+    configure(base);
+    await ready();
+    getLogger("test").info("still running");
+
+    const pipeline = runtime()["pipeline"];
+    if (!pipeline) {
+      throw new Error("the sender built no pipeline");
+    }
+    const pending = vi.spyOn(pipeline, "drainPending");
+    const forExit = vi.spyOn(pipeline, "drainForExit");
+
+    // A tab switch. The document keeps running, so an in-flight batch is still
+    // on its way, and taken here those records go out a second time.
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    // A second switch, with nothing buffered behind it.
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(pending).toHaveBeenCalledTimes(2);
+    expect(forExit).not.toHaveBeenCalled();
+  });
+
   it("tears everything down, and a second shutdown is a no-op", async () => {
     configure(base);
     await ready();
