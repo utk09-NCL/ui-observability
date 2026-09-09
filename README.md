@@ -62,7 +62,7 @@ log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
 log.error("pricing call failed", caughtError);
 ```
 
-- `configure()` is idempotent. Re-calling it updates the existing runtime singleton in place.
+- `configure()` is idempotent. Re-calling it updates the existing runtime singleton in place. `storage` is the exception: the adapter is built once at startup, and a later change to it is reported and ignored.
 - Exactly one context per document calls `configure()`. A second call renames `service.name` on every record the others emit, so in a composed page the shell configures and each microfrontend takes a namespace.
 - Calls before `configure()` record safely to an unconfigured implicit runtime without throwing.
 

@@ -22,7 +22,7 @@ import {
   TAB_ID_KEY,
 } from "../constants";
 import type { BusMessage } from "../models/bus";
-import type { ObservabilityConfig, ResolvedConfig } from "../models/config";
+import type { ObservabilityConfig, ResolvedConfig, StorageStrategy } from "../models/config";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { PruneResult, StorageAdapter } from "../models/storage";
 import { drainEmergencyQueue } from "../storage/emergency-queue";
@@ -91,6 +91,9 @@ export class ObservabilityRuntime {
 
   /** Persistent storage adapter for offline batches (sender role only). */
   private storage?: StorageAdapter;
+
+  /** Storage strategy the adapter was built from, set once the build starts. */
+  private storageBuiltAs?: StorageStrategy;
 
   /** HTTP transport instance for live log delivery (sender role only). */
   private transport?: HttpTransport;
@@ -237,6 +240,7 @@ export class ObservabilityRuntime {
 
     this.builder.invalidateResource();
     this.console.update(this.config.console);
+    this.keepBuiltStorage();
 
     if (this.ready) {
       this.reinstallCaptures();
@@ -246,6 +250,26 @@ export class ObservabilityRuntime {
       "config.reconfigured",
       "configure() was called again, the existing runtime was updated",
     );
+  }
+
+  /**
+   * Restores the storage strategy the adapter was built from. Every other key is read
+   * live, but the adapter is built once: swapping it strands the batches already
+   * persisted under the old one, which is worse than refusing the change.
+   */
+  private keepBuiltStorage(): void {
+    const built = this.storageBuiltAs;
+
+    if (built === undefined || this.config.storage === built) {
+      return;
+    }
+
+    this.diagnostics.report(
+      "config.invalid",
+      `storage cannot change after startup, still ${built}`,
+      { requested: this.config.storage },
+    );
+    this.config.storage = built;
   }
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
@@ -276,6 +300,7 @@ export class ObservabilityRuntime {
 
   /** Initializes storage, transport, pipeline, and unload listeners for sender role. */
   private async becomeSender(): Promise<void> {
+    this.storageBuiltAs = this.config.storage;
     this.storage = await createStorage(
       this.config.storage,
       STORAGE_DB_NAME,

@@ -113,6 +113,24 @@ describe("runtime lifecycle", () => {
     expect(runtime().diagnostics.snapshot()["config.reconfigured"]).toBe(1);
   });
 
+  it("refuses a storage change once the adapter is built, rather than doing nothing", async () => {
+    configure({ ...base, storage: "memory" });
+    await ready();
+
+    configure({ storage: "indexeddb" });
+
+    // The adapter is chosen once. A swap strands the batches already persisted under it.
+    expect(runtime().config.storage).toBe("memory");
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
+  it("takes a storage change made before the adapter is built", () => {
+    configure({ ...base, storage: "memory" });
+    configure({ storage: "localstorage" });
+
+    expect(runtime().config.storage).toBe("localstorage");
+  });
+
   it("keeps the rest of the config when a later call only turns logging off", () => {
     configure(base);
     configure({ enabled: false });
