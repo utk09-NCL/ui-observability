@@ -3,6 +3,7 @@
 // Formats and mirrors log records to the developer console during local execution
 
 import { CONSOLE_PREFIX_STYLE, LEVEL_ORDER, LIBRARY_LOG_PREFIX } from "../constants";
+import type { Diagnostics } from "../core/diagnostics";
 import type { LogLevel } from "../models/log-record";
 
 /** Maps log levels to corresponding console method names. */
@@ -19,8 +20,12 @@ const METHOD: Record<LogLevel, "debug" | "info" | "warn" | "error"> = {
 export class ConsoleSink {
   /**
    * @param minLevel Minimum log level required to emit, or null to mirror nothing.
+   * @param diagnostics Diagnostics reporter.
    */
-  constructor(private minLevel: LogLevel | null) {}
+  constructor(
+    private minLevel: LogLevel | null,
+    private diagnostics: Diagnostics,
+  ) {}
 
   /**
    * Updates the console mirroring threshold.
@@ -47,11 +52,17 @@ export class ConsoleSink {
     }
 
     const prefix = `%c${LIBRARY_LOG_PREFIX}%c ${level}`;
-    if (payload === undefined) {
-      console[METHOD[level]](prefix, CONSOLE_PREFIX_STYLE, "", message);
-      return;
-    }
+    const method = METHOD[level];
 
-    console[METHOD[level]](prefix, CONSOLE_PREFIX_STYLE, "", message, payload);
+    // A host can replace console with instrumented methods that throw. Unguarded,
+    // the mirror takes down the caller's log call.
+    this.diagnostics.guard("handler.threw", `mirroring to console.${method}`, () => {
+      if (payload === undefined) {
+        console[method](prefix, CONSOLE_PREFIX_STYLE, "", message);
+        return;
+      }
+
+      console[method](prefix, CONSOLE_PREFIX_STYLE, "", message, payload);
+    });
   }
 }

@@ -135,7 +135,7 @@ export class ObservabilityRuntime {
     this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
     // Fire and forget: an absent peer costs the host's spans, never the records.
     void this.tracing.loadOtel();
-    this.console = new ConsoleSink(this.config.console);
+    this.console = new ConsoleSink(this.config.console, this.diagnostics);
 
     this.journey = new JourneyEngine(
       JOURNEY_OPTIONS,

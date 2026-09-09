@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureLogger } from "../src/capture/types";
+import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
+import type { LogLevel } from "../src/models/log-record";
 import { ConsoleSink } from "../src/utils/console";
 import { timeAsync, timeSync } from "../src/utils/timer";
 
@@ -132,10 +134,26 @@ describe("ConsoleSink", () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * A sink with the diagnostics throttle disabled, plus the events it reported.
+   * @param minLevel Mirroring threshold.
+   * @returns The sink and its event list.
+   */
+  function sinkOf(minLevel: LogLevel | null): {
+    sink: ConsoleSink;
+    events: DiagnosticEvent[];
+  } {
+    const events: DiagnosticEvent[] = [];
+    const diagnostics = new Diagnostics((event) => {
+      events.push(event);
+    }, 0);
+    return { sink: new ConsoleSink(minLevel, diagnostics), events };
+  }
+
   it("prints nothing at all when disabled", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    new ConsoleSink(null).write("INFO", "hello");
+    sinkOf(null).sink.write("INFO", "hello");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -143,7 +161,7 @@ describe("ConsoleSink", () => {
   it("respects its own level independently of the pipeline level", () => {
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
-    new ConsoleSink("WARN").write("DEBUG", "quiet");
+    sinkOf("WARN").sink.write("DEBUG", "quiet");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -151,7 +169,7 @@ describe("ConsoleSink", () => {
   it("prints a message with no payload", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    new ConsoleSink("TRACE").write("INFO", "hello");
+    sinkOf("TRACE").sink.write("INFO", "hello");
 
     expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c INFO", "color:#888", "", "hello");
   });
@@ -159,7 +177,7 @@ describe("ConsoleSink", () => {
   it("appends the payload when there is one", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    new ConsoleSink("TRACE").write("WARN", "careful", { orderId: "ORD-1" });
+    sinkOf("TRACE").sink.write("WARN", "careful", { orderId: "ORD-1" });
 
     expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c WARN", "color:#888", "", "careful", {
       orderId: "ORD-1",
@@ -169,7 +187,7 @@ describe("ConsoleSink", () => {
   it("routes each level to its console method", () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const sink = new ConsoleSink("TRACE");
+    const { sink } = sinkOf("TRACE");
 
     sink.write("TRACE", "t");
     sink.write("FATAL", "f");
@@ -180,7 +198,7 @@ describe("ConsoleSink", () => {
 
   it("takes a changed configuration through update", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const sink = new ConsoleSink(null);
+    const { sink } = sinkOf(null);
 
     sink.write("INFO", "before");
     sink.update("INFO");
@@ -194,7 +212,21 @@ describe("ConsoleSink", () => {
     vi.stubGlobal("console", undefined);
 
     expect(() => {
-      new ConsoleSink("TRACE").write("INFO", "nowhere");
+      sinkOf("TRACE").sink.write("INFO", "nowhere");
     }).not.toThrow();
+  });
+
+  it("reports a console method that throws instead of failing the log call", () => {
+    // A host can instrument console. Its fault must not reach the caller's log call.
+    vi.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("instrumented");
+    });
+    const { sink, events } = sinkOf("TRACE");
+
+    expect(() => {
+      sink.write("INFO", "hello");
+    }).not.toThrow();
+    expect(events[0].code).toBe("handler.threw");
+    expect(events[0].message).toContain("console.info");
   });
 });
