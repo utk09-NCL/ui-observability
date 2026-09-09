@@ -404,7 +404,8 @@ export class Bus {
       return false;
     }
     try {
-      void (window.parent as unknown as Record<string, unknown>).location;
+      // The probe: a cross-origin parent throws on this read. A bare read fails lint.
+      Reflect.get(window.parent, "location");
       return false;
     } catch {
       return true;

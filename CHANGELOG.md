@@ -2,44 +2,67 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-09
+
+### Breaking changes - v0.4.0
+
+- The OpenFin bus topic is scoped to one application uuid. Upgrade all windows of an application together. A 0.3.0 window and a 0.4.0 window do not share a bus.
+- ECS documents write each attribute under `labels` as a flat dotted key. A nested attribute was an object. Update saved queries.
+- ECS `log.level` is `warning` for a WARN record. It was `warn`.
+- `logger.error(message, payload)` reads a plain object in the error slot as the payload. It was the error reason. An array, an `Error` and a class instance stay error reasons.
+- `configure({ storage })` after startup reports `config.invalid` and keeps the built adapter. The call was accepted before and did nothing.
+- One record sanitizes to 10,000 nodes. Values past the cap become `[MaxNodes]`.
+
+```ts
+// ECS attributes
+{ labels: { order: { id: "ORD-1" } } }  // 0.3.0
+{ labels: { "order.id": "ORD-1" } }     // 0.4.0
+```
+
+### Fixed - v0.4.0
+
+- A quota eviction dropped the write it made room for. Both persistent adapters retry the write. A failed retry counts a gap with `reason: "quota"`.
+- Sampling dropped the breadcrumb with the record. A sampled-out record keeps its breadcrumb. A record dropped by `redact` does not.
+- A typo inside a config section passed in silence. `capture: { webVital: true }` reports `unknown config key "capture.webVital"`. The guard reads one level into `sampling`, `bus` and `capture`.
+- A console method that throws stopped the caller's log call. The mirror is guarded and reports `handler.threw`.
+- The session touch throttle was module state. Two runtimes in one document silenced each other. Each runtime holds its own throttle.
+
 ## [0.3.0] - 2026-09-08
 
 ### Breaking changes - v0.3.0
 
-- `credentials` now defaults to `"omit"`. The library sends no cookies to the ingest endpoint. Set `credentials: "include"` for cookie auth.
-- A recorded URL carries no query string and no fragment. This applies to `page.url`, `url.full`, `resource.url`, `page.url.previous` and their breadcrumbs. Set `capture.fullUrls: true` to keep the full URL.
-- `@opentelemetry/api` is now an optional peer dependency. Install it to put records on the traces your spans carry. Without it, the library mints its own `trace_id` and reports `trace.otel_failed` once. Set `otelLoader` if your bundler cannot resolve the import.
+- `credentials` defaults to `"omit"`. The library sends no cookie to the ingest endpoint. Set `credentials: "include"` for cookie auth.
+- A recorded URL holds no query string and no fragment. This covers `page.url`, `url.full`, `resource.url`, `page.url.previous` and their breadcrumbs. Set `capture.fullUrls: true` to keep the full URL.
+- `@opentelemetry/api` is an optional peer dependency. Install it to put records on the traces your spans carry. Without it, the library mints its own `trace_id` and reports `trace.otel_failed` one time. Set `otelLoader` when your bundler cannot resolve the import.
 - `getLogger(namespace, options)` builds a new logger on each call. Only `getLogger(namespace)` is cached. A per-call `scopedContext` no longer stays in memory for the life of the document.
 
 ```ts
-// cookie auth, previously the default
+// cookie auth, the default before 0.3.0
 configure({ endpoint, credentials: "include" });
 
-// query strings, previously always recorded
+// query strings, always recorded before 0.3.0
 configure({ endpoint, capture: { fullUrls: true } });
 ```
 
-To join your own traces, install the peer: `npm install @opentelemetry/api`.
-
 ### Fixed - v0.3.0
 
-- `flush()` sent in-flight batches again under a new `X-UiObs-Batch-Id`. The server could not deduplicate them. `flush()` now takes the stream buffers only. The exit flush still takes both, because a document that closes cannot confirm delivery.
-- The bus posted to a child frame with the target origin `"*"`. A frame that navigated away received the `journey.id` and the `tab.id`. The bus now posts to the origin the child last spoke from.
-- `ERROR` and `FATAL` records bypass sampling and had no limit. A fixed window now admits 500 of them per 10 seconds. It counts the rest as `record.dropped_by_ceiling`.
+- `flush()` sent an in-flight batch again under a new `X-UiObs-Batch-Id`. The server could not deduplicate it. `flush()` takes the stream buffers only. The exit flush still takes both, because a closing document cannot confirm delivery.
+- The bus posted to a child frame with the target origin `"*"`. A frame that navigated away received the `journey.id` and the `tab.id`. The bus posts to the origin the child last spoke from.
+- An `ERROR` and a `FATAL` record bypass sampling and had no limit. A fixed window admits 500 of them per 10 seconds. It counts the rest as `record.dropped_by_ceiling`.
 
 ### Performance - v0.3.0
 
-- Sampling runs before the library builds the record. A dropped record costs one hash. It no longer pays for sanitize, the resource block, `redact` or truncation.
+- Sampling runs before the library builds the record. A dropped record costs one hash. It does not pay for sanitize, the resource block, `redact` or truncation.
 
 ## [0.2.0] - 2026-09-08
 
 ### Breaking changes - v0.2.0
 
-- Config was reduced from 63 keys in 9 sections to 31 keys in 3 sections.
-- Removed config keys are now fixed library defaults.
-- Unknown keys are ignored and reported through `onDiagnostic` as `config.invalid` with the message `unknown config key "<key>", ignored. Typo?`.
-- `storage` is now a strategy string instead of an object.
-- `console` is now a boolean or log level instead of an object.
+- Config holds 31 keys in 3 sections. It held 63 keys in 9 sections.
+- A removed key is a fixed library default.
+- An unknown key is ignored. `onDiagnostic` reports `config.invalid` with the message `unknown config key "<key>", ignored. Typo?`.
+- `storage` is a strategy string. It was an object.
+- `console` is a boolean or a level name. It was an object.
 
 ```ts
 // 0.1.x
@@ -67,19 +90,19 @@ configure({ endpoint, console: "WARN" });
 
 ### Removed
 
-- `rxjs` replaced with the library's own buffering, batching, queueing, and deferral logic.
-- `dexie` replaced with raw IndexedDB behind `IdbDriver`.
-- Runtime dependency footprint reduced to `@opentelemetry/api`; `web-vitals` remains the optional peer dependency.
+- The library replaces `rxjs` with its own buffering, batching, queueing and deferral.
+- The library replaces `dexie` with raw IndexedDB behind `IdbDriver`.
+- `@opentelemetry/api` is the only runtime dependency. `web-vitals` stays the optional peer.
 
 ### Changed - v0.2.0
 
-- IndexedDB database version increased to 11. Existing 0.1.x batches remain readable and are retried automatically after upgrade.
+- The IndexedDB database version is 11. The upgrade keeps a 0.1.x batch readable and retries it.
 
 ## [0.1.2] - 2026-08-30
 
 ### Fixed - v0.1.2
 
-- `telemetry.sdk.version` was reporting `0.1.0` for records produced by `0.1.1`; the version constant and package version are now kept in sync.
+- `telemetry.sdk.version` reported `0.1.0` for a record from `0.1.1`. The version constant and the package version stay in sync now.
 
 ## [0.1.1] - 2026-08-30
 
@@ -91,5 +114,5 @@ configure({ endpoint, console: "WARN" });
 
 ### Added
 
-- Initial release of `@utk09/ui-observability`.
-- Batching, gzip compression, OTLP/JSON and ECS serialization, durable IndexedDB and localStorage storage, retry/backoff delivery, `sendBeacon` exit flush, iframe/worker/OpenFin cross-context bus, and automatic capture of errors, network, interactions, navigation, and web vitals.
+- First release of `@utk09/ui-observability`.
+- Batching, gzip compression, OTLP/JSON and ECS serialization, IndexedDB and localStorage storage, retry with backoff, `sendBeacon` exit flush, an iframe, worker and OpenFin bus, and auto-capture of errors, network, interactions, navigation and web vitals.

@@ -17,8 +17,8 @@
     "@utk09/ui-observability": "file:../.."
   },
   "devDependencies": {
-    "@angular/build": "21.2.22",
-    "@angular/cli": "21.2.22",
+    "@angular/build": "21.2.23",
+    "@angular/cli": "21.2.23",
     "@angular/compiler-cli": "21.2.22",
     "typescript": "~5.9.3"
   }
