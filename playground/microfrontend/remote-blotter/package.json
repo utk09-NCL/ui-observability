@@ -11,8 +11,8 @@
     "@utk09/ui-observability": "file:../../.."
   },
   "devDependencies": {
-    "@module-federation/vite": "1.21.5",
+    "@module-federation/vite": "1.23.4",
     "typescript": "~5.9.3",
-    "vite": "8.2.2"
+    "vite": "8.3.4"
   }
 }

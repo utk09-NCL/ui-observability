@@ -4,7 +4,14 @@ import eslintConfigPrettier from "eslint-config-prettier";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
-  globalIgnores(["dist", "coverage", "**/node_modules", "**/dist", "playground/**/.angular"]),
+  globalIgnores([
+    "dist",
+    "coverage",
+    ".claude/**",
+    "**/node_modules",
+    "**/dist",
+    "playground/**/.angular",
+  ]),
 
   {
     files: ["**/*.ts", "**/*.tsx"],

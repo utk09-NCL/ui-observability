@@ -13,10 +13,10 @@
     "@utk09/ui-observability": "file:../../.."
   },
   "devDependencies": {
-    "@module-federation/vite": "1.21.5",
+    "@module-federation/vite": "1.23.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "typescript": "~5.9.3",
-    "vite": "8.2.2"
+    "vite": "8.3.4"
   }
 }
