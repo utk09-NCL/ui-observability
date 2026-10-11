@@ -15,6 +15,7 @@ import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import { saveToEmergencyQueue } from "../storage/emergency-queue";
 import { estimateBytes } from "../utils/sanitize";
+import { serializerFor } from "./serializers/select";
 
 /** Document lifecycle event or manual action that triggered an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
@@ -146,7 +147,7 @@ export class ExitFlush {
     const serialized = diagnostics.guard(
       "transport.serialize_failed",
       `the ${reason} exit flush could not serialize its batch`,
-      () => this.deps.config.serializer.serialize(batch.records),
+      () => serializerFor(this.deps.config.serializer).serialize(batch.records),
     );
     if (!serialized) {
       return;

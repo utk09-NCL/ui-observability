@@ -23,12 +23,12 @@ const activeSpan = (span: Span): void => {
   vi.spyOn(otelTrace, "getActiveSpan").mockReturnValue(span);
 };
 
-/** An engine holding the real API, which is what the default loader finds in this suite. */
+/** Makes an engine that loads the real API through an `otelLoader`. */
 const loaded = async (
   reporter: Diagnostics = diagnostics(),
   maxAgeMs?: number,
 ): Promise<TraceEngine> => {
-  const engine = new TraceEngine(reporter, maxAgeMs);
+  const engine = new TraceEngine(reporter, maxAgeMs, () => import("@opentelemetry/api"));
   await engine.loadOtel();
   return engine;
 };
@@ -148,6 +148,26 @@ describe("TraceEngine.resolve", () => {
     expect(engine.resolve().traceId).toMatch(/^[0-9a-f]{32}$/);
     expect(engine.headers().traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
+  });
+
+  it("imports nothing and reports nothing without a loader", async () => {
+    // The Vite dev server fails on a bare import of a peer that is not installed.
+    // OTel loads only through otelLoader.
+    const reporter = diagnostics();
+    const engine = new TraceEngine(reporter);
+    const ambient = engine.resolve().traceId;
+    activeSpan(
+      spanReporting({
+        traceId: VALID_TRACE_ID,
+        spanId: VALID_SPAN_ID,
+        traceFlags: 1,
+      }),
+    );
+
+    await engine.loadOtel();
+
+    expect(engine.resolve().traceId).toBe(ambient);
+    expect(reporter.snapshot()["trace.otel_failed"]).toBeUndefined();
   });
 
   it("takes the OpenTelemetry API from a supplied loader", async () => {

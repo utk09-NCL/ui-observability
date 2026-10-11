@@ -72,7 +72,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "check:version": "node tools/check-version-sync.mjs",
-    "verify": "npm run format:check && npm run check:version && npm run typecheck && npm run lint && npm run build && npm run test:coverage",
+    "check:peers": "node tools/check-peer-imports.mjs",
+    "verify": "npm run format:check && npm run check:version && npm run typecheck && npm run lint && npm run build && npm run check:peers && npm run test:coverage",
     "prepublishOnly": "npm run verify"
   },
   "peerDependencies": {

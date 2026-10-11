@@ -25,16 +25,6 @@ const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 const NON_ZERO = /[1-9a-f]/;
 
 /**
- * Loads the optional `@opentelemetry/api` peer. Dynamic specifier prevents
- * bundlers from failing statically when the peer is uninstalled.
- * @returns Promise resolving to the OpenTelemetry API.
- */
-function defaultLoader(): Promise<OtelApi> {
-  const specifier = "@opentelemetry/api";
-  return import(/* @vite-ignore */ specifier) as Promise<OtelApi>;
-}
-
-/**
  * Evaluates whether a span context can carry correlation. Replaces the
  * package's own isSpanContextValid, which is not available when the peer is not
  * installed.
@@ -128,20 +118,25 @@ export class TraceEngine {
   /**
    * @param diagnostics Diagnostics reporter.
    * @param maxAgeMs Maximum lifetime of an un-rotated ambient trace in milliseconds.
-   * @param load Supplies the OpenTelemetry API.
+   * @param load Loader for the OpenTelemetry API. If it is not set, OTel is off.
+   * Do not import the peer by name. The Vite dev server fails if the peer is not installed.
    */
   constructor(
     private readonly diagnostics: Diagnostics,
     private readonly maxAgeMs = TRACE_MAX_AGE_MS,
-    private readonly load: OtelLoader = defaultLoader,
+    private readonly load?: OtelLoader,
   ) {}
 
   /**
-   * Loads the OpenTelemetry API. Records built before this resolves, and every
-   * record when the package is absent, carry the ambient trace instead.
+   * Loads the OpenTelemetry API. Until the load completes, records use the ambient trace.
+   * If there is no loader or the load fails, all records use the ambient trace.
    * @returns Promise resolving once the attempt has settled.
    */
   async loadOtel(): Promise<void> {
+    if (!this.load) {
+      return;
+    }
+
     try {
       this.otel = await this.load();
     } catch (error) {

@@ -2,13 +2,9 @@
 //
 // Central coordination runtime managing subsystem lifecycles, configuration, and telemetry routing.
 
-import { Bus } from "../bus/bus";
+import type { Bus } from "../bus/bus";
 import type { Receive, WorkerLike } from "../bus/links";
-import { ErrorCapture } from "../capture/errors";
-import { InteractionCapture } from "../capture/interactions";
-import { NetworkCapture } from "../capture/network";
-import type { Capture, CaptureOnce } from "../capture/types";
-import { WebVitalsCapture } from "../capture/web-vitals";
+import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
   BUS_MAX_BOOT_BUFFER_RECORDS,
   CAPTURE_NAMESPACE,
@@ -16,22 +12,28 @@ import {
   MAX_BREADCRUMBS,
   RECORD_LIMITS,
   RUNTIME_GLOBAL_KEY,
-  STORAGE_DB_NAME,
-  STORAGE_LIMITS,
   STORAGE_NAMESPACE,
-  TAB_ID_KEY,
 } from "../constants";
-import type { BusMessage } from "../models/bus";
-import type { ObservabilityConfig, ResolvedConfig, StorageStrategy } from "../models/config";
+import type { BusMessage, BusRole } from "../models/bus";
+import type {
+  IdentityStrategy,
+  ObservabilityConfig,
+  ResolvedConfig,
+  StorageStrategy,
+} from "../models/config";
 import { isLogRecord, type LogRecord } from "../models/log-record";
-import type { PruneResult, StorageAdapter } from "../models/storage";
-import { drainEmergencyQueue } from "../storage/emergency-queue";
-import { createStorage } from "../storage/factory";
-import { ExitFlush } from "../transport/exit-flush";
-import { HttpTransport } from "../transport/http-transport";
-import { RetryEngine } from "../transport/retry-engine";
+import type { PruneResult } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
-import { type Identity, newId, resolveIdentity, SessionTouch } from "../utils/identity";
+import {
+  BROWSER_STORES,
+  type Identity,
+  type IdentityStores,
+  memoryStores,
+  newId,
+  persistTabId,
+  resolveIdentity,
+  SessionTouch,
+} from "../utils/identity";
 import { detectPlatform, type PlatformMetadata } from "../utils/platform";
 import { Sequence } from "../utils/sequence";
 import { TraceEngine } from "../utils/tracing";
@@ -41,9 +43,25 @@ import { ContextStore } from "./context";
 import { Diagnostics } from "./diagnostics";
 import { JourneyEngine, JOURNEY_OPTIONS } from "./journey";
 import { OneLogger } from "./logger";
-import { LogPipeline } from "./pipeline";
 import { RecordBuilder } from "./record";
 import { shouldSample } from "./sampling";
+import type { Sender } from "./sender";
+
+/** Constructor of one capture module. */
+type CaptureClass = new (ctx: CaptureContext) => Capture;
+
+/** Import of each capture module. Each import makes a separate chunk. */
+const CAPTURE_LOADERS = {
+  errors: async (): Promise<CaptureClass> => (await import("../capture/errors")).ErrorCapture,
+  network: async (): Promise<CaptureClass> => (await import("../capture/network")).NetworkCapture,
+  interactions: async (): Promise<CaptureClass> =>
+    (await import("../capture/interactions")).InteractionCapture,
+  webVitals: async (): Promise<CaptureClass> =>
+    (await import("../capture/web-vitals")).WebVitalsCapture,
+};
+
+/** Name of one capture module. */
+type CaptureName = keyof typeof CAPTURE_LOADERS;
 
 /** Global symbol key pinning the singleton runtime instance across federated bundles. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
@@ -61,6 +79,12 @@ export class ObservabilityRuntime {
 
   /** Identity context containing session, tab, and context identifiers. */
   readonly identity: Identity;
+
+  /** Stores for identity and journey keys. The runtime sets them at startup. */
+  private readonly stores: IdentityStores;
+
+  /** Identity strategy that the runtime used to make the stores. */
+  private readonly identityBuiltAs: IdentityStrategy;
 
   /** Throttled writer of the session's last-seen timestamp. */
   private readonly sessionTouch: SessionTouch;
@@ -86,29 +110,32 @@ export class ObservabilityRuntime {
   /** Console sink for local developer output. */
   readonly console: ConsoleSink;
 
-  /** Cross-realm communication bus. */
-  readonly bus: Bus;
+  /**
+   * Cross-realm communication bus. It is null until its chunk loads.
+   * In bus.mode "off", it loads only when a child frame or a worker needs it.
+   */
+  private bus: Bus | null = null;
 
-  /** Persistent storage adapter for offline batches (sender role only). */
-  private storage?: StorageAdapter;
+  /** Load and start of the bus. Undefined until the first need. */
+  private busLoad?: Promise<Bus | null>;
 
   /** Storage strategy the adapter was built from, set once the build starts. */
   private storageBuiltAs?: StorageStrategy;
 
-  /** HTTP transport instance for live log delivery (sender role only). */
-  private transport?: HttpTransport;
+  /** Delivery stack. The runtime sets it in the sender role with an endpoint, after the chunk loads. */
+  private sender?: Sender;
 
-  /** Background retry engine for redelivering failed batches (sender role only). */
-  private retry?: RetryEngine;
+  /** Load of the delivery stack. It is undefined when nothing loads. A record then has no destination. */
+  private senderLoad?: Promise<void>;
 
-  /** Primary log pipeline managing stream buffering and delivery (sender role only). */
-  private pipeline?: LogPipeline;
-
-  /** Exit flush handler executing atomic batch delivery on unload (sender role only). */
-  private exitFlush?: ExitFlush;
+  /** Records that arrive while the delivery stack loads. */
+  private pendingRecords: LogRecord[] = [];
 
   /** Active auto-capture instrumentation modules. */
   private readonly captures: Capture[] = [];
+
+  /** Count of capture installs. An install that a later install replaced stops after its load. */
+  private captureGeneration = 0;
 
   /** Capture work that a rebuild of the capture modules must not repeat. */
   private readonly captureOnce: CaptureOnce = { webVitals: false, navigationTiming: false };
@@ -139,11 +166,13 @@ export class ObservabilityRuntime {
 
     this.platform = detectPlatform(this.diagnostics);
     this.config = resolveConfig(input, this.diagnostics);
-    this.identity = resolveIdentity(this.diagnostics);
-    this.sessionTouch = new SessionTouch(this.diagnostics);
+    this.identityBuiltAs = this.config.identity;
+    this.stores = this.identityBuiltAs === "memory" ? memoryStores() : BROWSER_STORES;
+    this.identity = resolveIdentity(this.diagnostics, this.stores);
+    this.sessionTouch = new SessionTouch(this.diagnostics, this.stores);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
     this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
-    // Fire and forget: an absent peer costs the host's spans, never the records.
+    // Do not await. Without OTel, records use the ambient trace. No record is lost.
     void this.tracing.loadOtel();
     this.console = new ConsoleSink(this.config.console, this.diagnostics);
 
@@ -152,8 +181,9 @@ export class ObservabilityRuntime {
       this.diagnostics,
       this.identity.contextId,
       (journey) => {
-        this.bus.broadcastJourney(journey);
+        this.bus?.broadcastJourney(journey);
       },
+      this.stores,
     );
 
     this.builder = new RecordBuilder({
@@ -167,26 +197,6 @@ export class ObservabilityRuntime {
       identity: this.identity,
       platform: this.platform,
     });
-
-    this.bus = new Bus(
-      this.config,
-      this.diagnostics,
-      this.platform,
-      this.identity.contextId,
-      this.identity.tabId,
-      {
-        onRecords: (records) => {
-          this.ingestForwarded(records);
-        },
-        onJourney: (journey) => {
-          this.journey.applyRemote(journey);
-        },
-        onJourneyRequest: () => this.journey.current(),
-        onTabConflict: () => {
-          this.regenerateTabId();
-        },
-      },
-    );
   }
 
   /**
@@ -199,8 +209,15 @@ export class ObservabilityRuntime {
       return;
     }
 
-    this.diagnostics.guard("bus.send_failed", "accepting a direct message from a child", () => {
-      this.bus.acceptDirect(message, reply);
+    // Messages wait for the bus in arrival order. A promise runs its callbacks in order.
+    void this.ensureBus().then((bus) => {
+      if (!bus || this.destroyed) {
+        return;
+      }
+
+      this.diagnostics.guard("bus.send_failed", "accepting a direct message from a child", () => {
+        bus.acceptDirect(message, reply);
+      });
     });
   };
 
@@ -244,9 +261,15 @@ export class ObservabilityRuntime {
     this.builder.invalidateResource();
     this.console.update(this.config.console);
     this.keepBuiltStorage();
+    this.keepBuiltIdentity();
 
     if (this.ready) {
       this.reinstallCaptures();
+
+      // An endpoint set after startup loads the delivery stack that console-only mode skipped.
+      if (this.config.endpoint && this.role() === "sender") {
+        void this.loadSender();
+      }
     }
 
     this.diagnostics.report(
@@ -275,18 +298,38 @@ export class ObservabilityRuntime {
     this.config.storage = built;
   }
 
+  /**
+   * Restores the identity strategy from startup. The ids exist from startup.
+   * A later change cannot move them to another store.
+   */
+  private keepBuiltIdentity(): void {
+    const built = this.identityBuiltAs;
+
+    if (this.config.identity === built) {
+      return;
+    }
+
+    this.diagnostics.report(
+      "config.invalid",
+      `identity cannot change after startup. It stays ${built}.`,
+      { requested: this.config.identity },
+    );
+    this.config.identity = built;
+  }
+
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
   private async init(): Promise<void> {
     try {
       const journeyReady = this.journey.bootstrap();
-      const role = await this.bus.start();
+      const role = this.config.bus.mode === "off" ? "sender" : await this.startRole();
 
       if (role === "sender") {
         await this.becomeSender();
       }
 
       await journeyReady;
-      this.installCaptures();
+
+      await this.installCaptures();
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
@@ -301,56 +344,173 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Initializes storage, transport, pipeline, and unload listeners for sender role. */
-  private async becomeSender(): Promise<void> {
-    this.storageBuiltAs = this.config.storage;
-    this.storage = await createStorage(
-      this.config.storage,
-      STORAGE_DB_NAME,
-      STORAGE_LIMITS,
-      this.diagnostics,
-      this.reportGap,
-    );
-    this.transport = new HttpTransport(this.config, this.diagnostics);
-    this.retry = new RetryEngine(this.storage, this.transport, this.diagnostics, this.config);
-    this.pipeline = new LogPipeline(this.transport, this.storage, this.retry, this.diagnostics);
-
-    this.exitFlush = new ExitFlush({
-      config: this.config,
-      diagnostics: this.diagnostics,
-      drainForExit: () => this.pipeline?.drainForExit() ?? null,
-      drainPending: () => this.pipeline?.drainPending() ?? null,
-    });
-
-    await drainEmergencyQueue(this.storage, this.diagnostics);
-
-    this.retry.start();
-    this.exitFlush.install();
+  /**
+   * Loads and starts the bus, then reads the role it resolved.
+   * @returns Resolved role. "sender" if the bus did not load.
+   */
+  private async startRole(): Promise<BusRole> {
+    const bus = await this.ensureBus();
+    return bus?.getRole() ?? "sender";
   }
 
-  /** Instantiates and registers enabled auto-capture modules. */
-  private installCaptures(): void {
-    const ctx = {
+  /**
+   * Starts the load of the bus one time.
+   * @returns Promise resolving to the started bus, or null if it did not load.
+   */
+  private ensureBus(): Promise<Bus | null> {
+    this.busLoad ??= this.buildBus();
+    return this.busLoad;
+  }
+
+  /** Imports, builds and starts the bus. It never rejects. */
+  private async buildBus(): Promise<Bus | null> {
+    try {
+      const { Bus } = await import("../bus/bus");
+
+      // Guard against a shutdown during the load. A bus on a destroyed runtime leaks its links.
+      if (this.destroyed) {
+        return null;
+      }
+
+      const bus = new Bus(
+        this.config,
+        this.diagnostics,
+        this.platform,
+        this.identity.contextId,
+        this.identity.tabId,
+        {
+          onRecords: (records) => {
+            this.ingestForwarded(records);
+          },
+          onJourney: (journey) => {
+            this.journey.applyRemote(journey);
+          },
+          onJourneyRequest: () => this.journey.current(),
+          onTabConflict: () => {
+            this.regenerateTabId();
+          },
+        },
+      );
+
+      this.bus = bus;
+      await bus.start();
+
+      return bus;
+    } catch (error) {
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "the bus did not start. This context sends its own records.",
+        undefined,
+        error,
+      );
+
+      return null;
+    }
+  }
+
+  /**
+   * Reads the bus role. Without a bus, this context is the sender.
+   * @returns Active bus role.
+   */
+  private role(): BusRole {
+    return this.bus?.getRole() ?? "sender";
+  }
+
+  /** Loads the delivery stack for the sender role. Without an endpoint, it loads nothing. */
+  private async becomeSender(): Promise<void> {
+    if (!this.config.endpoint) {
+      return;
+    }
+
+    await this.loadSender();
+  }
+
+  /**
+   * Starts the load of the delivery stack one time.
+   * @returns Promise resolving when the load completes or fails.
+   */
+  private loadSender(): Promise<void> {
+    this.senderLoad ??= this.buildSender();
+    return this.senderLoad;
+  }
+
+  /** Imports and builds the delivery stack. It then moves the held records into it. It never rejects. */
+  private async buildSender(): Promise<void> {
+    this.storageBuiltAs = this.config.storage;
+
+    try {
+      const { Sender } = await import("./sender");
+      const sender = await Sender.create({
+        config: this.config,
+        diagnostics: this.diagnostics,
+        onGap: this.reportGap,
+      });
+
+      // Guard against a shutdown during the load. The stack must not outlive the runtime.
+      if (this.destroyed) {
+        await sender.destroy();
+        return;
+      }
+
+      this.sender = sender;
+    } catch (error) {
+      // Clear the load. A later configure() can then try again.
+      this.senderLoad = undefined;
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "the delivery stack did not load. Records are not sent.",
+        { held: this.pendingRecords.length },
+        error,
+      );
+    }
+
+    const held = this.pendingRecords;
+    this.pendingRecords = [];
+
+    for (const record of held) {
+      this.sender?.push(record);
+    }
+  }
+
+  /** Loads, builds and installs the enabled capture modules. It never rejects. */
+  private async installCaptures(): Promise<void> {
+    const generation = ++this.captureGeneration;
+    const settings = this.config.capture;
+    const names: CaptureName[] = [];
+
+    if (settings.errors || settings.rejections || settings.resourceErrors) {
+      names.push("errors");
+    }
+    if (settings.fetch || settings.xhr) {
+      names.push("network");
+    }
+    if (settings.interactions || settings.navigation) {
+      names.push("interactions");
+    }
+    if (settings.webVitals) {
+      names.push("webVitals");
+    }
+
+    const classes = await Promise.all(names.map((name) => this.loadCapture(name)));
+
+    // Guard against a later install or a shutdown during the load. A stale capture leaks its listeners.
+    if (generation !== this.captureGeneration || this.destroyed) {
+      return;
+    }
+
+    const ctx: CaptureContext = {
       config: this.config,
       diagnostics: this.diagnostics,
       breadcrumbs: this.breadcrumbs,
       tracing: this.tracing,
-      logger: new OneLogger(this, CAPTURE_NAMESPACE),
+      logger: new OneLogger(() => this, CAPTURE_NAMESPACE),
       once: this.captureOnce,
     };
-    const settings = this.config.capture;
 
-    if (settings.errors || settings.rejections || settings.resourceErrors) {
-      this.captures.push(new ErrorCapture(ctx));
-    }
-    if (settings.fetch || settings.xhr) {
-      this.captures.push(new NetworkCapture(ctx));
-    }
-    if (settings.interactions || settings.navigation) {
-      this.captures.push(new InteractionCapture(ctx));
-    }
-    if (settings.webVitals) {
-      this.captures.push(new WebVitalsCapture(ctx));
+    for (const CaptureModule of classes) {
+      if (CaptureModule) {
+        this.captures.push(new CaptureModule(ctx));
+      }
     }
 
     for (const capture of this.captures) {
@@ -368,7 +528,20 @@ export class ObservabilityRuntime {
       });
     }
     this.captures.length = 0;
-    this.installCaptures();
+    void this.installCaptures();
+  }
+
+  /**
+   * Imports one capture module. A failed import reports and skips that module only.
+   * @param name Capture module name.
+   * @returns Promise resolving to the class, or undefined if the import failed.
+   */
+  private loadCapture(name: CaptureName): Promise<CaptureClass | undefined> {
+    return this.diagnostics.guardAsync(
+      "capture.install_failed",
+      `loading the ${name} capture`,
+      CAPTURE_LOADERS[name],
+    );
   }
 
   /**
@@ -380,8 +553,14 @@ export class ObservabilityRuntime {
       return;
     }
 
-    this.diagnostics.guard("bus.send_failed", "registering a worker", () => {
-      this.bus.attachWorker(worker);
+    void this.ensureBus().then((bus) => {
+      if (!bus || this.destroyed) {
+        return;
+      }
+
+      this.diagnostics.guard("bus.send_failed", "registering a worker", () => {
+        bus.attachWorker(worker);
+      });
     });
   }
 
@@ -397,14 +576,14 @@ export class ObservabilityRuntime {
     }
     this.captures.length = 0;
 
-    this.exitFlush?.flush("shutdown");
-    this.exitFlush?.uninstall();
-    this.retry?.stop();
-    this.pipeline?.destroy();
+    // Sender.destroy runs its synchronous steps before its first await. The exit flush
+    // then runs before the journey and the bus stop, as before.
+    const closing = this.sender?.destroy();
     this.journey.destroy();
-    this.bus.destroy();
+    this.bus?.destroy();
     this.forwardBuffer = [];
-    await this.storage?.close();
+    this.pendingRecords = [];
+    await closing;
 
     if (ObservabilityRuntime.current() === this) {
       Reflect.deleteProperty(globalThis, RUNTIME_KEY);
@@ -439,12 +618,35 @@ export class ObservabilityRuntime {
    * @param record Log record to route.
    */
   private route(record: LogRecord): void {
-    if (this.bus.getRole() === "forwarder") {
+    if (this.role() === "forwarder") {
       this.forward(record);
       return;
     }
 
-    this.pipeline?.push(record);
+    this.deliver(record);
+  }
+
+  /**
+   * Hands a record to the delivery stack. Holds the record while the stack loads.
+   * Drops the record when nothing loads, for example in console-only mode.
+   * @param record Log record to deliver.
+   */
+  private deliver(record: LogRecord): void {
+    if (this.sender) {
+      this.sender.push(record);
+      return;
+    }
+
+    if (!this.senderLoad) {
+      return;
+    }
+
+    if (this.pendingRecords.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
+      this.pendingRecords.shift();
+      this.diagnostics.count("record.dropped_boot_buffer_full");
+    }
+
+    this.pendingRecords.push(record);
   }
 
   /**
@@ -463,7 +665,7 @@ export class ObservabilityRuntime {
       const records = this.forwardBuffer;
       this.forwardBuffer = [];
       if (records.length > 0) {
-        this.bus.sendRecords(records);
+        this.bus?.sendRecords(records);
       }
     });
   }
@@ -489,7 +691,7 @@ export class ObservabilityRuntime {
         this.diagnostics.count("record.dropped_by_sampling");
         continue;
       }
-      this.pipeline?.push(record);
+      this.deliver(record);
     }
   }
 
@@ -519,11 +721,14 @@ export class ObservabilityRuntime {
     }
     this.lastGapAt = now;
 
-    new OneLogger(this, STORAGE_NAMESPACE).warn("stored records were dropped before delivery", {
-      "gap.batches": result.batches,
-      "gap.records": result.records,
-      "gap.reason": result.reason,
-    });
+    new OneLogger(() => this, STORAGE_NAMESPACE).warn(
+      "stored records were dropped before delivery",
+      {
+        "gap.batches": result.batches,
+        "gap.records": result.records,
+        "gap.reason": result.reason,
+      },
+    );
   };
 
   /** Generates and persists a replacement tab ID when a collision is detected. */
@@ -536,9 +741,7 @@ export class ObservabilityRuntime {
     );
 
     (this.identity as { tabId: string }).tabId = fresh;
-    this.diagnostics.guard("storage.unavailable", "persisting the new tab id", () => {
-      sessionStorage.setItem(TAB_ID_KEY, fresh);
-    });
+    persistTabId(fresh, this.diagnostics, this.stores);
     this.builder.invalidateResource();
   }
 
@@ -547,13 +750,7 @@ export class ObservabilityRuntime {
    * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
    */
   async queueDepth(): Promise<number> {
-    const count = await this.diagnostics.guardAsync(
-      "storage.degraded",
-      "counting the batches waiting in storage",
-      () => this.storage?.count() ?? Promise.resolve(0),
-    );
-
-    return count ?? 0;
+    return (await this.sender?.queueDepth()) ?? 0;
   }
 
   /**
@@ -561,38 +758,15 @@ export class ObservabilityRuntime {
    * @returns Promise resolving when queued records are transmitted or handed off.
    */
   async flush(): Promise<void> {
-    if (this.bus.getRole() === "forwarder") {
+    if (this.role() === "forwarder") {
       const records = this.forwardBuffer;
       this.forwardBuffer = [];
       if (records.length > 0) {
-        this.bus.sendRecords(records);
+        this.bus?.sendRecords(records);
       }
       return;
     }
 
-    const batch = this.pipeline?.drainPending();
-    if (!batch || !this.transport) {
-      return;
-    }
-
-    try {
-      await this.transport.send(batch);
-    } catch (error) {
-      await this.diagnostics.guardAsync(
-        "storage.degraded",
-        "persisting the batch drained by flush()",
-        // The retry engine classifies the failure, so a 413 splits here as it does
-        // in the drain rather than parking an oversized batch.
-        async () => {
-          await this.retry?.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
-        },
-      );
-      this.diagnostics.report(
-        "transport.http_error",
-        "the batch drained by flush() was stored for retry instead of being delivered",
-        { batchId: batch.id, records: batch.records.length },
-        error,
-      );
-    }
+    await this.sender?.flush();
   }
 }

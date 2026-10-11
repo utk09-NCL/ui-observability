@@ -20,11 +20,14 @@ import {
   UNDEFAULTED_SECTION_KEYS,
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
-import type { ConsoleOption, ObservabilityConfig, ResolvedConfig } from "../models/config";
+import type {
+  ConsoleOption,
+  ObservabilityConfig,
+  ResolvedConfig,
+  SerializerChoice,
+} from "../models/config";
 import type { LogLevel } from "../models/log-record";
 import type { LogSerializer } from "../models/serializer";
-import { ecsSerializer } from "../transport/serializers/ecs";
-import { otlpSerializer } from "../transport/serializers/otlp";
 import type { Diagnostics } from "./diagnostics";
 
 /**
@@ -41,25 +44,22 @@ function isSerializer(value: unknown): value is LogSerializer {
 }
 
 /**
- * Resolves serializer selection to a valid LogSerializer instance.
+ * Validates the serializer option. A name stays a name. The transport selects the implementation.
  * @param requested Serializer name or custom serializer implementation.
- * @param previous Previously resolved serializer instance.
+ * @param previous Serializer option in force.
  * @param diagnostics Diagnostics reporter.
- * @returns Resolved LogSerializer instance.
+ * @returns Valid serializer option.
  */
 function resolveSerializer(
   requested: unknown,
-  previous: LogSerializer | undefined,
+  previous: SerializerChoice | undefined,
   diagnostics: Diagnostics,
-): LogSerializer {
+): SerializerChoice {
   if (requested === undefined) {
-    return previous ?? otlpSerializer;
+    return previous ?? SERIALIZER_NAME_OTLP;
   }
-  if (requested === SERIALIZER_NAME_OTLP) {
-    return otlpSerializer;
-  }
-  if (requested === SERIALIZER_NAME_ECS) {
-    return ecsSerializer;
+  if (requested === SERIALIZER_NAME_OTLP || requested === SERIALIZER_NAME_ECS) {
+    return requested;
   }
   if (isSerializer(requested)) {
     return requested;
@@ -69,7 +69,7 @@ function resolveSerializer(
     "config.invalid",
     `serializer must be "${SERIALIZER_NAME_OTLP}", "${SERIALIZER_NAME_ECS}" or an implementation`,
   );
-  return otlpSerializer;
+  return SERIALIZER_NAME_OTLP;
 }
 
 /**
@@ -111,6 +111,8 @@ export function resolveConfig(
   const merged: ResolvedConfig = {
     ...base,
     ...input,
+    // An unset environment variable gives undefined. Keep the current endpoint.
+    endpoint: input.endpoint === undefined ? base.endpoint : input.endpoint,
     // Serializer instance overrides string identifier after object merge.
     serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
     console: resolveConsole(input.console, base.console),
@@ -123,12 +125,13 @@ export function resolveConfig(
     capture: { ...base.capture, ...input.capture },
   };
 
-  if (!merged.endpoint) {
+  // null selects console-only mode, which is valid. Report only "".
+  if (merged.endpoint === "") {
     diagnostics.report(
       "config.invalid",
-      "endpoint is missing. Records will be built and dropped, never sent.",
+      "endpoint is missing. The library builds records and drops them. Set endpoint: null for console-only mode.",
     );
-  } else {
+  } else if (merged.endpoint !== null) {
     try {
       new URL(merged.endpoint);
     } catch (error) {

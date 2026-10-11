@@ -954,21 +954,45 @@ describe("WebVitalsCapture", () => {
     });
   });
 
-  it("goes through the default loader when none is injected", async () => {
+  it("reports config.invalid and imports nothing without a loader", async () => {
+    // The Vite dev server fails on a bare import of a peer that is not installed.
+    // web-vitals loads only through webVitalsLoader.
     const { ctx: c } = ctx({ webVitals: true });
     const guardAsync = vi.spyOn(c.diagnostics, "guardAsync");
 
     new WebVitalsCapture(c).install();
+    await Promise.resolve();
 
-    // Asserts the default path was taken. Whether the peer reports a vital in
-    // this environment is not what is under test, and is not deterministic.
+    expect(guardAsync).not.toHaveBeenCalled();
+    expect(c.diagnostics.snapshot()["config.invalid"]).toBe(1);
+  });
+
+  it("subscribes once a later configure supplies the loader", async () => {
+    let subscriptions = 0;
+    const subscribe = () => () => {
+      subscriptions++;
+    };
+    const { ctx: c } = ctx({ webVitals: true });
+
+    const first = new WebVitalsCapture(c);
+    first.install();
+    first.uninstall();
+
+    c.config.capture.webVitalsLoader = () =>
+      Promise.resolve({
+        onLCP: subscribe(),
+        onCLS: subscribe(),
+        onINP: subscribe(),
+        onFCP: subscribe(),
+        onTTFB: subscribe(),
+      });
+    const second = new WebVitalsCapture(c);
+    second.install();
+
     await vi.waitFor(() => {
-      expect(guardAsync).toHaveBeenCalledWith(
-        "capture.install_failed",
-        "loading web-vitals",
-        expect.any(Function),
-      );
+      expect(subscriptions).toBe(5);
     });
+    second.uninstall();
   });
 
   it("emits navigation timing, and skips a measurement that is not real", () => {

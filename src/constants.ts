@@ -642,6 +642,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   compression: "gzip",
   credentials: "omit",
   storage: "auto",
+  identity: "storage",
   sampling: { defaultRate: 1, rates: {}, alwaysSampleTypes: ["action"] },
   bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
   capture: {

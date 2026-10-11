@@ -3,6 +3,7 @@ import { type LogBatch, splitBatch } from "../src/models/batch";
 import type { LogRecord } from "../src/models/log-record";
 import { ecsSerializer } from "../src/transport/serializers/ecs";
 import { otlpSerializer } from "../src/transport/serializers/otlp";
+import { serializerFor } from "../src/transport/serializers/select";
 
 const record = (over: Partial<LogRecord> = {}): LogRecord => ({
   timeUnixNano: "1755543600123000000",
@@ -259,5 +260,18 @@ describe("splitBatch", () => {
   it("gives up on a single record, because splitting cannot help", () => {
     expect(splitBatch(batchOf(1))).toBeNull();
     expect(splitBatch(batchOf(0))).toBeNull();
+  });
+});
+
+describe("serializerFor", () => {
+  it("maps each name to the implementation that ships with it", () => {
+    expect(serializerFor("otlp")).toBe(otlpSerializer);
+    expect(serializerFor("ecs")).toBe(ecsSerializer);
+  });
+
+  it("returns a custom implementation unchanged", () => {
+    const mine = { name: "mine", serialize: () => ({ body: "", contentType: "text/plain" }) };
+
+    expect(serializerFor(mine)).toBe(mine);
   });
 });

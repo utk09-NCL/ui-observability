@@ -78,6 +78,35 @@ describe("resolveConfig", () => {
     expect(resolved.capture.ignoreUrls).toEqual([]);
   });
 
+  it("accepts endpoint: null as console-only mode, with no diagnostic", () => {
+    const { events, diagnostics } = collect();
+
+    const resolved = resolveConfig({ endpoint: null, serviceName: "checkout" }, diagnostics);
+
+    // Console-only mode is valid. There is no diagnostic and no URL to ignore.
+    expect(events).toEqual([]);
+    expect(resolved.endpoint).toBeNull();
+    expect(resolved.capture.ignoreUrls).toEqual([]);
+  });
+
+  it("defaults identity to storage, and accepts memory as a known key", () => {
+    const { events, diagnostics } = collect();
+
+    expect(resolveConfig(valid(), diagnostics).identity).toBe("storage");
+    expect(resolveConfig({ ...valid(), identity: "memory" }, diagnostics).identity).toBe("memory");
+    expect(events).toEqual([]);
+  });
+
+  it("keeps the endpoint in force when a reconfigure passes endpoint: undefined", () => {
+    const { diagnostics } = collect();
+    const first = resolveConfig(valid(), diagnostics);
+
+    // An unset environment variable gives undefined. The live endpoint must not change.
+    const second = resolveConfig({ endpoint: undefined }, diagnostics, first);
+
+    expect(second.endpoint).toBe(ENDPOINT);
+  });
+
   it("reports an endpoint that is not an absolute URL, and passes the parse error as the cause", () => {
     const { events, diagnostics } = collect();
 
@@ -346,16 +375,16 @@ describe("resolveConfig", () => {
     it("defaults to OTLP, which is what a collector expects", () => {
       const { diagnostics } = collect();
 
-      expect(resolveConfig(valid(), diagnostics).serializer.name).toBe("otlp");
+      expect(resolveConfig(valid(), diagnostics).serializer).toBe("otlp");
     });
 
-    it("resolves a name to the implementation that ships with it", () => {
+    it("keeps a known name, so config.ts imports no serializer", () => {
       const { events, diagnostics } = collect();
       const ecs = resolveConfig({ ...valid(), serializer: "ecs" }, diagnostics);
       const otlp = resolveConfig({ ...valid(), serializer: "otlp" }, diagnostics);
 
-      expect(ecs.serializer.name).toBe("ecs");
-      expect(otlp.serializer.name).toBe("otlp");
+      expect(ecs.serializer).toBe("ecs");
+      expect(otlp.serializer).toBe("otlp");
       expect(events).toEqual([]);
     });
 
@@ -370,16 +399,14 @@ describe("resolveConfig", () => {
       const { diagnostics } = collect();
       const live = resolveConfig({ ...valid(), serializer: "ecs" }, diagnostics);
 
-      expect(resolveConfig({ minLevel: "ERROR" }, diagnostics, live).serializer.name).toBe("ecs");
+      expect(resolveConfig({ minLevel: "ERROR" }, diagnostics, live).serializer).toBe("ecs");
     });
 
     it("reports a name it does not know and falls back, rather than sending nothing", () => {
       const { events, diagnostics } = collect();
       const named = "xml" as unknown as ObservabilityConfig["serializer"];
 
-      expect(resolveConfig({ ...valid(), serializer: named }, diagnostics).serializer.name).toBe(
-        "otlp",
-      );
+      expect(resolveConfig({ ...valid(), serializer: named }, diagnostics).serializer).toBe("otlp");
       expect(messages(events)[0]).toContain("serializer must be");
     });
 
@@ -391,8 +418,8 @@ describe("resolveConfig", () => {
       const fromNull = resolveConfig({ ...valid(), serializer: nothing }, diagnostics);
       const fromHalfBuilt = resolveConfig({ ...valid(), serializer: halfBuilt }, diagnostics);
 
-      expect(fromNull.serializer.name).toBe("otlp");
-      expect(fromHalfBuilt.serializer.name).toBe("otlp");
+      expect(fromNull.serializer).toBe("otlp");
+      expect(fromHalfBuilt.serializer).toBe("otlp");
       expect(events).toHaveLength(2);
     });
   });

@@ -17,7 +17,11 @@ export type { LogLevel, LogRecord, LogType, MetricType } from "./models/log-reco
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
 export type { StorageAdapter } from "./models/storage";
 
-/** Cached logger instances keyed by namespace. Scoped loggers are never cached. */
+/**
+ * Cached logger instances keyed by namespace. Scoped loggers are never cached.
+ * A logger finds the runtime on each write.
+ * The cache stays valid across configure() and shutdown().
+ */
 const loggers = new Map<string, OneLogger>();
 
 /**
@@ -40,8 +44,6 @@ function requireRuntime(): ObservabilityRuntime {
  */
 export function configure(config: Partial<ObservabilityConfig>): void {
   ObservabilityRuntime.configure(config);
-  // Clears cached loggers to rebind them to the updated runtime.
-  loggers.clear();
 }
 
 /**
@@ -53,13 +55,13 @@ export function configure(config: Partial<ObservabilityConfig>): void {
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
   // Caching a per-call scopedContext would hold it for the document lifetime.
   if (options) {
-    return new OneLogger(requireRuntime(), namespace, options);
+    return new OneLogger(requireRuntime, namespace, options);
   }
 
   let logger = loggers.get(namespace);
 
   if (!logger) {
-    logger = new OneLogger(requireRuntime(), namespace);
+    logger = new OneLogger(requireRuntime, namespace);
     loggers.set(namespace, logger);
   }
 
@@ -297,8 +299,5 @@ export function getDiagnosticCounters(): Record<string, number> {
  * @returns Promise resolving once shutdown completes.
  */
 export async function shutdown(): Promise<void> {
-  const runtime = ObservabilityRuntime.current();
-  // Clears cached logger references to release the terminated runtime.
-  loggers.clear();
-  await runtime?.destroy();
+  await ObservabilityRuntime.current()?.destroy();
 }

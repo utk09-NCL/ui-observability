@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
+import { ErrorCapture } from "../src/capture/errors";
 import { BUS_MAX_BOOT_BUFFER_RECORDS } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
+import { JourneyEngine } from "../src/core/journey";
 import { ObservabilityRuntime } from "../src/core/runtime";
+import { Sender } from "../src/core/sender";
 import type { LogRecord } from "../src/models/log-record";
 import { TransportError } from "../src/transport/errors";
 import {
@@ -52,6 +55,24 @@ function runtime(): ObservabilityRuntime {
   }
   return current;
 }
+
+/**
+ * The bus of the pinned runtime, which startup has loaded.
+ * @returns The bus.
+ */
+function bus(): Bus {
+  const loaded = runtime()["bus"];
+  if (!loaded) {
+    throw new Error("no bus loaded");
+  }
+  return loaded;
+}
+
+/** Lets queued microtasks and one timer turn run. */
+const settle = (): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 
 /** Waits for startup to finish. */
 async function ready(): Promise<void> {
@@ -125,6 +146,29 @@ describe("runtime lifecycle", () => {
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 
+  it('writes no identity or journey key with identity: "memory"', async () => {
+    configure({ ...base, identity: "memory" });
+    await ready();
+
+    info("hello");
+    startJourney("checkout");
+    runtime()["regenerateTabId"]();
+
+    expect(localStorage.getItem("ui-observability.session")).toBeNull();
+    expect(sessionStorage.getItem("ui-observability.tab")).toBeNull();
+    expect(sessionStorage.getItem("ui-observability.journey")).toBeNull();
+  });
+
+  it("refuses an identity change after startup", () => {
+    configure({ ...base, identity: "memory" });
+
+    configure({ identity: "storage" });
+
+    // The ids exist from startup. A later change cannot move them.
+    expect(runtime().config.identity).toBe("memory");
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
   it("takes a storage change made before the adapter is built", () => {
     configure({ ...base, storage: "memory" });
     configure({ storage: "localstorage" });
@@ -150,7 +194,39 @@ describe("runtime lifecycle", () => {
 
     configure({ capture: { fetch: true } });
 
-    expect(globalThis.fetch).not.toBe(stubbed);
+    await vi.waitFor(() => {
+      expect(globalThis.fetch).not.toBe(stubbed);
+    });
+  });
+
+  it("installs only the captures of the last configure() when two loads overlap", async () => {
+    const stubbed = globalThis.fetch;
+    configure(base);
+    await ready();
+
+    configure({ capture: { fetch: true } });
+    configure({ capture: { fetch: false } });
+    await settle();
+
+    // The first load is stale. It must not install a capture that the second configure removed.
+    expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual([
+      "errors",
+    ]);
+    expect(globalThis.fetch).toBe(stubbed);
+  });
+
+  it("reports a capture module that fails to load, and installs the others", async () => {
+    vi.doMock("../src/capture/network", () => {
+      throw new Error("chunk failed");
+    });
+    configure({ ...base, capture: { fetch: true } });
+    await ready();
+    vi.doUnmock("../src/capture/network");
+
+    expect(getDiagnosticCounters()["capture.install_failed"]).toBe(1);
+    expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual([
+      "errors",
+    ]);
   });
 
   it("builds a fresh runtime after the previous one was destroyed", async () => {
@@ -167,8 +243,17 @@ describe("runtime lifecycle", () => {
     configure({ ...base, bus: { mode: "forwarder" } });
     await ready();
 
-    expect(runtime()["pipeline"]).toBeUndefined();
+    expect(runtime()["sender"]).toBeUndefined();
     expect(runtime().diagnostics.snapshot()["bus.no_owner"]).toBe(1);
+  });
+
+  it("continues in a degraded state when the journey bootstrap rejects", async () => {
+    vi.spyOn(JourneyEngine.prototype, "bootstrap").mockRejectedValue(new Error("no journey"));
+    configure(base);
+
+    await ready();
+
+    expect(runtime().diagnostics.snapshot()["pipeline.crashed"]).toBe(1);
   });
 
   it("continues in a degraded state when startup throws", async () => {
@@ -189,7 +274,7 @@ describe("runtime lifecycle", () => {
     const journey = startJourney("order-lifecycle");
 
     await ready();
-    const batch = runtime()["pipeline"]?.drainPending();
+    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
 
     expect(batch?.records[0].body).toBe("during boot");
     expect(batch?.records[0].attributes["journey.id"]).toBe(journey.id);
@@ -227,6 +312,29 @@ describe("runtime lifecycle", () => {
     expect(getLogger("trading.blotter", options)).not.toBe(getLogger("trading.blotter", options));
   });
 
+  it("makes no runtime when getLogger runs before configure", () => {
+    // A module-level getLogger runs before the app calls configure. ES imports evaluate first.
+    getLogger("early");
+    getLogger("early.scoped", { scopedContext: { a: 1 } });
+
+    expect(ObservabilityRuntime.current()).toBeNull();
+  });
+
+  it("writes a logger taken before configure to the runtime that configure makes", async () => {
+    const early = getLogger("early");
+    // Lets a default runtime, if one exists, finish startup and build its storage.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    configure({ ...base, storage: "memory" });
+    const emit = vi.spyOn(runtime(), "emit");
+    early.info("hello");
+
+    // The app's own settings apply. No default runtime refuses the storage option.
+    expect(runtime().config.storage).toBe("memory");
+    expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
   it("configures implicitly when something logs before configure() was called", () => {
     expect(ObservabilityRuntime.current()).toBeNull();
 
@@ -242,7 +350,7 @@ describe("runtime lifecycle", () => {
     getLogger("test").info("a good local one");
     runtime()["ingestForwarded"]([{}, null, "nope", forwardedRecord("a good forwarded one")]);
 
-    const batch = runtime()["pipeline"]?.drainPending();
+    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
     expect(batch?.records.map((record) => record.body)).toEqual([
       "a good local one",
       "a good forwarded one",
@@ -256,7 +364,7 @@ describe("runtime lifecycle", () => {
 
     runtime()["ingestForwarded"]([forwardedRecord("from a frame")]);
 
-    expect(runtime()["pipeline"]?.drainPending()).toBeNull();
+    expect(runtime()["sender"]?.["pipeline"]?.drainPending()).toBeNull();
     expect(runtime().diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
   });
 
@@ -278,28 +386,32 @@ describe("runtime lifecycle", () => {
     record.timeUnixNano = `${String(Date.now() - 1000)}000000`;
     runtime()["ingestForwarded"]([record]);
 
-    const [stored] = runtime()["pipeline"]?.drainPending()?.records ?? [];
+    const [stored] = runtime()["sender"]?.["pipeline"]?.drainPending()?.records ?? [];
     expect(Number(stored.observedTimeUnixNano)).toBeGreaterThan(Number(stored.timeUnixNano));
   });
 
   it("accepts a direct message from a child, and ignores one after shutdown", async () => {
     configure(base);
     await ready();
-    const accept = vi.spyOn(runtime().bus, "acceptDirect");
+    const accept = vi.spyOn(bus(), "acceptDirect");
     const held = runtime();
 
     held.busAccept({ t: "journey?", from: "child" }, vi.fn());
+    await settle();
     expect(accept).toHaveBeenCalledTimes(1);
 
+    // A message queued before shutdown must not reach the destroyed bus.
+    held.busAccept({ t: "journey?", from: "child" }, vi.fn());
     await shutdown();
     held.busAccept({ t: "journey?", from: "child" }, vi.fn());
+    await settle();
     expect(accept).toHaveBeenCalledTimes(1);
   });
 
   it("attaches a worker, and ignores a registration after shutdown", async () => {
     configure(base);
     await ready();
-    const attach = vi.spyOn(runtime().bus, "attachWorker").mockImplementation(() => undefined);
+    const attach = vi.spyOn(bus(), "attachWorker").mockImplementation(() => undefined);
     const held = runtime();
     const worker: WorkerLike = {
       postMessage: vi.fn(),
@@ -308,10 +420,13 @@ describe("runtime lifecycle", () => {
     };
 
     registerWorker(worker);
+    await settle();
     expect(attach).toHaveBeenCalledWith(worker);
 
+    held.registerWorker(worker);
     await shutdown();
     held.registerWorker(worker);
+    await settle();
     expect(attach).toHaveBeenCalledTimes(1);
   });
 
@@ -332,6 +447,7 @@ describe("runtime lifecycle", () => {
     const applyRemote = vi.spyOn(runtime().journey, "applyRemote");
 
     runtime().busAccept({ t: "journey", from: "child", journey: null }, vi.fn());
+    await settle();
 
     expect(applyRemote).toHaveBeenCalledWith(null);
   });
@@ -348,8 +464,9 @@ describe("runtime lifecycle", () => {
       },
       vi.fn(),
     );
+    await settle();
 
-    const batch = runtime()["pipeline"]?.drainPending();
+    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
     expect(batch?.records.map((record) => record.body)).toEqual(["routed through bus"]);
   });
 
@@ -358,7 +475,7 @@ describe("runtime lifecycle", () => {
     await ready();
     const before = runtime().identity.tabId;
     const receive = (
-      runtime().bus as unknown as {
+      bus() as unknown as {
         receive: (
           message: { t: "tab"; from: string; tabId: string },
           source: { link: "broadcast"; origin: string },
@@ -456,7 +573,7 @@ describe("runtime lifecycle", () => {
     await ready();
     getLogger("test").info("still running");
 
-    const pipeline = runtime()["pipeline"];
+    const pipeline = runtime()["sender"]?.["pipeline"];
     if (!pipeline) {
       throw new Error("the sender built no pipeline");
     }
@@ -495,12 +612,155 @@ describe("runtime lifecycle", () => {
   });
 });
 
+describe("delivery stack loading", () => {
+  it("loads no delivery stack and sends nothing with endpoint: null", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    info("local only");
+    await flush();
+    dispatchEvent(new Event("pagehide"));
+
+    expect(runtime()["sender"]).toBeUndefined();
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    expect(vi.mocked(navigator.sendBeacon)).not.toHaveBeenCalled();
+  });
+
+  it("loads the delivery stack when a later configure sets an endpoint", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    info("during load");
+    await vi.waitFor(() => {
+      expect(runtime()["sender"]).toBeDefined();
+    });
+
+    // The runtime holds the record during the load. Then it gives the record to the stack.
+    const batch = runtime()["sender"]?.["pipeline"].drainPending();
+    expect(batch?.records.map((record) => record.body)).toEqual(["during load"]);
+  });
+
+  it("loads no delivery stack in a forwarder on a later configure", async () => {
+    configure({ ...base, bus: { mode: "forwarder" } });
+    await ready();
+
+    configure({ serviceName: "renamed" });
+    await Promise.resolve();
+
+    // A forwarder gives its records to another context. It must not send them itself.
+    expect(runtime()["sender"]).toBeUndefined();
+    expect(runtime()["senderLoad"]).toBeUndefined();
+  });
+
+  it("drops the oldest held record when the hold buffer is full", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    const log = getLogger("burst");
+    for (let i = 0; i <= BUS_MAX_BOOT_BUFFER_RECORDS; i++) {
+      log.info(`record ${String(i)}`);
+    }
+
+    expect(runtime()["pendingRecords"]).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
+    expect(getDiagnosticCounters()["record.dropped_boot_buffer_full"]).toBe(1);
+  });
+
+  it("reports a failed load, drops held records and retries on the next configure", async () => {
+    const create = vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    info("held, then lost");
+    await vi.waitFor(() => {
+      expect(getDiagnosticCounters()["pipeline.crashed"]).toBe(1);
+    });
+
+    expect(runtime()["sender"]).toBeUndefined();
+    expect(runtime()["pendingRecords"]).toHaveLength(0);
+
+    configure({ serviceName: "svc" });
+    await vi.waitFor(() => {
+      expect(runtime()["sender"]).toBeDefined();
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("installs no capture when shutdown runs during startup", async () => {
+    const install = vi.spyOn(ErrorCapture.prototype, "install");
+
+    configure(base);
+    await shutdown();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A capture on a destroyed runtime keeps its window listeners until the page closes.
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("destroys a delivery stack that completes its load after shutdown", async () => {
+    const destroy = vi.spyOn(Sender.prototype, "destroy");
+
+    configure(base);
+    await shutdown();
+
+    await vi.waitFor(() => {
+      expect(destroy).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("bus loading", () => {
+  it("loads no bus with bus.mode off", async () => {
+    configure({ ...base, bus: { mode: "off" } });
+    await ready();
+
+    startJourney("checkout");
+
+    expect(runtime()["bus"]).toBeNull();
+    expect(runtime()["busLoad"]).toBeUndefined();
+  });
+
+  it("loads the bus with bus.mode off when a same-origin child calls in", async () => {
+    // A child frame attaches to this runtime without a handshake. Its records must still arrive.
+    configure({ ...base, bus: { mode: "off" } });
+    await ready();
+
+    runtime().busAccept(
+      {
+        t: "records",
+        from: "child",
+        records: [forwardedRecord("from a child") as unknown as LogRecord],
+      },
+      vi.fn(),
+    );
+    await settle();
+
+    expect(runtime()["bus"]).not.toBeNull();
+    const batch = runtime()["sender"]?.["pipeline"].drainPending();
+    expect(batch?.records.map((record) => record.body)).toEqual(["from a child"]);
+  });
+
+  it("drops a child message when the bus did not start", async () => {
+    vi.spyOn(Bus.prototype, "start").mockRejectedValue(new Error("bus refused"));
+    const accept = vi.spyOn(Bus.prototype, "acceptDirect");
+    configure(base);
+    await ready();
+
+    runtime().busAccept({ t: "journey?", from: "child" }, vi.fn());
+    await settle();
+
+    expect(accept).not.toHaveBeenCalled();
+  });
+});
+
 describe("runtime routing as a forwarder", () => {
   it("sends one message per task rather than one per record", async () => {
     configure(base);
     await ready();
-    vi.spyOn(runtime().bus, "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(runtime().bus, "sendRecords").mockImplementation(() => undefined);
+    vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
 
     const log = getLogger("test");
     log.info("one");
@@ -516,8 +776,8 @@ describe("runtime routing as a forwarder", () => {
   it("hands the buffer over on flush without waiting for the microtask", async () => {
     configure(base);
     await ready();
-    vi.spyOn(runtime().bus, "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(runtime().bus, "sendRecords").mockImplementation(() => undefined);
+    vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
 
     getLogger("test").info("buffered");
     await flush();
@@ -528,8 +788,8 @@ describe("runtime routing as a forwarder", () => {
   it("flushes nothing when a forwarder has nothing buffered", async () => {
     configure(base);
     await ready();
-    vi.spyOn(runtime().bus, "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(runtime().bus, "sendRecords").mockImplementation(() => undefined);
+    vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
 
     await flush();
 
@@ -551,8 +811,8 @@ describe("runtime flush as a sender", () => {
   it("stores the batch and nudges retry when the send fails", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["transport"];
-    const storage = runtime()["storage"];
+    const transport = runtime()["sender"]?.["transport"];
+    const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
     }
@@ -569,8 +829,8 @@ describe("runtime flush as a sender", () => {
   it("reports a full store rather than rejecting the caller", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["transport"];
-    const storage = runtime()["storage"];
+    const transport = runtime()["sender"]?.["transport"];
+    const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
     }
@@ -586,8 +846,8 @@ describe("runtime flush as a sender", () => {
   it("splits the batch the server refused as too large", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["transport"];
-    const storage = runtime()["storage"];
+    const transport = runtime()["sender"]?.["transport"];
+    const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
     }
@@ -620,7 +880,7 @@ describe("queue depth", () => {
   it("counts the batches waiting in storage", async () => {
     configure(base);
     await ready();
-    const storage = runtime()["storage"];
+    const storage = runtime()["sender"]?.["storage"];
     if (!storage) {
       throw new Error("sender was not built");
     }
@@ -639,7 +899,7 @@ describe("queue depth", () => {
   it("reports a broken store as 0 rather than rejecting the caller", async () => {
     configure(base);
     await ready();
-    const storage = runtime()["storage"];
+    const storage = runtime()["sender"]?.["storage"];
     if (!storage) {
       throw new Error("sender was not built");
     }
@@ -651,6 +911,55 @@ describe("queue depth", () => {
 });
 
 describe("OneLogger", () => {
+  it("mirrors a record below minLevel to the console and does not send it", () => {
+    // minLevel limits what the library sends. The console level limits what it prints.
+    configure({ ...base, minLevel: "INFO", console: "DEBUG" });
+    const emit = vi.spyOn(runtime(), "emit");
+    const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    getLogger("board.hop").debug("moved", { from: 1 });
+
+    expect(spy).toHaveBeenCalledWith("%c[board.hop]%c DEBUG", "color:#888", "", "moved", {
+      from: 1,
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("prints nothing to the console when enabled is false", () => {
+    configure({ ...base, enabled: false, console: "DEBUG" });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("app").info("hello");
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("prints the error and the payload of an error call", () => {
+    configure({ ...base, console: "DEBUG" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = new Error("boom");
+
+    getLogger("app").error("failed", failure, { orderId: "ORD-1" });
+
+    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+      orderId: "ORD-1",
+    });
+  });
+
+  it("prints an error below minLevel to the console with its error and payload", () => {
+    configure({ ...base, minLevel: "FATAL", console: "DEBUG" });
+    const emit = vi.spyOn(runtime(), "emit");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = new Error("boom");
+
+    getLogger("app").error("failed", failure, { orderId: "ORD-1" });
+
+    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+      orderId: "ORD-1",
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("namespaces a child and merges its scoped context onto the parent's", () => {
     configure(base);
     const emit = vi.spyOn(runtime(), "emit");
@@ -967,14 +1276,26 @@ describe("public API", () => {
     expect(getDiagnosticCounters()["config.reconfigured"]).toBe(1);
   });
 
-  it("clears cached loggers on shutdown, so none holds the dead runtime", async () => {
+  it("writes a captured error through the capture logger to its own runtime", async () => {
     configure(base);
-    const first = getLogger("trading");
+    await ready();
+    const emit = vi.spyOn(runtime(), "emit");
+
+    dispatchEvent(new ErrorEvent("error", { error: new Error("boom"), message: "boom" }));
+
+    expect(emit.mock.calls[0][0]?.attributes["app.namespace"]).toBe("uiobs.capture");
+  });
+
+  it("binds a logger held across shutdown to the next runtime", async () => {
+    configure(base);
+    const held = getLogger("trading");
 
     await shutdown();
     configure(base);
+    const emit = vi.spyOn(runtime(), "emit");
+    held.info("after restart");
 
-    expect(getLogger("trading")).not.toBe(first);
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 
   it("shuts down cleanly when nothing was ever configured", async () => {

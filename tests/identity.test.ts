@@ -1,7 +1,7 @@
 // tests/identity.test.ts
 import { describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import { newId, resolveIdentity, SessionTouch } from "../src/utils/identity";
+import { memoryStores, newId, resolveIdentity, SessionTouch } from "../src/utils/identity";
 
 const SESSION_KEY = "ui-observability.session";
 const TAB_KEY = "ui-observability.tab";
@@ -221,5 +221,35 @@ describe("SessionTouch", () => {
 
     expect(setItem).toHaveBeenCalledTimes(2);
     expect(localStorage.getItem(SESSION_KEY)).toContain("s-2");
+  });
+});
+
+describe("memory identity stores", () => {
+  it("mints a session and a tab, and writes no key to browser storage", () => {
+    const { diagnostics } = collect();
+
+    const identity = resolveIdentity(diagnostics, memoryStores());
+
+    expect(identity.sessionId).not.toBe("");
+    expect(identity.tabId).not.toBe("");
+    expect(localStorage.getItem(SESSION_KEY)).toBeNull();
+    expect(sessionStorage.getItem(TAB_KEY)).toBeNull();
+  });
+
+  it("does not read the ids that browser storage holds", () => {
+    const { diagnostics } = collect();
+    sessionStorage.setItem(TAB_KEY, "stored-tab");
+
+    const identity = resolveIdentity(diagnostics, memoryStores());
+
+    expect(identity.tabId).not.toBe("stored-tab");
+  });
+
+  it("does not write the session to browser storage on a touch", () => {
+    const { diagnostics } = collect();
+
+    new SessionTouch(diagnostics, memoryStores()).touch("s-1");
+
+    expect(localStorage.getItem(SESSION_KEY)).toBeNull();
   });
 });

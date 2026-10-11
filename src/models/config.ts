@@ -14,6 +14,9 @@ import type { LogSerializer } from "./serializer";
 /** Backing store for undelivered records. "auto" picks the best one the host supports. */
 export type StorageStrategy = "auto" | "indexeddb" | "localstorage" | "memory" | "none";
 
+/** Selects where the library keeps session, tab and journey ids. "storage" uses browser storage. "memory" writes nothing. */
+export type IdentityStrategy = "storage" | "memory";
+
 /** What this context does with its records: `sender` delivers its own, `forwarder` hands them to another context, `auto` decides, `off` does neither. */
 export type BusMode = "auto" | "sender" | "forwarder" | "off";
 
@@ -198,7 +201,7 @@ export interface CaptureOptions {
    */
   navigation: boolean;
   /**
-   * Report web vitals as metrics. Requires the `web-vitals` peer or `webVitalsLoader`.
+   * Report web vitals as metrics. Requires `webVitalsLoader`.
    * @default false
    */
   webVitals: boolean;
@@ -225,13 +228,20 @@ export interface CaptureOptions {
   webVitalsLoader?: () => Promise<WebVitalsModule>;
 }
 
+/** Serializer option after resolution. A name stays a name. The transport selects the implementation. */
+export type SerializerChoice = "otlp" | "ecs" | LogSerializer;
+
 /** Console mirroring. `false` is off, `true` mirrors from DEBUG, a level mirrors from that level up. */
 export type ConsoleOption = boolean | LogLevel;
 
-/** Options passed to `configure()`. Only `endpoint` is required. */
+/** Options passed to `configure()`. */
 export interface ObservabilityConfig {
-  /** Ingest endpoint URL. Required. */
-  endpoint: string;
+  /**
+   * Ingest endpoint URL. Set `null` for console-only mode.
+   * In console-only mode, the library sends nothing. It writes records to the console if `console` is set.
+   * If the key is missing or `""`, the library reports `config.invalid`.
+   */
+  endpoint?: string | null;
 
   /**
    * Reported as `service.name`.
@@ -269,7 +279,7 @@ export interface ObservabilityConfig {
    * Wire format: a name, or a custom implementation.
    * @default "otlp"
    */
-  serializer?: "otlp" | "ecs" | LogSerializer;
+  serializer?: SerializerChoice;
   /**
    * Passed to `fetch`. Set "include" for an ingest endpoint that authenticates with cookies.
    * @default "omit"
@@ -284,6 +294,14 @@ export interface ObservabilityConfig {
    * @default "auto"
    */
   storage?: StorageStrategy;
+  /**
+   * Selects where the library keeps session, tab and journey ids.
+   * Set "memory" to write no key to localStorage or sessionStorage.
+   * With "memory", each page load starts a new session.
+   * You cannot change this value after startup.
+   * @default "storage"
+   */
+  identity?: IdentityStrategy;
   /**
    * Sampling policy.
    * @see {@link SamplingOptions}
@@ -306,8 +324,8 @@ export interface ObservabilityConfig {
   console?: ConsoleOption;
 
   /**
-   * Supplies the `@opentelemetry/api` module. Omit it and the library imports
-   * the package itself when it is installed.
+   * Loads the `@opentelemetry/api` module. Example: `() => import("@opentelemetry/api")`.
+   * If you do not set it, OTel is off.
    * @see {@link OtelLoader}
    */
   otelLoader?: OtelLoader;
@@ -328,8 +346,8 @@ export interface ObservabilityConfig {
 
 /** Fully resolved config, held by the runtime. */
 export interface ResolvedConfig {
-  /** Ingest endpoint URL. */
-  endpoint: string;
+  /** Ingest endpoint URL, or null in console-only mode. */
+  endpoint: string | null;
   /** Reported as `service.name`. */
   serviceName: string;
   /** Reported as `service.version`. */
@@ -346,6 +364,8 @@ export interface ResolvedConfig {
   credentials: RequestCredentials;
   /** Backing store for undelivered records. */
   storage: StorageStrategy;
+  /** Store for session, tab and journey ids. */
+  identity: IdentityStrategy;
   /**
    * Sampling policy.
    * @see {@link SamplingOptions}
@@ -363,8 +383,8 @@ export interface ResolvedConfig {
   capture: CaptureOptions;
   /** Min level mirrored to the console, or null when mirroring is off. */
   console: LogLevel | null;
-  /** Wire format implementation, resolved from a name or passed directly. */
-  serializer: LogSerializer;
+  /** Wire format name, or a custom implementation. */
+  serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */
   headers?: ObservabilityConfig["headers"];
   /** Supplies the `@opentelemetry/api` module in place of importing it. */

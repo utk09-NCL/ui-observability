@@ -56,15 +56,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Namespaced logger instance for recording structured events, metrics, and errors. */
 export class OneLogger {
   /**
-   * @param runtime Underlying observability runtime instance.
+   * @param bind Returns the runtime for each write.
+   * A logger that exists before configure() writes to the configured runtime.
    * @param namespace Application subsystem or module namespace.
    * @param options Scoped context options.
    */
   constructor(
-    private readonly runtime: ObservabilityRuntime,
+    private readonly bind: () => ObservabilityRuntime,
     readonly namespace: string,
     private readonly options: OneLoggerOptions = {},
   ) {}
+
+  /** Runtime that this write goes to. */
+  private get runtime(): ObservabilityRuntime {
+    return this.bind();
+  }
 
   /**
    * Creates a child logger with a nested namespace and merged scoped context.
@@ -73,7 +79,7 @@ export class OneLogger {
    * @returns Nested child OneLogger instance.
    */
   child(namespace: string, options: OneLoggerOptions = {}): OneLogger {
-    return new OneLogger(this.runtime, `${this.namespace}.${namespace}`, {
+    return new OneLogger(this.bind, `${this.namespace}.${namespace}`, {
       scopedContext: {
         ...this.options.scopedContext,
         ...options.scopedContext,
@@ -217,7 +223,12 @@ export class OneLogger {
     body: string,
     payload?: Record<string, unknown>,
   ): void {
+    // minLevel limits what the library sends. The console level limits what it prints.
     if (!this.runtime.builder.isEnabled(level)) {
+      if (this.mirrors(level)) {
+        this.runtime.console.write(this.namespace, level, body, payload);
+      }
+
       return;
     }
 
@@ -241,8 +252,7 @@ export class OneLogger {
       });
     }
 
-    // Passes sanitized attributes to console to prevent object retention leaks.
-    this.runtime.console.write(level, body, record?.attributes);
+    this.runtime.console.write(this.namespace, level, body, payload);
     this.runtime.emit(record);
   }
 
@@ -259,7 +269,9 @@ export class OneLogger {
     error: unknown,
     payload?: Record<string, unknown>,
   ): void {
-    if (!this.runtime.builder.isEnabled(level)) {
+    const ships = this.runtime.builder.isEnabled(level);
+
+    if (!ships && !this.mirrors(level)) {
       return;
     }
 
@@ -270,6 +282,11 @@ export class OneLogger {
     const attributes = asPayload ? error : payload;
     const asError =
       asPayload || error === undefined ? undefined : toError(error, this.runtime.diagnostics);
+
+    if (!ships) {
+      this.runtime.console.write(this.namespace, level, message, attributes, asError);
+      return;
+    }
 
     const { record } = this.runtime.builder.build({
       level,
@@ -290,7 +307,16 @@ export class OneLogger {
       },
     });
 
-    this.runtime.console.write(level, message, asError ?? record?.attributes);
+    this.runtime.console.write(this.namespace, level, message, attributes, asError);
     this.runtime.emit(record);
+  }
+
+  /**
+   * Tests whether the console prints a level that the library does not send.
+   * @param level Severity level.
+   * @returns True if logging is on and the console accepts the level.
+   */
+  private mirrors(level: LogLevel): boolean {
+    return this.runtime.config.enabled && this.runtime.console.accepts(level);
   }
 }

@@ -5,16 +5,6 @@
 import type { WebVitalsMetric, WebVitalsModule, WebVitalsReporter } from "../models/config";
 import type { Capture, CaptureContext } from "./types";
 
-/**
- * Dynamically loads the optional web-vitals peer dependency.
- * Dynamic specifier prevents bundlers from failing statically when peer is uninstalled.
- * @returns Promise resolving to the web-vitals module.
- */
-function defaultLoader(): Promise<WebVitalsModule> {
-  const specifier = "web-vitals";
-  return import(/* @vite-ignore */ specifier) as Promise<WebVitalsModule>;
-}
-
 /** Captures browser navigation timing benchmarks and Core Web Vitals. */
 export class WebVitalsCapture implements Capture {
   /** Capture module identifier. */
@@ -37,14 +27,26 @@ export class WebVitalsCapture implements Capture {
 
     this.reportNavigationTiming();
 
-    // Set before the load, not after. Two configure() calls in one turn otherwise
-    // both pass this check and subscribe two times.
     if (this.ctx.once.webVitals) {
       return;
     }
+
+    // Do not import the peer by name. The Vite dev server fails if the peer is not installed.
+    // Do not set once here. A later configure() call with a loader must subscribe.
+    const loader = this.ctx.config.capture.webVitalsLoader;
+    if (!loader) {
+      this.ctx.diagnostics.report(
+        "config.invalid",
+        "capture.webVitals needs capture.webVitalsLoader. LCP, CLS and INP are off. Navigation timing continues.",
+      );
+      return;
+    }
+
+    // Set before the load, not after. Two configure() calls in one turn otherwise
+    // both pass this check and subscribe two times.
     this.ctx.once.webVitals = true;
 
-    void this.loadWebVitals();
+    void this.loadWebVitals(loader);
   }
 
   /**
@@ -55,9 +57,11 @@ export class WebVitalsCapture implements Capture {
     this.installed = false;
   }
 
-  /** Loads the web-vitals module and registers metric reporters. */
-  private async loadWebVitals(): Promise<void> {
-    const loader = this.ctx.config.capture.webVitalsLoader ?? defaultLoader;
+  /**
+   * Loads the web-vitals module and registers metric reporters.
+   * @param loader Loader that the consumer supplies.
+   */
+  private async loadWebVitals(loader: () => Promise<WebVitalsModule>): Promise<void> {
     const module = await this.ctx.diagnostics.guardAsync(
       "capture.install_failed",
       "loading web-vitals",

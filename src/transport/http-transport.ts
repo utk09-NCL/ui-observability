@@ -30,6 +30,7 @@ import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
+import { serializerFor } from "./serializers/select";
 
 /** HTTP transport delivering serialized log batches with header resolution, gzip compression, and error classification. */
 export class HttpTransport {
@@ -51,11 +52,13 @@ export class HttpTransport {
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch): Promise<void> {
-    if (!this.config.endpoint || batch.records.length === 0) {
+    const { endpoint } = this.config;
+
+    if (!endpoint || batch.records.length === 0) {
       return;
     }
 
-    await this.post(batch);
+    await this.post(batch, endpoint);
   }
 
   /**
@@ -69,13 +72,14 @@ export class HttpTransport {
   /**
    * Serializes, encodes, and dispatches a batch, throwing a classified TransportError on failure.
    * @param batch Batch to deliver.
+   * @param endpoint Ingest URL. The caller reads it one time. A reconfigure during the send cannot change it.
    */
-  private async post(batch: LogBatch): Promise<void> {
+  private async post(batch: LogBatch, endpoint: string): Promise<void> {
     const { config } = this;
 
     let serialized: SerializedBatch;
     try {
-      serialized = config.serializer.serialize(batch.records);
+      serialized = serializerFor(config.serializer).serialize(batch.records);
     } catch (error) {
       this.diagnostics.report(
         "transport.serialize_failed",
@@ -97,7 +101,7 @@ export class HttpTransport {
       headers.set(HEADER_CONTENT_ENCODING, ENCODING_GZIP);
     }
 
-    const response = await this.dispatch(headers, body);
+    const response = await this.dispatch(endpoint, headers, body);
     if (response.ok) {
       this.throttledUntil = 0;
       return;
@@ -128,12 +132,14 @@ export class HttpTransport {
 
   /**
    * Executes the HTTP POST request with timeout and network error mapping.
+   * @param endpoint Ingest URL.
    * @param headers HTTP request headers.
    * @param body Request body string or byte array.
    * @returns Promise resolving to the HTTP Response.
    * @throws TransportError on network failure, timeout, or offline status.
    */
   private async dispatch(
+    endpoint: string,
     headers: Headers,
     body: string | Uint8Array<ArrayBuffer>,
   ): Promise<Response> {
@@ -145,7 +151,7 @@ export class HttpTransport {
     unrefTimer(timer);
 
     try {
-      return await fetch(config.endpoint, {
+      return await fetch(endpoint, {
         method: "POST",
         headers,
         body,

@@ -24,6 +24,62 @@ export interface Identity {
   contextId: string;
 }
 
+/** The three Storage methods that identity and journey code use. */
+export interface KeyValueStore {
+  /**
+   * Reads one value.
+   * @param key Storage key.
+   * @returns Stored value, or null.
+   */
+  getItem(key: string): string | null;
+  /**
+   * Writes one value.
+   * @param key Storage key.
+   * @param value Value to write.
+   */
+  setItem(key: string, value: string): void;
+  /**
+   * Removes one value.
+   * @param key Storage key.
+   */
+  removeItem(key: string): void;
+}
+
+/** Stores for identity and journey keys. A getter can throw in a sandboxed frame. */
+export interface IdentityStores {
+  /** Store that lasts across tabs and reloads. */
+  local(): KeyValueStore;
+  /** Store that lasts for one tab. */
+  session(): KeyValueStore;
+}
+
+/** Stores that write to the browser. The `identity: "storage"` option uses them. */
+export const BROWSER_STORES: IdentityStores = {
+  local: () => localStorage,
+  session: () => sessionStorage,
+};
+
+/**
+ * Creates stores that keep values in memory only. The `identity: "memory"` option uses them.
+ * @returns Stores that write nothing to the browser.
+ */
+export function memoryStores(): IdentityStores {
+  const wrap = (map: Map<string, string>): KeyValueStore => ({
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => {
+      map.set(key, value);
+    },
+    removeItem: (key) => {
+      map.delete(key);
+    },
+  });
+
+  const localStore = wrap(new Map());
+  const sessionStore = wrap(new Map());
+
+  return { local: () => localStore, session: () => sessionStore };
+}
+
 /**
  * Generates a random lowercase hexadecimal string of the specified byte length.
  * Uses crypto.getRandomValues when available, falling back to Math.random.
@@ -59,55 +115,61 @@ export function newId(): string {
 }
 
 /**
- * Reads a value from localStorage or sessionStorage with storage error guarding.
+ * Reads a value from the local or session store. Reports a storage error to diagnostics.
+ * @param stores Identity stores.
  * @param store Storage target ("local" or "session").
  * @param key Storage key.
  * @param diagnostics Diagnostics reporter.
  * @returns Stored string value or null if unreadable or absent.
  */
 function safeRead(
+  stores: IdentityStores,
   store: "local" | "session",
   key: string,
   diagnostics: Diagnostics,
 ): string | null {
   return (
-    diagnostics.guard("storage.unavailable", `reading ${store}Storage`, () => {
-      const s = store === "local" ? localStorage : sessionStorage;
-      return s.getItem(key);
-    }) ?? null
+    diagnostics.guard("storage.unavailable", `reading ${store}Storage`, () =>
+      stores[store]().getItem(key),
+    ) ?? null
   );
 }
 
 /**
- * Writes a key-value pair to localStorage or sessionStorage with storage error guarding.
+ * Writes a key-value pair to the local or session store. Reports a storage error to diagnostics.
+ * @param stores Identity stores.
  * @param store Storage target ("local" or "session").
  * @param key Storage key.
  * @param value String value to store.
  * @param diagnostics Diagnostics reporter.
  */
 function safeWrite(
+  stores: IdentityStores,
   store: "local" | "session",
   key: string,
   value: string,
   diagnostics: Diagnostics,
 ): void {
   diagnostics.guard("storage.unavailable", `writing ${store}Storage`, () => {
-    const s = store === "local" ? localStorage : sessionStorage;
-    s.setItem(key, value);
+    stores[store]().setItem(key, value);
   });
 }
 
 /**
  * Resolves or initializes session, tab, and context identifiers for the active realm.
  * @param diagnostics Diagnostics reporter.
+ * @param stores Identity stores.
  * @returns Populated Identity object.
  */
-export function resolveIdentity(diagnostics: Diagnostics): Identity {
+export function resolveIdentity(
+  diagnostics: Diagnostics,
+  stores: IdentityStores = BROWSER_STORES,
+): Identity {
   const contextId = newId();
   const now = Date.now();
 
   let sessionId = newId();
-  const rawSession = safeRead("local", SESSION_ID_KEY, diagnostics);
+  const rawSession = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
   if (rawSession) {
     try {
       const parsed = JSON.parse(rawSession) as {
@@ -122,15 +184,29 @@ export function resolveIdentity(diagnostics: Diagnostics): Identity {
     }
   }
   const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
-  safeWrite("local", SESSION_ID_KEY, session, diagnostics);
+  safeWrite(stores, "local", SESSION_ID_KEY, session, diagnostics);
 
-  let tabId = safeRead("session", TAB_ID_KEY, diagnostics) ?? "";
+  let tabId = safeRead(stores, "session", TAB_ID_KEY, diagnostics) ?? "";
   if (!tabId) {
     tabId = newId();
-    safeWrite("session", TAB_ID_KEY, tabId, diagnostics);
+    safeWrite(stores, "session", TAB_ID_KEY, tabId, diagnostics);
   }
 
   return { sessionId, tabId, contextId };
+}
+
+/**
+ * Writes a new tab id to the session store.
+ * @param tabId New tab identifier.
+ * @param diagnostics Diagnostics reporter.
+ * @param stores Identity stores.
+ */
+export function persistTabId(
+  tabId: string,
+  diagnostics: Diagnostics,
+  stores: IdentityStores,
+): void {
+  safeWrite(stores, "session", TAB_ID_KEY, tabId, diagnostics);
 }
 
 /**
@@ -144,11 +220,15 @@ export class SessionTouch {
 
   /**
    * @param diagnostics Diagnostics reporter.
+   * @param stores Identity stores.
    */
-  constructor(private diagnostics: Diagnostics) {}
+  constructor(
+    private diagnostics: Diagnostics,
+    private readonly stores: IdentityStores = BROWSER_STORES,
+  ) {}
 
   /**
-   * Updates the session activity timestamp in localStorage, at most once per window.
+   * Writes the session activity time to the local store. It writes one time in each throttle window.
    * @param sessionId Active session identifier.
    */
   touch(sessionId: string): void {
@@ -160,6 +240,6 @@ export class SessionTouch {
 
     this.lastTouchAt = now;
     const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
-    safeWrite("local", SESSION_ID_KEY, session, this.diagnostics);
+    safeWrite(this.stores, "local", SESSION_ID_KEY, session, this.diagnostics);
   }
 }

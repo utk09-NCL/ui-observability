@@ -153,7 +153,7 @@ describe("ConsoleSink", () => {
   it("prints nothing at all when disabled", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    sinkOf(null).sink.write("INFO", "hello");
+    sinkOf(null).sink.write("app", "INFO", "hello");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -161,7 +161,7 @@ describe("ConsoleSink", () => {
   it("respects its own level independently of the pipeline level", () => {
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
-    sinkOf("WARN").sink.write("DEBUG", "quiet");
+    sinkOf("WARN").sink.write("app", "DEBUG", "quiet");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -169,19 +169,44 @@ describe("ConsoleSink", () => {
   it("prints a message with no payload", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    sinkOf("TRACE").sink.write("INFO", "hello");
+    sinkOf("TRACE").sink.write("board.hop", "INFO", "hello");
 
-    expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c INFO", "color:#888", "", "hello");
+    // The namespace tells apart the logs of each part of the app.
+    expect(spy).toHaveBeenCalledWith("%c[board.hop]%c INFO", "color:#888", "", "hello");
   });
 
   it("appends the payload when there is one", () => {
     const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    sinkOf("TRACE").sink.write("WARN", "careful", { orderId: "ORD-1" });
+    sinkOf("TRACE").sink.write("app", "WARN", "careful", { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[ui-observability]%c WARN", "color:#888", "", "careful", {
+    expect(spy).toHaveBeenCalledWith("%c[app]%c WARN", "color:#888", "", "careful", {
       orderId: "ORD-1",
     });
+  });
+
+  it("prints the error and then the payload", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = new Error("boom");
+
+    sinkOf("TRACE").sink.write("app", "ERROR", "failed", { orderId: "ORD-1" }, failure);
+
+    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+      orderId: "ORD-1",
+    });
+  });
+
+  it("prints a sanitized copy of the payload, not the caller's object", () => {
+    // Devtools keeps a reference to each logged object. A copy releases the caller's object.
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const payload: Record<string, unknown> = { orderId: "ORD-1" };
+    payload.self = payload;
+
+    sinkOf("TRACE").sink.write("app", "INFO", "hello", payload);
+
+    const printed = spy.mock.calls[0][4] as Record<string, unknown>;
+    expect(printed).not.toBe(payload);
+    expect(printed.orderId).toBe("ORD-1");
   });
 
   it("routes each level to its console method", () => {
@@ -189,8 +214,8 @@ describe("ConsoleSink", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { sink } = sinkOf("TRACE");
 
-    sink.write("TRACE", "t");
-    sink.write("FATAL", "f");
+    sink.write("app", "TRACE", "t");
+    sink.write("app", "FATAL", "f");
 
     expect(debug).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledTimes(1);
@@ -200,9 +225,9 @@ describe("ConsoleSink", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const { sink } = sinkOf(null);
 
-    sink.write("INFO", "before");
+    sink.write("app", "INFO", "before");
     sink.update("INFO");
-    sink.write("INFO", "after");
+    sink.write("app", "INFO", "after");
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][3]).toBe("after");
@@ -212,7 +237,7 @@ describe("ConsoleSink", () => {
     vi.stubGlobal("console", undefined);
 
     expect(() => {
-      sinkOf("TRACE").sink.write("INFO", "nowhere");
+      sinkOf("TRACE").sink.write("app", "INFO", "nowhere");
     }).not.toThrow();
   });
 
@@ -224,7 +249,7 @@ describe("ConsoleSink", () => {
     const { sink, events } = sinkOf("TRACE");
 
     expect(() => {
-      sink.write("INFO", "hello");
+      sink.write("app", "INFO", "hello");
     }).not.toThrow();
     expect(events[0].code).toBe("handler.threw");
     expect(events[0].message).toContain("console.info");

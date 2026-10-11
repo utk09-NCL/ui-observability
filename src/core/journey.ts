@@ -21,7 +21,7 @@ import {
   OPENFIN_OPTIONS_TIMEOUT_MS,
 } from "../constants";
 import { withDeadline } from "../utils/deadline";
-import { newId } from "../utils/identity";
+import { BROWSER_STORES, type IdentityStores, newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
@@ -174,12 +174,14 @@ export class JourneyEngine {
    * @param diagnostics Diagnostics reporter.
    * @param contextId Unique context identifier for this document.
    * @param onLocalChange Callback invoked when journey state changes locally.
+   * @param stores Identity stores that hold the journey.
    */
   constructor(
     private readonly options: JourneyOptions,
     private readonly diagnostics: Diagnostics,
     private readonly contextId: string,
     private readonly onLocalChange: (journey: Journey | null) => void,
+    private readonly stores: IdentityStores = BROWSER_STORES,
   ) {}
 
   /** Returns the active journey instance or null. */
@@ -200,7 +202,7 @@ export class JourneyEngine {
     const fromStorage = this.diagnostics.guard(
       "storage.unavailable",
       "reading the persisted journey",
-      () => sessionStorage.getItem(JOURNEY_STORAGE_KEY),
+      () => this.stores.session().getItem(JOURNEY_STORAGE_KEY),
     );
     if (fromStorage && this.restore(fromStorage)) {
       return;
@@ -393,9 +395,9 @@ export class JourneyEngine {
 
     this.diagnostics.guard("storage.unavailable", "persisting the journey", () => {
       if (journey !== null) {
-        sessionStorage.setItem(JOURNEY_STORAGE_KEY, JSON.stringify(journey));
+        this.stores.session().setItem(JOURNEY_STORAGE_KEY, JSON.stringify(journey));
       } else {
-        sessionStorage.removeItem(JOURNEY_STORAGE_KEY);
+        this.stores.session().removeItem(JOURNEY_STORAGE_KEY);
       }
     });
 
@@ -418,10 +420,10 @@ export class JourneyEngine {
     unrefTimer(timer);
   }
 
-  /** Removes journey data from sessionStorage. */
+  /** Removes journey data from the session store. */
   private clearStored(): void {
     this.diagnostics.guard("storage.unavailable", "clearing the persisted journey", () => {
-      sessionStorage.removeItem(JOURNEY_STORAGE_KEY);
+      this.stores.session().removeItem(JOURNEY_STORAGE_KEY);
     });
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
 import { JourneyEngine, type Journey, type JourneyOptions } from "../src/core/journey";
+import { memoryStores } from "../src/utils/identity";
 
 // Own copies of both literals: a test that reads the constant it checks cannot
 // catch a typo in that constant.
@@ -797,5 +798,51 @@ describe("storage that cannot be written", () => {
     await engine.bootstrap();
 
     expect(diagnostics.snapshot()["storage.unavailable"]).toBe(1);
+  });
+});
+
+describe("JourneyEngine with memory identity stores", () => {
+  it("does not write the journey to sessionStorage", () => {
+    const engine = new JourneyEngine(
+      OPTIONS,
+      new Diagnostics(vi.fn(), 0),
+      "ctx-1",
+      vi.fn(),
+      memoryStores(),
+    );
+
+    engine.start("checkout");
+
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps the journey in the memory store and removes it on end", () => {
+    const stores = memoryStores();
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const engine = new JourneyEngine(OPTIONS, diagnostics, "ctx-1", vi.fn(), stores);
+
+    engine.start("checkout");
+    expect(stores.session().getItem(STORAGE_KEY)).not.toBeNull();
+
+    engine.end();
+    expect(stores.session().getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("does not resume a journey that sessionStorage holds", async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ id: "j-1", name: "checkout", startedAt: Date.now(), ownerContextId: "c" }),
+    );
+    const engine = new JourneyEngine(
+      OPTIONS,
+      new Diagnostics(vi.fn(), 0),
+      "ctx-1",
+      vi.fn(),
+      memoryStores(),
+    );
+
+    await engine.bootstrap();
+
+    expect(engine.current()).toBeNull();
   });
 });
