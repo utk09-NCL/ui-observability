@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-11
+
+### Breaking changes - v0.5.0
+
+- The library does not import `@opentelemetry/api` by itself. Set `otelLoader` to put records on your spans. Without `otelLoader`, OTel is off. The library reports no diagnostic.
+- `capture.webVitals` needs `capture.webVitalsLoader`. Without the loader, the library reports `config.invalid`. Navigation timing continues.
+- `console` does not depend on `minLevel`. `minLevel` limits what the library sends. `console` limits what it prints.
+- A console line starts with the logger namespace, for example `[board.hop] WARN`. It started with `[ui-observability]`.
+- A console line shows the caller's payload. It showed all record attributes.
+- With a `redact` hook, the console shows only what `redact` returns. A record that the library does not build shows its message and error only.
+- After `shutdown()`, every call does nothing until the next `configure()`. A log call after `shutdown()` started a new runtime with default settings.
+- After the delivery stack loads, `configure({ endpoint: null })` and `configure({ endpoint: "" })` report `config.invalid`. The endpoint in force stays.
+- `OneLogger` takes a function that returns the runtime. It took the runtime.
+
+```ts
+// OpenTelemetry, imported by the library before 0.5.0
+configure({ endpoint, otelLoader: () => import("@opentelemetry/api") });
+
+// web vitals
+configure({ endpoint, capture: { webVitals: true, webVitalsLoader: () => import("web-vitals") } });
+```
+
+### Added - v0.5.0
+
+- `endpoint: null` selects console-only mode. The library sends nothing. It reports no diagnostic about the endpoint. A missing endpoint or `""` still reports `config.invalid`.
+- `identity: "memory"` keeps session, tab and journey ids in memory. The library writes no key to `localStorage` or `sessionStorage` for them. You cannot change `identity` after startup.
+- `npm run check:peers` fails if a built file imports an optional peer by name.
+
+### Fixed - v0.5.0
+
+- The Vite dev server failed when a peer was not installed. `dist/index.js` imported `web-vitals` and `@opentelemetry/api` by name. Peers load only through the loaders.
+- `getLogger()` before `configure()` started a runtime with default settings. That runtime refused a later `configure({ storage })`. A logger finds the runtime on its first write.
+- A logger held across `shutdown()` wrote to the destroyed runtime. After the next `configure()`, it writes to the new runtime.
+- `error(message, err, payload)` printed the error without the payload. The console line shows both.
+- A `shutdown()` during startup still installed the capture modules. Their window listeners stayed until the page closed.
+- `endpoint: undefined` in a later `configure()` removed the live endpoint. The endpoint in force now stays.
+- The runtime dropped a forwarded record that arrived before the pipeline existed. The record now waits for the delivery stack.
+- A `configure()` during startup did not apply to `endpoint` or `capture`. It applies now.
+- A worker registered in a nested frame lost its handshake while the bus started. The runtime now attaches the worker when it constructs the bus.
+- `flush()`, `getQueueDepth()` and `shutdown()` did not wait for a delivery stack that was still loading. They wait now.
+- A `%o` or `%c` in a logger namespace changed the console output. The namespace now prints as text.
+- A failed exit flush install left the retry loop running. The library now stops the retry loop.
+
+### Performance - v0.5.0
+
+- The main chunk holds only the logger, the record builder and the console sink. The delivery stack loads only when you set an endpoint. The bus loads only when the context needs it. Each capture module loads only when you enable it. A console-only setup loads half the code of 0.4.1.
+
 ## [0.4.1] - 2026-09-09
 
 ### Fixed - v0.4.1

@@ -69,7 +69,8 @@ export class ConsoleSink {
       return;
     }
 
-    const prefix = `%c[${namespace}]%c ${level}`;
+    // The namespace goes in as a %s argument. A %o or %c in it then prints as text.
+    const prefix = `%c[%s]%c ${level}`;
     const method = METHOD[level];
 
     // A host can replace console with instrumented methods that throw. Unguarded,
@@ -86,7 +87,7 @@ export class ConsoleSink {
         details.push(sanitize(payload, RECORD_LIMITS));
       }
 
-      console[method](prefix, CONSOLE_PREFIX_STYLE, "", message, ...details);
+      console[method](prefix, CONSOLE_PREFIX_STYLE, namespace, "", message, ...details);
     });
   }
 }

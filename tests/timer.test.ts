@@ -172,7 +172,7 @@ describe("ConsoleSink", () => {
     sinkOf("TRACE").sink.write("board.hop", "INFO", "hello");
 
     // The namespace tells apart the logs of each part of the app.
-    expect(spy).toHaveBeenCalledWith("%c[board.hop]%c INFO", "color:#888", "", "hello");
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "board.hop", "", "hello");
   });
 
   it("appends the payload when there is one", () => {
@@ -180,9 +180,18 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "WARN", "careful", { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[app]%c WARN", "color:#888", "", "careful", {
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c WARN", "color:#888", "app", "", "careful", {
       orderId: "ORD-1",
     });
+  });
+
+  it("passes the namespace as an argument, not as part of the format string", () => {
+    // A %o or %c in a namespace must print as text.
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    sinkOf("TRACE").sink.write("a%ob", "INFO", "hello");
+
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "a%ob", "", "hello");
   });
 
   it("prints the error and then the payload", () => {
@@ -191,7 +200,7 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "ERROR", "failed", { orderId: "ORD-1" }, failure);
 
-    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
       orderId: "ORD-1",
     });
   });
@@ -204,7 +213,7 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "INFO", "hello", payload);
 
-    const printed = spy.mock.calls[0][4] as Record<string, unknown>;
+    const printed = spy.mock.calls[0][5] as Record<string, unknown>;
     expect(printed).not.toBe(payload);
     expect(printed.orderId).toBe("ORD-1");
   });
@@ -230,7 +239,7 @@ describe("ConsoleSink", () => {
     sink.write("app", "INFO", "after");
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0][3]).toBe("after");
+    expect(spy.mock.calls[0][4]).toBe("after");
   });
 
   it("returns quietly in a realm with no console", () => {

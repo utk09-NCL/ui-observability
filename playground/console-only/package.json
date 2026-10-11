@@ -1,0 +1,17 @@
+{
+  "name": "@example/console-only",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5195 --strictPort",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@utk09/ui-observability": "file:../.."
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "8.3.4"
+  }
+}

@@ -3,7 +3,7 @@
 // Namespaced logger facade providing scoped logging methods and metrics timing.
 
 import { DEFAULT_METRIC_UNIT } from "../constants";
-import type { LogLevel, LogType, MetricType } from "../models/log-record";
+import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
 import { timeAsync, timeSync } from "../utils/timer";
 import type { Diagnostics } from "./diagnostics";
 import type { ObservabilityRuntime } from "./runtime";
@@ -66,11 +66,6 @@ export class OneLogger {
     readonly namespace: string,
     private readonly options: OneLoggerOptions = {},
   ) {}
-
-  /** Runtime that this write goes to. */
-  private get runtime(): ObservabilityRuntime {
-    return this.bind();
-  }
 
   /**
    * Creates a child logger with a nested namespace and merged scoped context.
@@ -223,16 +218,23 @@ export class OneLogger {
     body: string,
     payload?: Record<string, unknown>,
   ): void {
+    const runtime = this.bind();
+
+    // Guard against a write after shutdown. The write must do nothing on the stopped runtime.
+    if (runtime.isDestroyed()) {
+      return;
+    }
+
     // minLevel limits what the library sends. The console level limits what it prints.
-    if (!this.runtime.builder.isEnabled(level)) {
-      if (this.mirrors(level)) {
-        this.runtime.console.write(this.namespace, level, body, payload);
+    if (!runtime.builder.isEnabled(level)) {
+      if (this.mirrors(runtime, level)) {
+        this.print(runtime, level, body, payload, undefined, null);
       }
 
       return;
     }
 
-    const { record, dropped } = this.runtime.builder.build({
+    const { record, dropped } = runtime.builder.build({
       level,
       type,
       body,
@@ -245,15 +247,15 @@ export class OneLogger {
     // leaves its trail for the next error. A redact hook that dropped the record
     // wanted the body gone, and a crumb would ship it on the next error anyway.
     if (type !== "metric" && dropped !== "redact") {
-      this.runtime.breadcrumbs.push({
+      runtime.breadcrumbs.push({
         t: Date.now(),
         category: type === "action" ? "action" : type === "event" ? "event" : "log",
         message: body,
       });
     }
 
-    this.runtime.console.write(this.namespace, level, body, payload);
-    this.runtime.emit(record);
+    this.print(runtime, level, body, payload, undefined, record);
+    runtime.emit(record);
   }
 
   /**
@@ -269,9 +271,15 @@ export class OneLogger {
     error: unknown,
     payload?: Record<string, unknown>,
   ): void {
-    const ships = this.runtime.builder.isEnabled(level);
+    const runtime = this.bind();
 
-    if (!ships && !this.mirrors(level)) {
+    if (runtime.isDestroyed()) {
+      return;
+    }
+
+    const ships = runtime.builder.isEnabled(level);
+
+    if (!ships && !this.mirrors(runtime, level)) {
       return;
     }
 
@@ -281,14 +289,14 @@ export class OneLogger {
     const asPayload = payload === undefined && isPlainObject(error);
     const attributes = asPayload ? error : payload;
     const asError =
-      asPayload || error === undefined ? undefined : toError(error, this.runtime.diagnostics);
+      asPayload || error === undefined ? undefined : toError(error, runtime.diagnostics);
 
     if (!ships) {
-      this.runtime.console.write(this.namespace, level, message, attributes, asError);
+      this.print(runtime, level, message, attributes, asError, null);
       return;
     }
 
-    const { record } = this.runtime.builder.build({
+    const { record } = runtime.builder.build({
       level,
       type: "system",
       body: message,
@@ -303,20 +311,53 @@ export class OneLogger {
               "error.stack_trace": asError.stack,
             }
           : {}),
-        breadcrumbs: this.runtime.breadcrumbs.snapshot(),
+        breadcrumbs: runtime.breadcrumbs.snapshot(),
       },
     });
 
-    this.runtime.console.write(this.namespace, level, message, attributes, asError);
-    this.runtime.emit(record);
+    this.print(runtime, level, message, attributes, asError, record);
+    runtime.emit(record);
+  }
+
+  /**
+   * Prints one log line. With a redact hook, the line shows only what redact returned.
+   * A host can record console arguments. The console must not show what redact removes.
+   * @param runtime Runtime of this write.
+   * @param level Severity level.
+   * @param message Primary message.
+   * @param payload Caller payload.
+   * @param error Error of an error call.
+   * @param record Built record, or null if the library did not build it or redact dropped it.
+   */
+  private print(
+    runtime: ObservabilityRuntime,
+    level: LogLevel,
+    message: string,
+    payload: Record<string, unknown> | undefined,
+    error: Error | undefined,
+    record: LogRecord | null,
+  ): void {
+    if (!runtime.config.redact) {
+      runtime.console.write(this.namespace, level, message, payload, error);
+      return;
+    }
+
+    // The record attributes hold the error fields after redact.
+    if (record) {
+      runtime.console.write(this.namespace, level, record.body, record.attributes);
+      return;
+    }
+
+    runtime.console.write(this.namespace, level, message, undefined, error);
   }
 
   /**
    * Tests whether the console prints a level that the library does not send.
+   * @param runtime Runtime of this write.
    * @param level Severity level.
    * @returns True if logging is on and the console accepts the level.
    */
-  private mirrors(level: LogLevel): boolean {
-    return this.runtime.config.enabled && this.runtime.console.accepts(level);
+  private mirrors(runtime: ObservabilityRuntime, level: LogLevel): boolean {
+    return runtime.config.enabled && runtime.console.accepts(level);
   }
 }

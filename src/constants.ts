@@ -235,7 +235,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.4.1";
+export const TELEMETRY_SDK_VERSION = "0.5.0";
 
 /**
  * Value of `telemetry.sdk.language`.
@@ -527,6 +527,9 @@ export const BUS_PROTOCOL = "ui-observability/1";
 
 /** Global window property key used to locate a same-origin runtime instance. */
 export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
+
+/** Global key of the runtime that shutdown() stopped. Calls go to it until the next configure(). */
+export const RUNTIME_STOPPED_KEY = "ui-observability.stopped";
 
 // ----------------------------------
 // Capture

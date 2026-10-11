@@ -12,6 +12,9 @@ import { resetPlatformCache } from "../src/utils/platform";
 
 export const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
 
+/** Key of the runtime that shutdown() stopped. A test must not inherit it. */
+const STOPPED_KEY = Symbol.for("ui-observability.stopped");
+
 interface DestroyableRuntime {
   destroy?: () => Promise<void>;
 }
@@ -34,4 +37,5 @@ afterEach(async () => {
   // banned by lint, and this removes the key outright rather than leaving it
   // present holding undefined.
   Reflect.deleteProperty(registry, RUNTIME_KEY);
+  Reflect.deleteProperty(registry, STOPPED_KEY);
 });

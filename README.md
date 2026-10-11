@@ -18,7 +18,7 @@ npm install @utk09/ui-observability
 
 Both peers are optional. The library has no runtime dependency.
 
-Install `web-vitals` (`^4 || ^5 || ^6`) for `capture.webVitals`:
+Install `web-vitals` (`^4 || ^5 || ^6`) for `capture.webVitals`, and set `capture.webVitalsLoader`. Without the loader, the library reports `config.invalid`:
 
 ```ts
 configure({
@@ -30,7 +30,7 @@ configure({
 });
 ```
 
-Install `@opentelemetry/api` (`^1`) to put records on the traces your spans carry. Without it, the library mints its own `trace_id` and reports `trace.otel_failed` one time. The library imports the package when it is installed. Set `otelLoader` when your bundler cannot resolve the import:
+Install `@opentelemetry/api` (`^1`) to put records on the traces your spans carry. Set `otelLoader` to load it. Without `otelLoader`, OTel is off and the library mints its own `trace_id`. The library never imports a peer by name, so a missing peer cannot break your bundler or dev server:
 
 ```ts
 configure({
@@ -62,9 +62,31 @@ log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
 log.error("pricing call failed", caughtError);
 ```
 
-- `configure()` is idempotent. A later call updates the runtime singleton in place. `storage` is fixed at startup. A later change to it is reported and ignored.
+- `configure()` is idempotent. A later call updates the runtime singleton in place. `storage` and `identity` are fixed at startup. A later change to them is reported and ignored.
 - One context per document calls `configure()`. A second call renames `service.name` on the records of every other context. In a composed page, the shell configures, and each microfrontend takes a namespace.
-- A log call before `configure()` goes to an implicit runtime. It does not throw.
+- You can call `getLogger()` at module top level, before `configure()`. The logger finds the runtime on its first write.
+- A write before `configure()` starts a runtime with default settings. It does not throw.
+
+### Console Only (No Network)
+
+Set `endpoint: null`. The library sends nothing. It writes records to the console only.
+
+```ts
+configure({
+  endpoint: null,
+  serviceName: "skardela",
+  identity: "memory",
+  storage: "none",
+  bus: { mode: "off" },
+  console: import.meta.env.DEV ? "DEBUG" : "WARN",
+});
+```
+
+- `endpoint: null` loads no transport, no storage and no exit flush. It reports no diagnostic.
+- `identity: "memory"` writes no key to `localStorage` or `sessionStorage`.
+- `console` and `minLevel` are independent. `console` sets what the library prints. `minLevel` sets what the library sends.
+- The console output does not depend on the bus or the endpoint.
+- With a `redact` hook, the console shows only what `redact` returns. A record that the library does not build shows its message and error only.
 
 ---
 
@@ -121,32 +143,33 @@ log.error("pricing call failed", caughtError);
 
 ## Configuration Options
 
-`endpoint` is the only required key.
+No key is required. Set `endpoint` to send records.
 
-| Key                          | Default      | Description                                                                       |
-| ---------------------------- | ------------ | --------------------------------------------------------------------------------- |
-| `endpoint`                   | _required_   | HTTP endpoint that receives the batches.                                          |
-| `serviceName`                | `""`         | `service.name` on every record.                                                   |
-| `serviceVersion`             | `""`         | `service.version` on every record.                                                |
-| `environment`                | `""`         | `deployment.environment` on every record.                                         |
-| `enabled`                    | `true`       | Kill switch. `false` makes every log call a no-op.                                |
-| `minLevel`                   | `"INFO"`     | Lowest level that ships (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).     |
-| `compression`                | `"gzip"`     | `gzip` or `none`. It applies above 1 KB.                                          |
-| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                       |
-| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                          |
-| `headers`                    | `{}`         | Static headers, or a function that returns them.                                  |
-| `storage`                    | `"auto"`     | `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.        |
-| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                           |
-| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                        |
-| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                |
-| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`.                                           |
-| `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                          |
-| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                   |
-| `capture`                    | See below    | Auto-capture settings.                                                            |
-| `console`                    | `false`      | Mirrors records to devtools. `true` starts at `DEBUG`. A level name starts there. |
-| `otelLoader()`               | `undefined`  | Supplies `@opentelemetry/api`. Omit it and the library imports the package.       |
-| `redact(record)`             | `undefined`  | Mutates a record before it ships. Return `null` to drop it.                       |
-| `onDiagnostic(event)`        | `undefined`  | Receives this library's own faults.                                               |
+| Key                          | Default      | Description                                                                                                                                          |
+| ---------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`                   | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                            |
+| `serviceName`                | `""`         | `service.name` on every record.                                                                                                                      |
+| `serviceVersion`             | `""`         | `service.version` on every record.                                                                                                                   |
+| `environment`                | `""`         | `deployment.environment` on every record.                                                                                                            |
+| `enabled`                    | `true`       | Kill switch. `false` makes every log call a no-op.                                                                                                   |
+| `minLevel`                   | `"INFO"`     | Lowest level that the library sends (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).                                                            |
+| `compression`                | `"gzip"`     | `gzip` or `none`. It applies above 1 KB.                                                                                                             |
+| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                                                                                          |
+| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                                                                                             |
+| `headers`                    | `{}`         | Static headers, or a function that returns them.                                                                                                     |
+| `storage`                    | `"auto"`     | Store for undelivered batches: `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.                                            |
+| `identity`                   | `"storage"`  | Store for session, tab and journey ids. `memory` writes no key. Fixed at startup.                                                                    |
+| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                              |
+| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                           |
+| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                   |
+| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. `off` sends this context's own records and opens no link. A same-origin child frame can still forward to it. |
+| `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                                                                                             |
+| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                      |
+| `capture`                    | See below    | Auto-capture settings.                                                                                                                               |
+| `console`                    | `false`      | Prints records to devtools. `true` starts at `DEBUG`. A level name starts there. It does not depend on `minLevel`.                                   |
+| `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                 |
+| `redact(record)`             | `undefined`  | Mutates a record before it ships. Return `null` to drop it.                                                                                          |
+| `onDiagnostic(event)`        | `undefined`  | Receives this library's own faults.                                                                                                                  |
 
 ### Auto-Capture Options
 
@@ -168,16 +191,30 @@ capture: {
 
 `fullUrls` is off. The library cuts a page URL, a request target and a failed resource URL at the first `?` or `#`. `ignoreUrls` and `propagateTraceHeaderTo` match the whole URL.
 
+### Browser Storage Keys
+
+| Key                            | Store            | Written when                                                     | Option that stops it                          |
+| ------------------------------ | ---------------- | ---------------------------------------------------------------- | --------------------------------------------- |
+| `ui-observability.session`     | `localStorage`   | At startup, then at most one time each minute while logging      | `identity: "memory"`                          |
+| `ui-observability.tab`         | `sessionStorage` | At startup, and when the bus finds a duplicated tab              | `identity: "memory"`                          |
+| `ui-observability.journey`     | `sessionStorage` | When a journey starts or ends                                    | `identity: "memory"`                          |
+| `ui-observability.batch.*`     | `localStorage`   | When a send fails and the `localstorage` adapter holds the batch | `storage` other than `auto` or `localstorage` |
+| `ui-observability.emergency.*` | `localStorage`   | When the exit flush cannot send a batch                          | `endpoint: null`                              |
+| `ui-observability.probe`       | `localStorage`   | One write and one remove, when the library tests `localStorage`  | `storage` other than `auto` or `localstorage` |
+
+IndexedDB holds undelivered batches with `storage: "auto"` or `"indexeddb"`.
+
 ---
 
 ## Core Architecture
 
+- **Code splitting:** The main chunk holds the logger, the record builder and the console sink. The delivery stack loads only when an endpoint is set. The bus loads only when the context needs it. Each capture module loads only when it is enabled.
 - **Document singleton:** The runtime pins to `globalThis[Symbol.for("ui-observability.runtime")]`. Federated microfrontends and separate bundles share one buffer, one sequence and one transport.
 - **One sender:** Iframes, workers and OpenFin views find the nearest long-lived context. They forward their records to it over the bus. That context batches, stores and sends for all of them.
 - **Five correlation ids:** Each record carries `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
 - **Durability and exit flush:** A failed send persists to IndexedDB or localStorage, then retries with exponential jittered backoff. On `pagehide` or `freeze`, pending records go out with `navigator.sendBeacon` below 60 KB. A larger payload goes to the emergency queue.
 - **Emergency queue:** The emergency queue is best effort. It writes to `localStorage` synchronously. No other storage works while the document unloads. A refused write reports `storage.quota_exceeded`. The library then loses the batch.
-- **Configuration after startup:** A second `configure()` call merges the new options into the live runtime. The `storage` option is the exception. The runtime builds the storage adapter one time. A change leaves the stored batches in the old adapter. The runtime refuses the change. It reports `config.invalid`.
+- **Configuration after startup:** A second `configure()` call merges the new options into the live runtime. The `storage` option is the exception. The runtime builds the storage adapter one time. A change leaves the stored batches in the old adapter. The runtime refuses the change. It reports `config.invalid`. The same rule applies to `identity`, and to an endpoint change to `null` or `""` after the delivery stack loads. A change to another endpoint URL is accepted.
 - **Deterministic sampling:** FNV-1a hashing applies one keep rate to a whole journey. An error and an explicit action bypass sampling.
 
 ---
@@ -214,6 +251,7 @@ npm run build
 npm run example:react          # http://localhost:5180
 npm run example:angular        # http://localhost:4200
 npm run example:microfrontend  # Shell on http://localhost:5191, remotes on 5192 and 5193
+npm run example:console-only   # http://localhost:5195
 ```
 
 ---

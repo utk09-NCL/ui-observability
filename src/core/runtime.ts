@@ -12,6 +12,7 @@ import {
   MAX_BREADCRUMBS,
   RECORD_LIMITS,
   RUNTIME_GLOBAL_KEY,
+  RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
 } from "../constants";
 import type { BusMessage, BusRole } from "../models/bus";
@@ -66,6 +67,9 @@ type CaptureName = keyof typeof CAPTURE_LOADERS;
 /** Global symbol key pinning the singleton runtime instance across federated bundles. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
+/** Global symbol key of the runtime that shutdown() stopped. */
+const STOPPED_KEY = Symbol.for(RUNTIME_STOPPED_KEY);
+
 /** Central runtime managing subsystem lifecycles, bus coordination, and record delivery. */
 export class ObservabilityRuntime {
   /** Diagnostics reporter for internal faults. */
@@ -116,7 +120,10 @@ export class ObservabilityRuntime {
    */
   private bus: Bus | null = null;
 
-  /** Load and start of the bus. Undefined until the first need. */
+  /** Load and construction of the bus. It is undefined until the first need. */
+  private busBuilt?: Promise<Bus | null>;
+
+  /** Load and start of the bus. It is undefined until the first need. */
   private busLoad?: Promise<Bus | null>;
 
   /** Storage strategy the adapter was built from, set once the build starts. */
@@ -148,6 +155,9 @@ export class ObservabilityRuntime {
 
   /** Indicates whether a microtask drain is scheduled for the forward buffer. */
   private forwardScheduled = false;
+
+  /** Indicates whether startup has decided the bus role. A sender load waits for it. */
+  private roleResolved = false;
 
   /** Indicates whether asynchronous initialization has completed. */
   private ready = false;
@@ -233,6 +243,25 @@ export class ObservabilityRuntime {
   }
 
   /**
+   * Returns the runtime that shutdown() stopped, until the next configure().
+   * @returns Stopped runtime instance or null.
+   */
+  static stopped(): ObservabilityRuntime | null {
+    return (
+      ((globalThis as Record<symbol, unknown>)[STOPPED_KEY] as ObservabilityRuntime | undefined) ??
+      null
+    );
+  }
+
+  /**
+   * Tests whether shutdown() stopped this runtime.
+   * @returns True after destroy() starts.
+   */
+  isDestroyed(): boolean {
+    return this.destroyed;
+  }
+
+  /**
    * Initializes a new runtime instance or updates the existing singleton.
    * @param input Consumer configuration options.
    * @returns Active runtime instance.
@@ -246,6 +275,7 @@ export class ObservabilityRuntime {
 
     const runtime = new ObservabilityRuntime(input);
     (globalThis as Record<symbol, unknown>)[RUNTIME_KEY] = runtime;
+    Reflect.deleteProperty(globalThis, STOPPED_KEY);
     void runtime.init();
     return runtime;
   }
@@ -255,7 +285,8 @@ export class ObservabilityRuntime {
    * @param input Partial configuration to merge.
    */
   private reconfigure(input: Partial<ObservabilityConfig>): void {
-    applyResolvedConfig(this.config, resolveConfig(input, this.diagnostics, this.config));
+    const accepted = this.keepEndpoint(input);
+    applyResolvedConfig(this.config, resolveConfig(accepted, this.diagnostics, this.config));
     this.diagnostics.setHandler(this.config.onDiagnostic);
 
     this.builder.invalidateResource();
@@ -263,13 +294,11 @@ export class ObservabilityRuntime {
     this.keepBuiltStorage();
     this.keepBuiltIdentity();
 
-    if (this.ready) {
-      this.reinstallCaptures();
+    // A stale capture load stops at its generation check. A reinstall is safe at any time.
+    void this.installCaptures();
 
-      // An endpoint set after startup loads the delivery stack that console-only mode skipped.
-      if (this.config.endpoint && this.role() === "sender") {
-        void this.loadSender();
-      }
+    if (this.roleResolved) {
+      void this.syncSender();
     }
 
     this.diagnostics.report(
@@ -299,6 +328,26 @@ export class ObservabilityRuntime {
   }
 
   /**
+   * Refuses to remove the endpoint once the delivery stack exists. Without an endpoint,
+   * the retry engine removes each stored batch as delivered.
+   * @param input Partial configuration to merge.
+   * @returns Input with the endpoint removal taken out.
+   */
+  private keepEndpoint(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
+    if (this.senderLoad === undefined || (input.endpoint !== null && input.endpoint !== "")) {
+      return input;
+    }
+
+    this.diagnostics.report(
+      "config.invalid",
+      "endpoint cannot be removed after the delivery stack loads. The endpoint in force stays.",
+    );
+
+    // An undefined endpoint keeps the endpoint in force, and keeps it in ignoreUrls.
+    return { ...input, endpoint: undefined };
+  }
+
+  /**
    * Restores the identity strategy from startup. The ids exist from startup.
    * A later change cannot move them to another store.
    */
@@ -319,17 +368,19 @@ export class ObservabilityRuntime {
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
   private async init(): Promise<void> {
+    // Start the capture imports at once. They download in parallel with the bus and the sender.
+    const captures = this.installCaptures();
+
     try {
       const journeyReady = this.journey.bootstrap();
-      const role = this.config.bus.mode === "off" ? "sender" : await this.startRole();
 
-      if (role === "sender") {
-        await this.becomeSender();
+      if (this.config.bus.mode !== "off") {
+        await this.ensureBus();
       }
 
+      this.roleResolved = true;
+      await this.syncSender();
       await journeyReady;
-
-      await this.installCaptures();
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
@@ -338,19 +389,12 @@ export class ObservabilityRuntime {
         error,
       );
     } finally {
-      // Flushes buffered boot records regardless of startup outcome.
+      // Release the boot records before the captures load. The exit flush can then find them.
       this.ready = true;
       this.releaseBootBuffer();
     }
-  }
 
-  /**
-   * Loads and starts the bus, then reads the role it resolved.
-   * @returns Resolved role. "sender" if the bus did not load.
-   */
-  private async startRole(): Promise<BusRole> {
-    const bus = await this.ensureBus();
-    return bus?.getRole() ?? "sender";
+    await captures;
   }
 
   /**
@@ -358,11 +402,46 @@ export class ObservabilityRuntime {
    * @returns Promise resolving to the started bus, or null if it did not load.
    */
   private ensureBus(): Promise<Bus | null> {
-    this.busLoad ??= this.buildBus();
+    this.busLoad ??= this.startBus();
     return this.busLoad;
   }
 
-  /** Imports, builds and starts the bus. It never rejects. */
+  /**
+   * Loads and constructs the bus one time. It does not call start().
+   * @returns Promise resolving to the constructed bus, or null if it did not load.
+   */
+  private constructBus(): Promise<Bus | null> {
+    this.busBuilt ??= this.buildBus();
+    return this.busBuilt;
+  }
+
+  /**
+   * Starts the constructed bus. It never rejects.
+   * @returns Promise resolving to the started bus, or null if it did not load or start.
+   */
+  private async startBus(): Promise<Bus | null> {
+    const bus = await this.constructBus();
+
+    if (!bus) {
+      return null;
+    }
+
+    try {
+      await bus.start();
+      return bus;
+    } catch (error) {
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "the bus did not start. This context sends its own records.",
+        undefined,
+        error,
+      );
+
+      return null;
+    }
+  }
+
+  /** Imports and constructs the bus. It never rejects. */
   private async buildBus(): Promise<Bus | null> {
     try {
       const { Bus } = await import("../bus/bus");
@@ -393,13 +472,12 @@ export class ObservabilityRuntime {
       );
 
       this.bus = bus;
-      await bus.start();
 
       return bus;
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
-        "the bus did not start. This context sends its own records.",
+        "the bus did not load. This context sends its own records.",
         undefined,
         error,
       );
@@ -416,13 +494,16 @@ export class ObservabilityRuntime {
     return this.bus?.getRole() ?? "sender";
   }
 
-  /** Loads the delivery stack for the sender role. Without an endpoint, it loads nothing. */
-  private async becomeSender(): Promise<void> {
-    if (!this.config.endpoint) {
-      return;
+  /**
+   * Loads the delivery stack if this context is the sender and has an endpoint.
+   * @returns Promise resolving when the load completes, or at once if nothing loads.
+   */
+  private syncSender(): Promise<void> {
+    if (!this.config.endpoint || this.role() !== "sender") {
+      return Promise.resolve();
     }
 
-    await this.loadSender();
+    return this.loadSender();
   }
 
   /**
@@ -440,15 +521,17 @@ export class ObservabilityRuntime {
 
     try {
       const { Sender } = await import("./sender");
-      const sender = await Sender.create({
-        config: this.config,
-        diagnostics: this.diagnostics,
-        onGap: this.reportGap,
-      });
+      const sender = this.destroyed
+        ? null
+        : await Sender.create({
+            config: this.config,
+            diagnostics: this.diagnostics,
+            onGap: this.reportGap,
+          });
 
       // Guard against a shutdown during the load. The stack must not outlive the runtime.
-      if (this.destroyed) {
-        await sender.destroy();
+      if (!sender || this.destroyed) {
+        await sender?.destroy();
         return;
       }
 
@@ -498,6 +581,9 @@ export class ObservabilityRuntime {
       return;
     }
 
+    // Swap the old set for the new set in one synchronous step. No interval runs without capture.
+    this.uninstallCaptures();
+
     const ctx: CaptureContext = {
       config: this.config,
       diagnostics: this.diagnostics,
@@ -520,15 +606,14 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Uninstalls active capture modules and re-creates them from updated configuration. */
-  private reinstallCaptures(): void {
+  /** Uninstalls the active capture modules. */
+  private uninstallCaptures(): void {
     for (const capture of this.captures) {
       this.diagnostics.guard("capture.install_failed", `uninstalling ${capture.name}`, () => {
         capture.uninstall();
       });
     }
     this.captures.length = 0;
-    void this.installCaptures();
   }
 
   /**
@@ -553,7 +638,8 @@ export class ObservabilityRuntime {
       return;
     }
 
-    void this.ensureBus().then((bus) => {
+    // Attach on construction. The worker's handshake can time out while the bus starts.
+    void this.constructBus().then((bus) => {
       if (!bus || this.destroyed) {
         return;
       }
@@ -561,6 +647,9 @@ export class ObservabilityRuntime {
       this.diagnostics.guard("bus.send_failed", "registering a worker", () => {
         bus.attachWorker(worker);
       });
+
+      // Start the bus in bus.mode "off", where startup did not start it.
+      void this.ensureBus();
     });
   }
 
@@ -571,10 +660,7 @@ export class ObservabilityRuntime {
     }
     this.destroyed = true;
 
-    for (const capture of this.captures) {
-      capture.uninstall();
-    }
-    this.captures.length = 0;
+    this.uninstallCaptures();
 
     // Sender.destroy runs its synchronous steps before its first await. The exit flush
     // then runs before the journey and the bus stop, as before.
@@ -584,9 +670,14 @@ export class ObservabilityRuntime {
     this.forwardBuffer = [];
     this.pendingRecords = [];
     await closing;
+    // A load in progress destroys its own stack. shutdown() resolves only after that.
+    await this.senderLoad;
 
     if (ObservabilityRuntime.current() === this) {
       Reflect.deleteProperty(globalThis, RUNTIME_KEY);
+      // Calls after shutdown() go to this runtime and do nothing.
+      // A new default runtime would drop the app's settings.
+      (globalThis as Record<symbol, unknown>)[STOPPED_KEY] = this;
     }
   }
 
@@ -602,11 +693,7 @@ export class ObservabilityRuntime {
     this.sessionTouch.touch(this.identity.sessionId);
 
     if (!this.ready) {
-      if (this.bootBuffer.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
-        this.bootBuffer.shift();
-        this.diagnostics.count("record.dropped_boot_buffer_full");
-      }
-      this.bootBuffer.push(record);
+      this.pushCapped(this.bootBuffer, record);
       return;
     }
 
@@ -641,12 +728,21 @@ export class ObservabilityRuntime {
       return;
     }
 
-    if (this.pendingRecords.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
-      this.pendingRecords.shift();
+    this.pushCapped(this.pendingRecords, record);
+  }
+
+  /**
+   * Adds a record to a hold buffer. It drops the oldest record when the buffer is full.
+   * @param buffer Hold buffer.
+   * @param record Record to hold.
+   */
+  private pushCapped(buffer: LogRecord[], record: LogRecord): void {
+    if (buffer.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
+      buffer.shift();
       this.diagnostics.count("record.dropped_boot_buffer_full");
     }
 
-    this.pendingRecords.push(record);
+    buffer.push(record);
   }
 
   /**
@@ -750,6 +846,7 @@ export class ObservabilityRuntime {
    * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
    */
   async queueDepth(): Promise<number> {
+    await this.senderLoad;
     return (await this.sender?.queueDepth()) ?? 0;
   }
 
@@ -767,6 +864,7 @@ export class ObservabilityRuntime {
       return;
     }
 
+    await this.senderLoad;
     await this.sender?.flush();
   }
 }

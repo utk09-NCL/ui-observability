@@ -25,11 +25,12 @@ export type { StorageAdapter } from "./models/storage";
 const loggers = new Map<string, OneLogger>();
 
 /**
- * Retrieves the active realm runtime, initializing an implicit default if unconfigured.
- * @returns Active runtime instance.
+ * Retrieves the active runtime. After shutdown(), it returns the stopped runtime, which does nothing.
+ * Before the first configure(), it starts a runtime with default settings.
+ * @returns Runtime instance.
  */
 function requireRuntime(): ObservabilityRuntime {
-  const runtime = ObservabilityRuntime.current();
+  const runtime = ObservabilityRuntime.current() ?? ObservabilityRuntime.stopped();
   if (runtime) {
     return runtime;
   }

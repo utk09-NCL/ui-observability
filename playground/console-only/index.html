@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ui-observability, console-only example</title>
+    <style>
+      html {
+        max-width: 70ch;
+        padding: 3em 1em;
+        margin: auto;
+        line-height: 1.75;
+        font-size: 1.25em;
+        font-family: system-ui, sans-serif;
+      }
+
+      button {
+        font-size: 0.75em;
+        margin: 0.5em 0.25em;
+        padding: 0.5em 1em;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>ui-observability, console-only example</h1>
+    <p>This app sends nothing. It prints each record to the devtools console.</p>
+
+    <button type="button" id="debug">DEBUG</button>
+    <button type="button" id="info">INFO</button>
+    <button type="button" id="warn">WARN</button>
+    <button type="button" id="error">ERROR with Error and payload</button>
+    <button type="button" id="nested">INFO from a nested namespace</button>
+
+    <h2>Storage keys that start with "ui-observability."</h2>
+    <pre id="keys"></pre>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

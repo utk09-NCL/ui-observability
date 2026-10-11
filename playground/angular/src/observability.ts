@@ -64,9 +64,7 @@ export class ObservabilityErrorHandler implements ErrorHandler {
    * @param error Whatever Angular caught.
    */
   handleError(error: unknown): void {
-    // Angular builds the ErrorHandler before any environment initializer runs.
-    // Held as a field, this logger would configure an implicit runtime with no
-    // endpoint before configure() ever ran. getLogger caches by namespace.
+    // getLogger caches by namespace. The logger finds the runtime on its first write.
     getLogger("angular.errors").error("unhandled Angular error", error);
     console.error(error);
   }

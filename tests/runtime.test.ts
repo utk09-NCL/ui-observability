@@ -8,6 +8,8 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import { Sender } from "../src/core/sender";
 import type { LogRecord } from "../src/models/log-record";
 import { TransportError } from "../src/transport/errors";
+import { ExitFlush } from "../src/transport/exit-flush";
+import { RetryEngine } from "../src/transport/retry-engine";
 import {
   adoptJourney,
   configure,
@@ -197,6 +199,33 @@ describe("runtime lifecycle", () => {
     await vi.waitFor(() => {
       expect(globalThis.fetch).not.toBe(stubbed);
     });
+  });
+
+  it("keeps the installed captures until the new set has loaded", async () => {
+    configure(base);
+    await ready();
+
+    configure({ capture: { fetch: true } });
+
+    // Errors stay captured while the network chunk downloads.
+    expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual([
+      "errors",
+    ]);
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual([
+        "errors",
+        "network",
+      ]);
+    });
+  });
+
+  it("applies a capture change made during startup", async () => {
+    configure(base);
+    configure({ capture: { errors: false, rejections: false } });
+    await ready();
+    await settle();
+
+    expect(runtime()["captures"]).toEqual([]);
   });
 
   it("installs only the captures of the last configure() when two loads overlap", async () => {
@@ -641,6 +670,44 @@ describe("delivery stack loading", () => {
     expect(batch?.records.map((record) => record.body)).toEqual(["during load"]);
   });
 
+  it("stops the retry loop when the exit flush fails to install", async () => {
+    // A retry loop with no owner sends after the runtime reports a failed load.
+    vi.spyOn(ExitFlush.prototype, "install").mockImplementation(() => {
+      throw new Error("listener refused");
+    });
+    const stop = vi.spyOn(RetryEngine.prototype, "stop");
+
+    configure(base);
+    await ready();
+
+    expect(runtime()["sender"]).toBeUndefined();
+    expect(getDiagnosticCounters()["pipeline.crashed"]).toBe(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to remove the endpoint once the delivery stack exists", async () => {
+    configure(base);
+    await ready();
+
+    configure({ endpoint: null });
+    configure({ endpoint: "" });
+
+    // Without an endpoint, the retry engine removes each stored batch as delivered.
+    expect(runtime().config.endpoint).toBe(base.endpoint);
+    expect(runtime().config.capture.ignoreUrls).toContain(base.endpoint);
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(2);
+  });
+
+  it("accepts a new endpoint URL once the delivery stack exists", async () => {
+    configure(base);
+    await ready();
+
+    configure({ endpoint: "https://y/v1/logs" });
+
+    expect(runtime().config.endpoint).toBe("https://y/v1/logs");
+    expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
+  });
+
   it("loads no delivery stack in a forwarder on a later configure", async () => {
     configure({ ...base, bus: { mode: "forwarder" } });
     await ready();
@@ -699,15 +766,86 @@ describe("delivery stack loading", () => {
     expect(install).not.toHaveBeenCalled();
   });
 
-  it("destroys a delivery stack that completes its load after shutdown", async () => {
+  it("resolves shutdown after it destroys a delivery stack that was still loading", async () => {
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realCreate = Sender.create.bind(Sender);
+    const create = vi.spyOn(Sender, "create").mockImplementation(async (deps) => {
+      await gate;
+      return realCreate(deps);
+    });
     const destroy = vi.spyOn(Sender.prototype, "destroy");
+    configure(base);
+    await vi.waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    const done = shutdown();
+    release();
+    await done;
+
+    // A retry loop that outlives shutdown() can send after the app thinks the library stopped.
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds no delivery stack when shutdown runs before the load", async () => {
+    const create = vi.spyOn(Sender, "create");
 
     configure(base);
     await shutdown();
+    await settle();
+
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("loads the delivery stack for an endpoint set during startup", async () => {
+    // Mode "off" decides the role at once. The endpoint arrives before startup completes.
+    configure({ ...base, endpoint: null, bus: { mode: "off" } });
+    configure({ endpoint: base.endpoint });
+    await ready();
 
     await vi.waitFor(() => {
-      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(runtime()["sender"]).toBeDefined();
     });
+  });
+
+  it("waits for a loading delivery stack in flush()", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    info("sent by flush");
+    await flush();
+
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a loading delivery stack in getQueueDepth()", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    const count = vi.spyOn(Sender.prototype, "queueDepth");
+    await getQueueDepth();
+
+    expect(count).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the boot records before the capture modules load", async () => {
+    // An unload while a capture chunk downloads must still find the boot records.
+    vi.spyOn(
+      ObservabilityRuntime.prototype as unknown as { loadCapture: () => Promise<undefined> },
+      "loadCapture",
+    ).mockReturnValue(new Promise(() => undefined));
+    configure(base);
+    info("during boot");
+
+    await ready();
+
+    const batch = runtime()["sender"]?.["pipeline"].drainPending();
+    expect(batch?.records.map((record) => record.body)).toEqual(["during boot"]);
   });
 });
 
@@ -740,6 +878,38 @@ describe("bus loading", () => {
     expect(runtime()["bus"]).not.toBeNull();
     const batch = runtime()["sender"]?.["pipeline"].drainPending();
     expect(batch?.records.map((record) => record.body)).toEqual(["from a child"]);
+  });
+
+  it("attaches a worker before the bus completes its start", async () => {
+    // A nested frame can hold start() for the full handshake. The worker's own handshake times out first.
+    vi.spyOn(Bus.prototype, "start").mockReturnValue(new Promise(() => undefined));
+    const attach = vi.spyOn(Bus.prototype, "attachWorker").mockImplementation(() => undefined);
+    const worker: WorkerLike = {
+      postMessage: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+
+    configure(base);
+    registerWorker(worker);
+    await settle();
+
+    expect(attach).toHaveBeenCalledWith(worker);
+  });
+
+  it("sends its own records when the bus chunk does not load", async () => {
+    vi.doMock("../src/bus/bus", () => {
+      throw new Error("chunk failed");
+    });
+    configure(base);
+    await ready();
+    vi.doUnmock("../src/bus/bus");
+
+    expect(getDiagnosticCounters()["pipeline.crashed"]).toBe(1);
+    expect(runtime()["bus"]).toBeNull();
+    await vi.waitFor(() => {
+      expect(runtime()["sender"]).toBeDefined();
+    });
   });
 
   it("drops a child message when the bus did not start", async () => {
@@ -919,10 +1089,58 @@ describe("OneLogger", () => {
 
     getLogger("board.hop").debug("moved", { from: 1 });
 
-    expect(spy).toHaveBeenCalledWith("%c[board.hop]%c DEBUG", "color:#888", "", "moved", {
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c DEBUG", "color:#888", "board.hop", "", "moved", {
       from: 1,
     });
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("prints the redacted attributes when a redact hook is set", () => {
+    configure({
+      ...base,
+      console: "DEBUG",
+      redact: (record) => {
+        delete record.attributes.card;
+        return record;
+      },
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("pay").info("charged", { card: "4111", orderId: "ORD-1" });
+
+    // The console must not show what redact removed. A host can record console arguments.
+    const printed = spy.mock.calls[0][5] as Record<string, unknown>;
+    expect(printed.orderId).toBe("ORD-1");
+    expect(printed).not.toHaveProperty("card");
+  });
+
+  it("prints the message only when redact drops the record", () => {
+    configure({ ...base, console: "DEBUG", redact: () => null });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("pay").info("charged", { card: "4111" });
+
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "pay", "", "charged");
+  });
+
+  it("prints the message only below minLevel when a redact hook is set", () => {
+    // redact runs only on a built record. A record below minLevel is not built.
+    configure({ ...base, minLevel: "INFO", console: "DEBUG", redact: (record) => record });
+    const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    getLogger("pay").debug("charged", { card: "4111" });
+
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c DEBUG", "color:#888", "pay", "", "charged");
+  });
+
+  it("prints the message and the error only for an error below minLevel with redact set", () => {
+    configure({ ...base, minLevel: "FATAL", console: "DEBUG", redact: (record) => record });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = new Error("boom");
+
+    getLogger("pay").error("failed", failure, { card: "4111" });
+
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "pay", "", "failed", failure);
   });
 
   it("prints nothing to the console when enabled is false", () => {
@@ -941,7 +1159,7 @@ describe("OneLogger", () => {
 
     getLogger("app").error("failed", failure, { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
       orderId: "ORD-1",
     });
   });
@@ -954,7 +1172,7 @@ describe("OneLogger", () => {
 
     getLogger("app").error("failed", failure, { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[app]%c ERROR", "color:#888", "", "failed", failure, {
+    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
       orderId: "ORD-1",
     });
     expect(emit).not.toHaveBeenCalled();
@@ -1296,6 +1514,36 @@ describe("public API", () => {
     held.info("after restart");
 
     expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing on a held logger write after shutdown, until configure runs", async () => {
+    configure({ ...base, console: "DEBUG" });
+    const held = getLogger("trading");
+    await shutdown();
+    const print = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const printError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    held.info("after shutdown");
+    held.error("failed after shutdown", new Error("late"));
+    info("top level after shutdown");
+
+    // A new default runtime has no redact and re-adds the listeners the app removed.
+    expect(ObservabilityRuntime.current()).toBeNull();
+    expect(print).not.toHaveBeenCalled();
+    expect(printError).not.toHaveBeenCalled();
+  });
+
+  it("starts no runtime for an API call after shutdown", async () => {
+    configure(base);
+    await shutdown();
+
+    setContext("k", "v");
+    const journey = startJourney("checkout");
+    await flush();
+
+    expect(journey.name).toBe("checkout");
+    expect(ObservabilityRuntime.current()).toBeNull();
   });
 
   it("shuts down cleanly when nothing was ever configured", async () => {

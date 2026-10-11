@@ -73,8 +73,19 @@ export class Sender {
 
     await drainEmergencyQueue(storage, diagnostics);
 
-    retry.start();
-    exitFlush.install();
+    // Stop both if one fails. A retry loop with no owner sends after the load reports a failure.
+    let started = false;
+
+    try {
+      exitFlush.install();
+      retry.start();
+      started = true;
+    } finally {
+      if (!started) {
+        exitFlush.uninstall();
+        retry.stop();
+      }
+    }
 
     return new Sender(storage, transport, retry, pipeline, exitFlush, diagnostics);
   }
