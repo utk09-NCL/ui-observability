@@ -63,31 +63,34 @@ export class ConsoleSink {
     if (!this.accepts(level)) {
       return;
     }
-    // Prevents throws in environments where console is undefined. Absent in a worker
-    // realm stripped of it.
+    // Guard against a missing console. Some worker realms do not define it.
     if (typeof console === "undefined") {
       return;
     }
 
-    // The namespace goes in as a %s argument. A %o or %c in it then prints as text.
+    // Pass the namespace as a %s argument. Then a %o or %c in the namespace prints as text.
     const prefix = `%c[%s]%c ${level}`;
     const method = METHOD[level];
 
-    // A host can replace console with instrumented methods that throw. Unguarded,
-    // the mirror takes down the caller's log call.
-    this.diagnostics.guard("handler.threw", `mirroring to console.${method}`, () => {
-      const details: unknown[] = [];
+    // A host can replace console methods with methods that throw. The guard stops that
+    // error from breaking the log call of the caller.
+    this.diagnostics.guard(
+      "handler.threw",
+      `The library could not print to console.${method}.`,
+      () => {
+        const details: unknown[] = [];
 
-      if (error !== undefined) {
-        details.push(error);
-      }
+        if (error !== undefined) {
+          details.push(error);
+        }
 
-      // Devtools keeps a reference to each logged object. A copy releases the caller's object.
-      if (payload !== undefined) {
-        details.push(sanitize(payload, RECORD_LIMITS));
-      }
+        // Devtools keeps a reference to each logged object. A copy releases the caller's object.
+        if (payload !== undefined) {
+          details.push(sanitize(payload, RECORD_LIMITS, this.diagnostics));
+        }
 
-      console[method](prefix, CONSOLE_PREFIX_STYLE, namespace, "", message, ...details);
-    });
+        console[method](prefix, CONSOLE_PREFIX_STYLE, namespace, "", message, ...details);
+      },
+    );
   }
 }

@@ -1,46 +1,46 @@
 // src/core/breadcrumbs.ts
 //
-// Ring buffer holding a bounded chronological trail of recent user and system
-// events. Crumbs are never sent as records. They reach the backend on an error
-// record's payload. Nothing here throws.
+// This ring buffer keeps a bounded trail of recent user and system events in time order.
+// The buffer does not send breadcrumbs as records. Breadcrumbs go to the backend in the
+// payload of an error record. No function in this file throws.
 
 import { BREADCRUMB_MIN_CAPACITY } from "../constants";
 
-/** Category classification for breadcrumb events. */
+/** Category of a breadcrumb event. */
 export type BreadcrumbCategory =
   "log" | "action" | "event" | "click" | "navigation" | "http" | "console";
 
-/** Lightweight event summary recorded prior to errors. */
+/** Short summary of one event that the buffer keeps for an error record. */
 export interface Breadcrumb {
   /** Timestamp in epoch milliseconds. */
   t: number;
-  /** Event category classification. */
+  /** Category of the event. */
   category: BreadcrumbCategory;
-  /** Human-readable event description. */
+  /** Description of the event for a person to read. */
   message: string;
   /** Optional contextual metadata. */
   data?: Record<string, unknown>;
 }
 
-/** Bounded circular ring buffer storing recent breadcrumb events in chronological order. */
+/** Ring buffer of fixed size. It keeps recent breadcrumbs in time order. */
 export class BreadcrumbBuffer {
-  /** Internal storage array for the ring buffer. */
+  /** Storage array of the ring buffer. */
   private buffer: (Breadcrumb | undefined)[];
 
   /** Next write index in the circular buffer. */
   private pointer = 0;
 
   /**
-   * Indicates whether the buffer has wrapped around its capacity. The pointer alone
-   * cannot separate an unwritten ring from one wrapped exactly to the start.
+   * It is true after the pointer wraps past the capacity. The pointer alone cannot
+   * tell an empty ring from a ring that wrapped back to index 0.
    */
   private filled = false;
 
-  /** Maximum number of breadcrumbs retained in memory. */
+  /** Maximum number of breadcrumbs that the buffer keeps. */
   private readonly capacity: number;
 
   /**
-   * @param capacity Maximum breadcrumb capacity, clamped to minimum allowed size.
+   * @param capacity Maximum number of breadcrumbs. A smaller value changes to the minimum size.
    */
   constructor(capacity: number) {
     this.capacity = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
@@ -48,8 +48,8 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Appends a breadcrumb, overwriting the oldest entry when capacity is reached.
-   * @param crumb Breadcrumb event to append.
+   * Adds a breadcrumb. When the buffer is full, the new breadcrumb replaces the oldest one.
+   * @param crumb Breadcrumb to add.
    */
   push(crumb: Breadcrumb): void {
     this.buffer[this.pointer] = crumb;
@@ -61,7 +61,7 @@ export class BreadcrumbBuffer {
 
   /**
    * Returns all stored breadcrumbs ordered from oldest to newest.
-   * @returns Chronological list of breadcrumbs.
+   * @returns List of breadcrumbs in time order.
    */
   snapshot(): Breadcrumb[] {
     const ordered = this.filled
@@ -70,7 +70,7 @@ export class BreadcrumbBuffer {
     return ordered.filter((crumb): crumb is Breadcrumb => crumb !== undefined);
   }
 
-  /** Clears all stored breadcrumbs and resets buffer state. */
+  /** Removes all breadcrumbs and resets the buffer. */
   clear(): void {
     this.buffer = new Array<Breadcrumb | undefined>(this.capacity);
     this.pointer = 0;

@@ -1,14 +1,14 @@
 // src/storage/memory-storage.ts
 //
-// In-memory fallback storage adapter for volatile batch retention during offline
-// periods. A reload loses everything here. Last resort adapter.
+// This module keeps batches in volatile memory during offline periods. A reload loses all of
+// them. This adapter is the last fallback.
 
 import { STORAGE_NAME_MEMORY } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 
 /**
- * Sums the total count of records contained across an array of batches.
+ * Returns the total record count of the batches.
  * @param batches Batches to measure.
  * @returns Total record count.
  */
@@ -16,12 +16,12 @@ function countRecords(batches: LogBatch[]): number {
   return batches.reduce((total, batch) => total + batch.records.length, 0);
 }
 
-/** In-memory StorageAdapter implementation retaining batches in volatile memory. */
+/** This StorageAdapter keeps batches in volatile memory. */
 export class MemoryStorage implements StorageAdapter {
-  /** Storage adapter strategy name. */
+  /** This field holds the storage strategy name. */
   readonly name = STORAGE_NAME_MEMORY;
 
-  /** Internal array holding batches in chronological FIFO order. */
+  /** This array holds the batches in FIFO order. */
   private batches: LogBatch[] = [];
 
   /**
@@ -34,7 +34,7 @@ export class MemoryStorage implements StorageAdapter {
   ) {}
 
   /**
-   * Appends a batch to memory storage and applies retention pruning.
+   * Appends a batch and applies retention pruning.
    * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
@@ -43,7 +43,7 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Retrieves up to limit batches in chronological order without deletion.
+   * Returns up to `limit` batches in FIFO order. It does not delete them.
    * @param limit Maximum number of batches to retrieve.
    * @returns Promise resolving to an array of batches.
    */
@@ -52,7 +52,7 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Deletes a batch from memory storage by batch ID.
+   * Deletes the batch with the given ID.
    * @param id Batch identifier.
    */
   remove(id: string): Promise<void> {
@@ -61,7 +61,7 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Updates delivery attempt count for a stored batch.
+   * Sets the delivery attempt count of a stored batch.
    * @param id Batch identifier.
    * @param attempts New absolute attempt count.
    */
@@ -74,7 +74,8 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Removes expired batches and evicts oldest entries exceeding capacity limits.
+   * Removes expired batches. It then removes the oldest batches above the
+   * capacity limit.
    * @returns Promise resolving to prune summary metrics.
    */
   prune(): Promise<PruneResult> {
@@ -103,20 +104,20 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Returns total count of stored batches.
+   * Returns the number of stored batches.
    * @returns Promise resolving to batch count.
    */
   count(): Promise<number> {
     return Promise.resolve(this.batches.length);
   }
 
-  /** Clears all stored batches from memory. */
+  /** This method deletes all stored batches. */
   clear(): Promise<void> {
     this.batches = [];
     return Promise.resolve();
   }
 
-  /** Clears stored batches on storage teardown. */
+  /** This method deletes all stored batches when the storage closes. */
   close(): Promise<void> {
     this.batches = [];
     return Promise.resolve();

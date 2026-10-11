@@ -1,14 +1,14 @@
 // src/transport/compression.ts
 //
-// Compresses payloads using the native CompressionStream API when available.
-// Returns null rather than raw text. A non-gzip body under Content-Encoding: gzip
-// is a 400 the server cannot explain.
+// This module compresses payloads with the native CompressionStream API. It returns null
+// when the API is absent. It does not return raw text. The server rejects a non-gzip body
+// that has a "Content-Encoding: gzip" header with a 400 status.
 
 import { ENCODING_GZIP } from "../constants";
 
 /**
- * Compresses a string into a gzip-encoded byte array using CompressionStream.
- * Returns non-shared ArrayBuffer backed Uint8Array compatible with fetch BodyInit.
+ * Compresses a string to gzip bytes with CompressionStream. The result is a
+ * Uint8Array on a non-shared ArrayBuffer. fetch accepts this result as BodyInit.
  * @param text Raw serialized payload to compress.
  * @returns Promise resolving to compressed Uint8Array, or null if CompressionStream is unsupported.
  */

@@ -1,7 +1,7 @@
 // src/transport/exit-flush.ts
 //
-// Synchronous exit-flush handler delivering buffered batches via sendBeacon, keepalive fetch, or emergency storage.
-// Runs during unload. Nothing awaits.
+// This module flushes buffered batches on exit. It uses sendBeacon, a keepalive fetch or
+// emergency storage. It runs during unload. No code in it awaits.
 
 import {
   BEACON_LIMIT_BYTES,
@@ -17,64 +17,67 @@ import { saveToEmergencyQueue } from "../storage/emergency-queue";
 import { estimateBytes } from "../utils/sanitize";
 import { serializerFor } from "./serializers/select";
 
-/** Document lifecycle event or manual action that triggered an exit flush. */
+/** This type names the lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
 /**
- * The answer of the browser to a beacon. `refused` means the in-flight budget is
- * full. `unavailable` means the host has no usable sendBeacon.
+ * This type holds the answer of the browser to a beacon. `refused` means that the in-flight
+ * budget is full. `unavailable` means that the host has no usable sendBeacon.
  */
 type BeaconOutcome = "sent" | "refused" | "unavailable";
 
-/** Structural interface for OpenFin window event subscription. */
+/** This interface describes the OpenFin window event API that the flush uses. */
 interface FinMeLike {
   on?: (event: string, listener: () => void) => void;
   removeListener?: (event: string, listener: () => void) => void;
 }
 
-/** Global environment extended with optional OpenFin runtime APIs. */
+/** This type adds the optional OpenFin runtime API to globalThis. */
 type OpenFinGlobal = typeof globalThis & { fin?: { me?: FinMeLike } };
 
-/** Structural type for inspecting navigator.sendBeacon without restoring global DOM assertions. */
+/** This type reads navigator.sendBeacon without global DOM type assertions. */
 interface BeaconGlobal {
   navigator?: { sendBeacon?: (url: string, data: Blob) => boolean };
 }
 
-/** Injected dependencies required by ExitFlush. */
+/** This interface lists the dependencies of ExitFlush. */
 export interface ExitFlushDeps {
-  /** Active configuration instance. */
+  /** This field holds the active configuration. */
   config: ResolvedConfig;
-  /** Diagnostics reporter instance. */
+  /** This field holds the diagnostics reporter. */
   diagnostics: Diagnostics;
-  /** Callback draining all pending buffered and unconfirmed batches into a single LogBatch. */
+  /** This callback drains all buffered and unconfirmed batches into one LogBatch. */
   drainForExit: () => LogBatch | null;
-  /** Callback draining the buffered records only. An in-flight batch stays where it is. */
+  /** This callback drains only the buffered records. It does not touch an in-flight batch. */
   drainPending: () => LogBatch | null;
 }
 
-/** Flushes pending telemetry on document unload using sendBeacon, keepalive fetch, or emergency storage. */
+/**
+ * This class flushes pending telemetry on document unload. It uses sendBeacon, a keepalive
+ * fetch or emergency storage.
+ */
 export class ExitFlush {
-  /** Indicates whether unload listeners are currently active. */
+  /** This flag is true while the unload listeners are attached. */
   private installed = false;
 
-  /** Handles visibilitychange events when the document becomes hidden. */
+  /** This listener flushes on visibilitychange when the document becomes hidden. */
   private readonly onVisibility = (): void => {
     if (document.visibilityState === "hidden") {
       this.flush("hidden");
     }
   };
 
-  /** Handles window pagehide events. */
+  /** This listener flushes on the window pagehide event. */
   private readonly onPageHide = (): void => {
     this.flush("pagehide");
   };
 
-  /** Handles document freeze events. */
+  /** This listener flushes on the document freeze event. */
   private readonly onFreeze = (): void => {
     this.flush("freeze");
   };
 
-  /** Handles OpenFin close-requested events. */
+  /** This listener flushes on the OpenFin close-requested event. */
   private readonly onOpenFinClose = (): void => {
     this.flush("openfin-close");
   };
@@ -84,7 +87,7 @@ export class ExitFlush {
    */
   constructor(private readonly deps: ExitFlushDeps) {}
 
-  /** Attaches unload listeners across document, window, and OpenFin environments. */
+  /** This method attaches the unload listeners to the document, the window and OpenFin. */
   install(): void {
     if (this.installed || typeof addEventListener === "undefined") {
       return;
@@ -92,7 +95,7 @@ export class ExitFlush {
     this.installed = true;
 
     if (typeof document !== "undefined") {
-      // visibilitychange and freeze target the document; pagehide targets window.
+      // visibilitychange and freeze fire on the document. pagehide fires on the window.
       document.addEventListener("visibilitychange", this.onVisibility);
       document.addEventListener("freeze", this.onFreeze);
     }
@@ -100,12 +103,16 @@ export class ExitFlush {
     addEventListener("pagehide", this.onPageHide);
 
     const me = (globalThis as OpenFinGlobal).fin?.me;
-    this.deps.diagnostics.guard("openfin.unavailable", "subscribing to close-requested", () => {
-      me?.on?.("close-requested", this.onOpenFinClose);
-    });
+    this.deps.diagnostics.guard(
+      "openfin.unavailable",
+      "The library could not subscribe to close-requested.",
+      () => {
+        me?.on?.("close-requested", this.onOpenFinClose);
+      },
+    );
   }
 
-  /** Removes all registered unload listeners and subscriptions. */
+  /** This method removes all unload listeners and subscriptions. */
   uninstall(): void {
     if (!this.installed) {
       return;
@@ -120,15 +127,19 @@ export class ExitFlush {
     removeEventListener("pagehide", this.onPageHide);
 
     const me = (globalThis as OpenFinGlobal).fin?.me;
-    this.deps.diagnostics.guard("openfin.unavailable", "releasing close-requested", () => {
-      me?.removeListener?.("close-requested", this.onOpenFinClose);
-    });
+    this.deps.diagnostics.guard(
+      "openfin.unavailable",
+      "The library could not unsubscribe from close-requested.",
+      () => {
+        me?.removeListener?.("close-requested", this.onOpenFinClose);
+      },
+    );
   }
 
   /**
-   * Synchronously drains pending records and transmits via beacon, keepalive, or
-   * emergency storage. Never awaits and never throws. The caller is an unload
-   * listener.
+   * Drains pending records synchronously. It sends them with a beacon, a
+   * keepalive fetch or emergency storage. It never awaits and never throws. The caller is an
+   * unload listener.
    * @param reason Trigger reason code.
    */
   flush(reason: ExitReason): void {
@@ -146,22 +157,21 @@ export class ExitFlush {
 
     const serialized = diagnostics.guard(
       "transport.serialize_failed",
-      `the ${reason} exit flush could not serialize its batch`,
+      `The ${reason} exit flush could not serialize its batch.`,
       () => serializerFor(this.deps.config.serializer).serialize(batch.records),
     );
     if (!serialized) {
       return;
     }
 
-    // Parks oversized payloads in synchronous localStorage queue. localStorage is
-    // the only storage writable without awaiting.
+    // Save an oversized payload to the synchronous localStorage queue. localStorage is the
+    // only storage that accepts a write without await.
     if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
       saveToEmergencyQueue(batch, diagnostics);
       return;
     }
 
-    // Passes batch ID and reason via query parameters. sendBeacon cannot set
-    // headers.
+    // Send the batch ID and the reason as query parameters. sendBeacon cannot set headers.
     url.searchParams.set(QUERY_PARAM_BATCH_ID, batch.id);
     url.searchParams.set(QUERY_PARAM_EXIT_REASON, reason);
 
@@ -172,7 +182,7 @@ export class ExitFlush {
     }
 
     // A refusal means the in-flight budget is full. A keepalive fetch uses the
-    // same budget and fails the same way. The document closes, so nothing retries.
+    // same budget and fails the same way. The document closes. No code retries the send.
     if (outcome === "refused") {
       saveToEmergencyQueue(batch, diagnostics);
       return;
@@ -182,9 +192,9 @@ export class ExitFlush {
   }
 
   /**
-   * Selects the drain for the reason. `hidden` occurs at each tab switch, and the
-   * document continues to run. Taken here, an in-flight batch goes out a second
-   * time under a new id, which the server cannot deduplicate.
+   * Selects the drain for the reason. `hidden` occurs at each tab switch. The
+   * document continues to run after it. A drain of the in-flight batch here sends it again
+   * with a new id. The server cannot deduplicate that second send.
    * @param reason Trigger reason code.
    * @returns Combined LogBatch, or null if no records are pending.
    */
@@ -193,7 +203,7 @@ export class ExitFlush {
   }
 
   /**
-   * Resolves and parses the destination endpoint URL.
+   * Parses the configured endpoint URL.
    * @returns URL instance or null if missing or invalid.
    */
   private endpointUrl(): URL | null {
@@ -204,7 +214,7 @@ export class ExitFlush {
 
     const url = this.deps.diagnostics.guard(
       "config.invalid",
-      `the exit flush cannot use endpoint ${endpoint}`,
+      `The exit flush cannot use the endpoint ${endpoint}.`,
       () => new URL(endpoint),
     );
 
@@ -212,7 +222,7 @@ export class ExitFlush {
   }
 
   /**
-   * Attempts transmission via navigator.sendBeacon with text/plain payload.
+   * Sends the payload as text/plain with navigator.sendBeacon.
    * @param url Target endpoint URL with query parameters.
    * @param body Serialized payload string.
    * @returns The answer of the browser.
@@ -222,28 +232,28 @@ export class ExitFlush {
       "transport.http_error",
       "sendBeacon",
       () => {
-        // Invokes sendBeacon directly on navigator to preserve receiver context. A
-        // detached sendBeacon throws on invocation.
+        // Call sendBeacon on navigator to keep its receiver. A detached sendBeacon throws when
+        // called.
         const nav = (globalThis as BeaconGlobal).navigator;
         if (!nav?.sendBeacon) {
           return "unavailable";
         }
 
-        // Uses text/plain to avoid CORS preflights during document unload. A preflight
-        // started during unload rarely completes, dropping the beacon silently.
+        // Use text/plain to prevent a CORS preflight during unload. A preflight during unload
+        // usually does not complete. The browser then drops the beacon without an error.
         const accepted = nav.sendBeacon(url, new Blob([body], { type: CONTENT_TYPE_TEXT_PLAIN }));
         return accepted ? "sent" : "refused";
       },
     );
 
-    // A throw is not a refusal: the method is present but unusable. The keepalive
-    // fetch can still succeed.
+    // A throw is not a refusal. The method is present but unusable. The keepalive fetch can
+    // still succeed.
     return outcome ?? "unavailable";
   }
 
   /**
-   * Fallback POST delivery using fetch with keepalive: true. keepalive outlives the
-   * document. A plain fetch is cancelled as the page goes.
+   * Sends a fallback POST with fetch and `keepalive: true`. A keepalive request
+   * continues after the document closes. The browser cancels a plain fetch at page close.
    * @param url Target endpoint URL.
    * @param body Serialized payload string.
    * @param reason Trigger reason code.
@@ -251,7 +261,7 @@ export class ExitFlush {
   private keepaliveFetch(url: string, body: string, reason: ExitReason): void {
     const { config, diagnostics } = this.deps;
 
-    diagnostics.guard("transport.http_error", "the keepalive fetch fallback", () => {
+    diagnostics.guard("transport.http_error", "The keepalive fetch fallback failed.", () => {
       void fetch(url, {
         method: "POST",
         body,
@@ -259,7 +269,7 @@ export class ExitFlush {
         credentials: config.credentials,
         keepalive: true,
       }).catch((error: unknown) => {
-        diagnostics.report("transport.http_error", "the exit flush failed", { reason }, error);
+        diagnostics.report("transport.http_error", "The exit flush failed.", { reason }, error);
       });
     });
   }

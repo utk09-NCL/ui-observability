@@ -162,49 +162,53 @@ describe("detectPlatform", () => {
 
 describe("isTopLevel", () => {
   it("is true in a document that is its own top", () => {
-    expect(isTopLevel()).toBe(true);
+    expect(isTopLevel(diag())).toBe(true);
   });
 
   it("is false when framed", () => {
     vi.spyOn(window, "top", "get").mockReturnValue({} as Window);
 
-    expect(isTopLevel()).toBe(false);
+    expect(isTopLevel(diag())).toBe(false);
   });
 
-  it("is false when reading window.top throws, which itself proves we are framed", () => {
+  it("is false and counts the fault when reading window.top throws", () => {
+    const diagnostics = diag();
     vi.spyOn(window, "top", "get").mockImplementation(() => {
       throw new DOMException("blocked a frame", "SecurityError");
     });
 
-    expect(isTopLevel()).toBe(false);
+    expect(isTopLevel(diagnostics)).toBe(false);
+    expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
   });
 
   it("is false where there is no window at all", () => {
     vi.stubGlobal("window", undefined);
 
-    expect(isTopLevel()).toBe(false);
+    expect(isTopLevel(diag())).toBe(false);
   });
 });
 
 describe("currentUrl", () => {
   it("reads the location fresh", () => {
-    expect(currentUrl()).toBe(location.href);
+    expect(currentUrl(diag())).toBe(location.href);
   });
 
   it("is empty where there is no location", () => {
     vi.stubGlobal("location", undefined);
 
-    expect(currentUrl()).toBe("");
+    expect(currentUrl(diag())).toBe("");
   });
 
-  it("is empty when reading the location throws", () => {
+  it("is empty and counts the fault when reading the location throws", () => {
+    const diagnostics = diag();
     vi.stubGlobal("location", {
       get href(): string {
         throw new DOMException("blocked", "SecurityError");
       },
     });
 
-    expect(currentUrl()).toBe("");
+    expect(currentUrl(diagnostics)).toBe("");
+    expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
   });
 });
 

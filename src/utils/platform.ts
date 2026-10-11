@@ -1,8 +1,8 @@
 // src/utils/platform.ts
 //
 // Detects host platform capabilities, OpenFin container metadata, and worker
-// execution realms. Cached: nothing here changes for the lifetime of a realm.
-// Order matters, a webview is also a browser and is tested first.
+// execution realms. The module caches the result. The result does not change during
+// the life of a realm. A webview is also a browser. Test for a webview first.
 
 import {
   ANDROID_WEBVIEW_UA_PATTERN,
@@ -101,7 +101,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
     isWorker = true;
   } else if (finMe !== undefined) {
     platform = OPENFIN_UA_PATTERN.test(ua) ? "openfin" : "openfin_web";
-    diagnostics.guard("openfin.unavailable", "reading fin.me.identity", () => {
+    diagnostics.guard("openfin.unavailable", "The library could not read fin.me.identity.", () => {
       const identity = finMe.identity;
       openfinUuid = identity?.uuid;
       openfinName = identity?.name;
@@ -120,7 +120,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
     openfinName,
     userAgent: ua,
     isWorker,
-    isTopLevelDocument: isTopLevel(),
+    isTopLevelDocument: isTopLevel(diagnostics),
   };
   return cached;
 }
@@ -141,34 +141,40 @@ function isWebView(ua: string): boolean {
 
 /**
  * Determines whether the current window is the top-level browsing context.
+ * @param diagnostics Diagnostics reporter. It counts a blocked read of window.top.
  * @returns True if top-level, false if framed or inaccessible due to cross-origin boundaries.
  */
-export function isTopLevel(): boolean {
+export function isTopLevel(diagnostics: Diagnostics): boolean {
   if (typeof window === "undefined") {
     return false;
   }
   try {
     return window.self === window.top;
   } catch {
+    // A cross-origin parent blocks the read. That proves a frame. Count it. Do not report it.
+    diagnostics.count("platform.api_blocked");
     return false;
   }
 }
 
 /**
  * Retrieves the current document URL without caching.
+ * @param diagnostics Diagnostics reporter. It counts a blocked read of location.href.
  * @returns Current location.href or empty string.
  */
-export function currentUrl(): string {
+export function currentUrl(diagnostics: Diagnostics): string {
   try {
     return typeof location !== "undefined" ? location.href : "";
   } catch {
+    // A sandbox can block the read. Count the fault. A report on each record is noise.
+    diagnostics.count("platform.api_blocked");
     return "";
   }
 }
 
 /**
  * Drops the query string and fragment from a URL.
- * A string cut, not a URL parse: a relative request target has no base to parse against.
+ * It cuts the string and does not parse a URL. A relative request target has no base URL.
  * @param url Absolute or relative URL.
  * @returns The URL up to the first "?" or "#".
  */

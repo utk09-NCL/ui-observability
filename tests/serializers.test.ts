@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { Diagnostics } from "../src/core/diagnostics";
 import { type LogBatch, splitBatch } from "../src/models/batch";
 import type { LogRecord } from "../src/models/log-record";
 import { ecsSerializer } from "../src/transport/serializers/ecs";
@@ -243,7 +244,7 @@ describe("splitBatch", () => {
   });
 
   it("halves a batch and gives each half a new id", () => {
-    const halves = splitBatch(batchOf(5));
+    const halves = splitBatch(batchOf(5), new Diagnostics(vi.fn(), 0));
     expect(halves).not.toBeNull();
     const [first, second] = halves!;
 
@@ -258,8 +259,8 @@ describe("splitBatch", () => {
   });
 
   it("gives up on a single record, because splitting cannot help", () => {
-    expect(splitBatch(batchOf(1))).toBeNull();
-    expect(splitBatch(batchOf(0))).toBeNull();
+    expect(splitBatch(batchOf(1), new Diagnostics(vi.fn(), 0))).toBeNull();
+    expect(splitBatch(batchOf(0), new Diagnostics(vi.fn(), 0))).toBeNull();
   });
 });
 

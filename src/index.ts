@@ -1,6 +1,7 @@
 // src/index.ts
 //
-// Public library entry point exporting facade APIs, logging primitives, and types.
+// This file is the public entry point of the library. It exports the facade API,
+// logging primitives, and types.
 
 import type { WorkerLike } from "./bus/links";
 import type { Journey } from "./core/journey";
@@ -18,15 +19,16 @@ export type { LogSerializer, SerializedBatch } from "./models/serializer";
 export type { StorageAdapter } from "./models/storage";
 
 /**
- * Cached logger instances keyed by namespace. Scoped loggers are never cached.
+ * Cached logger instances keyed by namespace. This map never holds a scoped logger.
  * A logger finds the runtime on each write.
  * The cache stays valid across configure() and shutdown().
  */
 const loggers = new Map<string, OneLogger>();
 
 /**
- * Retrieves the active runtime. After shutdown(), it returns the stopped runtime, which does nothing.
- * Before the first configure(), it starts a runtime with default settings.
+ * Retrieves the active runtime. After shutdown(), it returns the stopped runtime.
+ * The stopped runtime does nothing. Before the first configure(), it starts a runtime
+ * with default settings.
  * @returns Runtime instance.
  */
 function requireRuntime(): ObservabilityRuntime {
@@ -35,7 +37,7 @@ function requireRuntime(): ObservabilityRuntime {
     return runtime;
   }
 
-  // Configures implicit runtime to prevent throws on unconfigured log calls.
+  // Start a default runtime. A log call before configure() then does not throw.
   return ObservabilityRuntime.configure({});
 }
 
@@ -54,7 +56,7 @@ export function configure(config: Partial<ObservabilityConfig>): void {
  * @returns Cached OneLogger instance, or a new one when options are given.
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
-  // Caching a per-call scopedContext would hold it for the document lifetime.
+  // Do not cache a scoped logger. The cache keeps its scopedContext for the life of the document.
   if (options) {
     return new OneLogger(requireRuntime, namespace, options);
   }
@@ -186,7 +188,7 @@ export function timeAsync<T>(
 }
 
 /**
- * Sets a key-value pair on ambient context included in subsequent records.
+ * Sets a key-value pair on the ambient context. All later records include it.
  * @param key Attribute key.
  * @param value Attribute value.
  */
@@ -244,7 +246,7 @@ export function getJourneyToken(): string | undefined {
 /**
  * Adopts a serialized journey token into this application realm.
  * @param token Serialized journey token.
- * @returns True if token was valid and successfully adopted.
+ * @returns True if the token is valid and the runtime adopts it.
  */
 export function adoptJourney(token: string): boolean {
   return requireRuntime().journey.adopt(token, "manual", true);
@@ -273,7 +275,7 @@ export function getTraceHeaders(): Record<string, string> {
 
 /**
  * Flushes all pending log batches across pipeline streams.
- * @returns Promise resolving once queued batches are processed.
+ * @returns Promise that resolves after the pipeline processes the queued batches.
  */
 export function flush(): Promise<void> {
   return requireRuntime().flush();
@@ -281,7 +283,8 @@ export function flush(): Promise<void> {
 
 /**
  * Counts the batches waiting in storage for delivery.
- * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
+ * @returns Promise resolving to the number of stored batches. A forwarder reports 0.
+ * A forwarder does not store batches.
  */
 export function getQueueDepth(): Promise<number> {
   return requireRuntime().queueDepth();
@@ -296,7 +299,7 @@ export function getDiagnosticCounters(): Record<string, number> {
 }
 
 /**
- * Flushes pending records and tears down all runtime subsystems.
+ * Flushes pending records and stops all runtime subsystems.
  * @returns Promise resolving once shutdown completes.
  */
 export async function shutdown(): Promise<void> {

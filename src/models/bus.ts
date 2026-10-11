@@ -1,6 +1,6 @@
 // src/models/bus.ts
 //
-// Wire protocol types, message definitions, and envelope encoding for cross-realm bus communication.
+// Protocol types, message definitions, and envelope encoding for bus messages between realms.
 
 import { BUS_PROTOCOL } from "../constants";
 import type { Journey } from "../core/journey";
@@ -10,9 +10,9 @@ import type { LogRecord } from "./log-record";
 export type BusRole = "sender" | "forwarder";
 
 /**
- * Transport channel classification used to route incoming and outgoing bus
- * messages. If `receive` switches on the message alone and cannot tell the
- * channels apart, a same-origin iframe looks like a duplicated tab.
+ * Kind of transport channel. The bus uses it to route incoming and outgoing messages.
+ * Without it, `receive` cannot tell the channels apart. Then a same-origin iframe
+ * looks like a duplicated tab.
  */
 export type LinkKind =
   /** Synchronous call into a same-origin parent runtime. */
@@ -34,19 +34,18 @@ export type LinkKind =
 export interface MessageSource {
   /** Inbound transport channel kind. */
   link: LinkKind;
-  /** `event.origin` for `parent` and `children`; otherwise `"same-origin"` or `"openfin"`. */
+  /** `event.origin` for `parent` and `children`. Other links use `"same-origin"` or `"openfin"`. */
   origin: string;
 }
 
 /** Discriminated union of control and telemetry payload messages. */
 export type BusMessage =
-  /** Handshake discovery announcement from a booting forwarder. */
+  /** Handshake discovery announcement from a starting forwarder. */
   | { t: "hello"; from: string; tabId: string }
   /**
-   * Handshake response acknowledging an upstream owner relationship. Addressed
-   * through `to`: a welcome published over InterApplicationBus reaches every
-   * subscriber, so an unaddressed one lets three waiting views each conclude
-   * it has found an owner of its own.
+   * Handshake response from an upstream owner. The `to` field holds the address.
+   * A welcome on InterApplicationBus goes to every subscriber. Without an address,
+   * each waiting view accepts the welcome as its own.
    */
   | { t: "welcome"; from: string; to: string; tabId: string }
   /** Telemetry log records forwarded to an upstream sender. */
@@ -76,10 +75,10 @@ export function envelope(message: BusMessage): BusEnvelope {
 }
 
 /**
- * Validates protocol tags and unpacks raw payloads into bus messages. A
- * document receives `message` events from every embedded thing on the page,
- * including analytics tags, video players and extensions. Without the tag
- * check a video player's message is parsed as a log record.
+ * Validates the protocol tag and unpacks a raw payload into a bus message. A
+ * document gets `message` events from all embedded content on the page. This
+ * includes analytics tags, video players and extensions. Without the tag check,
+ * the bus parses a message from a video player as a log record.
  * @param data Raw payload received over a transport link.
  * @returns Validated message, or null if payload is invalid or unrecognized.
  */

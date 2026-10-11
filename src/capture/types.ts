@@ -9,8 +9,8 @@ import type { MetricType } from "../models/log-record";
 import type { TraceEngine } from "../utils/tracing";
 
 /**
- * Logging interface consumed by auto-capture modules. Naming the runtime class
- * here instead would cycle: the runtime installs the capture modules.
+ * Logging interface that auto-capture modules use. A reference to the runtime class
+ * here causes an import cycle. The runtime installs the capture modules.
  */
 export interface CaptureLogger {
   /**
@@ -61,14 +61,14 @@ export interface CaptureLogger {
 
 /**
  * Capture work that runs one time for each document, not one time for each
- * install. A reconfigure builds new capture instances, so instance state cannot
- * hold this. web-vitals has no unsubscribe, and a second subscription reports
- * each metric two times.
+ * install. A reconfigure builds new capture instances. Thus instance state
+ * cannot hold these flags. web-vitals has no unsubscribe. A second subscription
+ * reports each metric two times.
  */
 export interface CaptureOnce {
-  /** True once the web-vitals reporters are subscribed. */
+  /** True after the library subscribes the web-vitals reporters. */
   webVitals: boolean;
-  /** True once navigation timing has been reported. */
+  /** True after the library reports navigation timing. */
   navigationTiming: boolean;
 }
 
@@ -93,9 +93,9 @@ export interface Capture {
   /** Module identifier used in diagnostics. */
   readonly name: string;
   /**
-   * Attaches instrumentation listeners and patches target APIs. Patching an
-   * already patched function chains the wrapper and doubles every record, so a
-   * second call must do nothing.
+   * Attaches instrumentation listeners and patches target APIs. A second patch on a
+   * patched function adds a second wrapper and doubles each record. A second call
+   * must do nothing.
    */
   install(): void;
   /** Restores native APIs and removes registered listeners. */

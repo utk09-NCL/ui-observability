@@ -1,7 +1,7 @@
 // src/constants.ts
 //
-// All limits, thresholds, timing windows, storage keys, patterns, and
-// defaults used by the library.
+// Defines all limits, thresholds, timing windows, storage keys, patterns, and
+// defaults that the library uses.
 
 import type { ResolvedConfig } from "./models/config";
 import type { LogLevel, LogType } from "./models/log-record";
@@ -18,7 +18,10 @@ export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 // Diagnostics
 // ----------------------------------
 
-/** Throttle window per diagnostic code, in milliseconds. Limits how often an error loop can spam the handler. */
+/**
+ * Throttle window for each diagnostic code, in milliseconds. It limits how often an error
+ * loop calls the handler.
+ */
 export const DIAGNOSTIC_THROTTLE_MS = 1000;
 
 // ----------------------------------
@@ -110,7 +113,7 @@ export const BYTES_PER_KEY_OVERHEAD = 4;
 // ----------------------------------
 
 /**
- * Log level to OpenTelemetry severity number.
+ * Maps each log level to its OpenTelemetry severity number.
  * @see {@link LEVEL_ORDER}
  */
 export const SEVERITY_NUMBER: Record<LogLevel, number> = {
@@ -132,13 +135,13 @@ export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 // Attribute and resource keys
 // ----------------------------------
 //
-// Attribute and resource key names records carry on the wire, following
-// OpenTelemetry conventions. `uiobs.` marks this library's own fields.
+// Attribute and resource key names that records carry in the payload. The names
+// follow OpenTelemetry conventions. The `uiobs.` prefix marks the fields of this library.
 
 /** Record kind attribute key. */
 export const ATTR_LOG_TYPE = "log.type";
 
-/** Record sequence number within its context, from zero. */
+/** Record sequence number in its context. It starts at 1. */
 export const ATTR_LOG_SEQ = "log.seq";
 
 /** Logger namespace attribute key. */
@@ -148,7 +151,8 @@ export const ATTR_APP_NAMESPACE = "app.namespace";
 export const ATTR_PAGE_URL = "page.url";
 
 /**
- * HTTP request URL attribute key, set by network capture. Don't reuse `ATTR_PAGE_URL`; it would overwrite the request's target.
+ * HTTP request URL attribute key. Network capture sets it. Do not reuse `ATTR_PAGE_URL`.
+ * The page URL overwrites the request target under that key.
  * @see {@link ATTR_PAGE_URL}
  */
 export const ATTR_URL_FULL = "url.full";
@@ -166,7 +170,7 @@ export const ATTR_JOURNEY_PARENT_ID = "journey.parent_id";
 export const ATTR_SANITIZE_FAILED = "uiobs.sanitize_failed";
 
 /**
- * Marks a record whose attributes were dropped for exceeding the byte budget.
+ * Marks a record when the library drops its attributes because they exceed the byte budget.
  * @see {@link ATTR_ATTRIBUTES_BYTES}
  */
 export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
@@ -232,10 +236,11 @@ export const RESOURCE_OPENFIN_NAME = "openfin.name";
 export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
 
 /**
- * Value of `telemetry.sdk.version`. A literal, not read from package.json. Bump by hand alongside package.json.
+ * Value of `telemetry.sdk.version`. The code does not read it from package.json.
+ * Change it by hand when you change the version in package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.5.0";
+export const TELEMETRY_SDK_VERSION = "0.6.0";
 
 /**
  * Value of `telemetry.sdk.language`.
@@ -254,8 +259,8 @@ export const SERIALIZER_NAME_OTLP = "otlp";
 export const SERIALIZER_NAME_ECS = "ecs";
 
 /**
- * ECS `log.level` names that differ from the lowercased severity text. ECS spells
- * the warning level in full; every other level matches once lowercased.
+ * ECS `log.level` names that differ from the lowercase severity text. ECS spells
+ * the warning level in full. All other levels match in lowercase.
  * @see {@link SERIALIZER_NAME_ECS}
  */
 export const ECS_LEVEL_NAMES: Partial<Record<LogLevel, string>> = { WARN: "warning" };
@@ -306,10 +311,10 @@ export const HTTP_UNAUTHORIZED = 401;
 /** 403, valid credentials but access denied. */
 export const HTTP_FORBIDDEN = 403;
 
-/** 408, the server closed the connection after a timeout. Retryable. */
+/** 408, the server closed the connection after a timeout. The transport can retry. */
 export const HTTP_REQUEST_TIMEOUT = 408;
 
-/** 413, payload too large; batch must be split. */
+/** 413, payload too large. The transport must split the batch. */
 export const HTTP_PAYLOAD_TOO_LARGE = 413;
 
 /** 429, backpressure. */
@@ -331,7 +336,7 @@ export const MILLIS_PER_SECOND = 1000;
 /** Max exit payload size, in bytes (`sendBeacon`/`fetch(keepalive)` shared budget). */
 export const BEACON_LIMIT_BYTES = 60_000;
 
-/** Content type for an exit payload. CORS-safelisted, avoids a preflight. */
+/** Content type for an exit payload. It is CORS-safelisted and does not cause a preflight. */
 export const CONTENT_TYPE_TEXT_PLAIN = "text/plain;charset=UTF-8";
 
 /**
@@ -347,13 +352,13 @@ export const QUERY_PARAM_EXIT_REASON = "uiobs_exit";
 // Storage
 // ----------------------------------
 
-/** localStorage key prefix for a parked batch. */
+/** localStorage key prefix for a stored batch. */
 export const BATCH_STORAGE_KEY_PREFIX = "ui-observability.batch.";
 
 /** Zero-padded digit width for the creation time in a batch key. */
 export const BATCH_KEY_TIME_WIDTH = 14;
 
-/** localStorage key prefix for a batch parked by exit flush. */
+/** localStorage key prefix for a batch that exit flush stores. */
 export const EMERGENCY_STORAGE_KEY_PREFIX = "ui-observability.emergency.";
 
 /** Max exit batches held at once. */
@@ -362,21 +367,21 @@ export const EMERGENCY_MAX_ENTRIES = 20;
 /** Key used to test whether localStorage accepts writes. */
 export const STORAGE_PROBE_KEY = "ui-observability.probe";
 
-/** Fraction of the store evicted on a quota error (1 in N). */
+/** Fraction of the store to evict on a quota error (1 in N). */
 export const QUOTA_EVICTION_DIVISOR = 4;
 
 /** DOMException name for a full store. */
 export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
 
 /**
- * Native IndexedDB version. It starts at 11 because Dexie, which this replaced,
- * opened the same database at ten times its own declared version. Anything below
- * 11 makes open() fail with VersionError for an existing installation and every
- * batch already stored there is stranded.
+ * Native IndexedDB version. It starts at 11. Dexie, the previous adapter, opened the
+ * same database at ten times its declared version. A version below 11 makes open()
+ * fail with VersionError for an existing installation. Then no code can read the
+ * batches in that database.
  */
 export const INDEXEDDB_SCHEMA_VERSION = 11;
 
-/** IndexedDB object store holding batches. Named by Dexie before it was removed. */
+/** IndexedDB object store that holds batches. Dexie set this name before the library removed it. */
 export const INDEXEDDB_STORE_NAME = "batches";
 
 /** Index on the batch store that orders reads by creation time. */
@@ -427,14 +432,15 @@ export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
 export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
 
 /**
- * Max whole-token length, in characters. A tripwire, not validation.
+ * Max whole-token length, in characters. It rejects an oversized token. It does not
+ * validate the token content.
  * @see {@link JOURNEY_TOKEN_NAME_MAX_CHARS}
  */
 export const JOURNEY_TOKEN_MAX_CHARS = 256;
 
 /**
- * How long to wait for `fin.me.getOptions()` before giving up on a seeded journey,
- * in milliseconds.
+ * Time to wait for `fin.me.getOptions()`, in milliseconds. After this time, the
+ * runtime continues without a seeded journey.
  * @see {@link OPENFIN_JOURNEY_CUSTOM_DATA_KEY}
  */
 export const OPENFIN_OPTIONS_TIMEOUT_MS = 2000;
@@ -499,8 +505,8 @@ export const BREADCRUMB_MIN_CAPACITY = 1;
 // Sampling
 // ----------------------------------
 //
-// FNV-1a hash constants, used to turn a sampling key into a stable 0-1
-// fraction.
+// FNV-1a hash constants. The sampler uses them to change a sampling key into a
+// stable 0-1 fraction.
 
 /** FNV-1a 32-bit offset basis. */
 export const FNV_OFFSET_BASIS = 0x811c9dc5;
@@ -522,7 +528,7 @@ export const LOG_TYPE_METRIC: LogType = "metric";
 // Bus
 // ----------------------------------
 
-/** Protocol identifier for bus envelopes. Mismatched versions are dropped. */
+/** Protocol identifier for bus envelopes. The bus drops an envelope with a different version. */
 export const BUS_PROTOCOL = "ui-observability/1";
 
 /** Global window property key used to locate a same-origin runtime instance. */
@@ -542,9 +548,9 @@ export const ERROR_STORM_MAX_PER_WINDOW = 20;
 export const ERROR_STORM_WINDOW_MS = 10_000;
 
 /**
- * Max ERROR and FATAL records admitted to the pipeline per storm window.
- * A backstop against a render loop, not a shaper: ERROR and FATAL bypass sampling,
- * and a direct logger.error call has no other limit.
+ * Max ERROR and FATAL records that the pipeline admits in each storm window.
+ * It is a safety limit for a render loop. It does not shape normal traffic.
+ * ERROR and FATAL records skip sampling. A direct logger.error call has no other limit.
  */
 export const ERROR_CEILING_MAX_PER_WINDOW = 500;
 
@@ -630,8 +636,8 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
 };
 
 /**
- * Default runtime config, before a consumer's `configure()` call.
- * Excludes `serializer`; `resolveConfig` supplies its default to avoid a circular import.
+ * Default runtime config before the consumer calls `configure()`. It excludes `serializer`.
+ * `resolveConfig` supplies that default to prevent a circular import.
  * @see {@link ResolvedConfig}
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
@@ -671,16 +677,20 @@ export const CONSOLE_DEFAULT_LEVEL: LogLevel = "DEBUG";
 // Batching
 // ----------------------------------
 
-/** Max time a partial log batch waits before it is sent, in milliseconds. */
+/** Max time a partial log batch waits before the pipeline sends it, in milliseconds. */
 export const LOG_FLUSH_INTERVAL_MS = 2000;
 
-/** Max records per log batch before it is sent early. */
+/** Max records per log batch. At this count, the pipeline sends the batch early. */
 export const LOG_BATCH_SIZE = 100;
 
-/** Max time a partial metric batch waits before it is sent, in milliseconds. Metrics batch harder than logs: higher volume, nothing waits on them. */
+/**
+ * Max time a partial metric batch waits before the pipeline sends it, in milliseconds.
+ * Metric batches wait longer than log batches. Metrics have a higher volume, and no
+ * caller waits for them.
+ */
 export const METRIC_FLUSH_INTERVAL_MS = 10_000;
 
-/** Max records per metric batch before it is sent early. */
+/** Max records per metric batch. At this count, the pipeline sends the batch early. */
 export const METRIC_BATCH_SIZE = 500;
 
 /** Max concurrent ingest requests, across both streams. */
@@ -690,7 +700,7 @@ export const MAX_CONCURRENT_REQUESTS = 2;
 // HTTP transport
 // ----------------------------------
 
-/** Max time one ingest request may take before it is aborted and retried, in milliseconds. */
+/** Max time for one ingest request, in milliseconds. Then the transport aborts and retries it. */
 export const REQUEST_TIMEOUT_MS = 15_000;
 
 /** Min payload size to compress, in bytes. */
@@ -711,8 +721,8 @@ export const STORAGE_LIMITS: StorageLimits = {
 };
 
 /**
- * Max time one storage call may take before it is treated as failed, in milliseconds.
- * A call that does not settle holds a dispatch slot or the drain flag.
+ * Max time for one storage call, in milliseconds. Then the library treats the call as failed.
+ * A call that does not settle keeps a dispatch slot or the drain flag.
  */
 export const STORAGE_DEADLINE_MS = 10_000;
 
@@ -733,7 +743,7 @@ export const RETRY_IDLE_DELAY_MS = 30_000;
 // Journey lifetime
 // ----------------------------------
 
-/** Max time a journey stays open before it is treated as abandoned, in milliseconds. */
+/** Max time a journey stays open, in milliseconds. Then the library treats it as abandoned. */
 export const JOURNEY_MAX_AGE_MS = 30 * 60 * 1000;
 
 /** Whether closing the owning context ends the journey for everyone. */
@@ -755,7 +765,7 @@ export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
 /** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
 export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
-/** Max records a context buffers before its bus role is determined. */
+/** Max records a context buffers before it knows its bus role. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
 
 // ----------------------------------
@@ -765,14 +775,17 @@ export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
 /** Breadcrumbs kept as context for the next error. */
 export const MAX_BREADCRUMBS = 50;
 
-/** Window within which identical errors are counted but not re-sent, in milliseconds. */
+/**
+ * Time window in which the library counts identical errors but does not send them again,
+ * in milliseconds.
+ */
 export const ERROR_DEDUPE_MS = 5000;
 
 // ----------------------------------
 // Per-record size caps
 // ----------------------------------
 
-/** Size caps applied to every record, enforced after sanitize and after redact. */
+/** Size caps for every record. The library applies them after sanitize and after redact. */
 export const RECORD_LIMITS = {
   maxBodyChars: 4096,
   maxAttributeChars: 8192,

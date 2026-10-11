@@ -165,7 +165,9 @@ describe("resolveConfig", () => {
       const resolved = resolveConfig(input, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(1);
-      expect(messages(events)[0]).toContain("sampling.defaultRate must be 0..1, got high");
+      expect(messages(events)[0]).toContain(
+        "sampling.defaultRate must be 0..1. The value is high.",
+      );
     });
 
     it("falls back to 1 when the rate is below zero", () => {
@@ -174,7 +176,7 @@ describe("resolveConfig", () => {
       const resolved = resolveConfig({ ...valid(), sampling: { defaultRate: -1 } }, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(1);
-      expect(messages(events)[0]).toContain("got -1");
+      expect(messages(events)[0]).toContain("The value is -1.");
     });
 
     it("falls back to 1 when the rate is above one", () => {
@@ -183,7 +185,7 @@ describe("resolveConfig", () => {
       const resolved = resolveConfig({ ...valid(), sampling: { defaultRate: 2 } }, diagnostics);
 
       expect(resolved.sampling.defaultRate).toBe(1);
-      expect(messages(events)[0]).toContain("got 2");
+      expect(messages(events)[0]).toContain("The value is 2.");
     });
   });
 
@@ -209,7 +211,9 @@ describe("resolveConfig", () => {
       );
 
       expect(resolved.sampling.rates["app.blotter"]).toBe(1);
-      expect(messages(events)[0]).toContain('sampling.rates["app.blotter"] must be 0..1, got 5');
+      expect(messages(events)[0]).toContain(
+        'sampling.rates["app.blotter"] must be 0..1. The value is 5.',
+      );
     });
 
     it("clamps a namespace rate that is not a number", () => {
@@ -222,7 +226,7 @@ describe("resolveConfig", () => {
       const resolved = resolveConfig(input, diagnostics);
 
       expect(resolved.sampling.rates["app.ticket"]).toBe(1);
-      expect(messages(events)[0]).toContain("got null");
+      expect(messages(events)[0]).toContain("The value is null.");
     });
 
     it("does not mutate the caller's rates object while clamping", () => {

@@ -1,8 +1,8 @@
 // src/utils/tracing.ts
 //
-// Manages ambient distributed tracing contexts, OpenTelemetry span integration, and W3C traceparent headers.
-// One trace id spans consecutive records. Minting one per record gives every
-// trace exactly one span.
+// Manages ambient distributed trace contexts, OpenTelemetry span integration, and W3C
+// traceparent headers. Consecutive records share one trace id. A new trace id for each
+// record gives each trace only one span.
 
 import {
   SPAN_ID_BYTES,
@@ -17,17 +17,16 @@ import type { Diagnostics } from "../core/diagnostics";
 import type { OtelApi, OtelLoader, OtelSpanContext } from "../models/config";
 import { randomHex } from "./identity";
 
-/** Hex widths the W3C format fixes. A span context of another width is unusable. */
+/** The W3C format sets these hex widths. A span context with a different width is not usable. */
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 
-/** Any digit other than zero. An all-zero id is what an unstarted span reports. */
+/** Matches a digit that is not zero. A span that has not started reports an all-zero id. */
 const NON_ZERO = /[1-9a-f]/;
 
 /**
- * Evaluates whether a span context can carry correlation. Replaces the
- * package's own isSpanContextValid, which is not available when the peer is not
- * installed.
+ * Evaluates whether a span context can carry correlation. It replaces isSpanContextValid
+ * from the peer package. That function is not available when the peer is not installed.
  * @param context Span context reported by the host.
  * @returns True if both ids have the W3C width and neither is all zeros.
  */
@@ -60,9 +59,9 @@ interface AmbientTrace extends TraceContext {
 }
 
 /**
- * Generates a random 32-character hex string conforming to W3C trace ID format.
- * Exported for callers starting their own trace. A wrong-width id is dropped by
- * the backend without a word.
+ * Generates a random 32-character hex string in the W3C trace ID format.
+ * Use it to start your own trace. The backend drops an id with the wrong width
+ * and reports no error.
  * @returns 32-character hexadecimal trace ID.
  */
 export function newTraceId(): string {
@@ -78,8 +77,8 @@ export function newSpanId(): string {
 }
 
 /**
- * Creates a new AmbientTrace instance with sampled trace flag enabled. Set
- * unconditionally: sampling runs before the record is built.
+ * Creates a new AmbientTrace instance with the sampled trace flag set. It always sets
+ * the flag. Sampling runs before the library builds the record.
  * @returns Initialized AmbientTrace object.
  */
 function mintAmbient(): AmbientTrace {
@@ -107,12 +106,12 @@ function toTraceContext(ambient: AmbientTrace): TraceContext {
 /** Manages ambient distributed trace contexts and resolves active OpenTelemetry spans. */
 export class TraceEngine {
   /**
-   * Active ambient trace context. Instance state, never module state. Two runtimes
-   * in one document must not share a trace id.
+   * Active ambient trace context. The instance keeps this state, not the module. Two
+   * runtimes in one document must not share a trace id.
    */
   private ambient: AmbientTrace = mintAmbient();
 
-  /** The optional peer once loaded. Undefined while it loads, and forever if it is absent. */
+  /** The optional peer after it loads. It is undefined while it loads or when it is absent. */
   private otel: OtelApi | undefined;
 
   /**
@@ -142,7 +141,7 @@ export class TraceEngine {
     } catch (error) {
       this.diagnostics.report(
         "trace.otel_failed",
-        "@opentelemetry/api is not available, so records carry this library's own trace ids",
+        "The library could not load @opentelemetry/api. Records use the trace ids of the library.",
         undefined,
         error,
       );
@@ -159,8 +158,8 @@ export class TraceEngine {
       return fromOtel;
     }
 
-    // Rotates ambient trace if age exceeds maxAgeMs. Checked on read, not on a
-    // timer. A timer holds this instance alive for the life of the document.
+    // Rotate the ambient trace when its age exceeds maxAgeMs. The check runs on read,
+    // not on a timer. A timer keeps this instance alive for the life of the document.
     if (Date.now() - this.ambient.startedAt > this.maxAgeMs) {
       this.rotate("maxAge");
     }
@@ -179,7 +178,7 @@ export class TraceEngine {
 
     return this.diagnostics.guard(
       "trace.otel_failed",
-      "reading the active OpenTelemetry span",
+      "The library could not read the active OpenTelemetry span.",
       (): TraceContext | undefined => {
         const span = otel.trace.getActiveSpan();
         if (span === undefined) {
@@ -209,21 +208,26 @@ export class TraceEngine {
   }
 
   /**
-   * Generates W3C traceparent headers using registered OpenTelemetry propagators or ambient fallback.
+   * Generates W3C traceparent headers with the registered OpenTelemetry propagators.
+   * Without a traceparent from OpenTelemetry, it uses the ambient trace.
    * @returns Header map containing traceparent.
    */
   headers(): Record<string, string> {
     const carrier: Record<string, string> = {};
     const otel = this.otel;
     if (otel) {
-      this.diagnostics.guard("trace.otel_failed", "injecting OpenTelemetry headers", () => {
-        otel.propagation.inject(otel.context.active(), carrier);
-      });
+      this.diagnostics.guard(
+        "trace.otel_failed",
+        "The library could not add the OpenTelemetry headers.",
+        () => {
+          otel.propagation.inject(otel.context.active(), carrier);
+        },
+      );
     }
     if (!carrier[TRACEPARENT_HEADER]) {
       const ctx = this.resolve();
-      // Masks trace flags to 2-digit hex byte per W3C specification. trace-flags is
-      // a bitfield, not a boolean. 00 or 01 discards what an upstream tracer set.
+      // Mask the trace flags to a 2-digit hex byte, as the W3C specification requires.
+      // trace-flags is a bitfield, not a boolean. A fixed 00 or 01 discards upstream flags.
       const flags = (ctx.traceFlags & TRACE_FLAGS_MASK).toString(16).padStart(2, "0");
       carrier[TRACEPARENT_HEADER] = `${TRACEPARENT_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
     }

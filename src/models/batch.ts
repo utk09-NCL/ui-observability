@@ -2,6 +2,7 @@
 //
 // A batch of log records for delivery to the ingest endpoint.
 
+import type { Diagnostics } from "../core/diagnostics";
 import { newId } from "../utils/identity";
 import type { LogRecord } from "./log-record";
 
@@ -10,7 +11,7 @@ import type { LogRecord } from "./log-record";
  * @see {@link splitBatch}
  */
 export interface LogBatch {
-  /** Deduplication key. Stable across retries and reloads. */
+  /** Deduplication key. It stays the same across retries and reloads. */
   id: string;
   /** Records to deliver, in log order. */
   records: LogRecord[];
@@ -21,12 +22,13 @@ export interface LogBatch {
 }
 
 /**
- * Whether a value parsed out of storage carries the whole batch contract. An entry
- * missing `id` is never matched by `keyOf` after delivery, so it is retried forever
- * and blocks every batch behind it. One missing `attempts` counts as NaN, never
- * reaches `maxAttempts`, and is never dead-lettered.
+ * Tells whether a value from storage has all fields of a batch. `keyOf` cannot match
+ * an entry without `id` after delivery. The library then retries that entry with no
+ * end, and the entry blocks each batch behind it. An entry without `attempts` counts
+ * as NaN. That count never reaches `maxAttempts`. Thus the library never drops the
+ * entry as a dead letter.
  * @param value Parsed storage entry.
- * @returns True when every required field is present and correctly typed.
+ * @returns True when each required field is present and has the correct type.
  */
 export function isLogBatch(value: unknown): value is LogBatch {
   if (typeof value !== "object" || value === null) {
@@ -47,19 +49,20 @@ export function isLogBatch(value: unknown): value is LogBatch {
 }
 
 /**
- * Splits a batch the server rejected as too large into two halves.
- * Each half gets a fresh id; age and attempts carry over unchanged.
+ * Splits a batch that the server rejected as too large into two halves.
+ * Each half gets a new id. Each half keeps the age and attempts of the original batch.
  * @param batch The rejected batch.
+ * @param diagnostics Diagnostics reporter for the new batch ids.
  * @returns Two batches, or `null` if a single record is already over the limit.
  */
-export function splitBatch(batch: LogBatch): [LogBatch, LogBatch] | null {
+export function splitBatch(batch: LogBatch, diagnostics: Diagnostics): [LogBatch, LogBatch] | null {
   if (batch.records.length < 2) {
     return null;
   }
 
   const middle = Math.floor(batch.records.length / 2);
   const halve = (records: LogRecord[]): LogBatch => ({
-    id: newId(),
+    id: newId(diagnostics),
     records,
     createdAt: batch.createdAt,
     attempts: batch.attempts,

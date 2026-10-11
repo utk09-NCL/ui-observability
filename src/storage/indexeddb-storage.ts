@@ -1,6 +1,6 @@
 // src/storage/indexeddb-storage.ts
 //
-// Persistent storage adapter backed by IndexedDB with time-ordered indexing.
+// This module stores batches in IndexedDB. It indexes them by creation time.
 
 import { QUOTA_EVICTION_DIVISOR, QUOTA_EXCEEDED_ERROR, STORAGE_NAME_INDEXEDDB } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -9,7 +9,7 @@ import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "..
 import { IdbDriver } from "./idb-driver";
 
 /**
- * Sums the total count of records contained across an array of batches.
+ * Returns the total record count of the batches.
  * @param batches Batches to measure.
  * @returns Total record count.
  */
@@ -17,12 +17,12 @@ function countRecords(batches: LogBatch[]): number {
   return batches.reduce((total, batch) => total + batch.records.length, 0);
 }
 
-/** Persistent StorageAdapter implementation backed by IndexedDB. */
+/** This StorageAdapter keeps batches in IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
-  /** Storage adapter strategy name. */
+  /** This field holds the storage strategy name. */
   readonly name = STORAGE_NAME_INDEXEDDB;
 
-  /** IndexedDB mechanics for the batch store. */
+  /** This driver holds the IndexedDB code for the batch store. */
   private readonly db: IdbDriver;
 
   /**
@@ -41,15 +41,15 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Opens the database. Not guarded: the factory needs the rejection to select the
-   * next adapter.
+   * Opens the database. It has no guard. The factory needs the rejection to
+   * select the next adapter.
    */
   async open(): Promise<void> {
     await this.db.ready();
   }
 
   /**
-   * Persists a batch to IndexedDB and triggers storage pruning.
+   * Writes a batch to IndexedDB. It then prunes the storage.
    * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
@@ -58,21 +58,24 @@ export class IndexedDbStorage implements StorageAdapter {
       await this.prune();
     } catch (error) {
       if (error instanceof Error && error.name === QUOTA_EXCEEDED_ERROR) {
-        this.diagnostics.report("storage.quota_exceeded", "IndexedDB is full, evicting the oldest");
+        this.diagnostics.report(
+          "storage.quota_exceeded",
+          "IndexedDB is full. The library removes the oldest batches.",
+        );
         const evicted = await this.diagnostics.guardAsync(
           "storage.degraded",
-          "evicting after a full disk",
+          "The library could not remove old batches after a full disk.",
           () => this.evictOldest(Math.ceil(this.limits.maxBatches / QUOTA_EVICTION_DIVISOR)),
         );
         if (evicted) {
           this.reportGap({ ...evicted, reason: "quota" });
         }
 
-        // The eviction exists to make room for this batch. Without a second
-        // attempt save() resolves while the batch is gone and uncounted.
+        // The eviction makes room for this batch. Without a second write, save() resolves
+        // but the batch is lost and not counted.
         const stored = await this.diagnostics.guardAsync(
           "storage.degraded",
-          "writing a batch after evicting",
+          "The library could not write the batch after it removed old batches.",
           async () => {
             await this.db.put(batch);
             return true;
@@ -86,7 +89,7 @@ export class IndexedDbStorage implements StorageAdapter {
 
       this.diagnostics.report(
         "storage.degraded",
-        "could not persist a batch",
+        "The library could not store a batch.",
         { batchId: batch.id },
         error,
       );
@@ -94,94 +97,111 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Reads up to limit batches in chronological order without deletion.
+   * Reads up to `limit` batches in FIFO order. It does not delete them.
    * @param limit Maximum number of batches to retrieve.
    * @returns Array of retrieved batches.
    */
   async take(limit: number): Promise<LogBatch[]> {
     const batches = await this.diagnostics.guardAsync(
       "storage.degraded",
-      "reading stored batches",
+      "The library could not read the stored batches.",
       () => this.db.takeOldest(limit),
     );
     return batches ?? [];
   }
 
   /**
-   * Deletes a batch from IndexedDB by ID.
+   * Deletes the batch with the given ID from IndexedDB.
    * @param id Batch identifier to delete.
    */
   async remove(id: string): Promise<void> {
-    await this.diagnostics.guardAsync("storage.degraded", "deleting a batch", () =>
-      this.db.delete(id),
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not delete a batch.",
+      () => this.db.delete(id),
     );
   }
 
   /**
-   * Updates delivery attempt count for a stored batch.
+   * Sets the delivery attempt count of a stored batch.
    * @param id Batch identifier.
    * @param attempts New absolute attempt count.
    */
   async bumpAttempts(id: string, attempts: number): Promise<void> {
-    await this.diagnostics.guardAsync("storage.degraded", "updating attempts", () =>
-      this.db.bumpAttempts(id, attempts),
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not update the attempt count.",
+      () => this.db.bumpAttempts(id, attempts),
     );
   }
 
   /**
-   * Removes expired batches and evicts oldest entries exceeding capacity.
+   * Removes expired batches. It then removes the oldest batches above the
+   * capacity limit.
    * @returns Prune summary metrics.
    */
   async prune(): Promise<PruneResult> {
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
 
-    await this.diagnostics.guardAsync("storage.degraded", "pruning", async () => {
-      const cutoff = Date.now() - this.limits.maxAgeMs;
-      const expired = await this.db.takeBefore(cutoff);
-      if (expired.length > 0) {
-        await this.db.deleteMany(expired.map((batch) => batch.id));
-        result.batches += expired.length;
-        result.records += countRecords(expired);
-      }
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not prune the stored batches.",
+      async () => {
+        const cutoff = Date.now() - this.limits.maxAgeMs;
+        const expired = await this.db.takeBefore(cutoff);
+        if (expired.length > 0) {
+          await this.db.deleteMany(expired.map((batch) => batch.id));
+          result.batches += expired.length;
+          result.records += countRecords(expired);
+        }
 
-      const total = await this.db.count();
-      if (total > this.limits.maxBatches) {
-        result.reason = "over_capacity";
-        const evicted = await this.evictOldest(total - this.limits.maxBatches);
-        result.batches += evicted.batches;
-        result.records += evicted.records;
-      }
-    });
+        const total = await this.db.count();
+        if (total > this.limits.maxBatches) {
+          result.reason = "over_capacity";
+          const evicted = await this.evictOldest(total - this.limits.maxBatches);
+          result.batches += evicted.batches;
+          result.records += evicted.records;
+        }
+      },
+    );
 
     this.reportGap(result);
     return result;
   }
 
   /**
-   * Returns total count of stored batches.
+   * Returns the number of stored batches.
    * @returns Total batch count or 0 on failure.
    */
   async count(): Promise<number> {
-    const total = await this.diagnostics.guardAsync("storage.degraded", "counting", () =>
-      this.db.count(),
+    const total = await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not count the stored batches.",
+      () => this.db.count(),
     );
     return total ?? 0;
   }
 
-  /** Deletes all stored batches from the database. */
+  /** This method deletes all stored batches from the database. */
   async clear(): Promise<void> {
-    await this.diagnostics.guardAsync("storage.degraded", "clearing", () => this.db.clear());
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not clear the stored batches.",
+      () => this.db.clear(),
+    );
   }
 
-  /** Closes the active IndexedDB connection. */
+  /** This method closes the active IndexedDB connection. */
   async close(): Promise<void> {
-    await this.diagnostics.guardAsync("storage.degraded", "closing the database", () =>
-      this.db.close(),
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not close the database.",
+      () => this.db.close(),
     );
   }
 
   /**
-   * Reports dropped records to diagnostics and registered gap handlers.
+   * Reports dropped records to diagnostics and to the gap handler.
    * @param result Prune result metrics.
    */
   private reportGap(result: PruneResult): void {
@@ -191,16 +211,16 @@ export class IndexedDbStorage implements StorageAdapter {
 
     this.diagnostics.report(
       "storage.evicted",
-      `dropped ${String(result.batches)} stored batches (${String(result.records)} records)`,
+      `The library dropped ${String(result.batches)} stored batches (${String(result.records)} records).`,
       { ...result },
     );
     this.onGap?.(result);
   }
 
   /**
-   * Deletes a specified count of the oldest stored batches. Unguarded: both callers
-   * guard it, and swallowing the failure here reports an eviction that did not
-   * happen.
+   * Deletes the given number of oldest stored batches. It has no guard. Both
+   * callers guard it. A guard here hides the failure and reports an eviction that did not
+   * occur.
    * @param howMany Number of oldest batches to evict.
    * @returns Metrics of evicted batches and records.
    */

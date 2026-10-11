@@ -1,8 +1,7 @@
 // src/utils/unref.ts
 //
-// Utility for safely unreferencing timer handles across Node and browser
-// environments. A pending timer keeps a Node process alive under SSR and in
-// tests.
+// Unreferences timer handles in Node and browser environments. A pending timer
+// keeps a Node process alive under SSR and in tests.
 
 /** Cross-platform timer handle representing browser numeric IDs or Node Timeout objects. */
 export type TimerHandle = number | { unref?: () => void };

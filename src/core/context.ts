@@ -1,8 +1,7 @@
 // src/core/context.ts
 //
-// Stores ambient contextual attributes merged into all subsequent log records.
-// Per instance, never module level. A module Map is shared by every runtime in the
-// realm.
+// This store keeps ambient context attributes. The logger merges them into each later record.
+// Keep the store per instance, not at module level. All runtimes in a realm share a module Map.
 
 /** Key-value store for ambient context attributes attached to log records. */
 export class ContextStore {
@@ -51,8 +50,8 @@ export class ContextStore {
   }
 
   /**
-   * Returns a snapshot copy of all ambient context attributes. A copy: a merge
-   * target or sanitizer must not mutate the store.
+   * Returns a copy of all ambient context attributes. The copy prevents a merge
+   * target or a sanitizer from changing the store.
    * @returns Plain object containing stored key-value pairs.
    */
   getAll(): Record<string, unknown> {

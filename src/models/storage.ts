@@ -24,7 +24,7 @@ export interface StorageAdapter {
   take(limit: number): Promise<LogBatch[]>;
 
   /**
-   * Removes a batch by ID. Non-existent IDs resolve without error.
+   * Removes a batch by ID. A call with an unknown ID resolves without error.
    * @param id Batch identifier.
    */
   remove(id: string): Promise<void>;
@@ -68,7 +68,7 @@ export interface PruneResult {
   batches: number;
   /** Total records dropped within evicted batches. */
   records: number;
-  /** Eviction reason that triggered the prune. If more than one rule fired, this is the last one. */
+  /** Eviction reason for the prune. If more than one rule applies, this is the last rule. */
   reason: "expired" | "over_capacity" | "quota";
 }
 

@@ -2,7 +2,7 @@
 //
 // Shape of one log record, plus helpers for building and validating it.
 //
-// Severity tables live in `src/constants.ts`.
+// `src/constants.ts` contains the severity tables.
 
 /** OpenTelemetry severity levels, in ascending order. */
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
@@ -17,20 +17,23 @@ export type LogType = "action" | "event" | "metric" | "system";
 /** Metric value type: level, running total, or distribution. */
 export type MetricType = "gauge" | "counter" | "histogram";
 
-/** Internal record shape, converted to wire format by a serializer. */
+/** Internal record shape. A serializer converts it to the payload format. */
 export interface LogRecord {
   /**
    * Event time, nanoseconds since epoch, as a decimal string.
    * @see {@link nowUnixNano}
    */
   timeUnixNano: string;
-  /** Time this library received the event, if different from `timeUnixNano` (e.g. on a forwarded record). */
+  /**
+   * Time when this library received the event, if it differs from `timeUnixNano`.
+   * For example, a forwarded record can have a different time.
+   */
   observedTimeUnixNano?: string;
   /** Distributed trace id. */
   traceId: string;
   /** Span id within the trace. */
   spanId: string;
-  /** OpenTelemetry trace flags. Only the sampled bit is used. */
+  /** OpenTelemetry trace flags. The library uses only the sampled bit. */
   traceFlags: number;
   /** OpenTelemetry severity number for `severityText`. */
   severityNumber: number;
@@ -46,9 +49,9 @@ export interface LogRecord {
 
 /**
  * Returns the current time as a Unix nanosecond timestamp.
- * Concatenates rather than multiplies: `Date.now() * 1e6` overflows
- * `Number.MAX_SAFE_INTEGER` and silently corrupts digits. Trailing zeros are
- * unknown precision, not real.
+ * The function appends zeros and does not multiply. `Date.now() * 1e6` is larger
+ * than `Number.MAX_SAFE_INTEGER` and corrupts digits without an error. The trailing
+ * zeros show unknown precision. They are not measured digits.
  * @returns Epoch timestamp in nanoseconds, as a decimal string.
  */
 export function nowUnixNano(): string {
@@ -57,10 +60,9 @@ export function nowUnixNano(): string {
 
 /**
  * Checks whether a value has the shape `LogRecord` requires.
- * Used to validate records arriving from another realm, since a malformed
- * one throws during serialization. `severityText` is checked as a string,
- * not a known level, so an unrecognised level from a newer version still
- * passes.
+ * Use it to validate records from another realm. A malformed record throws
+ * during serialization. The check accepts any string as `severityText`, not only
+ * a known level. Thus an unknown level from a newer version passes.
  * @param value The value to check.
  * @returns Whether `value` has the shape `LogRecord` requires.
  */
@@ -68,9 +70,8 @@ export function isLogRecord(value: unknown): value is LogRecord {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  // Widened to `unknown` rather than asserted as `Partial<LogRecord>`, which
-  // would tell the compiler these fields are never null and make the checks
-  // below look unnecessary.
+  // Cast to `Record<string, unknown>`, not to `Partial<LogRecord>`. With `Partial<LogRecord>`,
+  // the compiler treats these fields as never null. The checks below then look unnecessary.
   const record = value as Record<string, unknown>;
   return (
     typeof record.body === "string" &&

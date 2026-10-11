@@ -362,7 +362,7 @@ describe("ExitFlush flush", () => {
 
     expect(beacon).not.toHaveBeenCalled();
     expect(pending).toHaveLength(1);
-    expect(events.some((event) => event.message.includes("the exit flush cannot use"))).toBe(true);
+    expect(events.some((event) => event.message.includes("The exit flush cannot use"))).toBe(true);
   });
 
   it("sends nothing when the drain hands back an empty batch", () => {

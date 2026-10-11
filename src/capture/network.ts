@@ -72,11 +72,11 @@ export class NetworkCapture implements Capture {
   /**
    * Evaluates whether a URL matches ignore patterns.
    * @param url Request target URL.
-   * @returns True if URL should be excluded from telemetry.
+   * @returns True if telemetry must exclude the URL.
    */
   private ignored(url: string): boolean {
-    // The endpoint is always in ignoreUrls, added by resolveConfig. Without it
-    // one failed POST logs, which POSTs, which logs, forever.
+    // resolveConfig always adds the endpoint to ignoreUrls. Without it, a failed POST
+    // makes a log record. That record causes a new POST, and the loop does not stop.
     return matchesAny(url, this.ctx.config.capture.ignoreUrls);
   }
 
@@ -113,17 +113,16 @@ export class NetworkCapture implements Capture {
       let fetchInput = input;
       let fetchInit = init;
 
-      // Allowlist only. An unexpected traceparent on a third-party request
-      // forces a CORS preflight they will not answer, and their API stops
-      // working inside the consumer's application.
+      // Add headers only to allowlisted URLs. A traceparent on a third-party request causes
+      // a CORS preflight. The third party does not answer it, and its API stops working.
       if (matchesAny(url, ctx.config.capture.propagateTraceHeaderTo)) {
         try {
           const injected = Object.entries(ctx.tracing.headers());
 
           if (input instanceof Request) {
-            // Never spread a non-empty init alongside a Request input: that
-            // re-runs the Request constructor over `input` and consumes its
-            // body, which throws TypeError on an already-read body.
+            // Do not spread a non-empty init with a Request input. That runs the Request
+            // constructor on `input` again and reads its body. A body that was read
+            // before causes a TypeError.
             const headers = new Headers(input.headers);
             for (const [key, value] of injected) {
               headers.set(key, value);
@@ -137,13 +136,13 @@ export class NetworkCapture implements Capture {
             fetchInit = { ...init, headers };
           }
         } catch (error) {
-          // Send exactly what the caller passed. Losing our header is always
-          // better than breaking their request.
+          // Send the request that the caller gave, without changes. A missing header is
+          // better than a failed request.
           fetchInput = input;
           fetchInit = init;
           ctx.diagnostics.report(
             "capture.header_failed",
-            "could not attach traceparent, sending the request unchanged",
+            "The library could not add the traceparent header. It sends the request unchanged.",
             { url },
             error,
           );
@@ -203,7 +202,7 @@ export class NetworkCapture implements Capture {
   /**
    * Records request outcome attributes and breadcrumb entry.
    * @param method Uppercase HTTP method.
-   * @param target Request target URL, scrubbed before it is recorded.
+   * @param target Request target URL. The method removes the query unless fullUrls is set.
    * @param status HTTP response status code, or 0 on failure.
    * @param durationMs Request duration in milliseconds.
    * @param error Caught error instance on failed requests.
@@ -215,41 +214,45 @@ export class NetworkCapture implements Capture {
     durationMs: number,
     error: unknown,
   ): void {
-    // Scrubbed here, not at the call sites: ignoreUrls and propagateTraceHeaderTo
-    // match on the whole URL, so only what is recorded loses the query string.
+    // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
+    // match on the full URL. Only the recorded URL loses the query string.
     const url = this.ctx.config.capture.fullUrls ? target : stripUrlQuery(target);
 
-    // A throw here runs inside the caller's own fetch. Breaking their request
-    // to record that their request broke is the one unacceptable outcome.
-    this.ctx.diagnostics.guard("capture.record_failed", `recording ${method} ${url}`, () => {
-      const rounded = Math.round(durationMs);
+    // This code runs inside the fetch call of the caller. An error here must not cause
+    // the request of the caller to fail.
+    this.ctx.diagnostics.guard(
+      "capture.record_failed",
+      `The library could not record ${method} ${url}.`,
+      () => {
+        const rounded = Math.round(durationMs);
 
-      this.ctx.breadcrumbs.push({
-        t: Date.now(),
-        category: "http",
-        message: `${method} ${url} ${status === 0 ? "failed" : String(status)}`,
-        data: { durationMs: rounded },
-      });
+        this.ctx.breadcrumbs.push({
+          t: Date.now(),
+          category: "http",
+          message: `${method} ${url} ${status === 0 ? "failed" : String(status)}`,
+          data: { durationMs: rounded },
+        });
 
-      const attributes = {
-        "http.request.method": method,
-        "url.full": url,
-        "http.response.status_code": status,
-        "http.duration_ms": rounded,
-      };
+        const attributes = {
+          "http.request.method": method,
+          "url.full": url,
+          "http.response.status_code": status,
+          "http.duration_ms": rounded,
+        };
 
-      if (status === 0) {
-        this.ctx.logger.error(`${method} ${url} failed`, error, attributes);
-        return;
-      }
-      if (status >= 400) {
-        this.ctx.logger.warn(`${method} ${url} returned ${String(status)}`, attributes);
-        return;
-      }
+        if (status === 0) {
+          this.ctx.logger.error(`${method} ${url} failed`, error, attributes);
+          return;
+        }
+        if (status >= 400) {
+          this.ctx.logger.warn(`${method} ${url} returned ${String(status)}`, attributes);
+          return;
+        }
 
-      // DEBUG, so a successful request is dropped by the default minLevel of
-      // INFO and only failures cost bandwidth.
-      this.ctx.logger.debug(`${method} ${url}`, attributes);
-    });
+        // Log a success at DEBUG. The default minLevel of INFO drops it.
+        // Only failures use bandwidth.
+        this.ctx.logger.debug(`${method} ${url}`, attributes);
+      },
+    );
   }
 }

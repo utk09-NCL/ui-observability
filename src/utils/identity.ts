@@ -1,8 +1,8 @@
 // src/utils/identity.ts
 //
-// Generates and manages session, tab, and context correlation identifiers. Storage
-// throws rather than returning null in a sandboxed iframe and in private mode. An
-// unguarded read takes the library down at import.
+// Generates and manages session, tab, and context correlation identifiers. In a
+// sandboxed iframe and in private mode, Storage throws instead of returning null.
+// An unguarded read breaks the library at import.
 
 import {
   BYTE_VALUE_COUNT,
@@ -82,7 +82,7 @@ export function memoryStores(): IdentityStores {
 
 /**
  * Generates a random lowercase hexadecimal string of the specified byte length.
- * Uses crypto.getRandomValues when available, falling back to Math.random.
+ * It uses crypto.getRandomValues when it is available. Otherwise it uses Math.random.
  * @param byteLength Number of random bytes to generate.
  * @returns Hexadecimal string of length byteLength * 2.
  */
@@ -100,16 +100,18 @@ export function randomHex(byteLength: number): string {
 
 /**
  * Generates a unique identifier string using crypto.randomUUID or randomHex fallback.
+ * @param diagnostics Diagnostics reporter. It counts a blocked crypto.randomUUID call.
  * @returns UUID or random hex identifier.
  */
-export function newId(): string {
+export function newId(diagnostics: Diagnostics): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID();
     }
   } catch {
-    // Catches sandbox SecurityError throws when crypto.randomUUID is blocked. The
-    // method is present; only the call fails.
+    // A sandbox can block crypto.randomUUID with a SecurityError. The method exists,
+    // but the call throws. Count the fault. A report on each id is noise.
+    diagnostics.count("platform.api_blocked");
   }
   return randomHex(ID_BYTE_LENGTH);
 }
@@ -129,7 +131,7 @@ function safeRead(
   diagnostics: Diagnostics,
 ): string | null {
   return (
-    diagnostics.guard("storage.unavailable", `reading ${store}Storage`, () =>
+    diagnostics.guard("storage.unavailable", `The library could not read ${store}Storage.`, () =>
       stores[store]().getItem(key),
     ) ?? null
   );
@@ -150,9 +152,13 @@ function safeWrite(
   value: string,
   diagnostics: Diagnostics,
 ): void {
-  diagnostics.guard("storage.unavailable", `writing ${store}Storage`, () => {
-    stores[store]().setItem(key, value);
-  });
+  diagnostics.guard(
+    "storage.unavailable",
+    `The library could not write to ${store}Storage.`,
+    () => {
+      stores[store]().setItem(key, value);
+    },
+  );
 }
 
 /**
@@ -165,10 +171,10 @@ export function resolveIdentity(
   diagnostics: Diagnostics,
   stores: IdentityStores = BROWSER_STORES,
 ): Identity {
-  const contextId = newId();
+  const contextId = newId(diagnostics);
   const now = Date.now();
 
-  let sessionId = newId();
+  let sessionId = newId(diagnostics);
   const rawSession = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
   if (rawSession) {
     try {
@@ -180,7 +186,10 @@ export function resolveIdentity(
         sessionId = parsed.id;
       }
     } catch {
-      diagnostics.report("storage.degraded", "session record was not JSON, starting a new session");
+      diagnostics.report(
+        "storage.degraded",
+        "The session record is not valid JSON. The library starts a new session.",
+      );
     }
   }
   const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
@@ -188,7 +197,7 @@ export function resolveIdentity(
 
   let tabId = safeRead(stores, "session", TAB_ID_KEY, diagnostics) ?? "";
   if (!tabId) {
-    tabId = newId();
+    tabId = newId(diagnostics);
     safeWrite(stores, "session", TAB_ID_KEY, tabId, diagnostics);
   }
 
@@ -210,9 +219,9 @@ export function persistTabId(
 }
 
 /**
- * Writes the session's last-seen timestamp, throttled by `SESSION_TOUCH_MS`.
- * The throttle is instance state, not module state: two runtimes in one document
- * must not silence each other's session writes.
+ * Writes the last-seen timestamp of the session. `SESSION_TOUCH_MS` sets the throttle.
+ * The instance keeps the throttle state, not the module. Two runtimes in one document
+ * must not block the session writes of each other.
  */
 export class SessionTouch {
   /** Epoch milliseconds of the last write this instance made. */

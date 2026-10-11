@@ -1,5 +1,6 @@
 // tests/sanitize.test.ts
 import { describe, expect, it, vi } from "vitest";
+import { Diagnostics } from "../src/core/diagnostics";
 import {
   estimateBytes,
   type SanitizeLimits,
@@ -16,6 +17,9 @@ const limits: SanitizeLimits = {
   maxStackChars: 100,
   maxNodes: 1000,
 };
+
+/** Diagnostics with the throttle off. */
+const quiet = new Diagnostics(vi.fn(), 0);
 
 const asRecord = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 
@@ -59,33 +63,33 @@ describe("estimateBytes", () => {
 
 describe("sanitize primitives", () => {
   it("passes null and undefined straight through", () => {
-    expect(sanitize(null, limits)).toBeNull();
-    expect(sanitize(undefined, limits)).toBeUndefined();
+    expect(sanitize(null, limits, quiet)).toBeNull();
+    expect(sanitize(undefined, limits, quiet)).toBeUndefined();
   });
 
   it("truncates a long string to the attribute limit", () => {
-    const out = sanitize("x".repeat(30), limits);
+    const out = sanitize("x".repeat(30), limits, quiet);
 
     expect(out).toBe(`${"x".repeat(20)}… [truncated 10 chars]`);
   });
 
   it("keeps a finite number as a number and stringifies the ones JSON cannot hold", () => {
-    expect(sanitize(42, limits)).toBe(42);
-    expect(sanitize(Number.NaN, limits)).toBe("NaN");
-    expect(sanitize(Number.POSITIVE_INFINITY, limits)).toBe("Infinity");
+    expect(sanitize(42, limits, quiet)).toBe(42);
+    expect(sanitize(Number.NaN, limits, quiet)).toBe("NaN");
+    expect(sanitize(Number.POSITIVE_INFINITY, limits, quiet)).toBe("Infinity");
   });
 
   it("keeps booleans", () => {
-    expect(sanitize(true, limits)).toBe(true);
-    expect(sanitize(false, limits)).toBe(false);
+    expect(sanitize(true, limits, quiet)).toBe(true);
+    expect(sanitize(false, limits, quiet)).toBe(false);
   });
 
   it("marks a bigint so it is not confused with a number", () => {
-    expect(sanitize(10n, limits)).toBe("10n");
+    expect(sanitize(10n, limits, quiet)).toBe("10n");
   });
 
   it("describes a symbol", () => {
-    expect(sanitize(Symbol("trade"), limits)).toBe("Symbol(trade)");
+    expect(sanitize(Symbol("trade"), limits, quiet)).toBe("Symbol(trade)");
   });
 
   it("names a function, and says anonymous when it has no name", () => {
@@ -95,8 +99,8 @@ describe("sanitize primitives", () => {
     // Created inside an array literal so it gets no inferred name.
     const anonymous = [() => undefined][0];
 
-    expect(sanitize(named, limits)).toBe("[Function named]");
-    expect(sanitize(anonymous, limits)).toBe("[Function anonymous]");
+    expect(sanitize(named, limits, quiet)).toBe("[Function named]");
+    expect(sanitize(anonymous, limits, quiet)).toBe("[Function anonymous]");
   });
 });
 
@@ -106,7 +110,7 @@ describe("sanitize structures", () => {
     const root: Record<string, unknown> = { a: shared, b: shared };
     root.self = root;
 
-    const out = asRecord(sanitize(root, limits));
+    const out = asRecord(sanitize(root, limits, quiet));
 
     expect(out.a).toEqual({ id: 1 });
     // Not "[Circular]": a sibling is not an ancestor.
@@ -117,7 +121,7 @@ describe("sanitize structures", () => {
   it("stops at the depth limit", () => {
     const deep = { a: { b: { c: { d: { e: "too far" } } } } };
 
-    const out = asRecord(sanitize(deep, limits));
+    const out = asRecord(sanitize(deep, limits, quiet));
     const a = asRecord(out.a);
     const b = asRecord(a.b);
     const c = asRecord(b.c);
@@ -126,21 +130,21 @@ describe("sanitize structures", () => {
   });
 
   it("caps an array and says how many were dropped", () => {
-    expect(sanitize([1, 2, 3, 4, 5], limits)).toEqual([1, 2, 3, "[2 more items]"]);
+    expect(sanitize([1, 2, 3, 4, 5], limits, quiet)).toEqual([1, 2, 3, "[2 more items]"]);
   });
 
   it("leaves a short array alone", () => {
-    expect(sanitize([1, 2], limits)).toEqual([1, 2]);
+    expect(sanitize([1, 2], limits, quiet)).toEqual([1, 2]);
   });
 
   it("caps object keys and says how many were dropped", () => {
-    const out = asRecord(sanitize({ a: 1, b: 2, c: 3, d: 4, e: 5 }, limits));
+    const out = asRecord(sanitize({ a: 1, b: 2, c: 3, d: 4, e: 5 }, limits, quiet));
 
     expect(out).toEqual({ a: 1, b: 2, c: 3, "…": "[2 more keys]" });
   });
 
   it("leaves a small object alone", () => {
-    expect(sanitize({ a: 1 }, limits)).toEqual({ a: 1 });
+    expect(sanitize({ a: 1 }, limits, quiet)).toEqual({ a: 1 });
   });
 
   it("converts a Map to an object, capping it", () => {
@@ -153,8 +157,8 @@ describe("sanitize structures", () => {
       ["e", 5],
     ]);
 
-    expect(sanitize(small, limits)).toEqual({ a: 1 });
-    expect(sanitize(big, limits)).toEqual({
+    expect(sanitize(small, limits, quiet)).toEqual({ a: 1 });
+    expect(sanitize(big, limits, quiet)).toEqual({
       a: 1,
       b: 2,
       c: 3,
@@ -163,27 +167,29 @@ describe("sanitize structures", () => {
   });
 
   it("stringifies non-string Map keys", () => {
-    expect(sanitize(new Map<number, string>([[1, "one"]]), limits)).toEqual({ "1": "one" });
+    expect(sanitize(new Map<number, string>([[1, "one"]]), limits, quiet)).toEqual({ "1": "one" });
   });
 
   it("converts a Set to a capped array", () => {
-    expect(sanitize(new Set([1, 2]), limits)).toEqual([1, 2]);
-    expect(sanitize(new Set([1, 2, 3, 4, 5]), limits)).toEqual([1, 2, 3]);
+    expect(sanitize(new Set([1, 2]), limits, quiet)).toEqual([1, 2]);
+    expect(sanitize(new Set([1, 2, 3, 4, 5]), limits, quiet)).toEqual([1, 2, 3]);
   });
 
   it("formats a Date as an ISO string and a RegExp as its source", () => {
-    expect(sanitize(new Date("2026-08-22T00:00:00.000Z"), limits)).toBe("2026-08-22T00:00:00.000Z");
-    expect(sanitize(/ab+c/gi, limits)).toBe("/ab+c/gi");
+    expect(sanitize(new Date("2026-08-22T00:00:00.000Z"), limits, quiet)).toBe(
+      "2026-08-22T00:00:00.000Z",
+    );
+    expect(sanitize(/ab+c/gi, limits, quiet)).toBe("/ab+c/gi");
   });
 
   it("summarises binary views, including one with no length", () => {
-    expect(sanitize(new Uint8Array([1, 2, 3]), limits)).toBe("[Uint8Array(3)]");
+    expect(sanitize(new Uint8Array([1, 2, 3]), limits, quiet)).toBe("[Uint8Array(3)]");
     // DataView is an ArrayBufferView with no length property at all.
-    expect(sanitize(new DataView(new ArrayBuffer(8)), limits)).toBe("[DataView(0)]");
+    expect(sanitize(new DataView(new ArrayBuffer(8)), limits, quiet)).toBe("[DataView(0)]");
   });
 
   it("does not try to inspect a promise", () => {
-    expect(sanitize(Promise.resolve(1), limits)).toBe("[Promise]");
+    expect(sanitize(Promise.resolve(1), limits, quiet)).toBe("[Promise]");
   });
 
   it("prefers an explicit toJSON", () => {
@@ -192,7 +198,7 @@ describe("sanitize structures", () => {
       toJSON: () => ({ shape: "custom" }),
     };
 
-    expect(sanitize(custom, limits)).toEqual({ shape: "custom" });
+    expect(sanitize(custom, limits, quiet)).toEqual({ shape: "custom" });
   });
 });
 
@@ -200,7 +206,7 @@ describe("sanitize errors", () => {
   it("flattens an Error including its cause and truncates the stack", () => {
     const err = new Error("outer", { cause: new Error("inner") });
 
-    const out = asRecord(sanitize(err, limits));
+    const out = asRecord(sanitize(err, limits, quiet));
 
     expect(out.name).toBe("Error");
     expect(out.message).toBe("outer");
@@ -212,7 +218,7 @@ describe("sanitize errors", () => {
     const err = new Error("bare");
     err.stack = undefined;
 
-    const out = asRecord(sanitize(err, limits));
+    const out = asRecord(sanitize(err, limits, quiet));
 
     expect(out.stack).toBeUndefined();
     expect(out.cause).toBeUndefined();
@@ -226,8 +232,12 @@ describe("sanitize errors", () => {
       },
     };
 
-    expect(() => sanitize({ hostile }, limits)).not.toThrow();
-    expect(asRecord(sanitize({ hostile }, limits)).hostile).toBe("[Unserializable: TypeError]");
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+
+    const out = asRecord(sanitize({ hostile }, limits, diagnostics));
+
+    expect(out.hostile).toBe("[Unserializable: TypeError]");
+    expect(diagnostics.snapshot()["record.sanitize_failed"]).toBe(1);
   });
 
   it("survives a getter that throws something which is not an Error", () => {
@@ -238,7 +248,9 @@ describe("sanitize errors", () => {
       },
     };
 
-    expect(asRecord(sanitize({ hostile }, limits)).hostile).toBe("[Unserializable: error]");
+    const out = asRecord(sanitize({ hostile }, limits, quiet));
+
+    expect(out.hostile).toBe("[Unserializable: error]");
   });
 });
 
@@ -248,17 +260,17 @@ describe("sanitize DOM nodes", () => {
     el.id = "grid";
     el.className = "a b c d";
 
-    expect(sanitize(el, limits)).toBe("[Element div#grid.a.b.c]");
+    expect(sanitize(el, limits, quiet)).toBe("[Element div#grid.a.b.c]");
   });
 
   it("omits the id and classes when the element has neither", () => {
-    expect(sanitize(document.createElement("span"), limits)).toBe("[Element span]");
+    expect(sanitize(document.createElement("span"), limits, quiet)).toBe("[Element span]");
   });
 
   it("copes with a node whose className is not a string", () => {
     // A text node has no className at all, which is the same branch a
     // non-string className takes.
-    expect(sanitize(document.createTextNode("hello"), limits)).toBe("[Element #text]");
+    expect(sanitize(document.createTextNode("hello"), limits, quiet)).toBe("[Element #text]");
   });
 
   it("falls back to NODE when a node-like object has no nodeName", () => {
@@ -269,7 +281,7 @@ describe("sanitize DOM nodes", () => {
     const foreignNode = { [Symbol.hasInstance]: () => true };
     vi.stubGlobal("Node", foreignNode);
 
-    expect(sanitize({}, limits)).toBe("[Element node]");
+    expect(sanitize({}, limits, quiet)).toBe("[Element node]");
   });
 
   it("does not reach for Node in a context that has none", () => {
@@ -277,30 +289,30 @@ describe("sanitize DOM nodes", () => {
 
     // Reaching the plain-object branch at all proves the guard short-circuited
     // rather than throwing on `instanceof undefined`.
-    expect(sanitize({ a: 1 }, limits)).toEqual({ a: 1 });
+    expect(sanitize({ a: 1 }, limits, quiet)).toEqual({ a: 1 });
   });
 });
 
 describe("sanitizeWithSize", () => {
   it("grows with the payload, so the record builder never has to stringify to measure", () => {
-    const small = sanitizeWithSize({ a: "x" }, limits).bytes;
-    const large = sanitizeWithSize({ a: "x".repeat(19) }, limits).bytes;
+    const small = sanitizeWithSize({ a: "x" }, limits, quiet).bytes;
+    const large = sanitizeWithSize({ a: "x".repeat(19) }, limits, quiet).bytes;
 
     expect(large).toBeGreaterThan(small);
     expect(small).toBeGreaterThan(0);
   });
 
   it("returns the sanitized value alongside the size", () => {
-    const result = sanitizeWithSize({ a: 1 }, limits);
+    const result = sanitizeWithSize({ a: 1 }, limits, quiet);
 
     expect(result.value).toEqual({ a: 1 });
     expect(result.bytes).toBeGreaterThan(0);
   });
 
   it("counts something for every primitive kind", () => {
-    expect(sanitizeWithSize(null, limits).bytes).toBe(4);
-    expect(sanitizeWithSize(1, limits).bytes).toBe(8);
-    expect(sanitizeWithSize(true, limits).bytes).toBe(5);
+    expect(sanitizeWithSize(null, limits, quiet).bytes).toBe(4);
+    expect(sanitizeWithSize(1, limits, quiet).bytes).toBe(8);
+    expect(sanitizeWithSize(true, limits, quiet).bytes).toBe(5);
   });
 });
 
@@ -324,7 +336,7 @@ describe("sanitize node budget", () => {
       maxNodes: 20,
     };
 
-    const out = JSON.stringify(sanitize(wide(4, 4), budget));
+    const out = JSON.stringify(sanitize(wide(4, 4), budget, quiet));
 
     expect(out).toContain("[MaxNodes]");
   });
@@ -332,7 +344,7 @@ describe("sanitize node budget", () => {
   it("counts the visited nodes across siblings, not per branch", () => {
     const budget: SanitizeLimits = { ...limits, maxAttributeCount: 10, maxNodes: 4 };
 
-    expect(sanitize({ a: 1, b: 2, c: 3, d: 4, e: 5 }, budget)).toEqual({
+    expect(sanitize({ a: 1, b: 2, c: 3, d: 4, e: 5 }, budget, quiet)).toEqual({
       a: 1,
       b: 2,
       c: 3,
@@ -342,7 +354,7 @@ describe("sanitize node budget", () => {
   });
 
   it("leaves a payload inside the budget untouched", () => {
-    expect(sanitize({ a: { b: [1, 2] } }, limits)).toEqual({ a: { b: [1, 2] } });
+    expect(sanitize({ a: { b: [1, 2] } }, limits, quiet)).toEqual({ a: { b: [1, 2] } });
   });
 
   it("bounds the walk instead of visiting every node of a wide tree", () => {
@@ -353,7 +365,7 @@ describe("sanitize node budget", () => {
       maxNodes: 50,
     };
 
-    const { bytes } = sanitizeWithSize(wide(4, 12), budget);
+    const { bytes } = sanitizeWithSize(wide(4, 12), budget, quiet);
 
     // 12 keys at 4 levels is 22k nodes, and the shipped limits allow 128 at 6.
     // Bounded, neither the walk nor the byte estimate runs away with it.

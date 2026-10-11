@@ -13,7 +13,7 @@ import type { Capture, CaptureContext } from "./types";
 
 /** Tracking metadata for a deduplicated error signature. */
 interface SeenError {
-  /** Timestamp when the signature was last reported in epoch milliseconds. */
+  /** Time of the last report for the signature, in epoch milliseconds. */
   at: number;
   /** Occurrences recorded since the last report. */
   count: number;
@@ -80,7 +80,8 @@ export class ErrorCapture implements Capture {
         return;
       }
 
-      // A cache buster is noise; a signed URL is a credential. Neither is recorded.
+      // A cache buster is noise. A signed URL is a credential.
+      // The record keeps neither unless fullUrls is set.
       const url = this.ctx.config.capture.fullUrls ? resourceUrl : stripUrlQuery(resourceUrl);
 
       this.ctx.breadcrumbs.push({
@@ -139,11 +140,11 @@ export class ErrorCapture implements Capture {
 
     this.windowCount++;
     if (this.windowCount > ERROR_STORM_MAX_PER_WINDOW) {
-      // A render loop throwing inside requestAnimationFrame produces thousands
-      // per second. Shipping all of them is a denial of service on our ingest.
+      // A render loop that throws in requestAnimationFrame makes thousands of errors each second.
+      // Sending all of them is a denial of service on the ingest endpoint.
       this.ctx.diagnostics.report(
         "capture.rate_limited",
-        `more than ${String(ERROR_STORM_MAX_PER_WINDOW)} errors in ${String(ERROR_STORM_WINDOW_MS)}ms, suppressing the rest of this window`,
+        `More than ${String(ERROR_STORM_MAX_PER_WINDOW)} errors occurred in ${String(ERROR_STORM_WINDOW_MS)} ms. The library ignores the other errors in this window.`,
       );
       return;
     }
@@ -159,18 +160,17 @@ export class ErrorCapture implements Capture {
       return;
     }
 
-    // Occurrences swallowed since this signature was last reported. Counting
-    // them and never emitting the number makes a storm look like a trickle.
+    // This is the number of occurrences that deduplication dropped since the last report.
+    // Without this count, many errors look like few errors.
     const suppressed = previous ? previous.count - 1 : 0;
 
-    // Deleted before it is re-set so the map stays in least-recently-reported
-    // order, which is what makes the eviction below evict the right entry.
+    // Delete, then set, to move the key to the end of the map. The map stays in
+    // least-recently-reported order. The eviction below needs this order.
     this.seen.delete(key);
     this.seen.set(key, { at: now, count: 1 });
 
-    // A page throwing with a fresh message every render, which is what a bad
-    // template literal inside a loop looks like, would grow this map for as
-    // long as the document stays open.
+    // A page can throw with a new message at each render, for example from a template literal
+    // in a loop. Without this cap, the map grows until the document closes.
     if (this.seen.size > MAX_TRACKED_ERROR_SIGNATURES) {
       const [oldest] = this.seen.keys();
       this.seen.delete(oldest);

@@ -93,7 +93,7 @@ describe("Diagnostics", () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(d.snapshot()["handler.threw"]).toBe(1);
     expect(warnSpy).toHaveBeenCalledWith(
-      "[ui-observability] onDiagnostic handler threw",
+      "[ui-observability] The onDiagnostic handler threw an error.",
       expect.any(Error),
     );
   });

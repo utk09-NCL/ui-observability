@@ -1,8 +1,8 @@
 // src/core/record.ts
 //
-// Assembles structured log records from ambient context, journey metadata, trace context, and resource attributes.
-// Never throws into the caller. The resource block is cached, so anything that
-// changes it must call invalidateResource.
+// This module builds structured log records from ambient context, journey data, trace
+// context and resource attributes. It never throws to the caller.
+// The builder caches the resource block. Call invalidateResource after a change to its inputs.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -68,13 +68,13 @@ export interface RecordBuilderDeps {
   tracing: TraceEngine;
   /** Monotonic sequence counter. */
   sequence: Sequence;
-  /** Context, session, and tab identity context. */
+  /** Context, session and tab identity. */
   identity: Identity;
   /** Detected host platform metadata. */
   platform: PlatformMetadata;
 }
 
-/** Per-record size caps, applied after sanitize and again after redact. */
+/** Size limits for each record. The builder applies them after sanitize and after redact. */
 export interface RecordLimits extends SanitizeLimits {
   /** Max record body length, in characters. */
   maxBodyChars: number;
@@ -89,7 +89,7 @@ export type DropReason = "level" | "sampling" | "redact";
 export interface BuildResult {
   /** Completed record, or null when it was dropped. */
   record: LogRecord | null;
-  /** Why it was dropped. Absent when a record was built. */
+  /** Reason for the drop. It is absent when the builder built a record. */
   dropped?: DropReason;
 }
 
@@ -128,13 +128,13 @@ export class RecordBuilder {
    */
   constructor(private readonly deps: RecordBuilderDeps) {}
 
-  /** Invalidates cached resource attributes to force recomputation on next build. */
+  /** Clears the cached resource attributes. The next build computes them again. */
   invalidateResource(): void {
     this.resourceCache = null;
   }
 
   /**
-   * Evaluates whether a log level clears minimum severity thresholds.
+   * Checks if logging is on and the level is at or above minLevel.
    * @param level Target log severity level.
    * @returns True if the level is enabled.
    */
@@ -147,7 +147,7 @@ export class RecordBuilder {
   }
 
   /**
-   * Builds a structured LogRecord from input attributes, applying sanitization and size budgeting.
+   * Builds a structured LogRecord from the input. It sanitizes attributes and applies size limits.
    * @param input Logger call input parameters.
    * @returns The record, or null with the reason it was dropped.
    */
@@ -162,8 +162,8 @@ export class RecordBuilder {
     const traceCtx = tracing.resolve();
     const activeJourney = journey.current();
 
-    // Sampling before the attribute walk below. A record nothing will send must
-    // not pay for sanitize, redact and the resource block.
+    // Sample before the attribute walk below. Do not sanitize, redact or build the
+    // resource block for a record that the runtime does not send.
     const sampled = shouldSampleInput(
       {
         level: input.level,
@@ -180,19 +180,19 @@ export class RecordBuilder {
     }
 
     const seq = sequence.next();
-    // Query and fragment carry tokens and user input. The path is the grouping signal.
-    const url = currentUrl();
+    // The query and fragment can contain tokens and user input. The path groups records.
+    const url = currentUrl(diagnostics);
     const pageUrl = config.capture.fullUrls ? url : stripUrlQuery(url);
 
     let attributes: Record<string, unknown>;
     let bytes = 0;
     try {
-      const fromContext = sanitizeWithSize(this.deps.context.getAll(), limits);
-      const fromScope = sanitizeWithSize(input.scoped ?? {}, limits);
-      const fromPayload = sanitizeWithSize(input.payload ?? {}, limits);
+      const fromContext = sanitizeWithSize(this.deps.context.getAll(), limits, diagnostics);
+      const fromScope = sanitizeWithSize(input.scoped ?? {}, limits, diagnostics);
+      const fromPayload = sanitizeWithSize(input.payload ?? {}, limits, diagnostics);
       bytes = fromContext.bytes + fromScope.bytes + fromPayload.bytes;
 
-      // Merges attributes in increasing order of precedence: context, scope, payload.
+      // Merge in increasing precedence. Scope overrides context. Payload overrides scope.
       attributes = {
         ...asAttributes(fromContext.value),
         ...asAttributes(fromScope.value),
@@ -201,16 +201,15 @@ export class RecordBuilder {
     } catch (error) {
       diagnostics.report(
         "record.sanitize_failed",
-        "attributes could not be sanitized",
+        "The library could not sanitize the attributes.",
         undefined,
         error,
       );
       attributes = { [ATTR_SANITIZE_FAILED]: true };
     }
 
-    // Injects reserved telemetry attributes after payload merge to prevent
-    // overwrites. Merged earlier, a payload key named journey.id rewrites the id
-    // records correlate on.
+    // Set reserved attributes after the payload merge. If they merge first, a payload key
+    // named journey.id replaces the ID that correlates the records.
     attributes[ATTR_LOG_TYPE] = input.type;
     attributes[ATTR_LOG_SEQ] = seq;
     attributes[ATTR_APP_NAMESPACE] = input.namespace;
@@ -242,8 +241,10 @@ export class RecordBuilder {
 
     const redact = config.redact;
     if (redact) {
-      const redacted = diagnostics.guard("record.sanitize_failed", "redact hook threw", () =>
-        redact(record),
+      const redacted = diagnostics.guard(
+        "record.sanitize_failed",
+        "The redact hook threw an error.",
+        () => redact(record),
       );
       if (redacted === null) {
         diagnostics.count("record.dropped_by_redact");
@@ -252,27 +253,27 @@ export class RecordBuilder {
 
       if (redacted !== undefined && redacted !== record) {
         if (isLogRecord(redacted)) {
-          // Re-sanitizes mutated record from redact hook. Hook output is consumer
-          // code: a cycle, a hostile getter or a BigInt throws at serialization
-          // and loses the batch.
-          const remeasured = sanitizeWithSize(redacted.attributes, limits);
+          // Sanitize the record from the redact hook again. The hook is consumer code.
+          // A cycle, a hostile getter or a BigInt throws at serialization. The transport
+          // then loses the batch.
+          const remeasured = sanitizeWithSize(redacted.attributes, limits, diagnostics);
           record = { ...redacted, attributes: asAttributes(remeasured.value) };
           bytes = remeasured.bytes;
         } else {
           diagnostics.report(
             "record.sanitize_failed",
-            "redact hook returned something that is not a record, keeping the original",
+            "The redact hook returned a value that is not a record. The library keeps the original record.",
           );
         }
       }
     }
 
-    // Truncates attributes when size exceeds maxRecordBytes while retaining indexing
-    // keys. Without journey.id and trace_id the record cannot be looked up.
+    // Drop the attributes when their size exceeds maxRecordBytes. Keep the index keys.
+    // A search cannot find a record without journey.id and trace_id.
     if (bytes > limits.maxRecordBytes) {
       diagnostics.report(
         "record.truncated",
-        "attributes exceeded the size budget and were dropped",
+        "The attributes are larger than the size limit. The library dropped them.",
         { bytes, body: record.body },
       );
 

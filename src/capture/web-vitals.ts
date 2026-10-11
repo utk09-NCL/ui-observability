@@ -1,6 +1,6 @@
 // src/capture/web-vitals.ts
 //
-// Captures browser navigation timing and Core Web Vitals metrics via optional peer.
+// Captures browser navigation timing and Core Web Vitals metrics through an optional peer.
 
 import type { WebVitalsMetric, WebVitalsModule, WebVitalsReporter } from "../models/config";
 import type { Capture, CaptureContext } from "./types";
@@ -18,7 +18,7 @@ export class WebVitalsCapture implements Capture {
    */
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Reports navigation benchmarks and initiates web-vitals loading. */
+  /** Reports navigation timing and starts to load web-vitals. */
   install(): void {
     if (this.installed) {
       return;
@@ -42,16 +42,16 @@ export class WebVitalsCapture implements Capture {
       return;
     }
 
-    // Set before the load, not after. Two configure() calls in one turn otherwise
-    // both pass this check and subscribe two times.
+    // Set the flag before the load, not after. Without this order, two configure() calls
+    // in one turn both pass this check and subscribe two times.
     this.ctx.once.webVitals = true;
 
     void this.loadWebVitals(loader);
   }
 
   /**
-   * Marks module uninstalled. The web-vitals reporters stay subscribed: the
-   * package has no unsubscribe. `ctx.once` prevents a second set.
+   * Marks the module as uninstalled. The web-vitals reporters stay subscribed
+   * because the package has no unsubscribe. `ctx.once` prevents a second set.
    */
   uninstall(): void {
     this.installed = false;
@@ -64,14 +64,14 @@ export class WebVitalsCapture implements Capture {
   private async loadWebVitals(loader: () => Promise<WebVitalsModule>): Promise<void> {
     const module = await this.ctx.diagnostics.guardAsync(
       "capture.install_failed",
-      "loading web-vitals",
+      "The library could not load web-vitals.",
       loader,
     );
 
     if (!module) {
       this.ctx.diagnostics.report(
         "capture.install_failed",
-        "web-vitals is not available, so LCP, CLS and INP are unavailable. Navigation timing still works.",
+        "The web-vitals module is not available. LCP, CLS and INP are off. Navigation timing continues.",
       );
       return;
     }
@@ -81,8 +81,8 @@ export class WebVitalsCapture implements Capture {
       (metric: WebVitalsMetric): void => {
         this.ctx.logger.logMetric(
           `web_vitals.${name}`,
-          // Three decimals: CLS is a small fraction, and rounding it to an
-          // integer reports every layout shift as zero.
+          // Keep three decimals. CLS is a small fraction. An integer value
+          // reports each layout shift as zero.
           Math.round(metric.value * 1000) / 1000,
           unit,
           "gauge",
@@ -99,38 +99,42 @@ export class WebVitalsCapture implements Capture {
 
   /** Extracts and logs PerformanceNavigationTiming benchmarks one time for each document. */
   private reportNavigationTiming(): void {
-    // The entry describes the one navigation of this document. Reported again
-    // after a reconfigure, the seven metrics are duplicates.
+    // The entry describes the one navigation of this document. A second report after a
+    // reconfigure duplicates the seven metrics.
     if (this.ctx.once.navigationTiming) {
       return;
     }
     this.ctx.once.navigationTiming = true;
 
-    this.ctx.diagnostics.guard("capture.install_failed", "reading navigation timing", () => {
-      const nav = performance.getEntriesByType("navigation")[0] as
-        PerformanceNavigationTiming | undefined;
-      if (!nav) {
-        return;
-      }
-
-      const metrics: Record<string, number> = {
-        "navigation.dns_ms": nav.domainLookupEnd - nav.domainLookupStart,
-        "navigation.tcp_ms": nav.connectEnd - nav.connectStart,
-        "navigation.ttfb_ms": nav.responseStart - nav.requestStart,
-        "navigation.response_ms": nav.responseEnd - nav.responseStart,
-        "navigation.dom_interactive_ms": nav.domInteractive,
-        "navigation.dom_complete_ms": nav.domComplete,
-        "navigation.load_ms": nav.loadEventEnd,
-      };
-
-      for (const [name, value] of Object.entries(metrics)) {
-        // Filters unrecorded or negative timings to avoid false zero readings.
-        if (Number.isFinite(value) && value >= 0) {
-          this.ctx.logger.logMetric(name, Math.round(value), "ms", "gauge", {
-            "navigation.type": nav.type,
-          });
+    this.ctx.diagnostics.guard(
+      "capture.install_failed",
+      "The library could not read the navigation timing.",
+      () => {
+        const nav = performance.getEntriesByType("navigation")[0] as
+          PerformanceNavigationTiming | undefined;
+        if (!nav) {
+          return;
         }
-      }
-    });
+
+        const metrics: Record<string, number> = {
+          "navigation.dns_ms": nav.domainLookupEnd - nav.domainLookupStart,
+          "navigation.tcp_ms": nav.connectEnd - nav.connectStart,
+          "navigation.ttfb_ms": nav.responseStart - nav.requestStart,
+          "navigation.response_ms": nav.responseEnd - nav.responseStart,
+          "navigation.dom_interactive_ms": nav.domInteractive,
+          "navigation.dom_complete_ms": nav.domComplete,
+          "navigation.load_ms": nav.loadEventEnd,
+        };
+
+        for (const [name, value] of Object.entries(metrics)) {
+          // Filters unrecorded or negative timings to avoid false zero readings.
+          if (Number.isFinite(value) && value >= 0) {
+            this.ctx.logger.logMetric(name, Math.round(value), "ms", "gauge", {
+              "navigation.type": nav.type,
+            });
+          }
+        }
+      },
+    );
   }
 }

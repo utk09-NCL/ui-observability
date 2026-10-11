@@ -1,6 +1,7 @@
 // src/core/runtime.ts
 //
-// Central coordination runtime managing subsystem lifecycles, configuration, and telemetry routing.
+// This runtime coordinates the subsystems. It manages their lifecycles, the configuration
+// and the routing of records.
 
 import type { Bus } from "../bus/bus";
 import type { Receive, WorkerLike } from "../bus/links";
@@ -64,18 +65,18 @@ const CAPTURE_LOADERS = {
 /** Name of one capture module. */
 type CaptureName = keyof typeof CAPTURE_LOADERS;
 
-/** Global symbol key pinning the singleton runtime instance across federated bundles. */
+/** Global symbol key of the singleton runtime. All federated bundles share it. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
 /** Global symbol key of the runtime that shutdown() stopped. */
 const STOPPED_KEY = Symbol.for(RUNTIME_STOPPED_KEY);
 
-/** Central runtime managing subsystem lifecycles, bus coordination, and record delivery. */
+/** Manages subsystem lifecycles, bus coordination and record delivery. */
 export class ObservabilityRuntime {
   /** Diagnostics reporter for internal faults. */
   readonly diagnostics: Diagnostics;
 
-  /** Active configuration instance mutated in place during reconfigurations. */
+  /** Active configuration instance. A reconfigure changes it in place. */
   readonly config: ResolvedConfig;
 
   /** Detected host platform metadata. */
@@ -126,7 +127,7 @@ export class ObservabilityRuntime {
   /** Load and start of the bus. It is undefined until the first need. */
   private busLoad?: Promise<Bus | null>;
 
-  /** Storage strategy the adapter was built from, set once the build starts. */
+  /** Storage strategy of the adapter. The runtime sets it when the build starts. */
   private storageBuiltAs?: StorageStrategy;
 
   /** Delivery stack. The runtime sets it in the sender role with an endpoint, after the chunk loads. */
@@ -162,7 +163,7 @@ export class ObservabilityRuntime {
   /** Indicates whether asynchronous initialization has completed. */
   private ready = false;
 
-  /** Indicates whether the runtime has been permanently shut down. */
+  /** Indicates whether shutdown stopped the runtime. */
   private destroyed = false;
 
   /** Timestamp of the last reported storage gap warning in epoch milliseconds. */
@@ -210,7 +211,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Direct communication receiver invoked by same-origin child frames.
+   * Receives direct messages from same-origin child frames.
    * @param message Inbound bus message.
    * @param reply Direct response callback.
    */
@@ -225,9 +226,13 @@ export class ObservabilityRuntime {
         return;
       }
 
-      this.diagnostics.guard("bus.send_failed", "accepting a direct message from a child", () => {
-        bus.acceptDirect(message, reply);
-      });
+      this.diagnostics.guard(
+        "bus.send_failed",
+        "The bus could not accept a direct message from a child frame.",
+        () => {
+          bus.acceptDirect(message, reply);
+        },
+      );
     });
   };
 
@@ -301,16 +306,13 @@ export class ObservabilityRuntime {
       void this.syncSender();
     }
 
-    this.diagnostics.report(
-      "config.reconfigured",
-      "configure() was called again, the existing runtime was updated",
-    );
+    this.diagnostics.report("config.reconfigured", "A later configure() call updated the runtime.");
   }
 
   /**
-   * Restores the storage strategy the adapter was built from. Every other key is read
-   * live, but the adapter is built once: swapping it strands the batches already
-   * persisted under the old one, which is worse than refusing the change.
+   * Restores the storage strategy of the built adapter. The runtime reads all other keys
+   * live. It builds the adapter only one time. A new adapter strands the batches in the
+   * old adapter. That loss is worse than a refused change.
    */
   private keepBuiltStorage(): void {
     const built = this.storageBuiltAs;
@@ -321,7 +323,7 @@ export class ObservabilityRuntime {
 
     this.diagnostics.report(
       "config.invalid",
-      `storage cannot change after startup, still ${built}`,
+      `storage cannot change after startup. It stays ${built}.`,
       { requested: this.config.storage },
     );
     this.config.storage = built;
@@ -340,7 +342,7 @@ export class ObservabilityRuntime {
 
     this.diagnostics.report(
       "config.invalid",
-      "endpoint cannot be removed after the delivery stack loads. The endpoint in force stays.",
+      "You cannot remove the endpoint after the delivery stack loads. The endpoint in force stays.",
     );
 
     // An undefined endpoint keeps the endpoint in force, and keeps it in ignoreUrls.
@@ -368,7 +370,7 @@ export class ObservabilityRuntime {
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
   private async init(): Promise<void> {
-    // Start the capture imports at once. They download in parallel with the bus and the sender.
+    // Start the capture imports now. They download in parallel with the bus and the sender.
     const captures = this.installCaptures();
 
     try {
@@ -384,7 +386,7 @@ export class ObservabilityRuntime {
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
-        "startup failed, continuing in a degraded state",
+        "Startup failed. The runtime continues with reduced function.",
         undefined,
         error,
       );
@@ -432,7 +434,7 @@ export class ObservabilityRuntime {
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
-        "the bus did not start. This context sends its own records.",
+        "The bus did not start. This context sends its own records.",
         undefined,
         error,
       );
@@ -477,7 +479,7 @@ export class ObservabilityRuntime {
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
-        "the bus did not load. This context sends its own records.",
+        "The bus did not load. This context sends its own records.",
         undefined,
         error,
       );
@@ -496,7 +498,7 @@ export class ObservabilityRuntime {
 
   /**
    * Loads the delivery stack if this context is the sender and has an endpoint.
-   * @returns Promise resolving when the load completes, or at once if nothing loads.
+   * @returns Promise resolving when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
     if (!this.config.endpoint || this.role() !== "sender") {
@@ -541,7 +543,7 @@ export class ObservabilityRuntime {
       this.senderLoad = undefined;
       this.diagnostics.report(
         "pipeline.crashed",
-        "the delivery stack did not load. Records are not sent.",
+        "The delivery stack did not load. The library does not send records.",
         { held: this.pendingRecords.length },
         error,
       );
@@ -600,18 +602,26 @@ export class ObservabilityRuntime {
     }
 
     for (const capture of this.captures) {
-      this.diagnostics.guard("capture.install_failed", `installing ${capture.name}`, () => {
-        capture.install();
-      });
+      this.diagnostics.guard(
+        "capture.install_failed",
+        `The library could not install the ${capture.name} capture.`,
+        () => {
+          capture.install();
+        },
+      );
     }
   }
 
   /** Uninstalls the active capture modules. */
   private uninstallCaptures(): void {
     for (const capture of this.captures) {
-      this.diagnostics.guard("capture.install_failed", `uninstalling ${capture.name}`, () => {
-        capture.uninstall();
-      });
+      this.diagnostics.guard(
+        "capture.install_failed",
+        `The library could not uninstall the ${capture.name} capture.`,
+        () => {
+          capture.uninstall();
+        },
+      );
     }
     this.captures.length = 0;
   }
@@ -624,7 +634,7 @@ export class ObservabilityRuntime {
   private loadCapture(name: CaptureName): Promise<CaptureClass | undefined> {
     return this.diagnostics.guardAsync(
       "capture.install_failed",
-      `loading the ${name} capture`,
+      `The library could not load the ${name} capture.`,
       CAPTURE_LOADERS[name],
     );
   }
@@ -644,9 +654,13 @@ export class ObservabilityRuntime {
         return;
       }
 
-      this.diagnostics.guard("bus.send_failed", "registering a worker", () => {
-        bus.attachWorker(worker);
-      });
+      this.diagnostics.guard(
+        "bus.send_failed",
+        "The library could not register the worker.",
+        () => {
+          bus.attachWorker(worker);
+        },
+      );
 
       // Start the bus in bus.mode "off", where startup did not start it.
       void this.ensureBus();
@@ -662,8 +676,8 @@ export class ObservabilityRuntime {
 
     this.uninstallCaptures();
 
-    // Sender.destroy runs its synchronous steps before its first await. The exit flush
-    // then runs before the journey and the bus stop, as before.
+    // Sender.destroy runs its synchronous steps before its first await. Thus the exit
+    // flush runs before the journey and the bus stop.
     const closing = this.sender?.destroy();
     this.journey.destroy();
     this.bus?.destroy();
@@ -683,7 +697,7 @@ export class ObservabilityRuntime {
 
   /**
    * Routes a completed log record to the pipeline or forward buffer.
-   * @param record Log record to emit, or null if dropped during build.
+   * @param record Log record to emit, or null when the build dropped it.
    */
   emit(record: LogRecord | null): void {
     if (!record || this.destroyed) {
@@ -701,7 +715,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Directs a record to the forward buffer or local pipeline based on active bus role.
+   * Sends a record to the forward buffer or to the local pipeline. The bus role selects
+   * the path.
    * @param record Log record to route.
    */
   private route(record: LogRecord): void {
@@ -767,9 +782,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Validates, samples and enqueues records received from child frames or workers.
-   * A forwarded record arrives built, so this is the first point in this context
-   * where sampling can run. A local record is sampled in RecordBuilder instead.
+   * Validates, samples and queues records from child frames or workers.
+   * A forwarded record arrives built. This is the first point in this context where
+   * sampling can run. RecordBuilder samples a local record.
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
@@ -791,7 +806,7 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Flushes records buffered during startup and backfills active journey metadata. */
+  /** Flushes the startup records. It adds the active journey to records without a journey. */
   private releaseBootBuffer(): void {
     const buffered = this.bootBuffer;
     this.bootBuffer = [];
@@ -807,7 +822,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Emits a warning log record when batches are evicted from persistent storage.
+   * Emits a warning record when storage evicts batches.
    * @param result Storage prune summary metrics.
    */
   private readonly reportGap = (result: PruneResult): void => {
@@ -827,12 +842,12 @@ export class ObservabilityRuntime {
     );
   };
 
-  /** Generates and persists a replacement tab ID when a collision is detected. */
+  /** Makes and stores a new tab ID after a tab ID collision. */
   private regenerateTabId(): void {
-    const fresh = newId();
+    const fresh = newId(this.diagnostics);
     this.diagnostics.report(
       "bus.role_resolved",
-      "another context claimed this tab id, most likely a duplicated tab. Regenerating.",
+      "Another context uses this tab id. A duplicated tab is the usual cause. The library makes a new tab id.",
       { was: this.identity.tabId, now: fresh },
     );
 
@@ -843,7 +858,8 @@ export class ObservabilityRuntime {
 
   /**
    * Counts the batches held in storage after a failed or deferred delivery.
-   * @returns Promise resolving to the number of stored batches. A forwarder reports 0, because it persists nothing.
+   * @returns Promise resolving to the number of stored batches. A forwarder stores
+   * nothing and reports 0.
    */
   async queueDepth(): Promise<number> {
     await this.senderLoad;

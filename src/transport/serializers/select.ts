@@ -1,7 +1,7 @@
 // src/transport/serializers/select.ts
 //
-// Maps the serializer option to an implementation. Only transport code imports this
-// module. config.ts keeps the name, so the main chunk holds no serializer.
+// This module maps the serializer option to an implementation. Only transport code imports
+// this module. config.ts keeps only the name. The main chunk then contains no serializer.
 
 import type { SerializerChoice } from "../../models/config";
 import type { LogSerializer } from "../../models/serializer";

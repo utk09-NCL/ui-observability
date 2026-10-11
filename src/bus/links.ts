@@ -34,7 +34,7 @@ export interface Link {
  */
 export type Receive = (message: BusMessage, source: MessageSource) => void;
 
-/** Interface exposed on global symbol by same-origin parent runtimes. */
+/** Interface that a same-origin parent runtime exposes on a global symbol. */
 export interface DirectHost {
   /**
    * Accepts a message directly from a child frame and replies synchronously.
@@ -106,10 +106,14 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
         return;
       }
 
-      // Catches errors thrown by parent runtime to protect child logging calls.
-      diagnostics.guard("bus.send_failed", "direct call into the parent runtime", () => {
-        target.busAccept(message, receive);
-      });
+      // Stops an error in the parent runtime from breaking a logging call in the child.
+      diagnostics.guard(
+        "bus.send_failed",
+        "The direct call into the parent runtime failed.",
+        () => {
+          target.busAccept(message, receive);
+        },
+      );
     },
     close() {
       open = false;
@@ -130,7 +134,7 @@ export function createParentLink(receive: Receive, diagnostics: Diagnostics): Li
 
   const onMessage = (event: MessageEvent): void => {
     const message = unwrap(event.data);
-    // The parent is trusted by construction: this context chose to talk to it.
+    // This context trusts the parent because it selected the parent as its upstream.
     if (message && event.source === window.parent) {
       receive(message, { link: "parent", origin: event.origin });
     }
@@ -140,10 +144,10 @@ export function createParentLink(receive: Receive, diagnostics: Diagnostics): Li
   return {
     kind: "parent",
     post(message) {
-      diagnostics.guard("bus.send_failed", "postMessage to parent", () => {
-        // "*" is fine outbound: the payload is this context's own records,
-        // and the parent already receives them another way. Inbound trust
-        // works differently; see createChildrenLink.
+      diagnostics.guard("bus.send_failed", "The postMessage call to the parent failed.", () => {
+        // An outbound "*" target is safe. The payload holds only this context's records.
+        // The parent already gets these records by another path.
+        // For inbound trust, see createChildrenLink.
         window.parent.postMessage(envelope(message), "*");
       });
     },
@@ -170,7 +174,8 @@ export function createChildrenLink(
   }
 
   const trusted = new Set([window.location.origin, ...trustedOrigins]);
-  // Origin per source: a child that navigates must not receive the previous origin's ids.
+  // The map keeps the origin of each source.
+  // A child that navigates must not get the ids of its previous origin.
   const sources = new Map<MessageEventSource, string>();
 
   const onMessage = (event: MessageEvent): void => {
@@ -181,7 +186,7 @@ export function createChildrenLink(
     if (!trusted.has(event.origin)) {
       diagnostics.report(
         "bus.untrusted_origin",
-        `ignored a bus message from ${event.origin}. Add it to bus.trustedOrigins if it is yours.`,
+        `The bus ignored a message from ${event.origin}. If you own this origin, add it to bus.trustedOrigins.`,
         { origin: event.origin, type: message.t },
       );
       return;
@@ -204,11 +209,15 @@ export function createChildrenLink(
           sources.delete(source);
           continue;
         }
-        diagnostics.guard("bus.send_failed", "postMessage to child", () => {
-          // Targets the origin the child last spoke from. The browser drops the
-          // message if the child has since navigated elsewhere.
-          target.postMessage(envelope(message), origin);
-        });
+        diagnostics.guard(
+          "bus.send_failed",
+          "The postMessage call to a child frame failed.",
+          () => {
+            // Targets the last known origin of the child. The browser drops the
+            // message if the child navigated to a different origin.
+            target.postMessage(envelope(message), origin);
+          },
+        );
       }
     },
     close() {
@@ -237,7 +246,7 @@ export function createBroadcastLink(
 
   const channel = diagnostics.guard(
     "bus.send_failed",
-    "opening BroadcastChannel",
+    "The library could not open the BroadcastChannel.",
     () => new BC(channelName),
   );
   if (!channel) {
@@ -254,14 +263,18 @@ export function createBroadcastLink(
   return {
     kind: "broadcast",
     post(message) {
-      diagnostics.guard("bus.send_failed", "BroadcastChannel.postMessage", () => {
+      diagnostics.guard("bus.send_failed", "The BroadcastChannel.postMessage call failed.", () => {
         channel.postMessage(envelope(message));
       });
     },
     close() {
-      diagnostics.guard("bus.send_failed", "closing BroadcastChannel", () => {
-        channel.close();
-      });
+      diagnostics.guard(
+        "bus.send_failed",
+        "The library could not close the BroadcastChannel.",
+        () => {
+          channel.close();
+        },
+      );
     },
   };
 }
@@ -308,37 +321,42 @@ export function createOpenFinLink(
     return null;
   }
   if (!appUuid) {
-    // publish() reaches every subscriber on the runtime. Without an identity to
-    // scope it, opening the link would share this app's bus with every other.
+    // publish() sends to every subscriber on the runtime. Without a uuid scope,
+    // this link shares the bus of this app with all other apps.
     diagnostics.report(
       "openfin.unavailable",
-      "no OpenFin application uuid, so the InterApplicationBus link stays closed",
+      "OpenFin gives no application uuid. The InterApplicationBus link stays closed.",
     );
     return null;
   }
 
-  // Both halves carry the uuid: the topic keeps this app's messages away from
-  // other applications, the subscriber identity rejects theirs.
+  // The topic and the subscriber identity both contain the uuid. The topic keeps
+  // messages of this app from other apps. The identity rejects messages from other apps.
   const scoped = `${topic}.${appUuid}`;
 
-  void diagnostics.guardAsync("bus.send_failed", "InterApplicationBus.subscribe", () =>
-    iab.subscribe({ uuid: appUuid }, scoped, (raw) => {
-      const message = unwrap(raw);
-      if (message) {
-        receive(message, { link: "openfin", origin: "openfin" });
-      }
-    }),
+  void diagnostics.guardAsync(
+    "bus.send_failed",
+    "The InterApplicationBus.subscribe call failed.",
+    () =>
+      iab.subscribe({ uuid: appUuid }, scoped, (raw) => {
+        const message = unwrap(raw);
+        if (message) {
+          receive(message, { link: "openfin", origin: "openfin" });
+        }
+      }),
   );
 
   return {
     kind: "openfin",
     post(message) {
-      void diagnostics.guardAsync("bus.send_failed", "InterApplicationBus.publish", () =>
-        iab.publish(scoped, envelope(message)),
+      void diagnostics.guardAsync(
+        "bus.send_failed",
+        "The InterApplicationBus.publish call failed.",
+        () => iab.publish(scoped, envelope(message)),
       );
     },
     close() {
-      // OpenFin automatically cleans up subscriptions on context teardown.
+      // OpenFin removes the subscriptions when the context closes.
     },
   };
 }
@@ -372,12 +390,12 @@ export function createOwnerLink(receive: Receive, diagnostics: Diagnostics): Lin
   return {
     kind: "owner",
     post(message) {
-      diagnostics.guard("bus.send_failed", "worker postMessage", () => {
+      diagnostics.guard("bus.send_failed", "The postMessage call of the worker failed.", () => {
         send(envelope(message));
       });
     },
     close() {
-      // Worker scope listeners terminate with the worker lifecycle.
+      // Worker scope listeners stop when the worker stops.
     },
   };
 }
@@ -403,13 +421,13 @@ export function createWorkerLink(
   };
   worker.addEventListener("message", onMessage);
 
-  // Activates MessagePort message delivery if supported.
+  // Starts delivery on a MessagePort. A Worker has no start method.
   worker.start?.();
 
   return {
     kind: "worker",
     post(message) {
-      diagnostics.guard("bus.send_failed", "postMessage to a worker", () => {
+      diagnostics.guard("bus.send_failed", "The postMessage call to a worker failed.", () => {
         worker.postMessage(envelope(message));
       });
     },

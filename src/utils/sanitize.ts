@@ -1,7 +1,7 @@
 // src/utils/sanitize.ts
 //
-// Sanitizes arbitrary data into JSON-safe structures with cycle detection and byte-size estimation.
-// Never throws. Never returns a circular structure.
+// Converts arbitrary data into JSON-safe structures. It detects cycles and estimates
+// the byte size. It never throws. It never returns a circular structure.
 
 import {
   BYTES_PER_BOOLEAN,
@@ -16,6 +16,7 @@ import {
   UTF8_ONE_BYTE_CEILING,
   UTF8_TWO_BYTE_CEILING,
 } from "../constants";
+import type { Diagnostics } from "../core/diagnostics";
 
 /** Structural depth and size limits enforced during object sanitization. */
 export interface SanitizeLimits {
@@ -95,26 +96,38 @@ interface WalkState {
   bytes: number;
   /** Count of values visited so far. */
   nodes: number;
+  /** Diagnostics reporter. It counts a value that throws during the walk. */
+  diagnostics: Diagnostics;
 }
 
 /**
  * Sanitizes arbitrary values into JSON-safe structures without throwing.
  * @param value Raw value to sanitize.
  * @param limits Configuration limits for depth, count, and character lengths.
+ * @param diagnostics Diagnostics reporter. It counts a value that throws during the walk.
  * @returns JSON-safe sanitized value.
  */
-export function sanitize(value: unknown, limits: SanitizeLimits): unknown {
-  return sanitizeWithSize(value, limits).value;
+export function sanitize(
+  value: unknown,
+  limits: SanitizeLimits,
+  diagnostics: Diagnostics,
+): unknown {
+  return sanitizeWithSize(value, limits, diagnostics).value;
 }
 
 /**
  * Sanitizes arbitrary values and calculates approximate serialized byte sizes.
  * @param value Raw value to sanitize.
  * @param limits Configuration limits.
+ * @param diagnostics Diagnostics reporter. It counts a value that throws during the walk.
  * @returns SanitizeResult containing sanitized value and byte count.
  */
-export function sanitizeWithSize(value: unknown, limits: SanitizeLimits): SanitizeResult {
-  const state: WalkState = { bytes: 0, nodes: 0 };
+export function sanitizeWithSize(
+  value: unknown,
+  limits: SanitizeLimits,
+  diagnostics: Diagnostics,
+): SanitizeResult {
+  const state: WalkState = { bytes: 0, nodes: 0, diagnostics };
   const result = walk(value, limits, new WeakSet(), 0, state);
   return { value: result, bytes: state.bytes };
 }
@@ -131,7 +144,8 @@ function counted(text: string, state: WalkState): string {
 }
 
 /**
- * Recursively walks object trees, replacing cyclic references, hostile getters, and invalid primitives.
+ * Walks an object tree recursively. It replaces cyclic references, hostile getters, and
+ * invalid primitives.
  * @param value Target value to sanitize.
  * @param limits Truncation and depth limits.
  * @param seen Set of active ancestor objects for cycle detection.
@@ -147,8 +161,8 @@ function walk(
   state: WalkState,
 ): unknown {
   state.nodes++;
-  // The per-level limits cannot bound a wide tree: 128 keys over 6 levels is
-  // 128^6 values, all walked synchronously on the main thread.
+  // The per-level limits do not bound a wide tree. 128 keys over 6 levels give 128^6
+  // values. The walk visits all of them synchronously on the main thread.
   if (state.nodes > limits.maxNodes) {
     return counted("[MaxNodes]", state);
   }
@@ -269,13 +283,14 @@ function walk(
     }
     return out;
   } catch (error) {
-    // Catches hostile getters and throwing proxies. One costs an attribute, not the
-    // record.
+    // Catch hostile getters and throwing proxies. A failure replaces one attribute,
+    // not the full record. Count the fault. A report on each attribute is noise.
+    state.diagnostics.count("record.sanitize_failed");
     const name = error instanceof Error ? error.name : "error";
     return counted(`[Unserializable: ${name}]`, state);
   } finally {
-    // Removes object from ancestor set on unwind. Left in, a repeated sibling reads
-    // as a cycle.
+    // Remove the object from the ancestor set on unwind. Otherwise a repeated sibling
+    // shows as a cycle.
     seen.delete(value);
   }
 }

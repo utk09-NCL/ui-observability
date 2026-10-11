@@ -1,6 +1,6 @@
 // src/transport/serializers/otlp.ts
 //
-// Serializes log batches into OpenTelemetry (OTLP/JSON) formatted log records grouped by resource.
+// This module serializes log batches as OTLP/JSON log records. It groups the records by resource.
 
 import {
   CONTENT_TYPE_JSON,
@@ -11,27 +11,27 @@ import {
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 
-/** OTLP AnyValue container with typed value wrappers. */
+/** This type holds an OTLP AnyValue with typed value wrappers. */
 type AnyValue = Record<string, unknown>;
 
-/** OTLP KeyValue pair container. */
+/** This interface holds an OTLP KeyValue pair. */
 interface KeyValue {
-  /** Attribute key. */
+  /** This field holds the attribute key. */
   key: string;
-  /** Typed AnyValue container. */
+  /** This field holds the typed AnyValue. */
   value: AnyValue;
 }
 
-/** Records grouped by shared resource attributes. */
+/** This interface holds the records that share resource attributes. */
 interface ResourceGroup {
-  /** Resource attribute map. */
+  /** This field holds the resource attribute map. */
   resource: Record<string, unknown>;
-  /** Log records associated with the resource. */
+  /** This field holds the log records of the resource. */
   records: LogRecord[];
 }
 
 /**
- * Wraps a JavaScript value in an OTLP AnyValue container.
+ * Wraps a JavaScript value in an OTLP AnyValue.
  * @param value Raw attribute or resource value.
  * @returns Typed AnyValue object or null if unsupported.
  */
@@ -48,14 +48,14 @@ function toAnyValue(value: unknown): AnyValue | null {
     return { boolValue: value };
   }
 
-  // Encodes int64 as decimal strings per OTLP protobuf JSON specification. A number
-  // is a silent 400 from a conforming collector.
+  // Encode int64 as a decimal string. The OTLP protobuf JSON mapping requires it. A conforming
+  // collector returns a 400 status for a number. The response does not give the cause.
   if (typeof value === "number") {
     return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
   }
 
-  // Converts BigInt to decimal string representation for JSON serialization.
-  // JSON.stringify throws on a BigInt and loses the batch.
+  // Convert a BigInt to a decimal string. JSON.stringify throws on a BigInt and loses the
+  // batch.
   if (typeof value === "bigint") {
     return { intValue: value.toString() };
   }
@@ -76,7 +76,7 @@ function toAnyValue(value: unknown): AnyValue | null {
 }
 
 /**
- * Converts a plain object into an array of OTLP KeyValue pairs.
+ * Converts a plain object to an array of OTLP KeyValue pairs.
  * @param source Key-value attribute object.
  * @returns Array of valid KeyValue pairs.
  */
@@ -93,11 +93,11 @@ function toKeyValues(source: Record<string, unknown>): KeyValue[] {
   return out;
 }
 
-/** Memoized JSON string keys per resource object to avoid redundant stringification. */
+/** This map caches the JSON key of each resource object. It prevents a repeated stringify. */
 const resourceKeys = new WeakMap<object, string>();
 
 /**
- * Computes or retrieves a stable serialization key for a resource object.
+ * Returns the stable JSON key of a resource object. It caches the key.
  * @param resource Resource attribute object.
  * @returns JSON key string.
  */
@@ -113,13 +113,14 @@ function resourceKey(resource: Record<string, unknown>): string {
   return key;
 }
 
-/** Serializer formatting log records into OTLP/JSON payloads. */
+/** This serializer writes log records as OTLP/JSON payloads. */
 export const otlpSerializer: LogSerializer = {
-  /** Format identifier name. */
+  /** This field holds the format name. */
   name: SERIALIZER_NAME_OTLP,
 
   /**
-   * Groups records by resource and encodes them into an OTLP ExportLogsServiceRequest JSON payload.
+   * Groups records by resource. It encodes them as an OTLP
+   * ExportLogsServiceRequest JSON payload.
    * @param records Array of log records to serialize.
    * @returns Serialized JSON batch payload.
    */
@@ -145,7 +146,7 @@ export const otlpSerializer: LogSerializer = {
           scope: { name: TELEMETRY_SDK_NAME, version: TELEMETRY_SDK_VERSION },
           logRecords: group.records.map((record) => ({
             timeUnixNano: record.timeUnixNano,
-            // Falls back to timeUnixNano if observedTimeUnixNano is unset.
+            // Use timeUnixNano when observedTimeUnixNano is not set.
             observedTimeUnixNano: record.observedTimeUnixNano ?? record.timeUnixNano,
             severityNumber: record.severityNumber,
             severityText: record.severityText,

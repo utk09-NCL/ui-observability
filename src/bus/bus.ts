@@ -1,6 +1,6 @@
 // src/bus/bus.ts
 //
-// Manages cross-realm bus role resolution and message routing.
+// Resolves the bus role and routes messages between realms.
 
 import {
   BUS_CHANNEL_NAME,
@@ -29,13 +29,13 @@ import {
 
 /** Handshake timing for a forwarder waiting on an owner. */
 export interface HandshakeOptions {
-  /** Max time to wait for an owner to answer, in milliseconds. */
+  /** Maximum time that a forwarder waits for an owner to answer, in milliseconds. */
   timeoutMs: number;
   /** Attempts allowed before a cross-origin forwarder promotes itself to sender. */
   maxAttempts: number;
 }
 
-/** Handshake timing in force. Tests build a bus with shorter values. */
+/** Default handshake timing. Tests build a bus with shorter values. */
 export const HANDSHAKE_OPTIONS: HandshakeOptions = {
   timeoutMs: BUS_HANDSHAKE_TIMEOUT_MS,
   maxAttempts: BUS_MAX_HANDSHAKE_ATTEMPTS,
@@ -47,9 +47,9 @@ export interface BusHandlers {
   onRecords: (records: LogRecord[]) => void;
   /** Applies journey updates received from the control bus. */
   onJourney: (journey: Journey | null) => void;
-  /** Returns the active journey for inquiring child contexts. */
+  /** Returns the active journey to a child context that requests it. */
   onJourneyRequest: () => Journey | null;
-  /** Invoked when a tab identifier collision is detected across windows. */
+  /** Runs when two windows use the same tab identifier. */
   onTabConflict: () => void;
 }
 
@@ -64,7 +64,7 @@ interface OpenFinMe {
 
 /** Coordinates cross-realm communication, role resolution, and message dispatch. */
 export class Bus {
-  /** Current bus role. Defaults to "sender". */
+  /** Current bus role. The default is "sender". */
   private role: BusRole = "sender";
   /** Upstream forwarding link, or null when acting as sender. */
   private upstream: Link | null = null;
@@ -133,7 +133,7 @@ export class Bus {
         if (!this.upstream) {
           this.diagnostics.report(
             "bus.no_owner",
-            'bus.mode is "forwarder" but there is no owner to forward to. Records will be dropped.',
+            'bus.mode is "forwarder". No owner exists. The library drops the records of this context.',
           );
         }
       }
@@ -144,7 +144,7 @@ export class Bus {
 
     this.openControlLinks();
 
-    // Direct synchronous attachment for same-origin parents.
+    // A same-origin parent runtime accepts a direct synchronous link.
     const direct = createDirectLink(this.receive, this.diagnostics);
     if (direct) {
       this.role = "forwarder";
@@ -152,7 +152,7 @@ export class Bus {
       this.resolved = true;
       this.diagnostics.report(
         "bus.role_resolved",
-        "attached directly to the same-origin parent runtime",
+        "This context attached directly to the runtime of its same-origin parent.",
         {
           role: "forwarder",
           via: "direct",
@@ -167,9 +167,13 @@ export class Bus {
     if (!candidate) {
       this.role = "sender";
       this.resolved = true;
-      this.diagnostics.report("bus.role_resolved", "no owner to forward to, sending directly", {
-        role: "sender",
-      });
+      this.diagnostics.report(
+        "bus.role_resolved",
+        "No owner exists. This context sends its own records.",
+        {
+          role: "sender",
+        },
+      );
       this.announce();
       return this.role;
     }
@@ -190,11 +194,11 @@ export class Bus {
       }
       this.diagnostics.report(
         "bus.handshake_timeout",
-        `no owner answered after ${String(attempts)} attempt(s) of ${String(this.handshakeOptions.timeoutMs)}ms, promoting to sender`,
+        `No owner answered after ${String(attempts)} attempt(s) of ${String(this.handshakeOptions.timeoutMs)} ms. This context becomes the sender.`,
         { via: candidate.kind, crossOrigin: this.isCrossOriginFrame() },
       );
     }
-    this.diagnostics.report("bus.role_resolved", `role is ${this.role}`, {
+    this.diagnostics.report("bus.role_resolved", `The bus role is ${this.role}.`, {
       role: this.role,
       via: welcomed ? candidate.kind : "none",
     });
@@ -288,7 +292,7 @@ export class Bus {
     }
   }
 
-  /** Sends a message exclusively over links matching the specified kind. */
+  /** Sends a message only over links of the given kind. */
   private postOver(link: LinkKind, message: BusMessage): void {
     for (const candidate of this.allLinks()) {
       if (candidate.kind === link) {
@@ -350,9 +354,9 @@ export class Bus {
       }
 
       case "tab":
-        // Collisions only apply to distinct contexts sharing the broadcast
-        // channel. The id comparison picks one side of the pair: without it
-        // both colliding contexts report the conflict and both rename.
+        // A collision applies only to two different contexts on the broadcast channel.
+        // The id comparison selects one context of the pair.
+        // Without it, both contexts report the conflict and rename.
         if (
           source.link === "broadcast" &&
           message.tabId === this.tabId &&
@@ -365,10 +369,10 @@ export class Bus {
   };
 
   /**
-   * Tells whether records from a link can go upstream. Posted back on the link
-   * they arrived on, the records echo to their sender. A direct link is an
-   * exception: it is one call into one parent, so two direct links in a chain are
-   * different links.
+   * Tells whether records from a link can go upstream. Records that go back on
+   * their arrival link return to their sender. A direct link is an exception.
+   * Each direct link is one call into one parent. Thus two direct links in a
+   * chain are different links.
    * @param link Kind of the link the records arrived on.
    * @returns True if the relay is safe.
    */
@@ -415,7 +419,7 @@ export class Bus {
       return false;
     }
     try {
-      // The probe: a cross-origin parent throws on this read. A bare read fails lint.
+      // A cross-origin parent throws on this read. Lint rejects a bare property read.
       Reflect.get(window.parent, "location");
       return false;
     } catch {
@@ -485,8 +489,8 @@ export class Bus {
       };
 
       this.awaitingWelcome = { link: candidate.kind, settle: finish };
-      // Declared below finish, which reads it: nothing can call finish until
-      // the timer exists, because the welcome arrives through the post below.
+      // finish reads timer, which the code declares after finish. This order is safe.
+      // finish can run only after the post below. The timer exists at that time.
       const timer = setTimeout(() => {
         finish(false);
       }, this.handshakeOptions.timeoutMs);

@@ -1,8 +1,8 @@
 // src/storage/factory.ts
 //
-// Factory resolving storage adapters with graceful degradation from IndexedDB to localStorage to memory.
-// Degrades rather than throwing. IndexedDB is unavailable in private mode and
-// sandboxed frames.
+// This module selects a storage adapter. It falls back from IndexedDB to localStorage to memory.
+// It falls back and does not throw. IndexedDB is unavailable in private mode and sandboxed
+// frames.
 
 import {
   STORAGE_NAME_INDEXEDDB,
@@ -17,8 +17,8 @@ import { LocalStorageStorage } from "./local-storage";
 import { MemoryStorage } from "./memory-storage";
 
 /**
- * No-op storage adapter returned when persistence strategy is "none". Every method
- * resolves. A sender calling close() on shutdown must not crash.
+ * This adapter does nothing. The factory returns it for the "none" strategy. Each method
+ * resolves. A sender that calls close() on shutdown must not crash.
  */
 const noop: StorageAdapter = {
   name: STORAGE_NAME_NONE,
@@ -33,36 +33,45 @@ const noop: StorageAdapter = {
 };
 
 /**
- * Evaluates whether IndexedDB is accessible in the current execution context.
+ * Checks whether IndexedDB is available in the current context.
  * @param diagnostics Diagnostics reporter.
  * @returns True if IDBFactory is available.
  */
 function hasIndexedDb(diagnostics: Diagnostics): boolean {
-  const available = diagnostics.guard("storage.unavailable", "reading indexedDB", () => {
-    const factory = (globalThis as { indexedDB?: IDBFactory | null }).indexedDB;
-    return factory !== undefined && factory !== null;
-  });
+  const available = diagnostics.guard(
+    "storage.unavailable",
+    "The library could not read indexedDB.",
+    () => {
+      const factory = (globalThis as { indexedDB?: IDBFactory | null }).indexedDB;
+      return factory !== undefined && factory !== null;
+    },
+  );
 
   return available === true;
 }
 
 /**
- * Tests whether localStorage is accessible and accepts write operations.
+ * Checks whether localStorage is available and accepts writes.
  * @param diagnostics Diagnostics reporter.
  * @returns True if localStorage probe write succeeds.
  */
 function hasLocalStorage(diagnostics: Diagnostics): boolean {
-  const usable = diagnostics.guard("storage.unavailable", "probing localStorage", () => {
-    localStorage.setItem(STORAGE_PROBE_KEY, "1");
-    localStorage.removeItem(STORAGE_PROBE_KEY);
-    return true;
-  });
+  const usable = diagnostics.guard(
+    "storage.unavailable",
+    "The library could not write a test key to localStorage.",
+    () => {
+      localStorage.setItem(STORAGE_PROBE_KEY, "1");
+      localStorage.removeItem(STORAGE_PROBE_KEY);
+      return true;
+    },
+  );
 
   return usable === true;
 }
 
 /**
- * Instantiates the requested storage adapter, degrading gracefully if dependencies are unavailable.
+ * Creates the requested storage adapter. It falls back to the next adapter when
+ * a dependency is unavailable.
  * @param strategy Configured persistence strategy.
  * @param dbName IndexedDB database name.
  * @param limits Storage retention and capacity thresholds.
@@ -86,17 +95,17 @@ export async function createStorage(
 
   if (strategy === STORAGE_NAME_INDEXEDDB || strategy === "auto") {
     if (hasIndexedDb(diagnostics)) {
-      // Dynamically imports IndexedDbStorage to omit storage drivers from main
-      // bundle. A chunk that fails to load degrades to the next adapter.
+      // Import IndexedDbStorage dynamically. This keeps the driver out of the main bundle. A
+      // chunk that does not load falls back to the next adapter.
       const adapter = await diagnostics.guardAsync(
         "storage.unavailable",
-        "opening IndexedDB",
+        "The library could not open IndexedDB.",
         async () => {
           const { IndexedDbStorage } = await import("./indexeddb-storage");
           const storage = new IndexedDbStorage(dbName, limits, diagnostics, onGap);
-          // Opened here, not on first use. Private mode, a corrupt profile and
-          // some WebViews define indexedDB and then reject open(). Only a
-          // rejection in this block selects the next adapter.
+          // Open the database here, not on first use. Private mode, a corrupt profile and
+          // some WebViews define indexedDB but reject open(). Only a rejection in this
+          // block selects the next adapter.
           await storage.open();
           return storage;
         },
@@ -109,7 +118,7 @@ export async function createStorage(
     if (strategy === STORAGE_NAME_INDEXEDDB) {
       diagnostics.report(
         "storage.degraded",
-        "IndexedDB was asked for by name and is unavailable, using memory",
+        "IndexedDB is not available. The library uses memory storage instead.",
       );
       return new MemoryStorage(limits, onGap);
     }
@@ -121,7 +130,7 @@ export async function createStorage(
 
   diagnostics.report(
     "storage.degraded",
-    "no persistent storage available, offline logs are memory only",
+    "No persistent storage is available. The library keeps undelivered records in memory only.",
   );
   return new MemoryStorage(limits, onGap);
 }

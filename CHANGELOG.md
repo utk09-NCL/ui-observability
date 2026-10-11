@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-11
+
+### Breaking changes - v0.6.0
+
+- Each diagnostic message, `TransportError` message and IndexedDB error message is a complete sentence. For example, "server throttled us" is now "The server throttles the requests." Filter on `event.code`, not on `event.message`.
+
+### Added - v0.6.0
+
+- The diagnostic code `platform.api_blocked` counts a browser API that a sandbox or a cross-origin boundary blocks. This includes `crypto.randomUUID`, `window.top` and `location.href`.
+- `getDiagnosticCounters()["record.sanitize_failed"]` counts each value that throws during sanitization, for example a hostile getter.
+
+### Changed - v0.6.0
+
+- The comments, the JSDoc in the `.d.ts` files and the README follow ASD-STE100.
+- The `BusMode` JSDoc said that `off` "does neither". With `off`, the context delivers its own records.
+
 ## [0.5.0] - 2026-10-11
 
 ### Breaking changes - v0.5.0

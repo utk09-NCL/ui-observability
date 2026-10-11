@@ -713,7 +713,7 @@ describe("IdbDriver", () => {
       failingRequest<number>(null),
     );
 
-    await expect(driver.count()).rejects.toThrow("the IndexedDB request failed");
+    await expect(driver.count()).rejects.toThrow("The IndexedDB request failed.");
     await driver.close();
   });
 
@@ -735,7 +735,7 @@ describe("IdbDriver", () => {
     });
 
     await expect(new IdbDriver(name()).ready()).rejects.toThrow(
-      "another connection is blocking the IndexedDB upgrade",
+      "Another connection blocks the IndexedDB upgrade.",
     );
   });
 
@@ -754,7 +754,7 @@ describe("IdbDriver", () => {
       return request;
     });
 
-    await expect(new IdbDriver(name()).ready()).rejects.toThrow("blocking");
+    await expect(new IdbDriver(name()).ready()).rejects.toThrow("blocks");
 
     // Nothing holds a reference to it. Left open, it blocks the next upgrade for
     // the life of the document.

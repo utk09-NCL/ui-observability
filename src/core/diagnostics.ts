@@ -1,6 +1,7 @@
 // src/core/diagnostics.ts
 //
-// Internal telemetry error reporting, rate-limited emission, and cumulative event counters.
+// This module reports internal errors of the library. It limits the emit rate.
+// It counts every event.
 
 import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
 
@@ -43,13 +44,14 @@ export type DiagnosticCode =
   | "capture.header_failed"
   | "capture.record_failed"
   | "openfin.unavailable"
+  | "platform.api_blocked"
   | "handler.threw";
 
 /** Diagnostic event payload dispatched to consumer handlers. */
 export interface DiagnosticEvent {
   /** Diagnostic fault code. */
   code: DiagnosticCode;
-  /** Human-readable description. */
+  /** Description for a person to read. */
   message: string;
   /** Structured context metadata. */
   detail?: Record<string, unknown>;
@@ -57,14 +59,14 @@ export interface DiagnosticEvent {
   cause?: unknown;
   /** Event timestamp in epoch milliseconds. */
   at: number;
-  /** Cumulative count of this code since startup, including rate-limited occurrences. */
+  /** Total count of this code since startup. It includes rate-limited occurrences. */
   count: number;
 }
 
 /** Consumer callback for receiving rate-limited diagnostic events. */
 export type DiagnosticHandler = (event: DiagnosticEvent) => void;
 
-/** Internal error reporting channel with rate-limited dispatch and unthrottled counters. */
+/** Reports internal errors. It limits the dispatch rate but counts every event. */
 export class Diagnostics {
   /** Running occurrence counts per diagnostic code. */
   private readonly counters = new Map<DiagnosticCode, number>();
@@ -90,10 +92,10 @@ export class Diagnostics {
   }
 
   /**
-   * Increments the occurrence count for a code without triggering handler emission.
+   * Increments the count for a code. It does not call the handler.
    * @param code Diagnostic code to increment.
    * @param by Increment delta.
-   * @returns Updated cumulative total for the code.
+   * @returns New total for the code.
    */
   count(code: DiagnosticCode, by = 1): number {
     const total = (this.counters.get(code) ?? 0) + by;
@@ -102,7 +104,8 @@ export class Diagnostics {
   }
 
   /**
-   * Increments counter and dispatches event if outside the throttling window. Never throws.
+   * Increments the counter for the code. It sends the event to the handler when the
+   * throttle window has passed. It never throws.
    * @param code Diagnostic code.
    * @param message Event description.
    * @param detail Optional structured metadata.
@@ -137,11 +140,14 @@ export class Diagnostics {
     try {
       this.handler(event);
     } catch (handlerError) {
-      // Increments counter without calling report() to avoid recursion on handler faults.
+      // Increment the counter directly. A call to report() recurses when the handler throws.
       this.count("handler.threw");
       if (typeof console !== "undefined") {
         // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
-        console.warn(`${LIBRARY_LOG_PREFIX} onDiagnostic handler threw`, handlerError);
+        console.warn(
+          `${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`,
+          handlerError,
+        );
       }
     }
   }
@@ -149,7 +155,7 @@ export class Diagnostics {
   /**
    * Executes a synchronous function and reports any thrown error to diagnostics.
    * @param code Diagnostic code to report on throw.
-   * @param message Error description.
+   * @param message ASD-STE100 sentence that states the failure. The handler gets it as the event message.
    * @param fn Function to execute.
    * @returns Function return value, or undefined on throw.
    */
@@ -165,7 +171,7 @@ export class Diagnostics {
   /**
    * Executes an asynchronous function and reports any rejected promise to diagnostics.
    * @param code Diagnostic code to report on rejection.
-   * @param message Error description.
+   * @param message ASD-STE100 sentence that states the failure. The handler gets it as the event message.
    * @param fn Async function to execute.
    * @returns Promise resolving to the return value, or undefined on rejection.
    */

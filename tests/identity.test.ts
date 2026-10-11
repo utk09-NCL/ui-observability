@@ -35,8 +35,11 @@ const throwingStorage = {
 };
 
 describe("newId", () => {
+  /** Diagnostics with the throttle off. */
+  const quiet = (): Diagnostics => new Diagnostics(vi.fn(), 0);
+
   it("uses crypto.randomUUID when it is available", () => {
-    expect(newId()).toMatch(/^[0-9a-f-]{36}$/);
+    expect(newId(quiet())).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("falls back to random bytes when randomUUID is absent", () => {
@@ -47,10 +50,11 @@ describe("newId", () => {
       },
     });
 
-    expect(newId()).toBe("ab".repeat(16));
+    expect(newId(quiet())).toBe("ab".repeat(16));
   });
 
-  it("falls back when a sandbox exposes randomUUID but throws on the call", () => {
+  it("falls back and counts the fault when a sandbox throws on randomUUID", () => {
+    const diagnostics = quiet();
     vi.stubGlobal("crypto", {
       randomUUID: () => {
         throw new DOMException("blocked", "NotSupportedError");
@@ -61,22 +65,23 @@ describe("newId", () => {
       },
     });
 
-    expect(newId()).toBe("01".repeat(16));
+    expect(newId(diagnostics)).toBe("01".repeat(16));
+    expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
   });
 
   it("falls back to Math.random when there is no usable crypto at all", () => {
     vi.stubGlobal("crypto", undefined);
 
-    const id = newId();
+    const id = newId(quiet());
 
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(newId()).not.toBe(id);
+    expect(newId(quiet())).not.toBe(id);
   });
 
   it("still produces 32 hex characters when crypto exists but is empty", () => {
     vi.stubGlobal("crypto", {});
 
-    expect(newId()).toMatch(/^[0-9a-f]{32}$/);
+    expect(newId(quiet())).toMatch(/^[0-9a-f]{32}$/);
   });
 });
 

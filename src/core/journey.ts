@@ -1,8 +1,8 @@
 // src/core/journey.ts
 //
-// Manages multi-window user journey lifecycles, token encoding, persistence, and expiration.
-// Nothing from storage or a token is trusted. Any code on the origin can write
-// either.
+// This module manages the lifecycle of a user journey across windows. It encodes tokens,
+// stores the journey and ends it at expiry. Do not trust a value from storage or a token.
+// Any code on the origin can write to both.
 
 import {
   BASE64_GROUP_CHARS,
@@ -25,9 +25,9 @@ import { BROWSER_STORES, type IdentityStores, newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
-/** Lifetime rules for a journey (one user task spanning several contexts). */
+/** Lifetime rules for a journey. A journey is one user task across several contexts. */
 export interface JourneyOptions {
-  /** Max time a journey stays open before it is treated as abandoned, in milliseconds. */
+  /** Maximum open time of a journey, in milliseconds. After this time, the engine ends it. */
   maxAgeMs: number;
   /** Whether closing the owning context ends the journey for everyone. */
   endOnOwnerClose: boolean;
@@ -46,13 +46,13 @@ export const JOURNEY_OPTIONS: JourneyOptions = {
 export interface Journey {
   /** Unique journey correlation identifier. */
   id: string;
-  /** Human-readable journey workflow name. */
+  /** Journey workflow name for a person to read. */
   name: string;
   /** Journey start timestamp in epoch milliseconds. */
   startedAt: number;
-  /** Optional parent journey identifier when branched from an earlier workflow. */
+  /** Optional parent journey ID when the journey branches from an earlier journey. */
   parentId?: string;
-  /** Context identifier of the document that initiated the journey. */
+  /** Context identifier of the document that started the journey. */
   ownerContextId: string;
 }
 
@@ -69,7 +69,7 @@ interface FinLike {
 type OpenFinGlobal = typeof globalThis & { fin?: FinLike };
 
 /**
- * Safely extracts a non-empty string property from an unverified object.
+ * Reads a non-empty string property from an unverified object.
  * @param source Object to read from.
  * @param key Property name.
  * @returns Non-empty string value or undefined.
@@ -80,7 +80,7 @@ function readString(source: object, key: string): string | undefined {
 }
 
 /**
- * Safely extracts a finite numeric property from an unverified object.
+ * Reads a finite number property from an unverified object.
  * @param source Object to read from.
  * @param key Property name.
  * @returns Finite number value or undefined.
@@ -148,8 +148,8 @@ function encodeToken(journey: Journey): string {
     n: journey.name.slice(0, JOURNEY_TOKEN_NAME_MAX_CHARS),
     s: journey.startedAt,
   });
-  // Binary string conversion handles multi-byte UTF-8 characters before btoa. btoa
-  // throws above U+00FF, so a name in a non-Latin script fails without it.
+  // Convert the UTF-8 bytes to a binary string before btoa. btoa throws above U+00FF.
+  // Without this step, a name in a non-Latin script fails.
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   for (const byte of bytes) {
@@ -190,7 +190,8 @@ export class JourneyEngine {
   }
 
   /**
-   * Discovers and adopts initial journey from URL query parameters, sessionStorage, or OpenFin customData.
+   * Finds and adopts the initial journey. It checks the URL query, then sessionStorage,
+   * then OpenFin customData.
    * @returns Promise resolving when journey initialization completes.
    */
   async bootstrap(): Promise<void> {
@@ -201,7 +202,7 @@ export class JourneyEngine {
 
     const fromStorage = this.diagnostics.guard(
       "storage.unavailable",
-      "reading the persisted journey",
+      "The library could not read the persisted journey.",
       () => this.stores.session().getItem(JOURNEY_STORAGE_KEY),
     );
     if (fromStorage && this.restore(fromStorage)) {
@@ -215,14 +216,14 @@ export class JourneyEngine {
   }
 
   /**
-   * Initiates a new journey, replacing any active journey and notifying connected peers.
+   * Starts a new journey. It replaces the active journey and tells connected peers.
    * @param name Human-readable workflow name.
    * @param opts Optional parent linkage and pre-assigned identifier.
    * @returns Started Journey instance.
    */
   start(name: string, opts: { parent?: boolean; id?: string } = {}): Journey {
     const journey: Journey = {
-      id: opts.id ?? newId(),
+      id: opts.id ?? newId(this.diagnostics),
       name,
       startedAt: Date.now(),
       parentId: opts.parent ? this.journey?.id : undefined,
@@ -233,7 +234,7 @@ export class JourneyEngine {
     return journey;
   }
 
-  /** Terminates the active journey and broadcasts the change. */
+  /** Ends the active journey and broadcasts the change. */
   end(): void {
     if (this.journey === null) {
       return;
@@ -243,9 +244,10 @@ export class JourneyEngine {
   }
 
   /**
-   * Applies journey updates received from external bus peers without echoing
-   * broadcasts. Echoing makes two windows ping the change back and forth. A journey
-   * matching the one in force is ignored, so an echo cannot restart the timer.
+   * Applies a journey update from a bus peer. It does not broadcast the update again.
+   * An echo makes two windows send the change back and forth without end.
+   * It ignores a journey with the same ID as the active journey. Thus an echo cannot
+   * restart the timer.
    * @param journey Updated Journey instance or null.
    */
   applyRemote(journey: Journey | null): void {
@@ -258,7 +260,8 @@ export class JourneyEngine {
 
   /**
    * Serializes the active journey into a compact token for URL or intent transfer.
-   * @returns Base64url token string or undefined if no journey is active or size cap is exceeded.
+   * @returns Base64url token, or undefined when no journey is active or the token exceeds
+   * the size limit.
    */
   getToken(): string | undefined {
     const journey = this.journey;
@@ -269,7 +272,7 @@ export class JourneyEngine {
     if (token.length > JOURNEY_TOKEN_MAX_CHARS) {
       this.diagnostics.report(
         "journey.token_too_large",
-        "journey token exceeded the size cap and was not issued",
+        "The journey token is larger than the size limit. The library does not issue it.",
         { length: token.length },
       );
       return undefined;
@@ -290,18 +293,26 @@ export class JourneyEngine {
       return false;
     }
     if (Date.now() - decoded.startedAt > this.options.maxAgeMs) {
-      this.diagnostics.report("journey.expired", "discarded a seeded journey older than maxAgeMs", {
-        source,
-        name: decoded.name,
-      });
+      this.diagnostics.report(
+        "journey.expired",
+        "The library discarded a seeded journey older than maxAgeMs.",
+        {
+          source,
+          name: decoded.name,
+        },
+      );
       return false;
     }
 
     this.setJourney(decoded);
-    this.diagnostics.report("journey.adopted", `adopted journey "${decoded.name}"`, {
-      source,
-      journeyId: decoded.id,
-    });
+    this.diagnostics.report(
+      "journey.adopted",
+      `The library adopted the journey "${decoded.name}".`,
+      {
+        source,
+        journeyId: decoded.id,
+      },
+    );
     if (broadcast) {
       this.onLocalChange(decoded);
     }
@@ -309,7 +320,7 @@ export class JourneyEngine {
   }
 
   /**
-   * Ends the journey if the terminated context matches the journey owner and endOnOwnerClose is enabled.
+   * Ends the journey when endOnOwnerClose is on and the closed context owns the journey.
    * @param ownerContextId Context identifier of the closed window.
    */
   ownerClosed(ownerContextId: string): void {
@@ -329,12 +340,12 @@ export class JourneyEngine {
   /**
    * Resumes a persisted journey from raw sessionStorage data.
    * @param raw Serialized JSON string from storage.
-   * @returns True if journey was successfully restored.
+   * @returns True if the engine restored the journey.
    */
   private restore(raw: string): boolean {
     const parsed = this.diagnostics.guard(
       "storage.degraded",
-      "parsing the persisted journey",
+      "The library could not parse the persisted journey.",
       () => JSON.parse(raw) as unknown,
     );
     const journey = journeyFromStorage(parsed);
@@ -345,7 +356,7 @@ export class JourneyEngine {
     if (Date.now() - journey.startedAt > this.options.maxAgeMs) {
       this.diagnostics.report(
         "journey.expired",
-        "discarded a persisted journey older than maxAgeMs",
+        "The library discarded a persisted journey older than maxAgeMs.",
         { name: journey.name },
       );
       this.clearStored();
@@ -353,24 +364,28 @@ export class JourneyEngine {
     }
 
     this.setJourney(journey);
-    this.diagnostics.report("journey.adopted", `resumed journey "${journey.name}"`, {
-      source: "sessionStorage",
-      journeyId: journey.id,
-    });
+    this.diagnostics.report(
+      "journey.adopted",
+      `The library resumed the journey "${journey.name}".`,
+      {
+        source: "sessionStorage",
+        journeyId: journey.id,
+      },
+    );
     return true;
   }
 
   /**
-   * Decodes a base64url token into a validated Journey object. Tokens come from URLs
-   * anyone can edit. Every step throws on non-token input, so the failure is
-   * reported, not raised.
+   * Decodes a base64url token into a validated Journey object. Anyone can edit the URL
+   * that holds a token. Each step throws on bad input. The guard reports the failure
+   * and does not throw it.
    * @param token Encoded token string.
    * @returns Decoded Journey instance or null on decode error.
    */
   private decodeToken(token: string): Journey | null {
     const decoded = this.diagnostics.guard(
       "config.invalid",
-      "decoding a seeded journey token",
+      "The library could not decode a seeded journey token.",
       () => {
         const standard = token
           .replace(BASE64URL_DASH_PATTERN, "+")
@@ -393,7 +408,7 @@ export class JourneyEngine {
     this.journey = journey;
     this.clearTimer();
 
-    this.diagnostics.guard("storage.unavailable", "persisting the journey", () => {
+    this.diagnostics.guard("storage.unavailable", "The library could not save the journey.", () => {
       if (journey !== null) {
         this.stores.session().setItem(JOURNEY_STORAGE_KEY, JSON.stringify(journey));
       } else {
@@ -409,7 +424,7 @@ export class JourneyEngine {
     const timer = setTimeout(() => {
       this.diagnostics.report(
         "journey.expired",
-        `journey "${journey.name}" hit maxAgeMs and was ended automatically`,
+        `The journey "${journey.name}" reached maxAgeMs. The library ended it.`,
         { journeyId: journey.id },
       );
       this.journey = null;
@@ -422,9 +437,13 @@ export class JourneyEngine {
 
   /** Removes journey data from the session store. */
   private clearStored(): void {
-    this.diagnostics.guard("storage.unavailable", "clearing the persisted journey", () => {
-      this.stores.session().removeItem(JOURNEY_STORAGE_KEY);
-    });
+    this.diagnostics.guard(
+      "storage.unavailable",
+      "The library could not clear the persisted journey.",
+      () => {
+        this.stores.session().removeItem(JOURNEY_STORAGE_KEY);
+      },
+    );
   }
 
   /** Cancels any active expiration timer. */
@@ -442,7 +461,7 @@ export class JourneyEngine {
   private readUrlToken(): string | null {
     const token = this.diagnostics.guard(
       "config.invalid",
-      "reading the journey token from the URL",
+      "The library could not read the journey token from the URL.",
       () => {
         if (typeof location === "undefined") {
           return null;
@@ -454,9 +473,9 @@ export class JourneyEngine {
   }
 
   /**
-   * Reads the journey token from OpenFin window creation customData. Bounded by
-   * OPENFIN_OPTIONS_TIMEOUT_MS: a deadline reached here reports openfin.unavailable
-   * and yields no token, which is the same outcome as a window created without one.
+   * Reads the journey token from the customData of the OpenFin window options.
+   * OPENFIN_OPTIONS_TIMEOUT_MS limits the wait. At the deadline, it reports
+   * openfin.unavailable and returns no token. A window without a token gives the same result.
    * @returns Promise resolving to token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
@@ -466,11 +485,11 @@ export class JourneyEngine {
       return null;
     }
 
-    // Uses call to preserve target receiver context on native OpenFin methods. A
-    // detached copy throws on invocation.
+    // Use call to keep the receiver of the native OpenFin method. A detached copy
+    // throws when called.
     const options = await this.diagnostics.guardAsync(
       "openfin.unavailable",
-      "reading fin.me.getOptions()",
+      "The library could not read fin.me.getOptions().",
       () => withDeadline(getOptions.call(me), OPENFIN_OPTIONS_TIMEOUT_MS),
     );
     const token = options?.customData?.[OPENFIN_JOURNEY_CUSTOM_DATA_KEY];

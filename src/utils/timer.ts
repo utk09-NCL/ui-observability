@@ -1,6 +1,6 @@
 // src/utils/timer.ts
 //
-// Utility functions for timing synchronous and asynchronous operations as metrics.
+// Logs the duration of synchronous and asynchronous operations as metrics.
 
 import type { CaptureLogger } from "../capture/types";
 import { DURATION_PRECISION } from "../constants";
@@ -77,7 +77,7 @@ export function timeSync<T>(
     finish(logger, label, startedAt, "SUCCESS", attributes);
     return result;
   } catch (error) {
-    // Re-throws error to preserve caller control flow.
+    // Throw the error again. The caller keeps its control flow.
     fail(logger, label, startedAt, error, attributes);
     throw error;
   }
@@ -103,7 +103,7 @@ export async function timeAsync<T>(
     finish(logger, label, startedAt, "SUCCESS", attributes);
     return result;
   } catch (error) {
-    // Re-throws error to preserve caller control flow.
+    // Throw the error again. The caller keeps its control flow.
     fail(logger, label, startedAt, error, attributes);
     throw error;
   }

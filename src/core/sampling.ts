@@ -1,8 +1,8 @@
 // src/core/sampling.ts
 //
-// Deterministic record sampling based on namespace rules, journey IDs, and trace
-// IDs. Keyed on the journey, so one journey is kept or dropped whole. Stable
-// across windows and reloads.
+// This module samples records by namespace rule, journey ID and trace ID.
+// The journey ID is the sampling key. The module keeps or drops a full journey.
+// The result is the same across windows and reloads.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -20,7 +20,7 @@ import type { ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 
 /**
- * Computes 32-bit FNV-1a hash of a string value. Not a security hash.
+ * Computes the 32-bit FNV-1a hash of a string. Do not use it as a security hash.
  * @param value Key string to hash.
  * @returns Unsigned 32-bit integer hash.
  */
@@ -36,8 +36,8 @@ function hash(value: string): number {
 }
 
 /**
- * Safely extracts a string attribute value from a log record. Absent and non-string
- * both read as empty. A forwarded record has only passed a shape check.
+ * Reads a string attribute from a log record. It returns an empty string for an absent
+ * or non-string value. A forwarded record has passed only a shape check.
  * @param record Log record being evaluated.
  * @param key Attribute key.
  * @returns String attribute value, or empty string if missing or non-string.
@@ -48,8 +48,8 @@ function readAttr(record: LogRecord, key: string): string {
 }
 
 /**
- * Resolves sampling rate for a namespace using longest-prefix matching, so
- * trading.ticks overrides trading.
+ * Finds the sampling rate for a namespace. The longest matching prefix wins.
+ * For example, trading.ticks overrides trading.
  * @param namespace Target application namespace.
  * @param config Active configuration instance.
  * @returns Matched namespace sampling rate or default rate.
@@ -71,7 +71,7 @@ function rateFor(namespace: string, config: ResolvedConfig): number {
   return best ?? defaultRate;
 }
 
-/** Everything sampling reads, all of it known before a record is built. */
+/** Fields that sampling reads. The caller knows all of them before it builds a record. */
 export interface SampleInput {
   /** Severity level of the entry. */
   level: string;
@@ -79,19 +79,18 @@ export interface SampleInput {
   type: string;
   /** Originating application namespace. */
   namespace: string;
-  /** Active journey id, empty when no journey is running. */
+  /** Active journey ID. It is empty when no journey runs. */
   journeyId: string;
-  /** Trace id, the sampling key when no journey is running. */
+  /** Trace ID. It is the sampling key when no journey runs. */
   traceId: string;
 }
 
 /**
- * Evaluates whether an entry should be sampled for retention. Takes the fields
- * rather than a record, so the verdict is available before the attribute walk
- * a dropped entry must not pay for.
+ * Decides if sampling keeps an entry. It reads fields, not a record.
+ * This lets the caller drop an entry before the attribute walk runs.
  * @param input Fields the sampling decision reads.
  * @param config Active configuration instance.
- * @returns True if the entry should be retained and transmitted.
+ * @returns True if the runtime keeps and sends the entry.
  */
 export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): boolean {
   // Errors and fatal records bypass sampling filters.
@@ -111,7 +110,7 @@ export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): b
     return false;
   }
 
-  // Falls back to trace ID when journey ID is absent. The trace still groups one
+  // Use the trace ID when the journey ID is absent. The trace ID still groups one
   // operation.
   const key = input.journeyId || input.traceId;
 
@@ -119,11 +118,11 @@ export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): b
 }
 
 /**
- * Evaluates whether a built log record should be sampled for retention. Used on
- * records that arrive already built, from a child context over the bus.
+ * Decides if sampling keeps a built log record. The runtime uses it for records
+ * that a child context sends over the bus.
  * @param record Record to evaluate.
  * @param config Active configuration instance.
- * @returns True if the record should be retained and transmitted.
+ * @returns True if the runtime keeps and sends the record.
  */
 export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean {
   return shouldSampleInput(
@@ -139,22 +138,22 @@ export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean
 }
 
 /**
- * Fixed-window ceiling on the ERROR and FATAL records that bypass sampling.
+ * Sets a fixed-window limit on the ERROR and FATAL records that bypass sampling.
  *
- * Auto-captured errors are already limited inside ErrorCapture. This covers the
- * case nothing else does: application code calling logger.error in a render loop.
+ * ErrorCapture already limits auto-captured errors. This class limits the remaining case.
+ * An example is application code that calls logger.error in a render loop.
  */
 export class ErrorCeiling {
-  /** Start of the window currently counting, in epoch milliseconds. */
+  /** Start of the current window, in epoch milliseconds. */
   private windowStart = 0;
 
   /** ERROR and FATAL records admitted in the current window. */
   private count = 0;
 
   /**
-   * Admits a record against the ceiling, counting only ERROR and FATAL.
+   * Checks a record against the limit. It counts only ERROR and FATAL records.
    * @param record Record about to enter a stream.
-   * @returns False when the window is spent and the record must be dropped.
+   * @returns False when the window has no allowance left. The caller must drop the record.
    */
   allow(record: LogRecord): boolean {
     if (record.severityText !== "ERROR" && record.severityText !== "FATAL") {
@@ -162,7 +161,7 @@ export class ErrorCeiling {
     }
 
     const now = Date.now();
-    // Fixed window, not a sliding one: a quiet spell banks no allowance.
+    // Use a fixed window, not a sliding window. A quiet period adds no allowance.
     if (now - this.windowStart > ERROR_STORM_WINDOW_MS) {
       this.windowStart = now;
       this.count = 0;

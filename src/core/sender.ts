@@ -1,8 +1,9 @@
 // src/core/sender.ts
 //
-// Delivery stack of the sender role: storage, transport, retry, pipeline and exit flush.
-// The runtime imports this module dynamically, and only when an endpoint is set.
-// Console-only mode does not download it.
+// This module builds the delivery stack of the sender role.
+// The stack has storage, transport, retry, pipeline and exit flush.
+// The runtime imports this module dynamically only when the config sets an endpoint.
+// Console-only mode does not download this module.
 
 import { STORAGE_DB_NAME, STORAGE_LIMITS } from "../constants";
 import type { ResolvedConfig } from "../models/config";
@@ -73,7 +74,7 @@ export class Sender {
 
     await drainEmergencyQueue(storage, diagnostics);
 
-    // Stop both if one fails. A retry loop with no owner sends after the load reports a failure.
+    // If one step fails, stop both. A retry loop with no owner sends after load reports failure.
     let started = false;
 
     try {
@@ -114,15 +115,15 @@ export class Sender {
     } catch (error) {
       await this.diagnostics.guardAsync(
         "storage.degraded",
-        "persisting the batch drained by flush()",
-        // The retry engine classifies the failure. A 413 splits the batch here, as in the drain.
+        "The library could not store the batch that flush() drained.",
+        // The retry engine classifies the failure. It splits the batch on a 413, as the drain does.
         async () => {
           await this.retry.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         },
       );
       this.diagnostics.report(
         "transport.http_error",
-        "the batch drained by flush() was stored for retry instead of being delivered",
+        "The send from flush() failed. The library stored the batch for a retry.",
         { batchId: batch.id, records: batch.records.length },
         error,
       );
@@ -136,7 +137,7 @@ export class Sender {
   async queueDepth(): Promise<number> {
     const count = await this.diagnostics.guardAsync(
       "storage.degraded",
-      "counting the batches waiting in storage",
+      "The library could not count the batches in storage.",
       () => this.storage.count(),
     );
 
@@ -144,7 +145,7 @@ export class Sender {
   }
 
   /**
-   * Sends pending records, stops every timer and listener, then closes storage.
+   * Sends pending records and stops all timers and listeners. Then it closes storage.
    * The synchronous steps run before the first await. The runtime relies on this order.
    * @returns Promise resolving when storage is closed.
    */

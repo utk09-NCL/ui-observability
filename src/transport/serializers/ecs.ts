@@ -1,6 +1,6 @@
 // src/transport/serializers/ecs.ts
 //
-// Serializes log batches into Elastic Common Schema (ECS) formatted newline-delimited JSON.
+// This module serializes log batches as Elastic Common Schema (ECS) newline-delimited JSON.
 
 import {
   ATTR_PAGE_URL,
@@ -19,9 +19,9 @@ import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 
 /**
- * Converts a nanosecond epoch string to epoch milliseconds. A record forwarded over
- * the bus has only passed a shape check, and BigInt throws a SyntaxError on a
- * non-numeric string, which loses the whole batch instead of one record.
+ * Converts a nanosecond epoch string to epoch milliseconds. A record from the
+ * bus has passed only a shape check. BigInt throws a SyntaxError on a non-numeric string.
+ * That error loses the whole batch, not one record.
  * @param timeUnixNano Nanosecond epoch as decimal digits.
  * @returns Epoch milliseconds, or the current time when the input is not numeric.
  */
@@ -33,11 +33,11 @@ function toMillis(timeUnixNano: string): number {
   return Number(BigInt(timeUnixNano) / NANOS_PER_MILLI);
 }
 
-/** Value forms Elasticsearch maps under `labels` without a dynamic mapping conflict. */
+/** Elasticsearch maps these value types under `labels` without a dynamic mapping conflict. */
 type LabelValue = string | number | boolean;
 
 /**
- * Converts a value into its label form.
+ * Converts a value to its label form.
  * @param value Raw attribute or resource value.
  * @returns Scalar label value, or null when the value has no scalar form.
  */
@@ -46,7 +46,7 @@ function toLabelValue(value: unknown): LabelValue | null {
     return value;
   }
 
-  // JSON.stringify throws on a BigInt, which loses the whole batch.
+  // JSON.stringify throws on a BigInt. That error loses the whole batch.
   if (typeof value === "bigint") {
     return value.toString();
   }
@@ -55,8 +55,8 @@ function toLabelValue(value: unknown): LabelValue | null {
 }
 
 /**
- * Writes one label, folding a repeated key into an array. Elasticsearch reads a
- * repeated leaf as one multi-valued field, which is how an array of objects maps.
+ * Writes one label. It folds a repeated key into an array. Elasticsearch reads
+ * a repeated leaf as one multi-valued field. An array of objects maps the same way.
  * @param labels Label map being built.
  * @param key Dotted label key.
  * @param value Scalar label value.
@@ -78,12 +78,12 @@ function pushLabel(labels: Record<string, unknown>, key: string, value: LabelVal
 }
 
 /**
- * Flattens one value into dotted label keys. ECS `labels` is a flat map; a nested
- * object under it trips Elasticsearch dynamic mapping.
+ * Flattens one value into dotted label keys. ECS `labels` is a flat map. A
+ * nested object under it causes an Elasticsearch dynamic mapping conflict.
  * @param labels Label map being built.
  * @param key Dotted key for this value.
  * @param value Value to flatten.
- * @param seen Active ancestor objects, so a cycle cannot recurse forever.
+ * @param seen Active ancestor objects. This set stops infinite recursion on a cycle.
  */
 function flattenLabel(
   labels: Record<string, unknown>,
@@ -98,7 +98,7 @@ function flattenLabel(
     return;
   }
 
-  // A forwarded record has only passed a shape check, so its attributes can hold a cycle.
+  // A forwarded record has passed only a shape check. Its attributes can contain a cycle.
   if (typeof value !== "object" || value === null || seen.has(value)) {
     return;
   }
@@ -115,7 +115,7 @@ function flattenLabel(
     }
   }
 
-  // Removes the object on unwind, so a repeated sibling does not read as a cycle.
+  // Remove the object on unwind. Otherwise a repeated sibling reads as a cycle.
   seen.delete(value);
 }
 
@@ -125,7 +125,7 @@ function flattenLabel(
  * @returns Flat label map keyed by dotted path.
  */
 function toLabels(source: Record<string, unknown>): Record<string, unknown> {
-  // Null prototype: an attribute named `__proto__` must become a key, not a prototype.
+  // Use a null prototype. An attribute named `__proto__` must become a key, not a prototype.
   const labels: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const seen = new WeakSet();
 
@@ -136,13 +136,13 @@ function toLabels(source: Record<string, unknown>): Record<string, unknown> {
   return labels;
 }
 
-/** Serializer formatting log records into Elastic Common Schema (ECS) NDJSON documents. */
+/** This serializer writes log records as Elastic Common Schema (ECS) NDJSON documents. */
 export const ecsSerializer: LogSerializer = {
-  /** Format identifier name. */
+  /** This field holds the format name. */
   name: SERIALIZER_NAME_ECS,
 
   /**
-   * Serializes an array of log records into newline-delimited ECS JSON documents.
+   * Serializes log records into newline-delimited ECS JSON documents.
    * @param records Records to serialize.
    * @returns Serialized NDJSON batch payload.
    */
@@ -162,11 +162,12 @@ export const ecsSerializer: LogSerializer = {
           environment: record.resource[RESOURCE_DEPLOYMENT_ENVIRONMENT],
         },
         user_agent: { original: record.resource[RESOURCE_BROWSER_USER_AGENT] },
-        // Prefers request URL over ambient page URL for captured network events.
+        // Use the request URL of a captured network event before the page URL.
         url: {
           full: record.attributes[ATTR_URL_FULL] ?? record.attributes[ATTR_PAGE_URL],
         },
-        // Attributes last: a record attribute overrides the resource key of the same name.
+        // Spread the attributes last. A record attribute overrides a resource key with the same
+        // name.
         labels: { ...toLabels(record.resource), ...toLabels(record.attributes) },
       });
     });

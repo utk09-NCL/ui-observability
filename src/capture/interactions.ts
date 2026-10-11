@@ -7,7 +7,8 @@ import { stripUrlQuery } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
 /**
- * Generates a concise CSS selector for an element, prioritizing test IDs, IDs, aria-labels, and classes.
+ * Generates a short CSS selector for an element. The order of preference is test ID, ID,
+ * aria-label, then class names.
  * @param element Target DOM element.
  * @returns Generated CSS selector string.
  */
@@ -31,8 +32,8 @@ function describeElement(element: Element | null): string {
     return `${tag}[aria-label="${label.slice(0, ARIA_LABEL_MAX_CHARS)}"]`;
   }
 
-  // Read through getAttribute: an SVG element's `className` is an
-  // SVGAnimatedString at runtime, and slicing it would throw.
+  // Read the class through getAttribute. On an SVG element, `className` is an
+  // SVGAnimatedString, and a slice of it throws.
   const classAttribute = element.getAttribute("class")?.trim() ?? "";
   if (classAttribute === "") {
     return tag;
@@ -43,10 +44,10 @@ function describeElement(element: Element | null): string {
 }
 
 /**
- * The two History members this module replaces, typed as properties rather than
- * methods so the originals can be held unbound. Holding a bound copy instead
- * makes uninstall restore a different function than it replaced, and repeated
- * install cycles wrap a bind over the previous bind.
+ * The two History members that this module replaces. The type declares them as
+ * properties, not methods, to keep the original functions unbound. With a bound
+ * copy, uninstall restores a different function than the one it replaced.
+ * Each install cycle also adds one more bind over the previous bind.
  */
 interface HistoryMethods {
   pushState: (this: History, ...args: never[]) => void;
@@ -54,7 +55,7 @@ interface HistoryMethods {
 }
 
 /**
- * The History object, typed for holding its methods unbound.
+ * Returns the History object with a type that holds its methods unbound.
  * @returns The global history.
  */
 function historyMethods(): HistoryMethods {
@@ -92,7 +93,7 @@ export class InteractionCapture implements Capture {
     this.lastUrl = location.href;
 
     if (this.ctx.config.capture.interactions) {
-      // Uses capture phase to observe clicks before event propagation is stopped.
+      // The capture phase sees a click before a page handler can stop propagation.
       addEventListener("click", this.onClick, true);
     }
     if (this.ctx.config.capture.navigation) {
@@ -127,14 +128,13 @@ export class InteractionCapture implements Capture {
   private readonly onClick = (event: Event): void => {
     const target = event.target;
     const selector = describeElement(target instanceof Element ? target : null);
-    // textContent, not innerText: layout defines innerText, so a read of it
-    // causes style and layout work at each click.
+    // Use textContent, not innerText. A read of innerText causes style and layout work
+    // at each click.
     const text =
       target instanceof HTMLElement ? target.textContent.trim().slice(0, CLICK_TEXT_MAX_CHARS) : "";
 
-    // A click starts a new logical operation, so everything it causes shares one
-    // trace id. Without the rotation a click and its five API calls cannot be
-    // pulled back as one query.
+    // A click starts a new logical operation. All work that the click causes shares one
+    // trace id. Without the rotation, one query cannot find a click and its API calls.
     this.ctx.tracing.rotate("interaction");
     this.ctx.breadcrumbs.push({
       t: Date.now(),
@@ -153,8 +153,8 @@ export class InteractionCapture implements Capture {
     }
     this.lastUrl = to;
 
-    // Compared on the whole URL above, recorded without it: a move that only
-    // changes the query is still a navigation, but the query is not recorded.
+    // The comparison above uses the full URL. A change to the query only is a navigation.
+    // The record does not keep the query unless fullUrls is set.
     const full = this.ctx.config.capture.fullUrls;
     const fromUrl = full ? from : stripUrlQuery(from);
     const toUrl = full ? to : stripUrlQuery(to);
@@ -166,9 +166,8 @@ export class InteractionCapture implements Capture {
       message: `${fromUrl} -> ${toUrl}`,
     });
 
-    // Only the previous URL is carried: the record builder stamps the current
-    // one as `page.url`. Sending the new URL as `url.full` would make a
-    // navigation look like an HTTP request to that address.
+    // The event carries only the previous URL. The record builder adds the current URL as
+    // `page.url`. A new URL in `url.full` makes a navigation look like an HTTP request.
     this.ctx.logger.logEvent("NAVIGATION", { "page.url.previous": fromUrl });
   };
 
@@ -178,9 +177,9 @@ export class InteractionCapture implements Capture {
       return;
     }
 
-    // Held unbound and called through apply. Reading History.prototype instead
-    // skips whatever a router already installed on the instance, and leaves
-    // uninstall writing a permanent own property where there was none.
+    // Keep the originals unbound and call them through apply. A read from History.prototype
+    // skips a patch that a router installed on the instance. Uninstall then adds an own
+    // property that was not there before.
     const target = historyMethods();
     const originalPushState = target.pushState;
     const originalReplaceState = target.replaceState;
@@ -190,8 +189,8 @@ export class InteractionCapture implements Capture {
 
     target.pushState = function (this: History, ...args: never[]): void {
       originalPushState.apply(this, args);
-      // Queued: location.href is only updated once the call returns, so reading
-      // it synchronously reports the previous URL as the new one.
+      // Queue the handler. The browser updates location.href after the call returns.
+      // A synchronous read gives the previous URL as the new URL.
       queueMicrotask(onNavigate);
     };
 

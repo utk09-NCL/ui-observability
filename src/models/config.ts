@@ -1,11 +1,10 @@
 // src/models/config.ts
 //
-// Configuration types: what a consumer may pass to `configure()`, and what
-// the runtime holds after resolving defaults.
+// Configuration types. `ObservabilityConfig` is the input to `configure()`.
+// `ResolvedConfig` is the configuration that the runtime holds after it applies defaults.
 //
-// Not derived with `Required<ObservabilityConfig>`: that only strips `?` at
-// the top level, so a nested field like `sampling.defaultRate` would stay
-// possibly undefined.
+// `ResolvedConfig` does not use `Required<ObservabilityConfig>`. That type removes `?`
+// only at the top level. A nested field such as `sampling.defaultRate` can then be undefined.
 
 import type { DiagnosticHandler } from "../core/diagnostics";
 import type { LogLevel, LogRecord } from "./log-record";
@@ -17,10 +16,17 @@ export type StorageStrategy = "auto" | "indexeddb" | "localstorage" | "memory" |
 /** Selects where the library keeps session, tab and journey ids. "storage" uses browser storage. "memory" writes nothing. */
 export type IdentityStrategy = "storage" | "memory";
 
-/** What this context does with its records: `sender` delivers its own, `forwarder` hands them to another context, `auto` decides, `off` does neither. */
+/**
+ * What this context does with its records. `sender` delivers its own records.
+ * `forwarder` gives them to another context. `auto` selects a role at startup.
+ * `off` turns off the bus. The context then delivers its own records.
+ */
 export type BusMode = "auto" | "sender" | "forwarder" | "off";
 
-/** Structural type for the `web-vitals` package's metric shape, so this library has no hard dependency on the package. */
+/**
+ * Structural type for the metric shape of the `web-vitals` package. With this type,
+ * the library has no hard dependency on the package.
+ */
 export interface WebVitalsMetric {
   /** Measurement value, in the metric's own unit. */
   value: number;
@@ -85,8 +91,8 @@ export interface OtelSpan {
 }
 
 /**
- * The three `@opentelemetry/api` entry points this library uses, typed
- * structurally so the package stays an optional peer.
+ * The three `@opentelemetry/api` entry points that this library uses. The structural
+ * types keep the package an optional peer.
  */
 export interface OtelApi {
   /** Span lookup. */
@@ -101,7 +107,7 @@ export interface OtelApi {
   context: {
     /**
      * Reads the active context.
-     * @returns Context, opaque to this library, understood by the propagator.
+     * @returns Context object that only the propagator reads.
      */
     active(): unknown;
   };
@@ -122,7 +128,7 @@ export interface OtelApi {
  */
 export type OtelLoader = () => Promise<OtelApi>;
 
-/** Sampling policy: which records survive. */
+/** Sampling policy. It controls which records the library keeps. */
 export interface SamplingOptions {
   /**
    * Default fraction of records kept, 0 to 1.
@@ -130,7 +136,7 @@ export interface SamplingOptions {
    */
   defaultRate: number;
   /**
-   * Per-namespace override, keyed by `app.namespace`. Most specific prefix wins.
+   * Rate override for each namespace, keyed by `app.namespace`. The most specific prefix applies.
    * @default {}
    */
   rates: Record<string, number>;
@@ -141,7 +147,7 @@ export interface SamplingOptions {
   alwaysSampleTypes: string[];
 }
 
-/** Bus settings: how this context discovers, trusts, and messages the others. */
+/** Bus settings. They control how this context finds, trusts, and sends messages to others. */
 export interface BusOptions {
   /**
    * This context's role.
@@ -149,21 +155,24 @@ export interface BusOptions {
    */
   mode: BusMode;
   /**
-   * Origins allowed to send postMessage records to this document. Required for any document receiving them from a cross-origin iframe.
+   * Origins that can send postMessage records to this document.
+   * A document that gets records from a cross-origin iframe must list the iframe origin.
    * @default []
    */
   trustedOrigins: string[];
   /**
-   * Which OpenFin context this is. Only the platform provider answers a
-   * handshake, so setting this wrong makes every view send for itself.
-   * "auto" treats the window whose name equals its application uuid as the
-   * provider.
+   * Which OpenFin context this is. Only the platform provider answers a handshake.
+   * With an incorrect value, each view sends its own records. "auto" treats the
+   * window whose name equals its application uuid as the provider.
    * @default "auto"
    */
   openFinRole: "auto" | "provider" | "client";
 }
 
-/** What the library instruments automatically. Everything but errors and rejections is off by default. */
+/**
+ * What the library instruments automatically. By default, only `errors` and `rejections`
+ * are on.
+ */
 export interface CaptureOptions {
   /**
    * Log uncaught errors from `window.onerror`.
@@ -181,7 +190,7 @@ export interface CaptureOptions {
    */
   resourceErrors: boolean;
   /**
-   * Wrap `fetch` to log requests. The ingest endpoint itself is never logged.
+   * Wrap `fetch` to log requests. The library never logs requests to the ingest endpoint.
    * @default false
    */
   fetch: boolean;
@@ -201,23 +210,24 @@ export interface CaptureOptions {
    */
   navigation: boolean;
   /**
-   * Report web vitals as metrics. Requires `webVitalsLoader`.
+   * Report web vitals as metrics. This option requires `webVitalsLoader`.
    * @default false
    */
   webVitals: boolean;
   /**
    * Keep the query string and fragment on every URL the library records.
-   * Off strips them from page URLs, request targets and failed resource URLs.
+   * When off, the library removes them from page URLs, request targets and failed resource URLs.
    * @default false
    */
   fullUrls: boolean;
   /**
-   * URLs excluded from logging. The ingest endpoint is always included.
+   * URLs that the library does not log. The library always adds the ingest endpoint.
    * @default []
    */
   ignoreUrls: (string | RegExp)[];
   /**
-   * Targets that receive a `traceparent` header. A catch-all breaks CORS on third-party endpoints.
+   * Targets that receive a `traceparent` header. A pattern that matches all URLs breaks
+   * CORS on third-party endpoints.
    * @default []
    */
   propagateTraceHeaderTo: (string | RegExp)[];
@@ -231,30 +241,34 @@ export interface CaptureOptions {
 /** Serializer option after resolution. A name stays a name. The transport selects the implementation. */
 export type SerializerChoice = "otlp" | "ecs" | LogSerializer;
 
-/** Console mirroring. `false` is off, `true` mirrors from DEBUG, a level mirrors from that level up. */
+/**
+ * Console mirroring. `false` turns it off. `true` mirrors records at DEBUG and above.
+ * A level mirrors records at that level and above.
+ */
 export type ConsoleOption = boolean | LogLevel;
 
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
   /**
    * Ingest endpoint URL. Set `null` for console-only mode.
-   * In console-only mode, the library sends nothing. It writes records to the console if `console` is set.
+   * In console-only mode, the library sends nothing. It writes records to the console
+   * if you set `console`.
    * If the key is missing or `""`, the library reports `config.invalid`.
    */
   endpoint?: string | null;
 
   /**
-   * Reported as `service.name`.
+   * The library reports this value as `service.name`.
    * @default ""
    */
   serviceName?: string;
   /**
-   * Reported as `service.version`.
+   * The library reports this value as `service.version`.
    * @default ""
    */
   serviceVersion?: string;
   /**
-   * Reported as `deployment.environment`.
+   * The library reports this value as `deployment.environment`.
    * @default ""
    */
   environment?: string;
@@ -265,23 +279,25 @@ export interface ObservabilityConfig {
    */
   enabled?: boolean;
   /**
-   * Min level logged.
+   * Minimum level that the library logs.
    * @default "INFO"
    */
   minLevel?: LogLevel;
 
   /**
-   * Whether to gzip a payload past the compression threshold. Set "none" for an ingest endpoint that rejects gzip.
+   * Whether to gzip a payload that is larger than the compression threshold.
+   * Set "none" for an ingest endpoint that rejects gzip.
    * @default "gzip"
    */
   compression?: "gzip" | "none";
   /**
-   * Wire format: a name, or a custom implementation.
+   * Payload format. Give a name or a custom implementation.
    * @default "otlp"
    */
   serializer?: SerializerChoice;
   /**
-   * Passed to `fetch`. Set "include" for an ingest endpoint that authenticates with cookies.
+   * The library passes this value to `fetch`. Set "include" for an ingest endpoint that
+   * authenticates with cookies.
    * @default "omit"
    */
   credentials?: RequestCredentials;
@@ -331,8 +347,8 @@ export interface ObservabilityConfig {
   otelLoader?: OtelLoader;
 
   /**
-   * Rewrites or drops a record before it's sent.
-   * @param record The record about to be sent.
+   * Rewrites or drops a record before the library sends it.
+   * @param record The record that the library is about to send.
    * @returns The record to send, or `null` to drop it.
    */
   redact?: (record: LogRecord) => LogRecord | null;
@@ -344,23 +360,23 @@ export interface ObservabilityConfig {
   onDiagnostic?: DiagnosticHandler;
 }
 
-/** Fully resolved config, held by the runtime. */
+/** Fully resolved configuration that the runtime holds. */
 export interface ResolvedConfig {
   /** Ingest endpoint URL, or null in console-only mode. */
   endpoint: string | null;
-  /** Reported as `service.name`. */
+  /** The library reports this value as `service.name`. */
   serviceName: string;
-  /** Reported as `service.version`. */
+  /** The library reports this value as `service.version`. */
   serviceVersion: string;
-  /** Reported as `deployment.environment`. */
+  /** The library reports this value as `deployment.environment`. */
   environment: string;
   /** Master switch. False makes every log call a no-op. */
   enabled: boolean;
-  /** Min level logged. */
+  /** Minimum level that the library logs. */
   minLevel: LogLevel;
-  /** Whether to gzip a payload past the compression threshold. */
+  /** Whether to gzip a payload that is larger than the compression threshold. */
   compression: "gzip" | "none";
-  /** Passed to `fetch`. */
+  /** The library passes this value to `fetch`. */
   credentials: RequestCredentials;
   /** Backing store for undelivered records. */
   storage: StorageStrategy;
@@ -381,17 +397,17 @@ export interface ResolvedConfig {
    * @see {@link CaptureOptions}
    */
   capture: CaptureOptions;
-  /** Min level mirrored to the console, or null when mirroring is off. */
+  /** Minimum level that the library mirrors to the console, or null when mirroring is off. */
   console: LogLevel | null;
-  /** Wire format name, or a custom implementation. */
+  /** Payload format name, or a custom implementation. */
   serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */
   headers?: ObservabilityConfig["headers"];
   /** Supplies the `@opentelemetry/api` module in place of importing it. */
   otelLoader?: OtelLoader;
   /**
-   * Rewrites or drops a record before it's sent.
-   * @param record The record about to be sent.
+   * Rewrites or drops a record before the library sends it.
+   * @param record The record that the library is about to send.
    * @returns The record to send, or `null` to drop it.
    */
   redact?: ObservabilityConfig["redact"];

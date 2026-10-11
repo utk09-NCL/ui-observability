@@ -1,6 +1,6 @@
 // src/core/logger.ts
 //
-// Namespaced logger facade providing scoped logging methods and metrics timing.
+// This module gives a namespaced logger facade. It has scoped log methods and metric timers.
 
 import { DEFAULT_METRIC_UNIT } from "../constants";
 import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
@@ -27,17 +27,19 @@ function toError(value: unknown, diagnostics: Diagnostics): Error {
 
   // String() throws on a null-prototype object and on a throwing toString.
   // log.error() runs inside a consumer catch block and must not throw out of it.
-  const text = diagnostics.guard("record.sanitize_failed", "describing an error reason", () =>
-    String(value),
+  const text = diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not convert the error reason to text.",
+    () => String(value),
   );
 
   return new Error(text ?? typeof value);
 }
 
 /**
- * Tests whether a value is an attribute bag rather than an error reason.
- * Cross-realm safe: an object literal from an iframe has that realm's
- * Object.prototype, whose own prototype is still null.
+ * Tests if a value is an attribute bag, not an error reason. The test works across realms.
+ * An object literal from an iframe has the Object.prototype of that realm.
+ * The prototype of that Object.prototype is also null.
  * @param value Value found in the error slot.
  * @returns True if the value is a plain object.
  */
@@ -119,8 +121,8 @@ export class OneLogger {
   };
 
   /**
-   * Logs an error record with attached breadcrumb history. A plain object in the
-   * error slot with no payload given is read as the payload.
+   * Logs an error record with the breadcrumb history. If payload is absent, a plain
+   * object in the error slot becomes the payload.
    * @param message Error description.
    * @param error Caught error instance, reason, or payload.
    * @param payload Optional contextual attributes.
@@ -130,8 +132,8 @@ export class OneLogger {
   };
 
   /**
-   * Logs a fatal unrecoverable error record. A plain object in the error slot
-   * with no payload given is read as the payload.
+   * Logs a fatal error record. If payload is absent, a plain object in the error slot
+   * becomes the payload.
    * @param message Error description.
    * @param error Caught error instance, reason, or payload.
    * @param payload Optional contextual attributes.
@@ -141,7 +143,7 @@ export class OneLogger {
   };
 
   /**
-   * Logs a discrete user interaction action.
+   * Logs one user action.
    * @param name Action identifier.
    * @param payload Optional action attributes.
    */
@@ -206,7 +208,7 @@ export class OneLogger {
   ): Promise<T> => timeAsync(this, label, fn, attributes);
 
   /**
-   * Builds, logs to console, and emits a standard log record.
+   * Builds and emits a standard log record. It also prints the record to the console.
    * @param level Severity level.
    * @param type Record classification.
    * @param body Primary message.
@@ -243,9 +245,9 @@ export class OneLogger {
       payload,
     });
 
-    // Crumbs are memory-only and never billed, so a record sampling dropped still
-    // leaves its trail for the next error. A redact hook that dropped the record
-    // wanted the body gone, and a crumb would ship it on the next error anyway.
+    // Breadcrumbs stay in memory and have no delivery cost. A record that sampling drops
+    // still adds a breadcrumb for the next error. Skip a record that redact drops.
+    // Its breadcrumb sends the removed body with the next error.
     if (type !== "metric" && dropped !== "redact") {
       runtime.breadcrumbs.push({
         t: Date.now(),
@@ -259,7 +261,7 @@ export class OneLogger {
   }
 
   /**
-   * Builds, logs to console, and emits an error record with attached breadcrumbs.
+   * Builds and emits an error record with breadcrumbs. It also prints the record to the console.
    * @param level Severity level ("ERROR" or "FATAL").
    * @param message Error description.
    * @param error Caught error instance, reason, or payload.
@@ -283,9 +285,9 @@ export class OneLogger {
       return;
     }
 
-    // Every sibling method is (name, payload?), so log.error("failed", { id })
-    // is the natural call. Describing that object as the error reason would put
-    // "[object Object]" in error.message and drop the caller's fields.
+    // All sibling methods take (name, payload?). Callers expect log.error("failed", { id }).
+    // As an error reason, that object puts "[object Object]" in error.message.
+    // It also drops the caller fields.
     const asPayload = payload === undefined && isPlainObject(error);
     const attributes = asPayload ? error : payload;
     const asError =
