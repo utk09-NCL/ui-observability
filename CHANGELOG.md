@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-12
+
+### Breaking changes - v0.7.0
+
+- A console line has the form `[namespace][LEVEL] message`. It was `[namespace] LEVEL message`.
+
+### Added - v0.7.0
+
+- The level in a console line has its own color. `TRACE` and `DEBUG` are gray. `INFO` is blue. `WARN` is orange. `ERROR` and `FATAL` are red.
+- `console` accepts an object with `level` and `styles`. `styles` holds a CSS string for `namespace` and for each level. A key that you do not set keeps its style. The package exports the types `ConsoleOptions` and `ConsoleStyles`.
+- A style can set the text color and the background together, for example `"color:#fff;background:#1e6fd9;padding:0 4px;border-radius:3px"`.
+- A later `configure({ console: "WARN" })` changes the level only. A later `configure({ console: { styles } })` changes the styles only.
+- An unknown style key or a style that is not a string reports `config.invalid`. The style in force stays.
+- `npm run check:size` fails if the main chunk graph is above its gzip budget. `npm run check:dev` fails if the Vite dev server cannot load the library without the optional peers. `verify` runs both.
+
 ## [0.6.0] - 2026-10-11
 
 ### Breaking changes - v0.6.0
