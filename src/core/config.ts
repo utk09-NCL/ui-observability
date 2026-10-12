@@ -10,6 +10,7 @@
 import {
   CONFIG_SECTIONS,
   CONSOLE_DEFAULT_LEVEL,
+  CONSOLE_DEFAULT_STYLES,
   DEFAULT_CONFIG,
   SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
@@ -22,11 +23,12 @@ import {
 } from "../constants";
 import type {
   ConsoleOption,
+  ConsoleStyles,
   ObservabilityConfig,
   ResolvedConfig,
+  ResolvedConsole,
   SerializerChoice,
 } from "../models/config";
-import type { LogLevel } from "../models/log-record";
 import type { LogSerializer } from "../models/serializer";
 import type { Diagnostics } from "./diagnostics";
 
@@ -73,26 +75,80 @@ function resolveSerializer(
   return SERIALIZER_NAME_OTLP;
 }
 
+/** Style keys that the console option accepts. */
+const CONSOLE_STYLE_KEYS = new Set(Object.keys(CONSOLE_DEFAULT_STYLES));
+
 /**
- * Normalizes the console option into a minimum mirror level.
+ * Keeps the valid entries of a console styles object. It reports each entry that it drops.
+ * @param styles Styles that the consumer passed.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The valid styles.
+ */
+function validStyles(styles: ConsoleStyles | undefined, diagnostics: Diagnostics): ConsoleStyles {
+  const valid: Record<string, string> = {};
+  const entries: [string, unknown][] = Object.entries(styles ?? {});
+
+  for (const [key, value] of entries) {
+    if (!CONSOLE_STYLE_KEYS.has(key)) {
+      diagnostics.report(
+        "config.invalid",
+        `The library ignores the unknown console.styles key "${key}". Check the spelling.`,
+      );
+      continue;
+    }
+
+    if (typeof value !== "string") {
+      diagnostics.report(
+        "config.invalid",
+        `console.styles.${key} must be a string. The library keeps the style in force.`,
+      );
+      continue;
+    }
+
+    valid[key] = value;
+  }
+
+  return valid;
+}
+
+/**
+ * Normalizes the console option into a level and a set of styles.
  * @param requested Consumer console option.
- * @param previous Console level in force.
- * @returns Minimum level to mirror, or null when mirroring is off.
+ * @param previous Console settings in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns Console settings. The level is null when the console is off.
  */
 function resolveConsole(
   requested: ConsoleOption | undefined,
-  previous: LogLevel | null,
-): LogLevel | null {
+  previous: ResolvedConsole,
+  diagnostics: Diagnostics,
+): ResolvedConsole {
   if (requested === undefined) {
     return previous;
   }
   if (requested === false) {
-    return null;
+    return { level: null, styles: previous.styles };
   }
   if (requested === true) {
-    return CONSOLE_DEFAULT_LEVEL;
+    return { level: CONSOLE_DEFAULT_LEVEL, styles: previous.styles };
   }
-  return requested;
+  if (typeof requested === "string") {
+    return { level: requested, styles: previous.styles };
+  }
+
+  // Guard against null and other values that the type does not allow.
+  if (typeof requested !== "object" || (requested as unknown) === null) {
+    diagnostics.report(
+      "config.invalid",
+      "console must be a boolean, a level or an object. The console settings in force stay.",
+    );
+    return previous;
+  }
+
+  return {
+    level: requested.level ?? previous.level ?? CONSOLE_DEFAULT_LEVEL,
+    styles: { ...previous.styles, ...validStyles(requested.styles, diagnostics) },
+  };
 }
 
 /**
@@ -116,7 +172,7 @@ export function resolveConfig(
     endpoint: input.endpoint === undefined ? base.endpoint : input.endpoint,
     // A serializer instance replaces the string name after the object merge.
     serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
-    console: resolveConsole(input.console, base.console),
+    console: resolveConsole(input.console, base.console, diagnostics),
     sampling: {
       ...base.sampling,
       ...input.sampling,

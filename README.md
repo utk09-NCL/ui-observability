@@ -91,6 +91,48 @@ configure({
 - The console output does not depend on the bus or the endpoint.
 - With a `redact` hook, the console shows only what `redact` returns. A record below `minLevel` shows its message and error only, because the library does not build it.
 
+### Console Output
+
+Each console line has the form `[namespace][LEVEL] message payload`:
+
+```text
+[app.puzzle-page][INFO] The puzzle page loaded {puzzleId: 'colour-binary-0006', difficulty: 'easy'}
+```
+
+The namespace and the level each have a color. To change the colors, use the object form of `console`:
+
+```ts
+configure({
+  console: {
+    level: "DEBUG",
+    styles: {
+      namespace: "color:#888",
+      INFO: "color:#0a7;font-weight:bold",
+      WARN: "color:#c80;font-weight:bold",
+    },
+  },
+});
+```
+
+- Each style is a CSS string. A browser applies it with `%c`. Node prints the text without the style.
+- A style can set the text color and the background together. This example shows the level as a badge:
+
+  ```ts
+  configure({
+    console: {
+      styles: {
+        INFO: "color:#fff;background:#1e6fd9;padding:0 4px;border-radius:3px",
+        ERROR: "color:#fff;background:#d32f2f;padding:0 4px;border-radius:3px",
+      },
+    },
+  });
+  ```
+
+- The style keys are `namespace`, `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` and `FATAL`. A key that you do not set keeps its style.
+- The default namespace color is gray. The default levels are gray for `TRACE` and `DEBUG`, blue for `INFO`, orange for `WARN`, and red for `ERROR` and `FATAL`.
+- A later `configure({ console: "WARN" })` changes the level. The styles stay.
+- A later `configure({ console: { styles } })` changes the styles. The level stays.
+
 ---
 
 ## API Reference
@@ -148,31 +190,31 @@ configure({
 
 No key is required. Set `endpoint` to send records.
 
-| Key                          | Default      | Description                                                                                                                                                  |
-| ---------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `endpoint`                   | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                    |
-| `serviceName`                | `""`         | `service.name` on every record.                                                                                                                              |
-| `serviceVersion`             | `""`         | `service.version` on every record.                                                                                                                           |
-| `environment`                | `""`         | `deployment.environment` on every record.                                                                                                                    |
-| `enabled`                    | `true`       | Set `false` to stop all logging. Every log call then does nothing.                                                                                           |
-| `minLevel`                   | `"INFO"`     | Lowest level that the library sends (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).                                                                    |
-| `compression`                | `"gzip"`     | `gzip` or `none`. The library compresses a payload above 1 KB only.                                                                                          |
-| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                                                                                                  |
-| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                                                                                                     |
-| `headers`                    | `{}`         | Static headers, or a function that returns them.                                                                                                             |
-| `storage`                    | `"auto"`     | Store for undelivered batches: `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.                                                    |
-| `identity`                   | `"storage"`  | Store for session, tab and journey ids. `memory` writes no key. Fixed at startup.                                                                            |
-| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                                      |
-| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                                   |
-| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                           |
-| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. With `off`, this context sends its own records and opens no link. A same-origin child frame can still forward to it. |
-| `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                                                                                                     |
-| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                              |
-| `capture`                    | See below    | Auto-capture settings.                                                                                                                                       |
-| `console`                    | `false`      | Prints records to devtools. `true` prints from `DEBUG` up. A level name prints from that level up. It does not depend on `minLevel`.                         |
-| `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                         |
-| `redact(record)`             | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record.                                                                    |
-| `onDiagnostic(event)`        | `undefined`  | Receives the faults of the library itself.                                                                                                                   |
+| Key                          | Default      | Description                                                                                                                                                                                    |
+| ---------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`                   | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                                                      |
+| `serviceName`                | `""`         | `service.name` on every record.                                                                                                                                                                |
+| `serviceVersion`             | `""`         | `service.version` on every record.                                                                                                                                                             |
+| `environment`                | `""`         | `deployment.environment` on every record.                                                                                                                                                      |
+| `enabled`                    | `true`       | Set `false` to stop all logging. Every log call then does nothing.                                                                                                                             |
+| `minLevel`                   | `"INFO"`     | Lowest level that the library sends (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).                                                                                                      |
+| `compression`                | `"gzip"`     | `gzip` or `none`. The library compresses a payload above 1 KB only.                                                                                                                            |
+| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                                                                                                                                    |
+| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                                                                                                                                       |
+| `headers`                    | `{}`         | Static headers, or a function that returns them.                                                                                                                                               |
+| `storage`                    | `"auto"`     | Store for undelivered batches: `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.                                                                                      |
+| `identity`                   | `"storage"`  | Store for session, tab and journey ids. `memory` writes no key. Fixed at startup.                                                                                                              |
+| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                                                                        |
+| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                                                                     |
+| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                                                             |
+| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. With `off`, this context sends its own records and opens no link. A same-origin child frame can still forward to it.                                   |
+| `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                                                                                                                                       |
+| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                                                                |
+| `capture`                    | See below    | Auto-capture settings.                                                                                                                                                                         |
+| `console`                    | `false`      | Prints records to devtools. `true` prints from `DEBUG` up. A level name prints from that level up. An object sets `level` and `styles` (see Console Output). It does not depend on `minLevel`. |
+| `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                                                           |
+| `redact(record)`             | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record.                                                                                                      |
+| `onDiagnostic(event)`        | `undefined`  | Receives the faults of the library itself.                                                                                                                                                     |
 
 ### Auto-Capture Options
 

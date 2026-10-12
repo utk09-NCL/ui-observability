@@ -3,7 +3,7 @@
 // Defines all limits, thresholds, timing windows, storage keys, patterns, and
 // defaults that the library uses.
 
-import type { ResolvedConfig } from "./models/config";
+import type { ConsoleStyles, ResolvedConfig } from "./models/config";
 import type { LogLevel, LogType } from "./models/log-record";
 import type { StorageLimits } from "./models/storage";
 
@@ -566,8 +566,16 @@ export const ARIA_LABEL_MAX_CHARS = 40;
 /** Maximum class names included per element in generated CSS selectors. */
 export const SELECTOR_MAX_CLASSES = 2;
 
-/** CSS styling applied to console prefix labels. */
-export const CONSOLE_PREFIX_STYLE = "color:#888";
+/** Default CSS of the console prefix. The colors are readable on light and dark devtools. */
+export const CONSOLE_DEFAULT_STYLES: Readonly<Required<ConsoleStyles>> = {
+  namespace: "color:#888",
+  TRACE: "color:#888;font-weight:bold",
+  DEBUG: "color:#888;font-weight:bold",
+  INFO: "color:#1e6fd9;font-weight:bold",
+  WARN: "color:#c77700;font-weight:bold",
+  ERROR: "color:#d32f2f;font-weight:bold",
+  FATAL: "color:#d32f2f;font-weight:bold",
+};
 
 /** Scaling factor for rounding duration measurements to three decimal places. */
 export const DURATION_PRECISION = 1000;
@@ -667,7 +675,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     ignoreUrls: [],
     propagateTraceHeaderTo: [],
   },
-  console: null,
+  console: { level: null, styles: CONSOLE_DEFAULT_STYLES },
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */

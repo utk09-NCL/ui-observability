@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { applyResolvedConfig, resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import type { ObservabilityConfig, SamplingOptions } from "../src/models/config";
+import { CONSOLE_DEFAULT_STYLES } from "../src/constants";
+import type { ConsoleStyles, ObservabilityConfig, SamplingOptions } from "../src/models/config";
 
 const ENDPOINT = "https://ingest.example/v1/logs";
 const OTHER_ENDPOINT = "https://ingest-two.example/v1/logs";
@@ -47,7 +48,7 @@ describe("resolveConfig", () => {
     expect(resolved.bus.mode).toBe("auto");
     expect(resolved.capture.errors).toBe(true);
     expect(resolved.capture.fullUrls).toBe(false);
-    expect(resolved.console).toBeNull();
+    expect(resolved.console.level).toBeNull();
 
     // The only complaint should be the absent serviceName.
     expect(messages(events)).toHaveLength(1);
@@ -57,12 +58,98 @@ describe("resolveConfig", () => {
   it("reads the console option as off, on, or an explicit level", () => {
     const { diagnostics } = collect();
 
-    expect(resolveConfig({ ...valid(), console: true }, diagnostics).console).toBe("DEBUG");
-    expect(resolveConfig({ ...valid(), console: "WARN" }, diagnostics).console).toBe("WARN");
+    expect(resolveConfig({ ...valid(), console: true }, diagnostics).console.level).toBe("DEBUG");
+    expect(resolveConfig({ ...valid(), console: "WARN" }, diagnostics).console.level).toBe("WARN");
 
     // false has to turn off a level already in force, not fall through to it.
     const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
-    expect(resolveConfig({ console: false }, diagnostics, live).console).toBeNull();
+    expect(resolveConfig({ console: false }, diagnostics, live).console.level).toBeNull();
+  });
+
+  it("reads the object form of console and merges its styles onto the defaults", () => {
+    const { events, diagnostics } = collect();
+
+    const resolved = resolveConfig(
+      { ...valid(), console: { styles: { INFO: "color:#0a7" } } },
+      diagnostics,
+    );
+
+    // An object with no level turns the console on, as true does.
+    expect(resolved.console.level).toBe("DEBUG");
+    expect(resolved.console.styles.INFO).toBe("color:#0a7");
+    expect(resolved.console.styles.WARN).toBe(CONSOLE_DEFAULT_STYLES.WARN);
+    expect(events).toEqual([]);
+  });
+
+  it("keeps the level and the styles in force on a later partial console change", () => {
+    const { diagnostics } = collect();
+    const live = resolveConfig(
+      { ...valid(), console: { level: "WARN", styles: { WARN: "color:orange" } } },
+      diagnostics,
+    );
+
+    const restyled = resolveConfig(
+      { console: { styles: { ERROR: "color:red" } } },
+      diagnostics,
+      live,
+    );
+    const relevelled = resolveConfig({ console: "INFO" }, diagnostics, restyled);
+
+    expect(restyled.console.level).toBe("WARN");
+    expect(relevelled.console.level).toBe("INFO");
+    expect(relevelled.console.styles.WARN).toBe("color:orange");
+    expect(relevelled.console.styles.ERROR).toBe("color:red");
+  });
+
+  it("reads a console object that sets the level only, and keeps the default styles", () => {
+    const { events, diagnostics } = collect();
+
+    const resolved = resolveConfig({ ...valid(), console: { level: "WARN" } }, diagnostics);
+
+    expect(resolved.console.level).toBe("WARN");
+    expect(resolved.console.styles).toEqual(CONSOLE_DEFAULT_STYLES);
+    expect(events).toEqual([]);
+  });
+
+  it("reports a null console value and keeps the console settings in force", () => {
+    const { events, diagnostics } = collect();
+    const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
+    const nothing = null as unknown as ObservabilityConfig["console"];
+
+    const number = 42 as unknown as ObservabilityConfig["console"];
+
+    const resolved = resolveConfig({ console: nothing }, diagnostics, live);
+    const fromNumber = resolveConfig({ console: number }, diagnostics, live);
+
+    expect(resolved.console).toBe(live.console);
+    expect(fromNumber.console).toBe(live.console);
+    expect(messages(events)).toHaveLength(2);
+    expect(messages(events)[0]).toContain("console must be a boolean, a level or an object");
+  });
+
+  it("accepts a style that sets both the text color and the background", () => {
+    const { diagnostics } = collect();
+    const badge = "color:#fff;background:#1e6fd9;padding:0 4px;border-radius:3px";
+
+    const resolved = resolveConfig(
+      { ...valid(), console: { styles: { INFO: badge } } },
+      diagnostics,
+    );
+
+    expect(resolved.console.styles.INFO).toBe(badge);
+  });
+
+  it("reports an unknown console style key and a style that is not a string", () => {
+    const { events, diagnostics } = collect();
+    const styles = { NOTICE: "color:blue", INFO: 42 } as unknown as ConsoleStyles;
+
+    const resolved = resolveConfig({ ...valid(), console: { styles } }, diagnostics);
+
+    expect(messages(events)).toEqual([
+      expect.stringContaining('console.styles key "NOTICE"'),
+      expect.stringContaining("console.styles.INFO must be a string"),
+    ]);
+    expect(resolved.console.styles.INFO).toBe(CONSOLE_DEFAULT_STYLES.INFO);
   });
 
   it("reports a missing endpoint and still returns a usable config", () => {
@@ -470,6 +557,6 @@ describe("applyResolvedConfig", () => {
 
     expect(live.minLevel).toBe("ERROR");
     expect(live.sampling.defaultRate).toBe(0.25);
-    expect(live.console).toBe("WARN");
+    expect(live.console.level).toBe("WARN");
   });
 });

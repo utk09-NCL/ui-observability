@@ -241,11 +241,39 @@ export interface CaptureOptions {
 /** Serializer option after resolution. A name stays a name. The transport selects the implementation. */
 export type SerializerChoice = "otlp" | "ecs" | LogSerializer;
 
+/** Part of the console prefix that a style applies to: the namespace or one level. */
+export type ConsoleStyleKey = "namespace" | LogLevel;
+
 /**
- * Console mirroring. `false` turns it off. `true` mirrors records at DEBUG and above.
- * A level mirrors records at that level and above.
+ * CSS for each part of the console prefix, for example `"color:#0a7;font-weight:bold"`.
+ * A browser applies it with `%c`. Node prints the text without the style.
  */
-export type ConsoleOption = boolean | LogLevel;
+export type ConsoleStyles = Partial<Record<ConsoleStyleKey, string>>;
+
+/** Object form of the console option. */
+export interface ConsoleOptions {
+  /**
+   * Lowest level that the console prints. If you do not set it, the level in force stays.
+   * If no level is in force, the console prints from DEBUG up.
+   */
+  level?: LogLevel;
+  /** CSS for the namespace and for each level. A key that you do not set keeps its style. */
+  styles?: ConsoleStyles;
+}
+
+/**
+ * Console mirroring. `false` turns it off. `true` prints records at DEBUG and above.
+ * A level prints records at that level and above. An object sets the level and the styles.
+ */
+export type ConsoleOption = boolean | LogLevel | ConsoleOptions;
+
+/** Console settings after resolution. */
+export interface ResolvedConsole {
+  /** Lowest level that the console prints, or null when the console is off. */
+  level: LogLevel | null;
+  /** CSS for the namespace and for each level. */
+  styles: Required<ConsoleStyles>;
+}
 
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
@@ -334,7 +362,7 @@ export interface ObservabilityConfig {
    */
   capture?: Partial<CaptureOptions>;
   /**
-   * Console mirroring, for development.
+   * Console mirroring. The line format is `[namespace][LEVEL] message`.
    * @default false
    */
   console?: ConsoleOption;
@@ -397,8 +425,8 @@ export interface ResolvedConfig {
    * @see {@link CaptureOptions}
    */
   capture: CaptureOptions;
-  /** Minimum level that the library mirrors to the console, or null when mirroring is off. */
-  console: LogLevel | null;
+  /** Console level and styles. */
+  console: ResolvedConsole;
   /** Payload format name, or a custom implementation. */
   serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */

@@ -2,8 +2,9 @@
 //
 // Formats and mirrors log records to the developer console during local execution
 
-import { CONSOLE_PREFIX_STYLE, LEVEL_ORDER, RECORD_LIMITS } from "../constants";
+import { LEVEL_ORDER, RECORD_LIMITS } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import type { ResolvedConsole } from "../models/config";
 import type { LogLevel } from "../models/log-record";
 import { sanitize } from "./sanitize";
 
@@ -20,20 +21,20 @@ const METHOD: Record<LogLevel, "debug" | "info" | "warn" | "error"> = {
 /** Mirrors log records directly to browser or Node console methods based on severity. */
 export class ConsoleSink {
   /**
-   * @param minLevel Minimum log level required to emit, or null to mirror nothing.
+   * @param settings Console level and styles. A null level prints nothing.
    * @param diagnostics Diagnostics reporter.
    */
   constructor(
-    private minLevel: LogLevel | null,
+    private settings: ResolvedConsole,
     private diagnostics: Diagnostics,
   ) {}
 
   /**
-   * Updates the console mirroring threshold.
-   * @param minLevel Minimum log level required to emit, or null to mirror nothing.
+   * Replaces the console level and styles.
+   * @param settings Console level and styles. A null level prints nothing.
    */
-  update(minLevel: LogLevel | null): void {
-    this.minLevel = minLevel;
+  update(settings: ResolvedConsole): void {
+    this.settings = settings;
   }
 
   /**
@@ -42,7 +43,7 @@ export class ConsoleSink {
    * @returns True if the sink prints this level.
    */
   accepts(level: LogLevel): boolean {
-    return this.minLevel !== null && LEVEL_ORDER[level] >= LEVEL_ORDER[this.minLevel];
+    return this.settings.level !== null && LEVEL_ORDER[level] >= LEVEL_ORDER[this.settings.level];
   }
 
   /**
@@ -69,7 +70,9 @@ export class ConsoleSink {
     }
 
     // Pass the namespace as a %s argument. Then a %o or %c in the namespace prints as text.
-    const prefix = `%c[%s]%c ${level}`;
+    // The last %c resets the style. The message then prints in the default style.
+    const prefix = `%c[%s]%c[${level}]%c`;
+    const { styles } = this.settings;
     const method = METHOD[level];
 
     // A host can replace console methods with methods that throw. The guard stops that
@@ -89,7 +92,15 @@ export class ConsoleSink {
           details.push(sanitize(payload, RECORD_LIMITS, this.diagnostics));
         }
 
-        console[method](prefix, CONSOLE_PREFIX_STYLE, namespace, "", message, ...details);
+        console[method](
+          prefix,
+          styles.namespace,
+          namespace,
+          styles[level],
+          "",
+          message,
+          ...details,
+        );
       },
     );
   }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
-import { BUS_MAX_BOOT_BUFFER_RECORDS } from "../src/constants";
+import { BUS_MAX_BOOT_BUFFER_RECORDS, CONSOLE_DEFAULT_STYLES as STYLES } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { JourneyEngine } from "../src/core/journey";
 import { ObservabilityRuntime } from "../src/core/runtime";
@@ -1089,9 +1089,17 @@ describe("OneLogger", () => {
 
     getLogger("board.hop").debug("moved", { from: 1 });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c DEBUG", "color:#888", "board.hop", "", "moved", {
-      from: 1,
-    });
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[DEBUG]%c",
+      STYLES.namespace,
+      "board.hop",
+      STYLES.DEBUG,
+      "",
+      "moved",
+      {
+        from: 1,
+      },
+    );
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -1109,7 +1117,7 @@ describe("OneLogger", () => {
     getLogger("pay").info("charged", { card: "4111", orderId: "ORD-1" });
 
     // The console must not show what redact removed. A host can record console arguments.
-    const printed = spy.mock.calls[0][5] as Record<string, unknown>;
+    const printed = spy.mock.calls[0][6] as Record<string, unknown>;
     expect(printed.orderId).toBe("ORD-1");
     expect(printed).not.toHaveProperty("card");
   });
@@ -1120,7 +1128,14 @@ describe("OneLogger", () => {
 
     getLogger("pay").info("charged", { card: "4111" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "pay", "", "charged");
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[INFO]%c",
+      STYLES.namespace,
+      "pay",
+      STYLES.INFO,
+      "",
+      "charged",
+    );
   });
 
   it("prints the message only below minLevel when a redact hook is set", () => {
@@ -1130,7 +1145,14 @@ describe("OneLogger", () => {
 
     getLogger("pay").debug("charged", { card: "4111" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c DEBUG", "color:#888", "pay", "", "charged");
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[DEBUG]%c",
+      STYLES.namespace,
+      "pay",
+      STYLES.DEBUG,
+      "",
+      "charged",
+    );
   });
 
   it("prints the message and the error only for an error below minLevel with redact set", () => {
@@ -1140,7 +1162,31 @@ describe("OneLogger", () => {
 
     getLogger("pay").error("failed", failure, { card: "4111" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "pay", "", "failed", failure);
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[ERROR]%c",
+      STYLES.namespace,
+      "pay",
+      STYLES.ERROR,
+      "",
+      "failed",
+      failure,
+    );
+  });
+
+  it("uses the console styles from configure()", () => {
+    configure({ ...base, console: { level: "INFO", styles: { INFO: "color:red" } } });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("app").info("hello");
+
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[INFO]%c",
+      STYLES.namespace,
+      "app",
+      "color:red",
+      "",
+      "hello",
+    );
   });
 
   it("prints nothing to the console when enabled is false", () => {
@@ -1159,9 +1205,18 @@ describe("OneLogger", () => {
 
     getLogger("app").error("failed", failure, { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
-      orderId: "ORD-1",
-    });
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[ERROR]%c",
+      STYLES.namespace,
+      "app",
+      STYLES.ERROR,
+      "",
+      "failed",
+      failure,
+      {
+        orderId: "ORD-1",
+      },
+    );
   });
 
   it("prints an error below minLevel to the console with its error and payload", () => {
@@ -1172,9 +1227,18 @@ describe("OneLogger", () => {
 
     getLogger("app").error("failed", failure, { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
-      orderId: "ORD-1",
-    });
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[ERROR]%c",
+      STYLES.namespace,
+      "app",
+      STYLES.ERROR,
+      "",
+      "failed",
+      failure,
+      {
+        orderId: "ORD-1",
+      },
+    );
     expect(emit).not.toHaveBeenCalled();
   });
 

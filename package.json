@@ -75,7 +75,9 @@
     "typecheck": "tsc --noEmit",
     "check:version": "node tools/check-version-sync.mjs",
     "check:peers": "node tools/check-peer-imports.mjs",
-    "verify": "npm run format:check && npm run check:version && npm run typecheck && npm run lint && npm run build && npm run check:peers && npm run test:coverage",
+    "check:size": "node tools/check-size.mjs",
+    "check:dev": "node tools/check-dev-server.mjs",
+    "verify": "npm run format:check && npm run check:version && npm run typecheck && npm run lint && npm run build && npm run check:peers && npm run check:size && npm run check:dev && npm run test:coverage",
     "prepublishOnly": "npm run verify"
   },
   "peerDependencies": {

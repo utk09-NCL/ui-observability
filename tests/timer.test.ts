@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureLogger } from "../src/capture/types";
+import { CONSOLE_DEFAULT_STYLES as STYLES } from "../src/constants";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
+import type { ConsoleStyles } from "../src/models/config";
 import type { LogLevel } from "../src/models/log-record";
 import { ConsoleSink } from "../src/utils/console";
 import { timeAsync, timeSync } from "../src/utils/timer";
@@ -136,10 +138,14 @@ describe("ConsoleSink", () => {
 
   /**
    * A sink with the diagnostics throttle disabled, plus the events it reported.
-   * @param minLevel Mirroring threshold.
+   * @param level Mirroring threshold.
+   * @param styles CSS styles of the prefix parts.
    * @returns The sink and its event list.
    */
-  function sinkOf(minLevel: LogLevel | null): {
+  function sinkOf(
+    level: LogLevel | null,
+    styles: Required<ConsoleStyles> = STYLES,
+  ): {
     sink: ConsoleSink;
     events: DiagnosticEvent[];
   } {
@@ -147,7 +153,7 @@ describe("ConsoleSink", () => {
     const diagnostics = new Diagnostics((event) => {
       events.push(event);
     }, 0);
-    return { sink: new ConsoleSink(minLevel, diagnostics), events };
+    return { sink: new ConsoleSink({ level, styles }, diagnostics), events };
   }
 
   it("prints nothing at all when disabled", () => {
@@ -172,7 +178,14 @@ describe("ConsoleSink", () => {
     sinkOf("TRACE").sink.write("board.hop", "INFO", "hello");
 
     // The namespace tells apart the logs of each part of the app.
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "board.hop", "", "hello");
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[INFO]%c",
+      STYLES.namespace,
+      "board.hop",
+      STYLES.INFO,
+      "",
+      "hello",
+    );
   });
 
   it("appends the payload when there is one", () => {
@@ -180,9 +193,17 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "WARN", "careful", { orderId: "ORD-1" });
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c WARN", "color:#888", "app", "", "careful", {
-      orderId: "ORD-1",
-    });
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[WARN]%c",
+      STYLES.namespace,
+      "app",
+      STYLES.WARN,
+      "",
+      "careful",
+      {
+        orderId: "ORD-1",
+      },
+    );
   });
 
   it("passes the namespace as an argument, not as part of the format string", () => {
@@ -191,7 +212,30 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("a%ob", "INFO", "hello");
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c INFO", "color:#888", "a%ob", "", "hello");
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[INFO]%c",
+      STYLES.namespace,
+      "a%ob",
+      STYLES.INFO,
+      "",
+      "hello",
+    );
+  });
+
+  it("styles the namespace and the level with the configured CSS", () => {
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const styles = { ...STYLES, namespace: "color:teal", INFO: "color:#0a7;font-weight:bold" };
+
+    sinkOf("TRACE", styles).sink.write("app.puzzle-page", "INFO", "The puzzle page loaded");
+
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[INFO]%c",
+      "color:teal",
+      "app.puzzle-page",
+      "color:#0a7;font-weight:bold",
+      "",
+      "The puzzle page loaded",
+    );
   });
 
   it("prints the error and then the payload", () => {
@@ -200,9 +244,18 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "ERROR", "failed", { orderId: "ORD-1" }, failure);
 
-    expect(spy).toHaveBeenCalledWith("%c[%s]%c ERROR", "color:#888", "app", "", "failed", failure, {
-      orderId: "ORD-1",
-    });
+    expect(spy).toHaveBeenCalledWith(
+      "%c[%s]%c[ERROR]%c",
+      STYLES.namespace,
+      "app",
+      STYLES.ERROR,
+      "",
+      "failed",
+      failure,
+      {
+        orderId: "ORD-1",
+      },
+    );
   });
 
   it("prints a sanitized copy of the payload, not the caller's object", () => {
@@ -213,7 +266,7 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("app", "INFO", "hello", payload);
 
-    const printed = spy.mock.calls[0][5] as Record<string, unknown>;
+    const printed = spy.mock.calls[0][6] as Record<string, unknown>;
     expect(printed).not.toBe(payload);
     expect(printed.orderId).toBe("ORD-1");
   });
@@ -235,11 +288,11 @@ describe("ConsoleSink", () => {
     const { sink } = sinkOf(null);
 
     sink.write("app", "INFO", "before");
-    sink.update("INFO");
+    sink.update({ level: "INFO", styles: STYLES });
     sink.write("app", "INFO", "after");
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0][4]).toBe("after");
+    expect(spy.mock.calls[0][5]).toBe("after");
   });
 
   it("returns quietly in a realm with no console", () => {
