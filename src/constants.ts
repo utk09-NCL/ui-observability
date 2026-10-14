@@ -240,7 +240,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Change it by hand when you change the version in package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.7.0";
+export const TELEMETRY_SDK_VERSION = "0.8.0";
 
 /**
  * Value of `telemetry.sdk.language`.

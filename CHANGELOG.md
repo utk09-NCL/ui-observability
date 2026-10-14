@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-14
+
+### Added - v0.8.0
+
+- `transport` sends batches through a channel of the app, for example an API client, a WebSocket or IPC. Batching, retry, storage, splitting and the exit flush stay the same. The returned status code has the meaning of the ingest contract. With `transport`, `endpoint` is optional.
+- `transportOnExit` sends the last batch while the page closes. Without it, that batch goes to the emergency queue. The next page load sends it.
+- The package exports the types `Transport`, `TransportRequest`, `TransportResponse` and `ExitTransport`.
+- After the delivery stack loads, `configure()` cannot add or remove `transport`. The library reports `config.invalid`. A new function in place of the one in force is accepted.
+- Network capture skips each request that the library starts itself. This includes a request that a custom transport starts before its first `await`.
+- `createMemoryTransport()` gives tests a transport that keeps each batch in memory. `records()` returns the accepted records. `respondWith()` sets the answer, for example `413` or `429`. The package exports the type `MemoryTransport`.
+- `capture.longFrames` records each frame that freezes the page as the histogram `ui.long_frame.duration`. `capture.longFrameThresholdMs` sets the minimum duration. The default is 100 ms. A browser without `long-animation-frame` gives `longtask` entries.
+- `capture.console` records the console calls of the app. `true` wraps `error` and `warn`. A list selects from `error`, `warn`, `info` and `log`. `error` and `warn` give records. `info` and `log` give breadcrumbs. The library does not record the lines that it prints itself.
+- `sampling.remote` reads sampling rules from the `X-UiObs-Sampling` header of each accepted batch. The rules stay in force for their `ttlMs`, at most 1 hour. They can change rates and lower `minLevel`. `sampling.remoteMaxRate` caps each remote rate. A custom transport returns the rules in `TransportResponse.sampling`. Child frames, workers and OpenFin views ask their owner for the rules.
+
+### Fixed - v0.8.0
+
+- `flush()` during startup missed the records in the boot buffer. It now waits for startup to release them.
+- The `sendBeacon` failure message was a fragment. It is now a complete sentence.
+
 ## [0.7.0] - 2026-10-12
 
 ### Breaking changes - v0.7.0
