@@ -8,7 +8,7 @@ import { BREADCRUMB_MIN_CAPACITY } from "../constants";
 
 /** Category of a breadcrumb event. */
 export type BreadcrumbCategory =
-  "log" | "action" | "event" | "click" | "navigation" | "http" | "console";
+  "log" | "action" | "event" | "click" | "navigation" | "http" | "console" | "frame";
 
 /** Short summary of one event that the buffer keeps for an error record. */
 export interface Breadcrumb {

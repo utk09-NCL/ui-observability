@@ -14,6 +14,8 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { Journey } from "../src/core/journey";
+import { applyRemote } from "../src/core/remote-rules";
+import type { RemoteSampling, RemoteSlot, RemoteWire } from "../src/core/remote-sampling";
 import {
   envelope,
   unwrap,
@@ -24,7 +26,7 @@ import {
 } from "../src/models/bus";
 import type { BusOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
-import { BUS_CHANNEL_NAME, BUS_PROTOCOL } from "../src/constants";
+import { BUS_CHANNEL_NAME, BUS_PROTOCOL, REMOTE_SAMPLING_POLL_MS } from "../src/constants";
 
 /** Matches the parent-runtime lookup key in src/bus/links.ts. */
 const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
@@ -71,6 +73,7 @@ const handlers = () => ({
   onJourney: vi.fn<(journey: Journey | null) => void>(),
   onJourneyRequest: vi.fn<() => Journey | null>(() => null),
   onTabConflict: vi.fn<() => void>(),
+  remote: { sampling: null } as RemoteSlot,
 });
 
 const platform = (over = {}) => ({
@@ -1782,5 +1785,218 @@ describe("Bus public methods", () => {
       from: "ctx-1",
       journey: j,
     });
+  });
+});
+
+describe("Bus remote sampling", () => {
+  const wire: RemoteWire = { v: 1, ttlMs: 5000, rates: { grid: 1 } };
+
+  /** Overlay stand-in that answers with the wire rules. */
+  const stub = (): RemoteSampling => ({ wire: () => wire }) as unknown as RemoteSampling;
+
+  /** Source of a message from a parent window on the page origin. */
+  const parent = (): MessageSource => ({ link: "parent", origin: location.origin });
+
+  /**
+   * Makes a forwarder bus with a fake upstream link.
+   * @param kind Kind of the upstream link.
+   * @param trustedOrigins Value of bus.trustedOrigins.
+   * @returns The bus, its handlers, its config and the upstream link.
+   */
+  function forwarder(kind: LinkKind = "parent", trustedOrigins: string[] = []) {
+    const made = make({ trustedOrigins });
+    const upstream = fakeLink(kind);
+    const internals = made.bus as unknown as { role: string; upstream: Link | null };
+    internals.role = "forwarder";
+    internals.upstream = upstream;
+    made.config.sampling.remote = true;
+
+    return { ...made, upstream };
+  }
+
+  it("answers a direct sampling question, with null when no rules are in force", () => {
+    const { bus, handlers: h } = make();
+    const reply = vi.fn<Receive>();
+    const direct = { link: "direct", origin: "same-origin" };
+
+    bus.acceptDirect({ t: "sampling?", from: "child" }, reply);
+    h.remote.sampling = stub();
+    bus.acceptDirect({ t: "sampling?", from: "child" }, reply);
+
+    // A null answer ends the copy of the forwarder. A revocation then reaches it.
+    expect(reply.mock.calls).toEqual([
+      [{ t: "sampling", from: "ctx-1", to: "child", rules: null }, direct],
+      [{ t: "sampling", from: "ctx-1", to: "child", rules: wire }, direct],
+    ]);
+  });
+
+  it("answers a sampling question as a sender on a link that it owns", () => {
+    const { bus, handlers: h } = make();
+    const link = fakeLink("children");
+    (bus as unknown as { links: Link[] }).links.push(link);
+
+    h.remote.sampling = stub();
+    deliver(bus, { t: "sampling?", from: "child" }, { link: "children", origin: location.origin });
+
+    expect(link.post).toHaveBeenCalledWith({
+      t: "sampling",
+      from: "ctx-1",
+      to: "child",
+      rules: wire,
+    });
+  });
+
+  it("does not answer as a sender on a link that it does not own", () => {
+    const { bus } = make();
+    const link = fakeLink("broadcast");
+    (bus as unknown as { links: Link[] }).links.push(link);
+
+    deliver(bus, { t: "sampling?", from: "tab-2" }, { link: "broadcast", origin: "same-origin" });
+
+    expect(link.post).not.toHaveBeenCalled();
+  });
+
+  it("answers its own children as a forwarder, and never a sibling on its upstream link", () => {
+    const { bus, upstream } = forwarder("openfin");
+    const worker = fakeLink("worker");
+    (bus as unknown as { links: Link[] }).links.push(worker);
+
+    deliver(bus, { t: "sampling?", from: "sibling" }, { link: "openfin", origin: "openfin" });
+    deliver(bus, { t: "sampling?", from: "child" }, { link: "worker", origin: "same-origin" });
+
+    // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
+    expect(upstream.post).not.toHaveBeenCalled();
+    expect(worker.post).toHaveBeenCalledWith({
+      t: "sampling",
+      from: "ctx-1",
+      to: "child",
+      rules: null,
+    });
+  });
+
+  it("applies rules from the upstream link that name this context", () => {
+    const { bus, handlers: h } = forwarder();
+
+    deliver(bus, { t: "sampling", from: "owner", to: "ctx-1", rules: wire }, parent());
+
+    expect(h.remote.sampling?.current()).toEqual({ rates: { grid: 1 } });
+  });
+
+  it("applies rules from the owner link of a worker", () => {
+    const { bus, handlers: h } = forwarder("owner");
+
+    deliver(
+      bus,
+      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { link: "owner", origin: "same-origin" },
+    );
+
+    expect(h.remote.sampling).not.toBeNull();
+  });
+
+  it("ends its copy of the rules when the upstream has none", () => {
+    const { bus, handlers: h, config } = forwarder();
+    const none = { t: "sampling", from: "owner", to: "ctx-1", rules: null } as const;
+
+    deliver(bus, none, parent());
+    expect(h.remote.sampling).toBeNull();
+
+    applyRemote(h.remote, config, { rules: { rates: {} }, ttlMs: 60_000 });
+    deliver(bus, none, parent());
+
+    expect(h.remote.sampling?.current()).toBeNull();
+  });
+
+  it("accepts rules from a parent on a trusted origin", () => {
+    const { bus, handlers: h } = forwarder("parent", ["https://shell.example"]);
+
+    deliver(
+      bus,
+      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { link: "parent", origin: "https://shell.example" },
+    );
+
+    expect(h.remote.sampling).not.toBeNull();
+  });
+
+  it("refuses rules from a parent on an origin that is not trusted, and reports it", () => {
+    const { bus, handlers: h, diagnostics } = forwarder();
+
+    // A hostile page can embed the app. It must not lower minLevel and read the DEBUG records.
+    deliver(
+      bus,
+      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { link: "parent", origin: "https://evil.example" },
+    );
+
+    expect(h.remote.sampling).toBeNull();
+    expect(diagnostics.snapshot()["bus.untrusted_origin"]).toBe(1);
+  });
+
+  it("refuses rules from another link, for another context, or as a sender", () => {
+    const { bus, handlers: h } = forwarder();
+
+    deliver(
+      bus,
+      { t: "sampling", from: "peer", to: "ctx-1", rules: wire },
+      { link: "broadcast", origin: "same-origin" },
+    );
+    deliver(bus, { t: "sampling", from: "owner", to: "ctx-2", rules: wire }, parent());
+    (bus as unknown as { role: string }).role = "sender";
+    deliver(bus, { t: "sampling", from: "owner", to: "ctx-1", rules: wire }, parent());
+
+    expect(h.remote.sampling).toBeNull();
+  });
+
+  it("refuses rules that are not valid, and reports them", () => {
+    const { bus, handlers: h, diagnostics } = forwarder();
+
+    deliver(
+      bus,
+      { t: "sampling", from: "owner", to: "ctx-1", rules: { v: 1, ttlMs: -1 } },
+      parent(),
+    );
+
+    expect(h.remote.sampling).toBeNull();
+    expect(diagnostics.snapshot()["config.invalid"]).toBe(1);
+  });
+
+  it("asks the upstream for rules at start and at each poll while remote sampling is on", () => {
+    vi.useFakeTimers();
+    const { bus, upstream, config } = forwarder();
+    const poll = () => (bus as unknown as { pollRules: () => void }).pollRules();
+    const ask = { t: "sampling?", from: "ctx-1" };
+
+    poll();
+    config.sampling.remote = false;
+    vi.advanceTimersByTime(REMOTE_SAMPLING_POLL_MS);
+    config.sampling.remote = true;
+    vi.advanceTimersByTime(REMOTE_SAMPLING_POLL_MS);
+    bus.destroy();
+    vi.advanceTimersByTime(REMOTE_SAMPLING_POLL_MS);
+
+    expect(upstream.post.mock.calls).toEqual([[ask], [ask]]);
+    vi.useRealTimers();
+  });
+
+  it("does not poll as a sender, without an upstream, or after destroy", () => {
+    vi.useFakeTimers();
+    const sender = make();
+    sender.config.sampling.remote = true;
+    (sender.bus as unknown as { pollRules: () => void }).pollRules();
+
+    const orphan = forwarder();
+    (orphan.bus as unknown as { upstream: Link | null }).upstream = null;
+    (orphan.bus as unknown as { pollRules: () => void }).pollRules();
+
+    // A shutdown during a handshake must not leave a timer when the welcome arrives later.
+    const stopped = forwarder();
+    stopped.bus.destroy();
+    (stopped.bus as unknown as { upstream: Link | null }).upstream = stopped.upstream;
+    (stopped.bus as unknown as { pollRules: () => void }).pollRules();
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(stopped.upstream.post).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

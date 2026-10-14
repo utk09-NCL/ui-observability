@@ -302,8 +302,23 @@ export const HEADER_BATCH_ID = "X-UiObs-Batch-Id";
 /** Delivery attempt number header name. */
 export const HEADER_ATTEMPT = "X-UiObs-Attempt";
 
+/** Response header that carries sampling rules from the ingest server. */
+export const HEADER_SAMPLING = "X-UiObs-Sampling";
+
 /** Gzip encoding name. */
 export const ENCODING_GZIP = "gzip";
+
+/** Lowest valid HTTP status code. */
+export const HTTP_STATUS_MIN = 100;
+
+/** Highest valid HTTP status code. */
+export const HTTP_STATUS_MAX = 599;
+
+/** Lowest HTTP status code that accepts a batch. */
+export const HTTP_SUCCESS_MIN = 200;
+
+/** Lowest HTTP status code above the success range. */
+export const HTTP_SUCCESS_END = 300;
 
 /** 401, credentials missing or rejected. */
 export const HTTP_UNAUTHORIZED = 401;
@@ -537,6 +552,12 @@ export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
 /** Global key of the runtime that shutdown() stopped. Calls go to it until the next configure(). */
 export const RUNTIME_STOPPED_KEY = "ui-observability.stopped";
 
+/** Global symbol key of the library request scope count. All library copies on a page share it. */
+export const LIBRARY_REQUEST_KEY = "ui-observability.request-scope";
+
+/** Global symbol key of the library console scope count. All library copies on a page share it. */
+export const LIBRARY_CONSOLE_KEY = "ui-observability.console-scope";
+
 // ----------------------------------
 // Capture
 // ----------------------------------
@@ -553,6 +574,15 @@ export const ERROR_STORM_WINDOW_MS = 10_000;
  * ERROR and FATAL records skip sampling. A direct logger.error call has no other limit.
  */
 export const ERROR_CEILING_MAX_PER_WINDOW = 500;
+
+/** Default minimum duration of a long frame that the library records, in milliseconds. */
+export const LONG_FRAME_THRESHOLD_MS = 100;
+
+/** Maximum long frames recorded in each storm window. A frozen tab cannot flood the pipeline. */
+export const LONG_FRAME_MAX_PER_WINDOW = 20;
+
+/** Maximum character length of a console breadcrumb message. */
+export const CONSOLE_BREADCRUMB_MAX_CHARS = 200;
 
 /** Maximum distinct error signatures tracked for deduplication before LRU eviction. */
 export const MAX_TRACKED_ERROR_SIGNATURES = 200;
@@ -615,6 +645,21 @@ export const SAMPLING_RATE_MAX = 1;
  */
 export const SAMPLING_RATE_FALLBACK = 1;
 
+/** Version of the remote sampling rules that the library accepts. */
+export const REMOTE_SAMPLING_VERSION = 1;
+
+/** Maximum length of the sampling header, in characters. */
+export const REMOTE_SAMPLING_MAX_CHARS = 4096;
+
+/** Maximum time that remote sampling rules stay in force, in milliseconds. */
+export const REMOTE_SAMPLING_MAX_TTL_MS = 60 * 60 * 1000;
+
+/** Maximum namespace rates in one set of remote sampling rules. */
+export const REMOTE_SAMPLING_MAX_RATES = 100;
+
+/** Time between two requests of a forwarder for the remote sampling rules, in milliseconds. */
+export const REMOTE_SAMPLING_POLL_MS = 30_000;
+
 /**
  * Config keys with no default, excluded from `DEFAULT_CONFIG`.
  * @see {@link DEFAULT_CONFIG}
@@ -625,6 +670,8 @@ export const UNDEFAULTED_CONFIG_KEYS = [
   "headers",
   "serializer",
   "otelLoader",
+  "transport",
+  "transportOnExit",
 ] as const;
 
 /**
@@ -660,7 +707,13 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   credentials: "omit",
   storage: "auto",
   identity: "storage",
-  sampling: { defaultRate: 1, rates: {}, alwaysSampleTypes: ["action"] },
+  sampling: {
+    defaultRate: 1,
+    rates: {},
+    alwaysSampleTypes: ["action"],
+    remote: false,
+    remoteMaxRate: 1,
+  },
   bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
   capture: {
     errors: true,
@@ -671,6 +724,9 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     interactions: false,
     navigation: false,
     webVitals: false,
+    longFrames: false,
+    longFrameThresholdMs: LONG_FRAME_THRESHOLD_MS,
+    console: false,
     fullUrls: false,
     ignoreUrls: [],
     propagateTraceHeaderTo: [],

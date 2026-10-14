@@ -4,6 +4,7 @@
 // It counts every event.
 
 import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
+import { runAsLibraryConsole } from "../utils/library-console";
 
 /** Closed set of diagnostic event codes emitted by library subsystems. */
 export type DiagnosticCode =
@@ -134,20 +135,29 @@ export class Diagnostics {
       count,
     };
 
-    if (!this.handler) {
+    const { handler } = this;
+
+    if (!handler) {
       return;
     }
     try {
-      this.handler(event);
+      // The console capture skips a console call of the handler. Without the scope, the line
+      // gives a record, and a failed send of that record gives a new diagnostic.
+      runAsLibraryConsole(() => {
+        handler(event);
+      });
     } catch (handlerError) {
       // Increment the counter directly. A call to report() recurses when the handler throws.
       this.count("handler.threw");
       if (typeof console !== "undefined") {
-        // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
-        console.warn(
-          `${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`,
-          handlerError,
-        );
+        // The console capture skips a call in this scope.
+        runAsLibraryConsole(() => {
+          // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
+          console.warn(
+            `${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`,
+            handlerError,
+          );
+        });
       }
     }
   }

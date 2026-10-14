@@ -145,6 +145,17 @@ export interface SamplingOptions {
    * @default ["action"]
    */
   alwaysSampleTypes: string[];
+  /**
+   * Read sampling rules from the `X-UiObs-Sampling` header of each accepted batch.
+   * The rules stay in force for their `ttlMs`. Set it in each context of the page.
+   * @default false
+   */
+  remote: boolean;
+  /**
+   * Highest rate that a remote rule can set, 0 to 1. It applies to `defaultRate` and each namespace rate.
+   * @default 1
+   */
+  remoteMaxRate: number;
 }
 
 /** Bus settings. They control how this context finds, trusts, and sends messages to others. */
@@ -168,6 +179,9 @@ export interface BusOptions {
    */
   openFinRole: "auto" | "provider" | "client";
 }
+
+/** Console method that the console capture can wrap. */
+export type CapturedConsoleMethod = "error" | "warn" | "info" | "log";
 
 /**
  * What the library instruments automatically. By default, only `errors` and `rejections`
@@ -214,6 +228,24 @@ export interface CaptureOptions {
    * @default false
    */
   webVitals: boolean;
+  /**
+   * Report long animation frames as the histogram `ui.long_frame.duration`. A long frame
+   * freezes the page. Browsers without `long-animation-frame` report `longtask` entries.
+   * @default false
+   */
+  longFrames: boolean;
+  /**
+   * Minimum frame duration that `longFrames` reports, in milliseconds.
+   * @default 100
+   */
+  longFrameThresholdMs: number;
+  /**
+   * Record the app's console calls. `true` wraps `error` and `warn`. A list selects the methods.
+   * `error` gives an ERROR record and `warn` gives a WARN record.
+   * `info` and `log` give a breadcrumb only.
+   * @default false
+   */
+  console: boolean | CapturedConsoleMethod[];
   /**
    * Keep the query string and fragment on every URL the library records.
    * When off, the library removes them from page URLs, request targets and failed resource URLs.
@@ -274,6 +306,53 @@ export interface ResolvedConsole {
   /** CSS for the namespace and for each level. */
   styles: Required<ConsoleStyles>;
 }
+
+/** One batch that the library gives to a custom transport. */
+export interface TransportRequest {
+  /** Serialized batch from the configured serializer. The library does not compress it. */
+  body: string;
+  /** Content type of `body`, from the serializer. */
+  contentType: string;
+  /** Batch id. Send it to the server for deduplication, for example as `X-UiObs-Batch-Id`. */
+  batchId: string;
+  /** Number of earlier send attempts. It is 0 for the first send. */
+  attempt: number;
+  /** Built records after `redact`. Do not change them. The retry engine can send them again. */
+  records: readonly LogRecord[];
+}
+
+/** Answer of a custom transport. The status code has the meaning of the ingest contract. */
+export interface TransportResponse {
+  /**
+   * HTTP-like status code. 2xx accepts the batch. 413 splits it. 429 and 503 throttle.
+   * 408 and 5xx retry. Each other code drops the batch.
+   */
+  status: number;
+  /** Delay before the next send, for 429 and 503, in milliseconds. */
+  retryAfterMs?: number;
+  /** Largest payload that the server accepts, for 413, in bytes. */
+  maxBytes?: number;
+  /**
+   * Sampling rules for a 2xx answer, as the header text or as a parsed object.
+   * The library reads it only with `sampling.remote`.
+   */
+  sampling?: unknown;
+}
+
+/**
+ * Sends one batch through a channel of the app, such as an API client, a WebSocket or IPC.
+ * A rejected promise counts as a network error. The library then sends the batch again.
+ * @param request Batch to send.
+ * @returns Promise resolving to the answer of the server.
+ */
+export type Transport = (request: TransportRequest) => Promise<TransportResponse>;
+
+/**
+ * Sends one batch while the page closes. It must not wait for a promise.
+ * @param request Batch to send.
+ * @returns True if the channel accepted the batch. False puts the batch in the emergency queue.
+ */
+export type ExitTransport = (request: TransportRequest) => boolean;
 
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
@@ -368,6 +447,19 @@ export interface ObservabilityConfig {
   console?: ConsoleOption;
 
   /**
+   * Sends batches through a channel of the app in place of HTTP. With `transport`, `endpoint`
+   * is optional. The library does not compress the body for a custom transport.
+   * @see {@link Transport}
+   */
+  transport?: Transport;
+  /**
+   * Sends the last batch while the page closes, for a custom transport. Without it, the
+   * library puts that batch in the emergency queue. The next page load sends it.
+   * @see {@link ExitTransport}
+   */
+  transportOnExit?: ExitTransport;
+
+  /**
    * Loads the `@opentelemetry/api` module. Example: `() => import("@opentelemetry/api")`.
    * If you do not set it, OTel is off.
    * @see {@link OtelLoader}
@@ -431,6 +523,10 @@ export interface ResolvedConfig {
   serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */
   headers?: ObservabilityConfig["headers"];
+  /** Sends batches through a channel of the app in place of HTTP. */
+  transport?: Transport;
+  /** Sends the last batch while the page closes, for a custom transport. */
+  transportOnExit?: ExitTransport;
   /** Supplies the `@opentelemetry/api` module in place of importing it. */
   otelLoader?: OtelLoader;
   /**

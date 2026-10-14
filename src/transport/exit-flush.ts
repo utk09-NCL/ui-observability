@@ -12,10 +12,13 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
-import type { ResolvedConfig } from "../models/config";
+import type { ExitTransport, ResolvedConfig } from "../models/config";
+import type { SerializedBatch } from "../models/serializer";
 import { saveToEmergencyQueue } from "../storage/emergency-queue";
+import { runAsLibraryRequest } from "../utils/library-request";
 import { estimateBytes } from "../utils/sanitize";
-import { serializerFor } from "./serializers/select";
+import { toTransportRequest } from "./custom-transport";
+import { serializeBatch } from "./serializers/select";
 
 /** This type names the lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
@@ -143,7 +146,12 @@ export class ExitFlush {
    * @param reason Trigger reason code.
    */
   flush(reason: ExitReason): void {
-    const { diagnostics } = this.deps;
+    const { config, diagnostics } = this.deps;
+
+    if (config.transport) {
+      this.flushCustom(reason, config.transportOnExit);
+      return;
+    }
 
     const url = this.endpointUrl();
     if (url === null) {
@@ -155,11 +163,7 @@ export class ExitFlush {
       return;
     }
 
-    const serialized = diagnostics.guard(
-      "transport.serialize_failed",
-      `The ${reason} exit flush could not serialize its batch.`,
-      () => serializerFor(this.deps.config.serializer).serialize(batch.records),
-    );
+    const serialized = this.serialize(batch, reason);
     if (!serialized) {
       return;
     }
@@ -189,6 +193,57 @@ export class ExitFlush {
     }
 
     this.keepaliveFetch(target, serialized.body, reason);
+  }
+
+  /**
+   * Gives the pending records to the exit hook of a custom transport. A page that closes cannot
+   * wait for the async transport. Without a hook, or when the hook refuses the batch, the batch
+   * goes to the emergency queue. The next page load sends it.
+   * @param reason Trigger reason code.
+   * @param onExit Synchronous exit hook of the custom transport.
+   */
+  private flushCustom(reason: ExitReason, onExit: ExitTransport | undefined): void {
+    const { diagnostics } = this.deps;
+
+    // The page keeps running after a tab switch. The pipeline sends the records later.
+    if (reason === "hidden" && !onExit) {
+      return;
+    }
+
+    const batch = this.drain(reason);
+    if (!batch || batch.records.length === 0) {
+      return;
+    }
+
+    const serialized = this.serialize(batch, reason);
+    if (!serialized) {
+      return;
+    }
+
+    const accepted =
+      onExit !== undefined &&
+      diagnostics.guard("transport.http_error", "The transportOnExit hook threw an error.", () =>
+        runAsLibraryRequest(() => onExit(toTransportRequest(batch, serialized))),
+      ) === true;
+
+    if (!accepted) {
+      saveToEmergencyQueue(batch, diagnostics);
+    }
+  }
+
+  /**
+   * Serializes the exit batch. It reports a serializer that throws.
+   * @param batch Batch to serialize.
+   * @param reason Trigger reason code.
+   * @returns The serialized batch, or undefined if the serializer threw.
+   */
+  private serialize(batch: LogBatch, reason: ExitReason): SerializedBatch | undefined {
+    return serializeBatch(
+      this.deps.config.serializer,
+      batch,
+      this.deps.diagnostics,
+      `The ${reason} exit flush could not serialize its batch.`,
+    );
   }
 
   /**
@@ -230,7 +285,7 @@ export class ExitFlush {
   private beacon(url: string, body: string): BeaconOutcome {
     const outcome = this.deps.diagnostics.guard<BeaconOutcome>(
       "transport.http_error",
-      "sendBeacon",
+      "The sendBeacon call failed.",
       () => {
         // Call sendBeacon on navigator to keep its receiver. A detached sendBeacon throws when
         // called.

@@ -21,6 +21,7 @@ export class TransportError extends Error {
    * @param status Optional HTTP response status code.
    * @param retryAfterMs Delay requested by the server in milliseconds.
    * @param maxBytes Maximum payload bytes suggested by a 413 response.
+   * @param cause Error that caused this failure.
    */
   constructor(
     public readonly kind: TransportFailureKind,
@@ -28,8 +29,9 @@ export class TransportError extends Error {
     public readonly status?: number,
     public readonly retryAfterMs?: number,
     public readonly maxBytes?: number,
+    cause?: unknown,
   ) {
-    super(message);
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "TransportError";
   }
 }

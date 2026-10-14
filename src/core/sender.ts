@@ -12,10 +12,14 @@ import type { GapReporter, StorageAdapter } from "../models/storage";
 import { drainEmergencyQueue } from "../storage/emergency-queue";
 import { createStorage } from "../storage/factory";
 import { ExitFlush } from "../transport/exit-flush";
+import { CustomTransport } from "../transport/custom-transport";
 import { HttpTransport } from "../transport/http-transport";
 import { RetryEngine } from "../transport/retry-engine";
+import type { BatchTransport } from "../transport/status-transport";
 import type { Diagnostics } from "./diagnostics";
 import { LogPipeline } from "./pipeline";
+import { applyRemote, parseRemoteRules } from "./remote-rules";
+import type { RemoteSlot } from "./remote-sampling";
 
 /** Inputs to build the delivery stack. */
 export interface SenderDeps {
@@ -25,6 +29,8 @@ export interface SenderDeps {
   diagnostics: Diagnostics;
   /** Receives a report when storage drops batches before delivery. */
   onGap: GapReporter;
+  /** Slot of the runtime for the sampling rules from the ingest server. */
+  remote: RemoteSlot;
 }
 
 /** Delivery stack for one sender runtime. */
@@ -39,7 +45,7 @@ export class Sender {
    */
   private constructor(
     private readonly storage: StorageAdapter,
-    private readonly transport: HttpTransport,
+    private readonly transport: BatchTransport,
     private readonly retry: RetryEngine,
     private readonly pipeline: LogPipeline,
     private readonly exitFlush: ExitFlush,
@@ -61,7 +67,18 @@ export class Sender {
       diagnostics,
       deps.onGap,
     );
-    const transport = new HttpTransport(config, diagnostics);
+    const onSampling = (raw: unknown): void => {
+      const update = parseRemoteRules(raw, diagnostics);
+
+      if (update) {
+        applyRemote(deps.remote, config, update);
+      }
+    };
+
+    // The stack keeps one transport for its life. The runtime refuses a later change.
+    const transport: BatchTransport = config.transport
+      ? new CustomTransport(config, diagnostics, onSampling)
+      : new HttpTransport(config, diagnostics, onSampling);
     const retry = new RetryEngine(storage, transport, diagnostics, config);
     const pipeline = new LogPipeline(transport, storage, retry, diagnostics);
 

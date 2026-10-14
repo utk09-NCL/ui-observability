@@ -5,6 +5,7 @@ import { BUS_MAX_BOOT_BUFFER_RECORDS, CONSOLE_DEFAULT_STYLES as STYLES } from ".
 import type { WorkerLike } from "../src/bus/links";
 import { JourneyEngine } from "../src/core/journey";
 import { ObservabilityRuntime } from "../src/core/runtime";
+import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
 import type { LogRecord } from "../src/models/log-record";
 import { TransportError } from "../src/transport/errors";
@@ -517,7 +518,7 @@ describe("runtime lifecycle", () => {
     expect(runtime().identity.tabId).not.toBe(before);
   });
 
-  it("installs interactions and web-vitals captures when enabled", async () => {
+  it("installs interactions, web-vitals, long-frames and console captures when enabled", async () => {
     const webVitalsModule = {
       onLCP: vi.fn(),
       onCLS: vi.fn(),
@@ -531,13 +532,110 @@ describe("runtime lifecycle", () => {
         navigation: true,
         webVitals: true,
         webVitalsLoader: () => Promise.resolve(webVitalsModule),
+        longFrames: true,
+        console: ["log"],
       },
     });
     await ready();
 
-    expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual(
-      expect.arrayContaining(["interactions", "web-vitals"]),
+    // ready() does not wait for the capture chunks. They load in parallel with startup.
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual(
+        expect.arrayContaining(["interactions", "web-vitals", "long-frames", "console"]),
+      );
+    });
+  });
+
+  it("does not load the console capture for an empty list", async () => {
+    configure({ ...base, capture: { console: [] } });
+    await ready();
+
+    // Wait for the default error capture. The install is then complete, and the check is real.
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toContain(
+        "errors",
+      );
+    });
+
+    expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).not.toContain(
+      "console",
     );
+  });
+
+  it("records an app console.error one time, and does not print the mirror line", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    configure({ ...base, console: "DEBUG", capture: { console: true } });
+    await ready();
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toContain(
+        "console",
+      );
+    });
+    const emit = vi.spyOn(runtime(), "emit");
+
+    console.error("grid failed");
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      severityText: "ERROR",
+      body: "grid failed",
+    });
+  });
+
+  it("applies the sampling header of an accepted batch", async () => {
+    const header = '{"v":1,"ttlMs":60000,"minLevel":"TRACE","rates":{"grid":1}}';
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(null, { status: 204, headers: { "X-UiObs-Sampling": header } }),
+        ),
+      ),
+    );
+    configure({ ...base, minLevel: "INFO", sampling: { remote: true } });
+    await ready();
+
+    info("first");
+    await flush();
+
+    expect(runtime()["remote"].sampling?.current()).toEqual({
+      rates: { grid: 1 },
+      minLevel: "TRACE",
+    });
+  });
+
+  it("ignores a sampling header that is not valid, and reports it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(null, { status: 204, headers: { "X-UiObs-Sampling": '{"v":2}' } }),
+        ),
+      ),
+    );
+    configure({ ...base, sampling: { remote: true } });
+    await ready();
+
+    info("first");
+    await flush();
+
+    expect(runtime()["remote"].sampling).toBeNull();
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
+  it("gives the bus the slot of the remote rules, and samples forwarded records with them", async () => {
+    configure({ ...base, sampling: { remote: true, defaultRate: 0 } });
+    await ready();
+    const slot = runtime()["remote"];
+    const deliver = vi.spyOn(runtime() as unknown as { deliver: () => void }, "deliver");
+
+    expect(bus()["handlers"].remote).toBe(slot);
+    runtime()["ingestForwarded"]([forwardedRecord("dropped")]);
+    applyRemote(slot, runtime().config, { rules: { rates: {}, defaultRate: 1 }, ttlMs: 60_000 });
+    runtime()["ingestForwarded"]([forwardedRecord("kept")]);
+
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 
   it("does not install ErrorCapture when error signals are all disabled", async () => {
@@ -683,6 +781,73 @@ describe("delivery stack loading", () => {
     expect(runtime()["sender"]).toBeUndefined();
     expect(getDiagnosticCounters()["pipeline.crashed"]).toBe(1);
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits in flush() for startup to release the boot records", async () => {
+    const transport = vi.fn(() => Promise.resolve({ status: 202 }));
+    configure({ ...base, endpoint: null, transport, bus: { mode: "off" } });
+
+    info("logged during startup");
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends through a custom transport with no endpoint", async () => {
+    const transport = vi.fn(() => Promise.resolve({ status: 202 }));
+    configure({ ...base, endpoint: null, transport });
+    await ready();
+
+    info("through the app channel");
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+  });
+
+  it("refuses to add or remove a custom transport once the delivery stack exists", async () => {
+    const transport = vi.fn(() => Promise.resolve({ status: 202 }));
+    configure({ ...base, endpoint: null, transport });
+    await ready();
+
+    configure({ transport: undefined });
+
+    // Without the transport, the retry engine removes each stored batch as delivered.
+    expect(runtime().config.transport).toBe(transport);
+
+    await shutdown();
+    configure(base);
+    await ready();
+
+    configure({ transport });
+
+    // The HTTP stack is already built. It would ignore the new transport without a word.
+    expect(runtime().config.transport).toBeUndefined();
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
+  it("accepts a new transport function in place of the one in force", async () => {
+    const first = vi.fn(() => Promise.resolve({ status: 202 }));
+    const second = vi.fn(() => Promise.resolve({ status: 202 }));
+    configure({ ...base, endpoint: null, transport: first });
+    await ready();
+
+    configure({ transport: second });
+    info("after the swap");
+    await flush();
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows endpoint: null after the stack loads when a custom transport sends", async () => {
+    configure({ ...base, transport: () => Promise.resolve({ status: 202 }) });
+    await ready();
+
+    configure({ endpoint: null });
+
+    expect(runtime().config.endpoint).toBeNull();
+    expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
   });
 
   it("refuses to remove the endpoint once the delivery stack exists", async () => {

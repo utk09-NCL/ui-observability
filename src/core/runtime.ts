@@ -46,6 +46,7 @@ import { Diagnostics } from "./diagnostics";
 import { JourneyEngine, JOURNEY_OPTIONS } from "./journey";
 import { OneLogger } from "./logger";
 import { RecordBuilder } from "./record";
+import type { RemoteSlot } from "./remote-sampling";
 import { shouldSample } from "./sampling";
 import type { Sender } from "./sender";
 
@@ -60,6 +61,9 @@ const CAPTURE_LOADERS = {
     (await import("../capture/interactions")).InteractionCapture,
   webVitals: async (): Promise<CaptureClass> =>
     (await import("../capture/web-vitals")).WebVitalsCapture,
+  longFrames: async (): Promise<CaptureClass> =>
+    (await import("../capture/long-frames")).LongFrameCapture,
+  console: async (): Promise<CaptureClass> => (await import("../capture/console")).ConsoleCapture,
 };
 
 /** Name of one capture module. */
@@ -112,6 +116,9 @@ export class ObservabilityRuntime {
   /** Record builder assembling structured log records. */
   readonly builder: RecordBuilder;
 
+  /** Slot of the remote sampling rules. The sender or the bus fills it. */
+  private readonly remote: RemoteSlot = { sampling: null };
+
   /** Console sink for local developer output. */
   readonly console: ConsoleSink;
 
@@ -146,7 +153,11 @@ export class ObservabilityRuntime {
   private captureGeneration = 0;
 
   /** Capture work that a rebuild of the capture modules must not repeat. */
-  private readonly captureOnce: CaptureOnce = { webVitals: false, navigationTiming: false };
+  private readonly captureOnce: CaptureOnce = {
+    webVitals: false,
+    navigationTiming: false,
+    longFrames: false,
+  };
 
   /** Queue buffering records created before bus role resolution. */
   private bootBuffer: LogRecord[] = [];
@@ -159,6 +170,9 @@ export class ObservabilityRuntime {
 
   /** Indicates whether startup has decided the bus role. A sender load waits for it. */
   private roleResolved = false;
+
+  /** Resolves when startup releases the boot records. flush() waits for it. init() sets it. */
+  private started: Promise<void> = Promise.resolve();
 
   /** Indicates whether asynchronous initialization has completed. */
   private ready = false;
@@ -198,6 +212,7 @@ export class ObservabilityRuntime {
     );
 
     this.builder = new RecordBuilder({
+      remote: this.remote,
       config: this.config,
       limits: RECORD_LIMITS,
       diagnostics: this.diagnostics,
@@ -290,7 +305,7 @@ export class ObservabilityRuntime {
    * @param input Partial configuration to merge.
    */
   private reconfigure(input: Partial<ObservabilityConfig>): void {
-    const accepted = this.keepEndpoint(input);
+    const accepted = this.keepDestination(input);
     applyResolvedConfig(this.config, resolveConfig(accepted, this.diagnostics, this.config));
     this.diagnostics.setHandler(this.config.onDiagnostic);
 
@@ -330,23 +345,43 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Refuses to remove the endpoint once the delivery stack exists. Without an endpoint,
-   * the retry engine removes each stored batch as delivered.
+   * Refuses a change that would leave the built delivery stack with nowhere to send.
+   * Without a destination, the retry engine removes each stored batch as delivered.
    * @param input Partial configuration to merge.
-   * @returns Input with the endpoint removal taken out.
+   * @returns Input without the refused changes.
    */
-  private keepEndpoint(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
-    if (this.senderLoad === undefined || (input.endpoint !== null && input.endpoint !== "")) {
+  private keepDestination(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
+    if (this.senderLoad === undefined) {
       return input;
     }
 
-    this.diagnostics.report(
-      "config.invalid",
-      "You cannot remove the endpoint after the delivery stack loads. The endpoint in force stays.",
-    );
+    let accepted = input;
+    const addsOrRemoves =
+      "transport" in input &&
+      (input.transport === undefined) !== (this.config.transport === undefined);
 
-    // An undefined endpoint keeps the endpoint in force, and keeps it in ignoreUrls.
-    return { ...input, endpoint: undefined };
+    // The stack selects HTTP or the custom transport one time. It cannot change to the other.
+    if (addsOrRemoves) {
+      this.diagnostics.report(
+        "config.invalid",
+        "You cannot add or remove transport after the delivery stack loads. The transport in force stays.",
+      );
+      accepted = { ...accepted };
+      delete accepted.transport;
+    }
+
+    const removesEndpoint = accepted.endpoint === null || accepted.endpoint === "";
+
+    if (removesEndpoint && this.config.transport === undefined) {
+      this.diagnostics.report(
+        "config.invalid",
+        "You cannot remove the endpoint after the delivery stack loads. The endpoint in force stays.",
+      );
+      // An undefined endpoint keeps the endpoint in force, and keeps it in ignoreUrls.
+      accepted = { ...accepted, endpoint: undefined };
+    }
+
+    return accepted;
   }
 
   /**
@@ -373,6 +408,14 @@ export class ObservabilityRuntime {
     // Start the capture imports now. They download in parallel with the bus and the sender.
     const captures = this.installCaptures();
 
+    // Set before the first await. A flush() directly after configure() then waits for it.
+    this.started = this.boot();
+    await this.started;
+    await captures;
+  }
+
+  /** Resolves the bus role, loads the delivery stack and releases the boot records. It never rejects. */
+  private async boot(): Promise<void> {
     try {
       const journeyReady = this.journey.bootstrap();
 
@@ -395,8 +438,6 @@ export class ObservabilityRuntime {
       this.ready = true;
       this.releaseBootBuffer();
     }
-
-    await captures;
   }
 
   /**
@@ -470,6 +511,7 @@ export class ObservabilityRuntime {
           onTabConflict: () => {
             this.regenerateTabId();
           },
+          remote: this.remote,
         },
       );
 
@@ -501,7 +543,9 @@ export class ObservabilityRuntime {
    * @returns Promise resolving when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
-    if (!this.config.endpoint || this.role() !== "sender") {
+    const hasDestination = Boolean(this.config.endpoint) || this.config.transport !== undefined;
+
+    if (!hasDestination || this.role() !== "sender") {
       return Promise.resolve();
     }
 
@@ -529,6 +573,7 @@ export class ObservabilityRuntime {
             config: this.config,
             diagnostics: this.diagnostics,
             onGap: this.reportGap,
+            remote: this.remote,
           });
 
       // Guard against a shutdown during the load. The stack must not outlive the runtime.
@@ -574,6 +619,17 @@ export class ObservabilityRuntime {
     }
     if (settings.webVitals) {
       names.push("webVitals");
+    }
+    if (settings.longFrames) {
+      names.push("longFrames");
+    }
+    // An empty list wraps nothing. Do not load the chunk for it.
+    const consoleOn = Array.isArray(settings.console)
+      ? settings.console.length > 0
+      : settings.console;
+
+    if (consoleOn) {
+      names.push("console");
     }
 
     const classes = await Promise.all(names.map((name) => this.loadCapture(name)));
@@ -798,7 +854,7 @@ export class ObservabilityRuntime {
         this.diagnostics.count("record.dropped_malformed");
         continue;
       }
-      if (!shouldSample(record, this.config)) {
+      if (!shouldSample(record, this.config, this.remote.sampling?.current() ?? null)) {
         this.diagnostics.count("record.dropped_by_sampling");
         continue;
       }
@@ -871,6 +927,12 @@ export class ObservabilityRuntime {
    * @returns Promise resolving when queued records are transmitted or handed off.
    */
   async flush(): Promise<void> {
+    // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.
+    // After startup, do not wait. The handover of the forward buffer then stays synchronous.
+    if (!this.ready) {
+      await this.started;
+    }
+
     if (this.role() === "forwarder") {
       const records = this.forwardBuffer;
       this.forwardBuffer = [];

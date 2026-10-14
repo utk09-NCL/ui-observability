@@ -26,11 +26,16 @@
     <button type="button" id="reject">unhandled rejection</button>
     <button type="button" id="fetch-500">fetch a 404</button>
     <button type="button" id="circular">log a circular object</button>
+    <button type="button" id="long-frame">block the page for 300 ms</button>
+    <button type="button" id="console-error">console.error from app code</button>
 
     <h2>Durability</h2>
     <button type="button" id="burst">250 logs in a burst</button>
     <button type="button" id="offline">toggle forced 503 on the server</button>
     <button type="button" id="queue">what is waiting</button>
+    <button type="button" id="remote-sampling">
+      toggle server sampling rules (10% of playground)
+    </button>
     <p>
       A record waits up to two seconds before it is batched. Click
       <code>info</code> and close the tab inside that window to send it as an exit beacon instead;

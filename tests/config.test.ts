@@ -111,6 +111,69 @@ describe("resolveConfig", () => {
     expect(events).toEqual([]);
   });
 
+  it("does not report a missing endpoint when a custom transport sends", () => {
+    const { events, diagnostics } = collect();
+
+    resolveConfig(
+      { serviceName: "checkout", transport: () => Promise.resolve({ status: 200 }) },
+      diagnostics,
+    );
+
+    expect(events).toEqual([]);
+  });
+
+  it("accepts transport and transportOnExit as known keys", () => {
+    const { events, diagnostics } = collect();
+
+    resolveConfig(
+      {
+        ...valid(),
+        transport: () => Promise.resolve({ status: 200 }),
+        transportOnExit: () => true,
+      },
+      diagnostics,
+    );
+
+    expect(events).toEqual([]);
+  });
+
+  it("reports a transport or transportOnExit that is not a function, and ignores it", () => {
+    const { events, diagnostics } = collect();
+    const notAFunction = "https://x" as unknown as ObservabilityConfig["transport"];
+    const notAHook = true as unknown as ObservabilityConfig["transportOnExit"];
+
+    const resolved = resolveConfig(
+      { ...valid(), transport: notAFunction, transportOnExit: notAHook },
+      diagnostics,
+    );
+
+    expect(resolved.transport).toBeUndefined();
+    expect(resolved.transportOnExit).toBeUndefined();
+    expect(messages(events)).toEqual([
+      expect.stringContaining("transport must be a function"),
+      expect.stringContaining("transportOnExit must be a function"),
+    ]);
+  });
+
+  it("keeps the transport and the exit hook in force when a new value is not a function", () => {
+    const { events, diagnostics } = collect();
+    const transport = () => Promise.resolve({ status: 200 });
+    const transportOnExit = () => true;
+    const live = resolveConfig({ ...valid(), transport, transportOnExit }, diagnostics);
+    const nothing = null as unknown as ObservabilityConfig["transport"];
+    const notAHook = false as unknown as ObservabilityConfig["transportOnExit"];
+
+    const resolved = resolveConfig(
+      { transport: nothing, transportOnExit: notAHook },
+      diagnostics,
+      live,
+    );
+
+    expect(resolved.transport).toBe(transport);
+    expect(resolved.transportOnExit).toBe(transportOnExit);
+    expect(messages(events)).toHaveLength(2);
+  });
+
   it("reports a null console value and keeps the console settings in force", () => {
     const { events, diagnostics } = collect();
     const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
@@ -230,6 +293,26 @@ describe("resolveConfig", () => {
 
     expect(resolved.credentials).toBe("include");
     expect(events).toEqual([]);
+  });
+
+  describe("sampling.remoteMaxRate", () => {
+    it("defaults to 1 with remote sampling off", () => {
+      const resolved = resolveConfig(valid(), collect().diagnostics);
+
+      expect(resolved.sampling.remote).toBe(false);
+      expect(resolved.sampling.remoteMaxRate).toBe(1);
+    });
+
+    it.each([["high"], [-0.1], [1.5], [Number.NaN]])("falls back to 1 for %s", (value) => {
+      const { events, diagnostics } = collect();
+      const input: Partial<ObservabilityConfig> = { ...valid() };
+      input.sampling = { remoteMaxRate: value } as unknown as Partial<SamplingOptions>;
+
+      const resolved = resolveConfig(input, diagnostics);
+
+      expect(resolved.sampling.remoteMaxRate).toBe(1);
+      expect(messages(events)[0]).toContain("sampling.remoteMaxRate must be 0..1.");
+    });
   });
 
   describe("sampling.defaultRate", () => {

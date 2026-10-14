@@ -60,6 +60,36 @@ const headersOf = (fetchMock: any, index = 0): Headers =>
   initOf(fetchMock, index).headers as Headers;
 
 describe("HttpTransport", () => {
+  it("gives the sampling header of a 2xx answer to the sampling callback", async () => {
+    answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
+    const onSampling = vi.fn();
+    const t = new HttpTransport(config({ sampling: { remote: true } }), diagnostics(), onSampling);
+
+    await t.send(batch());
+
+    expect(onSampling).toHaveBeenCalledWith('{"v":1,"ttlMs":1000}');
+  });
+
+  it("ignores the sampling header with remote sampling off, and a 2xx with no header", async () => {
+    answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
+    const onSampling = vi.fn();
+    const off = new HttpTransport(config(), diagnostics(), onSampling);
+    await off.send(batch());
+
+    answer(204);
+    const on = new HttpTransport(config({ sampling: { remote: true } }), diagnostics(), onSampling);
+    await on.send(batch());
+
+    expect(onSampling).not.toHaveBeenCalled();
+  });
+
+  it("accepts a header with no sampling callback", async () => {
+    answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
+    const t = new HttpTransport(config({ sampling: { remote: true } }), diagnostics());
+
+    await expect(t.send(batch())).resolves.toBeUndefined();
+  });
+
   it("classifies a 400 as permanent so it is never retried forever", async () => {
     answer(400);
     const t = new HttpTransport(config(), diagnostics());

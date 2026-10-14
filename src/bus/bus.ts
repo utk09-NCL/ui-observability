@@ -6,9 +6,12 @@ import {
   BUS_CHANNEL_NAME,
   BUS_HANDSHAKE_TIMEOUT_MS,
   BUS_MAX_HANDSHAKE_ATTEMPTS,
+  REMOTE_SAMPLING_POLL_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { Journey } from "../core/journey";
+import { applyRemote, parseRemoteRules } from "../core/remote-rules";
+import type { RemoteSlot } from "../core/remote-sampling";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
 import type { ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
@@ -51,6 +54,8 @@ export interface BusHandlers {
   onJourneyRequest: () => Journey | null;
   /** Runs when two windows use the same tab identifier. */
   onTabConflict: () => void;
+  /** Slot of the runtime for the remote sampling rules. The bus reads it and fills it. */
+  remote: RemoteSlot;
 }
 
 /** Link types that a sender context may claim ownership over during handshakes. */
@@ -76,6 +81,10 @@ export class Bus {
   private isOpenFinProvider = false;
   /** Indicates whether role resolution has completed. */
   private resolved = false;
+  /** Timer that asks the upstream owner for the remote sampling rules. */
+  private rulesPoll: ReturnType<typeof setInterval> | undefined;
+  /** True after destroy(). A handshake that ends later must not start a timer. */
+  private destroyed = false;
   /** Active handshake state awaiting welcome response. */
   private awaitingWelcome: {
     link: LinkKind;
@@ -248,6 +257,11 @@ export class Bus {
       }
       return;
     }
+    // A direct link has no channel from the parent to the child. The parent answers here.
+    if (message.t === "sampling?") {
+      reply(this.rulesAnswer(message.from), source);
+      return;
+    }
     this.receive(message, source);
   }
 
@@ -269,6 +283,9 @@ export class Bus {
 
   /** Closes all open links and clears internal state. */
   destroy(): void {
+    this.destroyed = true;
+    clearInterval(this.rulesPoll);
+    this.rulesPoll = undefined;
     for (const link of this.allLinks()) {
       link.close();
     }
@@ -352,6 +369,22 @@ export class Bus {
         }
         break;
       }
+
+      case "sampling?":
+        // A forwarder answers only its own children. A sibling on its upstream link asks too.
+        // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
+        if (
+          this.role === "forwarder" ? source.link !== this.upstream?.kind : this.canOwn(source.link)
+        ) {
+          this.postOver(source.link, this.rulesAnswer(message.from));
+        }
+        break;
+
+      case "sampling":
+        if (this.acceptsRules(message.to, source)) {
+          this.applyRules(message.rules);
+        }
+        break;
 
       case "tab":
         // A collision applies only to two different contexts on the broadcast channel.
@@ -507,5 +540,88 @@ export class Bus {
       tabId: this.tabId,
     });
     this.post({ t: "journey?", from: this.contextId });
+    this.pollRules();
+  }
+
+  /**
+   * Builds the answer to a sampling question. Null rules end the copy of the forwarder.
+   * @param to Context id of the forwarder that asked.
+   * @returns The answer.
+   */
+  private rulesAnswer(to: string): BusMessage {
+    const rules = this.handlers.remote.sampling?.wire() ?? null;
+
+    return { t: "sampling", from: this.contextId, to, rules };
+  }
+
+  /**
+   * Tests whether this context accepts sampling rules from a source.
+   * @param to Context id that the answer names.
+   * @param source Link and origin of the answer.
+   * @returns True only for an answer from the upstream owner to this context.
+   */
+  private acceptsRules(to: string, source: MessageSource): boolean {
+    // Accept rules only from the upstream owner. A sibling on a shared link is not trusted.
+    if (this.role !== "forwarder" || to !== this.contextId || source.link !== this.upstream?.kind) {
+      return false;
+    }
+
+    // A page on another origin can embed this app. It must not lower minLevel and read the records.
+    const { origin } = source;
+
+    if (
+      source.link === "parent" &&
+      origin !== location.origin &&
+      !this.config.bus.trustedOrigins.includes(origin)
+    ) {
+      this.diagnostics.report(
+        "bus.untrusted_origin",
+        `The bus ignored sampling rules from ${origin}. If you own this origin, add it to bus.trustedOrigins.`,
+        { origin, type: "sampling" },
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Applies the rules of an answer. It ignores rules that are not valid.
+   * @param raw Rules of the answer, or null when the upstream has none.
+   */
+  private applyRules(raw: unknown): void {
+    if (raw === null) {
+      applyRemote(this.handlers.remote, this.config, null);
+      return;
+    }
+
+    const update = parseRemoteRules(raw, this.diagnostics);
+
+    if (update) {
+      applyRemote(this.handlers.remote, this.config, update);
+    }
+  }
+
+  /**
+   * Asks the upstream owner for the remote sampling rules now, then at each poll interval.
+   * A direct link cannot push the rules to a child. A poll works on each link kind.
+   */
+  private pollRules(): void {
+    const { upstream } = this;
+
+    if (this.destroyed || this.role !== "forwarder" || !upstream) {
+      return;
+    }
+
+    // Read the config at each poll. A later configure() can turn remote sampling on or off.
+    const ask = (): void => {
+      if (this.config.sampling.remote) {
+        upstream.post({ t: "sampling?", from: this.contextId });
+      }
+    };
+
+    ask();
+    this.rulesPoll = setInterval(ask, REMOTE_SAMPLING_POLL_MS);
+    unrefTimer(this.rulesPoll);
   }
 }

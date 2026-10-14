@@ -7,7 +7,6 @@ import type { LogRecord } from "../src/models/log-record";
 import type { StorageAdapter } from "../src/models/storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { TransportError } from "../src/transport/errors";
-import type { HttpTransport } from "../src/transport/http-transport";
 import type { RetryEngine } from "../src/transport/retry-engine";
 
 const LOG_FLUSH_MS = 1000;
@@ -64,7 +63,7 @@ const setup = (
   });
 
   const pipeline = new LogPipeline(
-    { send, throttledForMs } as unknown as HttpTransport,
+    { send, throttledForMs },
     storage,
     { nudge, storeFailed } as unknown as RetryEngine,
     diagnostics,

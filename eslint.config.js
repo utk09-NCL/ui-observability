@@ -115,8 +115,8 @@ export default defineConfig(
   },
 
   {
-    // Allows console calls in the dedicated developer console sink.
-    files: ["src/utils/console.ts"],
+    // Allows console calls in the console sink, the console capture and its test.
+    files: ["src/utils/console.ts", "src/capture/console.ts", "tests/console-capture.test.ts"],
     rules: {
       "no-console": "off",
     },

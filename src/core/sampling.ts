@@ -12,12 +12,14 @@ import {
   ERROR_STORM_WINDOW_MS,
   FNV_OFFSET_BASIS,
   FNV_PRIME,
+  LEVEL_ORDER,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
   UINT32_MAX,
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
-import type { LogRecord } from "../models/log-record";
+import type { LogLevel, LogRecord } from "../models/log-record";
+import type { RemoteRules } from "./remote-sampling";
 
 /**
  * Computes the 32-bit FNV-1a hash of a string. Do not use it as a security hash.
@@ -47,28 +49,60 @@ function readAttr(record: LogRecord, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+/** Rate of the longest prefix that matches a namespace. */
+interface PrefixMatch {
+  /** Sampling rate of the prefix. */
+  rate: number;
+  /** Length of the prefix. */
+  length: number;
+}
+
 /**
- * Finds the sampling rate for a namespace. The longest matching prefix wins.
+ * Finds the longest prefix in a rate map that matches a namespace.
  * For example, trading.ticks overrides trading.
  * @param namespace Target application namespace.
- * @param config Active configuration instance.
- * @returns Matched namespace sampling rate or default rate.
+ * @param rates Rate for each namespace prefix.
+ * @returns The match, or undefined if no prefix matches.
  */
-function rateFor(namespace: string, config: ResolvedConfig): number {
-  const { rates, defaultRate } = config.sampling;
-  let best: number | undefined;
-  let bestLength = -1;
+function longestPrefix(namespace: string, rates: Record<string, number>): PrefixMatch | undefined {
+  let best: PrefixMatch | undefined;
 
   for (const [prefix, rate] of Object.entries(rates)) {
     const matches = namespace === prefix || namespace.startsWith(`${prefix}.`);
 
-    if (matches && prefix.length > bestLength) {
-      best = rate;
-      bestLength = prefix.length;
+    if (matches && prefix.length > (best?.length ?? -1)) {
+      best = { rate, length: prefix.length };
     }
   }
 
-  return best ?? defaultRate;
+  return best;
+}
+
+/**
+ * Finds the sampling rate for a namespace. The longest matching prefix wins.
+ * A remote prefix wins over a config prefix of the same length.
+ * @param namespace Target application namespace.
+ * @param config Active configuration instance.
+ * @param remote Remote rules in force, or null.
+ * @returns Matched namespace sampling rate or default rate.
+ */
+function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules | null): number {
+  const { rates, defaultRate, remoteMaxRate } = config.sampling;
+  const local = longestPrefix(namespace, rates);
+  const fromRemote = remote ? longestPrefix(namespace, remote.rates) : undefined;
+
+  // Cap a remote rate when sampling reads it. A configure() that lowers the cap then applies at once.
+  if (fromRemote && fromRemote.length >= (local?.length ?? -1)) {
+    return Math.min(fromRemote.rate, remoteMaxRate);
+  }
+
+  if (local) {
+    return local.rate;
+  }
+
+  return remote?.defaultRate === undefined
+    ? defaultRate
+    : Math.min(remote.defaultRate, remoteMaxRate);
 }
 
 /** Fields that sampling reads. The caller knows all of them before it builds a record. */
@@ -90,9 +124,14 @@ export interface SampleInput {
  * This lets the caller drop an entry before the attribute walk runs.
  * @param input Fields the sampling decision reads.
  * @param config Active configuration instance.
+ * @param remote Remote rules in force, or null.
  * @returns True if the runtime keeps and sends the entry.
  */
-export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): boolean {
+export function shouldSampleInput(
+  input: SampleInput,
+  config: ResolvedConfig,
+  remote: RemoteRules | null,
+): boolean {
   // Errors and fatal records bypass sampling filters.
   if (input.level === "ERROR" || input.level === "FATAL") {
     return true;
@@ -102,7 +141,13 @@ export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): b
     return true;
   }
 
-  const rate = rateFor(input.namespace, config);
+  let rate = rateFor(input.namespace, config, remote);
+
+  // A remote minLevel adds the records below minLevel. Cap them too, or they ship at the config rate.
+  if (remote && LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[config.minLevel]) {
+    rate = Math.min(rate, config.sampling.remoteMaxRate);
+  }
+
   if (rate >= SAMPLING_RATE_MAX) {
     return true;
   }
@@ -122,9 +167,14 @@ export function shouldSampleInput(input: SampleInput, config: ResolvedConfig): b
  * that a child context sends over the bus.
  * @param record Record to evaluate.
  * @param config Active configuration instance.
+ * @param remote Remote rules in force, or null.
  * @returns True if the runtime keeps and sends the record.
  */
-export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean {
+export function shouldSample(
+  record: LogRecord,
+  config: ResolvedConfig,
+  remote: RemoteRules | null = null,
+): boolean {
   return shouldSampleInput(
     {
       level: record.severityText,
@@ -134,6 +184,7 @@ export function shouldSample(record: LogRecord, config: ResolvedConfig): boolean
       traceId: record.traceId,
     },
     config,
+    remote,
   );
 }
 

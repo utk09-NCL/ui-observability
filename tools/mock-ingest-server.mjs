@@ -24,6 +24,8 @@ const ALLOWED_ORIGINS = new Set([
 
 let forcedStatus = 0;
 let forcedRetryAfter = 0;
+// Sampling rules that each accepted batch gets in X-UiObs-Sampling. Empty sends no header.
+let samplingRules = "";
 const seenBatchIds = new Map(); // idempotency, as the real server must also do
 
 function cors(req, res) {
@@ -40,7 +42,8 @@ function cors(req, res) {
   // Without this the browser hides Retry-After from the client on every
   // cross-origin response, so a 429 or 503 arrives with no delay attached and
   // the client backs off on its own schedule instead of the server's.
-  res.setHeader("Access-Control-Expose-Headers", "retry-after");
+  // The client reads the sampling rules only if this list has the header.
+  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
@@ -68,6 +71,13 @@ const server = createServer(async (req, res) => {
     forcedStatus = Number(url.searchParams.get("status") || 0);
     forcedRetryAfter = Number(url.searchParams.get("retryAfter") || 0);
     console.log(`[control] forcedStatus=${forcedStatus} retryAfter=${forcedRetryAfter}`);
+    res.writeHead(204).end();
+    return;
+  }
+
+  if (url.pathname === "/__sampling") {
+    samplingRules = url.searchParams.get("rules") || "";
+    console.log(`[control] sampling=${samplingRules || "(none)"}`);
     res.writeHead(204).end();
     return;
   }
@@ -108,6 +118,11 @@ const server = createServer(async (req, res) => {
       res.writeHead(400).end();
       return;
     }
+  }
+
+  // Send the rules only with an accepted batch, as the ingest contract says.
+  if (samplingRules) {
+    res.setHeader("X-UiObs-Sampling", samplingRules);
   }
 
   if (seenBatchIds.has(batchId)) {

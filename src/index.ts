@@ -11,8 +11,16 @@ import type { ObservabilityConfig } from "./models/config";
 import type { MetricType } from "./models/log-record";
 
 export { OneLogger };
+export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
 export type { Journey, ObservabilityConfig, OneLoggerOptions };
-export type { ConsoleOptions, ConsoleStyles } from "./models/config";
+export type {
+  ConsoleOptions,
+  ConsoleStyles,
+  ExitTransport,
+  Transport,
+  TransportRequest,
+  TransportResponse,
+} from "./models/config";
 export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { LogLevel, LogRecord, LogType, MetricType } from "./models/log-record";

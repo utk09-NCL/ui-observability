@@ -158,6 +158,57 @@ describe("shouldSample on attributes it cannot read", () => {
   });
 });
 
+describe("shouldSample with remote rules", () => {
+  it("applies remote rates over the config rates, and keeps the other config rates", () => {
+    const rates = config({ defaultRate: 0, rates: { app: 0, other: 1 } });
+    const remote = { rates: { app: 1 } };
+
+    expect(shouldSample(record(), rates, remote)).toBe(true);
+    expect(shouldSample(record({ [ATTR_APP_NAMESPACE]: "other" }), rates, remote)).toBe(true);
+    expect(shouldSample(record({ [ATTR_APP_NAMESPACE]: "third" }), rates, remote)).toBe(false);
+  });
+
+  it("caps each remote rate at remoteMaxRate when it reads the rules", () => {
+    // A configure() that lowers the cap then applies to the rules in force.
+    const rates = config({ defaultRate: 0, remoteMaxRate: 0 });
+
+    expect(shouldSample(record(), rates, { rates: { app: 1 } })).toBe(false);
+    expect(shouldSample(record(), rates, { rates: {}, defaultRate: 1 })).toBe(false);
+  });
+
+  it("caps a record below minLevel at remoteMaxRate, also with a config rate of 1", () => {
+    // A remote minLevel adds records. Without the cap, they ship at the config rate.
+    const rates = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        minLevel: "INFO",
+        sampling: { remoteMaxRate: 0 },
+      },
+      new Diagnostics(vi.fn(), 0),
+    );
+    const debug = record({}, { severityText: "DEBUG" });
+
+    expect(shouldSample(debug, rates, { rates: {}, minLevel: "DEBUG" })).toBe(false);
+    expect(shouldSample(record(), rates, { rates: {}, minLevel: "DEBUG" })).toBe(true);
+  });
+
+  it("lets a longer config prefix win over a shorter remote prefix", () => {
+    const rates = config({ defaultRate: 0, rates: { "app.grid": 0 } });
+
+    expect(
+      shouldSample(record({ [ATTR_APP_NAMESPACE]: "app.grid" }), rates, { rates: { app: 1 } }),
+    ).toBe(false);
+  });
+
+  it("uses the remote defaultRate only when the rules have it", () => {
+    const rates = config({ defaultRate: 0 });
+
+    expect(shouldSample(record(), rates, { rates: {}, defaultRate: 1 })).toBe(true);
+    expect(shouldSample(record(), rates, { rates: {} })).toBe(false);
+  });
+});
+
 describe("ErrorCeiling", () => {
   const err = (): LogRecord => record({}, { severityText: "ERROR" });
 

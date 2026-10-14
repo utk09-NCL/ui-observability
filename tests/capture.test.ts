@@ -10,6 +10,7 @@ import { ERROR_DEDUPE_MS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
+import { runAsLibraryRequest } from "../src/utils/library-request";
 import { TraceEngine } from "../src/utils/tracing";
 
 /** A logger whose every method is a spy, so a test can read what was recorded. */
@@ -57,7 +58,7 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
       breadcrumbs: new BreadcrumbBuffer(10),
       tracing: new TraceEngine(diagnostics),
       // Fresh per context, as a new runtime gets a fresh set.
-      once: { webVitals: false, navigationTiming: false },
+      once: { webVitals: false, navigationTiming: false, longFrames: false },
     },
   };
 }
@@ -359,6 +360,18 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
+  it("never logs a fetch that a custom transport starts", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await runAsLibraryRequest(() => fetch("https://telemetry.app.internal/logs"));
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    capture.uninstall();
+  });
+
   it("records the request URL, not the page it was made from", async () => {
     const { ctx: c, logger } = ctx({ fetch: true });
     globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
@@ -617,6 +630,20 @@ describe("NetworkCapture: XMLHttpRequest", () => {
       "GET https://api.internal/orders",
       expect.objectContaining({ "http.request.method": "GET" }),
     );
+    capture.uninstall();
+  });
+
+  it("never logs an XHR that a custom transport starts", () => {
+    const { ctx: c, logger } = ctx({ xhr: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    runAsLibraryRequest(() => {
+      sendXhr("https://telemetry.app.internal/logs", 500);
+    });
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.debug).not.toHaveBeenCalled();
     capture.uninstall();
   });
 

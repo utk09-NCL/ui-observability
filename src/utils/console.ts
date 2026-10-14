@@ -6,6 +6,7 @@ import { LEVEL_ORDER, RECORD_LIMITS } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConsole } from "../models/config";
 import type { LogLevel } from "../models/log-record";
+import { isLibraryConsole, runAsLibraryConsole } from "./library-console";
 import { sanitize } from "./sanitize";
 
 /** Maps log levels to corresponding console method names. */
@@ -69,6 +70,12 @@ export class ConsoleSink {
       return;
     }
 
+    // Guard against a loop. A host console wrapper can call the logger. The logger then prints again.
+    // The console capture also records inside this scope. Its line is already in devtools.
+    if (isLibraryConsole()) {
+      return;
+    }
+
     // Pass the namespace as a %s argument. Then a %o or %c in the namespace prints as text.
     // The last %c resets the style. The message then prints in the default style.
     const prefix = `%c[%s]%c[${level}]%c`;
@@ -92,15 +99,18 @@ export class ConsoleSink {
           details.push(sanitize(payload, RECORD_LIMITS, this.diagnostics));
         }
 
-        console[method](
-          prefix,
-          styles.namespace,
-          namespace,
-          styles[level],
-          "",
-          message,
-          ...details,
-        );
+        // The console capture skips a call in this scope. It must not record a mirrored line.
+        runAsLibraryConsole(() => {
+          console[method](
+            prefix,
+            styles.namespace,
+            namespace,
+            styles[level],
+            "",
+            message,
+            ...details,
+          );
+        });
       },
     );
   }

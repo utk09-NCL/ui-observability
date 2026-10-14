@@ -133,7 +133,102 @@ configure({
 - A later `configure({ console: "WARN" })` changes the level. The styles stay.
 - A later `configure({ console: { styles } })` changes the styles. The level stays.
 
+### Custom Transport
+
+Set `transport` to send batches through a channel of your app, for example an API client with token refresh, a WebSocket, Electron IPC or an OpenFin channel. With `transport`, `endpoint` is optional.
+
+```ts
+configure({
+  serviceName: "equities-blotter",
+  transport: async (request) => {
+    const response = await apiClient.post("/telemetry", request.body, {
+      headers: { "Content-Type": request.contentType, "X-UiObs-Batch-Id": request.batchId },
+    });
+    const retryAfterSeconds = Number(response.headers["retry-after"]);
+    return { status: response.status, retryAfterMs: retryAfterSeconds * 1000 };
+  },
+  // Optional. It runs while the page closes, so it must not wait for a promise.
+  transportOnExit: (request) => navigator.sendBeacon("/telemetry", request.body),
+  // Network capture must not log the requests of your transport.
+  capture: { ignoreUrls: ["/telemetry"] },
+});
+```
+
+- The library keeps batching, retry, storage, splitting and the exit flush.
+- The status code that you return has the meaning of the ingest contract. `2xx` accepts the batch. `413` splits it. `429` and `503` throttle. `408` and `5xx` retry. Each other code drops the batch.
+- A rejected promise counts as a network error. The library sends the batch again later. A call that does not settle in 15 seconds counts as a timeout.
+- The library does not compress `request.body`. Compress it in your transport if necessary.
+- `request.records` holds the built records after `redact`. Do not change them, because the retry engine can send them again.
+- Without `transportOnExit`, the last batch goes to the emergency queue when the page closes. The next page load sends it.
+- With `storage: "none"`, the next page load cannot keep that batch. Set `transportOnExit`, or the library loses the last batch.
+- The library ignores a `retryAfterMs` or a `maxBytes` that is not a finite number. It uses 0 for a negative value.
+- After the delivery stack loads, you cannot add or remove `transport`. You can replace it with another function.
+- Network capture skips a request that your transport starts before its first `await`. Put your telemetry URL in `capture.ignoreUrls` too. A request after an `await` is outside that scope.
+
+### Testing
+
+Use `createMemoryTransport()` to check what your code logs. It needs no network and no `fetch` mock.
+
+```ts
+import {
+  configure,
+  createMemoryTransport,
+  flush,
+  getLogger,
+  shutdown,
+} from "@utk09/ui-observability";
+
+const memory = createMemoryTransport();
+
+beforeEach(() => {
+  configure({
+    serviceName: "orders",
+    transport: memory.transport,
+    storage: "none",
+    bus: { mode: "off" },
+    identity: "memory",
+  });
+});
+
+afterEach(async () => {
+  memory.clear();
+  await shutdown();
+});
+
+it("logs the order submit", async () => {
+  getLogger("orders.ticket").logAction("ORDER_SUBMIT", { orderId: "ORD-1" });
+  await flush();
+
+  expect(memory.records()).toContainEqual(expect.objectContaining({ body: "ORDER_SUBMIT" }));
+});
+```
+
+- `records()` returns the records of each accepted batch. `batches()` returns each request, accepted or refused.
+- `respondWith(status, retryAfterMs?)` sets the answer for each later batch. Use it to test a `413`, `429` or `500` answer. The default answer is `200`.
+- `flush()` waits for startup. A record that you log directly after `configure()` is in the flushed batch.
+- After `shutdown()`, each call does nothing until the next `configure()`.
+- Set `storage: "none"` in tests. Without it, `shutdown()` stores the unsent records, and the next test can receive them.
+
 ---
+
+### Remote Sampling
+
+With `sampling: { remote: true }`, the ingest server can change the sampling during an incident. You do not deploy the app again.
+
+```http
+X-UiObs-Sampling: {"v":1,"ttlMs":600000,"defaultRate":0.1,"rates":{"blotter.grid":1},"minLevel":"DEBUG"}
+```
+
+- The library reads the header only on a `2xx` answer to a batch that it sent. A custom transport returns the rules in `TransportResponse.sampling`, as text or as an object.
+- `v` must be `1`. `ttlMs` is mandatory, from more than 0 to 3,600,000 (1 hour). After the TTL, the rules from `configure()` apply again.
+- `rates` apply over the `configure()` rates. The other `configure()` rates stay. `defaultRate` applies only if the header has it.
+- `minLevel` can only lower the level that the library sends. It does not change the console level.
+- `sampling.remoteMaxRate` caps each remote rate. It also caps the records that a remote `minLevel` adds. Set it below 1 to limit the traffic that a compromised server can cause.
+- The library rejects all the rules if one field is not valid, for example a rate outside 0 to 1, more than 100 `rates` or a header longer than 4096 characters. It reports `config.invalid`.
+- The library keeps the rules in memory only. A reload uses the `configure()` rules until the next accepted batch.
+- A child frame, a worker or an OpenFin view asks its owner for the rules at start and each 30 seconds. Set `sampling.remote: true` in each context.
+- A frame accepts rules from a parent only if the parent origin is the page origin or is in `bus.trustedOrigins`. A page that embeds your app cannot lower `minLevel`.
+- Each OpenFin view of one app can read the bus messages of the others. Load only trusted content into a view that has the `fin` API.
 
 ## API Reference
 
@@ -207,11 +302,15 @@ No key is required. Set `endpoint` to send records.
 | `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                                                                        |
 | `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                                                                     |
 | `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                                                             |
+| `sampling.remote`            | `false`      | Reads sampling rules from the `X-UiObs-Sampling` header of each accepted batch (see Remote Sampling).                                                                                          |
+| `sampling.remoteMaxRate`     | `1`          | Highest rate that a remote rule can set. It applies to the remote `defaultRate` and to each remote namespace rate.                                                                             |
 | `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. With `off`, this context sends its own records and opens no link. A same-origin child frame can still forward to it.                                   |
 | `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                                                                                                                                       |
 | `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                                                                |
 | `capture`                    | See below    | Auto-capture settings.                                                                                                                                                                         |
 | `console`                    | `false`      | Prints records to devtools. `true` prints from `DEBUG` up. A level name prints from that level up. An object sets `level` and `styles` (see Console Output). It does not depend on `minLevel`. |
+| `transport(request)`         | `undefined`  | Sends batches through a channel of your app in place of HTTP (see Custom Transport).                                                                                                           |
+| `transportOnExit(request)`   | `undefined`  | Sends the last batch while the page closes. It must return a boolean and must not wait.                                                                                                        |
 | `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                                                           |
 | `redact(record)`             | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record.                                                                                                      |
 | `onDiagnostic(event)`        | `undefined`  | Receives the faults of the library itself.                                                                                                                                                     |
@@ -228,11 +327,33 @@ capture: {
   interactions: false,   // Element click breadcrumbs
   navigation: false,     // Single-page navigation URL changes
   webVitals: false,      // Core Web Vitals (LCP, CLS, INP, FCP, TTFB)
+  longFrames: false,     // Frames that freeze the page, as ui.long_frame.duration
+  longFrameThresholdMs: 100, // Minimum frame duration that longFrames records
+  console: false,        // App console calls: true, or a list such as ["error", "warn", "info"]
   fullUrls: false,       // Keep query strings and fragments on recorded URLs
   ignoreUrls: [],        // URL patterns excluded from network capture
   propagateTraceHeaderTo: [], // Target origins allowed to receive traceparent
 }
 ```
+
+`longFrames` records each frame at or above `longFrameThresholdMs` as the histogram `ui.long_frame.duration`. Each long frame also adds a breadcrumb. The next error record then shows the freeze before it.
+
+- The library observes `long-animation-frame`. A browser without it gives `longtask` entries, with no script attributes.
+- The attributes are `frame.type`, `frame.blocking_ms`, `frame.script.invoker` and `frame.script.source`. The source URL follows `fullUrls`.
+- The library records at most 20 long frames in each 10-second window.
+
+`capture.console` records the console calls of your app and of third-party code. It is different from the top-level `console` option, which prints records.
+
+> **Set `redact` before you turn on `capture.console`.** A call such as `console.error("Request failed", error.response)` sends the request headers, for example `Authorization`. Third-party code on the page writes such lines too.
+
+- `true` wraps `console.error` and `console.warn`. A list selects from `error`, `warn`, `info` and `log`.
+- `error` gives an ERROR record, and `warn` gives a WARN record. `info` and `log` give a breadcrumb only.
+- The first string is the message. The first `Error` of an `error` call gives the `error.*` fields. The other arguments go into `console.args`.
+- The wrapper calls the original method first. Devtools shows the same text. The source link of the line points to the library wrapper.
+- The library does not record the lines that it prints itself.
+- The library records at most 20 `error` and `warn` calls in each 10-second window. The error capture has a separate limit. Console noise cannot hide an uncaught error.
+- To record an argument, the library reads each property, also a getter. A getter with a side effect then runs during the console call.
+- On `shutdown()`, the library restores each method. If another script wrapped the method later, the library leaves it and reports `capture.install_failed`.
 
 `fullUrls` is off by default. The library then cuts each recorded URL at the first `?` or `#`. This applies to the page URL, the request target and the URL of a failed resource. `ignoreUrls` and `propagateTraceHeaderTo` match the full URL.
 
@@ -287,6 +408,7 @@ The ingest server must meet these requirements:
 3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours.
 4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`.
 5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the library split the batch. The library drops a batch that gets any other `4xx`.
+6. **Remote sampling (optional):** To send sampling rules, add `X-UiObs-Sampling` to a `2xx` answer. Expose the header with `Access-Control-Expose-Headers: x-uiobs-sampling`.
 
 ---
 

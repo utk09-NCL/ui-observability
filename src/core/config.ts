@@ -182,12 +182,33 @@ export function resolveConfig(
     capture: { ...base.capture, ...input.capture },
   };
 
-  // null selects console-only mode. That value is valid. Report only an empty string.
-  if (merged.endpoint === "") {
+  // Guard against a value that cannot send. Keep the function in force.
+  // Without a transport, the pipeline drops each batch.
+  if (merged.transport !== undefined && typeof merged.transport !== "function") {
     diagnostics.report(
       "config.invalid",
-      "endpoint is missing. The library drops each record. Set endpoint: null for console-only mode.",
+      "transport must be a function. The library ignores the value.",
     );
+    merged.transport = base.transport;
+  }
+
+  if (merged.transportOnExit !== undefined && typeof merged.transportOnExit !== "function") {
+    diagnostics.report(
+      "config.invalid",
+      "transportOnExit must be a function. The library ignores the value.",
+    );
+    merged.transportOnExit = base.transportOnExit;
+  }
+
+  // null selects console-only mode. That value is valid. Report only an empty string.
+  // A custom transport needs no endpoint.
+  if (merged.endpoint === "") {
+    if (merged.transport === undefined) {
+      diagnostics.report(
+        "config.invalid",
+        "endpoint is missing. The library drops each record. Set endpoint: null for console-only mode.",
+      );
+    }
   } else if (merged.endpoint !== null) {
     try {
       new URL(merged.endpoint);
@@ -216,6 +237,19 @@ export function resolveConfig(
       `sampling.defaultRate must be 0..1. The value is ${String(rate)}. The library uses ${String(SAMPLING_RATE_FALLBACK)}.`,
     );
     merged.sampling.defaultRate = SAMPLING_RATE_FALLBACK;
+  }
+
+  const maxRate: unknown = merged.sampling.remoteMaxRate;
+  // The negated range test also rejects NaN.
+  if (
+    typeof maxRate !== "number" ||
+    !(maxRate >= SAMPLING_RATE_MIN && maxRate <= SAMPLING_RATE_MAX)
+  ) {
+    diagnostics.report(
+      "config.invalid",
+      `sampling.remoteMaxRate must be 0..1. The value is ${String(maxRate)}. The library uses ${String(SAMPLING_RATE_FALLBACK)}.`,
+    );
+    merged.sampling.remoteMaxRate = SAMPLING_RATE_FALLBACK;
   }
 
   const rates: [string, unknown][] = Object.entries(merged.sampling.rates);

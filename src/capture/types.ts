@@ -70,6 +70,8 @@ export interface CaptureOnce {
   webVitals: boolean;
   /** True after the library reports navigation timing. */
   navigationTiming: boolean;
+  /** True after the first long frame install. Only that install reads buffered frames. */
+  longFrames: boolean;
 }
 
 /** Shared runtime dependencies provided to auto-capture instances. */

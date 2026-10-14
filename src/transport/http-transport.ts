@@ -12,43 +12,29 @@ import {
   HEADER_CONTENT_ENCODING,
   HEADER_CONTENT_TYPE,
   HEADER_RETRY_AFTER,
-  HTTP_FORBIDDEN,
+  HEADER_SAMPLING,
   HTTP_PAYLOAD_TOO_LARGE,
-  HTTP_REQUEST_TIMEOUT,
-  HTTP_SERVER_ERROR_MIN,
-  HTTP_SERVICE_UNAVAILABLE,
-  HTTP_TOO_MANY_REQUESTS,
-  HTTP_UNAUTHORIZED,
   REQUEST_TIMEOUT_MS,
-  RETRY_BASE_DELAY_MS,
 } from "../constants";
-import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
-import type { ResolvedConfig } from "../models/config";
-import type { SerializedBatch } from "../models/serializer";
+import { runAsLibraryRequest } from "../utils/library-request";
 import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
-import { serializerFor } from "./serializers/select";
+import { StatusTransport } from "./status-transport";
+
+/** Advice for a 401 or a 403 answer on the HTTP path. */
+const CREDENTIAL_ADVICE =
+  "In a cross-origin iframe, the session cookie is a third-party cookie. The browser " +
+  "often blocks it. Forward the records to the platform document. As an alternative, " +
+  "issue the cookie with the Partitioned attribute.";
 
 /**
  * This class sends serialized log batches over HTTP. It resolves headers, applies gzip
  * compression and classifies errors.
  */
-export class HttpTransport {
-  /** This field holds the epoch time in milliseconds when the server throttle ends. */
-  private throttledUntil = 0;
-
-  /**
-   * @param config Active configuration instance.
-   * @param diagnostics Diagnostics reporter.
-   */
-  constructor(
-    private readonly config: ResolvedConfig,
-    private readonly diagnostics: Diagnostics,
-  ) {}
-
+export class HttpTransport extends StatusTransport {
   /**
    * Sends one log batch over HTTP.
    * @param batch Batch to send.
@@ -65,14 +51,6 @@ export class HttpTransport {
   }
 
   /**
-   * Returns the remaining throttle delay in milliseconds.
-   * @returns Milliseconds remaining in throttle window, or 0 if unthrottled.
-   */
-  throttledForMs(): number {
-    return Math.max(0, this.throttledUntil - Date.now());
-  }
-
-  /**
    * Serializes, encodes and sends a batch. It throws a classified TransportError
    * on failure.
    * @param batch Batch to deliver.
@@ -80,18 +58,9 @@ export class HttpTransport {
    * cannot change it.
    */
   private async post(batch: LogBatch, endpoint: string): Promise<void> {
-    const { config } = this;
+    const serialized = this.serialize(batch);
 
-    let serialized: SerializedBatch;
-    try {
-      serialized = serializerFor(config.serializer).serialize(batch.records);
-    } catch (error) {
-      this.diagnostics.report(
-        "transport.serialize_failed",
-        "The serializer threw an error. The library dropped the batch.",
-        { batchId: batch.id },
-        error,
-      );
+    if (!serialized) {
       return;
     }
 
@@ -108,11 +77,17 @@ export class HttpTransport {
 
     const response = await this.dispatch(endpoint, headers, body);
     if (response.ok) {
-      this.throttledUntil = 0;
+      // The server must list the header in Access-Control-Expose-Headers. Else the value is null.
+      this.accept(response.headers.get(HEADER_SAMPLING));
       return;
     }
 
-    throw await this.classify(response, batch.id);
+    const status = response.status;
+    const retryAfterMs = parseRetryAfter(response.headers.get(HEADER_RETRY_AFTER));
+    const maxBytes =
+      status === HTTP_PAYLOAD_TOO_LARGE ? await this.readMaxBytes(response) : undefined;
+
+    throw this.reject(status, batch.id, { retryAfterMs, maxBytes, advice: CREDENTIAL_ADVICE });
   }
 
   /**
@@ -158,14 +133,16 @@ export class HttpTransport {
     unrefTimer(timer);
 
     try {
-      return await fetch(endpoint, {
-        method: "POST",
-        headers,
-        body,
-        credentials: config.credentials,
-        signal: controller.signal,
-        cache: "no-store",
-      });
+      return await runAsLibraryRequest(() =>
+        fetch(endpoint, {
+          method: "POST",
+          headers,
+          body,
+          credentials: config.credentials,
+          signal: controller.signal,
+          cache: "no-store",
+        }),
+      );
     } catch {
       if (controller.signal.aborted) {
         const waited = String(REQUEST_TIMEOUT_MS);
@@ -179,84 +156,6 @@ export class HttpTransport {
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  /**
-   * Converts an HTTP error response into a classified TransportError.
-   * @param response Unsuccessful HTTP response.
-   * @param batchId Identifier of the rejected batch.
-   * @returns Classified TransportError instance.
-   */
-  private async classify(response: Response, batchId: string): Promise<TransportError> {
-    const status = response.status;
-    const retryAfterMs = parseRetryAfter(response.headers.get(HEADER_RETRY_AFTER));
-
-    if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) {
-      const advice =
-        "In a cross-origin iframe, the session cookie is a third-party cookie. The browser " +
-        "often blocks it. Forward the records to the platform document. As an alternative, " +
-        "issue the cookie with the Partitioned attribute.";
-
-      this.diagnostics.report(
-        "transport.rejected_credentials",
-        `The server returned ${String(status)}. ${advice}`,
-        { status, endpoint: this.config.endpoint },
-      );
-      // Classify as permanent. A retry loop on a rejected credential blocks each batch after it.
-      return new TransportError(
-        "permanent",
-        `The server rejected the batch with ${String(status)}.`,
-        status,
-      );
-    }
-
-    if (status === HTTP_PAYLOAD_TOO_LARGE) {
-      const maxBytes = await this.readMaxBytes(response);
-      return new TransportError(
-        "too_large",
-        "The payload is too large.",
-        status,
-        undefined,
-        maxBytes,
-      );
-    }
-
-    if (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_SERVICE_UNAVAILABLE) {
-      const throttled = status === HTTP_TOO_MANY_REQUESTS;
-      this.throttledUntil = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
-
-      if (throttled) {
-        this.diagnostics.report("transport.throttled", "The server throttles the requests.", {
-          retryAfterMs,
-        });
-      }
-
-      return new TransportError(
-        "throttled",
-        throttled ? "The server throttles the requests." : "The service is not available.",
-        status,
-        retryAfterMs,
-      );
-    }
-
-    if (status === HTTP_REQUEST_TIMEOUT || status >= HTTP_SERVER_ERROR_MIN) {
-      return new TransportError(
-        "transient",
-        `The server returned the error ${String(status)}.`,
-        status,
-      );
-    }
-
-    this.diagnostics.report(
-      "transport.dropped_permanent",
-      `The server rejected the batch with ${String(status)}. The library dropped it.`,
-      { batchId, status },
-    );
-    return new TransportError(
-      "permanent",
-      `The server rejected the batch with ${String(status)}.`,
-      status,
-    );
   }
 
   /**

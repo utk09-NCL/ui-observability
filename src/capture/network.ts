@@ -2,6 +2,7 @@
 //
 // Instruments fetch and XMLHttpRequest to record network request outcomes and timing.
 
+import { isLibraryRequest } from "../utils/library-request";
 import { stripUrlQuery } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
@@ -77,7 +78,8 @@ export class NetworkCapture implements Capture {
   private ignored(url: string): boolean {
     // resolveConfig always adds the endpoint to ignoreUrls. Without it, a failed POST
     // makes a log record. That record causes a new POST, and the loop does not stop.
-    return matchesAny(url, this.ctx.config.capture.ignoreUrls);
+    // A custom transport has no known URL. Its request starts inside the library scope.
+    return isLibraryRequest() || matchesAny(url, this.ctx.config.capture.ignoreUrls);
   }
 
   /** Instruments globalThis.fetch with tracing injection and outcome logging. */

@@ -50,6 +50,7 @@ import type { TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
 import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
+import type { RemoteSlot } from "./remote-sampling";
 import { shouldSampleInput } from "./sampling";
 
 /** Injected dependencies required by RecordBuilder. */
@@ -72,6 +73,8 @@ export interface RecordBuilderDeps {
   identity: Identity;
   /** Detected host platform metadata. */
   platform: PlatformMetadata;
+  /** Slot of the sampling rules from the ingest server. */
+  remote: RemoteSlot;
 }
 
 /** Size limits for each record. The builder applies them after sanitize and after redact. */
@@ -143,7 +146,10 @@ export class RecordBuilder {
     if (!config.enabled) {
       return false;
     }
-    return LEVEL_ORDER[level] >= LEVEL_ORDER[config.minLevel];
+    // A remote rule can lower minLevel during an incident.
+    const minLevel = this.deps.remote.sampling?.minLevel() ?? config.minLevel;
+
+    return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel];
   }
 
   /**
@@ -152,7 +158,7 @@ export class RecordBuilder {
    * @returns The record, or null with the reason it was dropped.
    */
   build(input: BuildInput): BuildResult {
-    const { config, diagnostics, tracing, journey, sequence, limits } = this.deps;
+    const { config, diagnostics, tracing, journey, sequence, limits, remote } = this.deps;
 
     if (!this.isEnabled(input.level)) {
       diagnostics.count("record.dropped_by_level");
@@ -173,6 +179,7 @@ export class RecordBuilder {
         traceId: traceCtx.traceId,
       },
       config,
+      remote.sampling?.current() ?? null,
     );
     if (!sampled) {
       diagnostics.count("record.dropped_by_sampling");

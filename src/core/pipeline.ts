@@ -18,7 +18,7 @@ import {
 import type { LogBatch } from "../models/batch";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
-import type { HttpTransport } from "../transport/http-transport";
+import type { BatchTransport } from "../transport/status-transport";
 import type { RetryEngine } from "../transport/retry-engine";
 import { withDeadline } from "../utils/deadline";
 import { newId } from "../utils/identity";
@@ -162,7 +162,7 @@ export class LogPipeline {
    * @param streamOptions Batching policy per stream.
    */
   constructor(
-    private readonly transport: HttpTransport,
+    private readonly transport: BatchTransport,
     private readonly storage: StorageAdapter,
     private readonly retry: RetryEngine,
     private readonly diagnostics: Diagnostics,

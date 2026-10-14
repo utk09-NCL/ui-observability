@@ -55,7 +55,15 @@ export type BusMessage =
   /** Query requesting active journey state from connected peers. */
   | { t: "journey?"; from: string }
   /** Tab identifier claim broadcast to detect collisions across windows. */
-  | { t: "tab"; from: string; tabId: string };
+  | { t: "tab"; from: string; tabId: string }
+  /** Request of a forwarder for the remote sampling rules in force. */
+  | { t: "sampling?"; from: string }
+  /**
+   * Remote sampling rules in the shape of the header, with the remaining TTL. The `to` field
+   * holds the address of the forwarder that asked. The receiver validates `rules` again.
+   * Null rules end the copy of the forwarder.
+   */
+  | { t: "sampling"; from: string; to: string; rules: unknown };
 
 /** Transport envelope wrapping bus messages with a protocol version tag. */
 export interface BusEnvelope {

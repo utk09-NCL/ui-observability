@@ -3,7 +3,7 @@ import { EMERGENCY_STORAGE_KEY_PREFIX } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
-import type { ObservabilityConfig } from "../src/models/config";
+import type { ExitTransport, ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import { ExitFlush } from "../src/transport/exit-flush";
 
@@ -471,5 +471,110 @@ describe("ExitFlush keepalive fallback", () => {
     flush.flush("pagehide");
 
     expect(codes()).toContain("transport.http_error");
+  });
+});
+
+describe("ExitFlush with a custom transport", () => {
+  /** A transport that the exit path must never call. A page that closes cannot await it. */
+  const transport = () => Promise.resolve({ status: 200 });
+
+  it("gives the batch to transportOnExit and sends no beacon", () => {
+    const beacon = stubBeacon();
+    const onExit = vi.fn<ExitTransport>(() => true);
+    const { flush } = setup({
+      records: [record("bye")],
+      config: { endpoint: null, transport, transportOnExit: onExit },
+    });
+
+    flush.flush("pagehide");
+
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(onExit.mock.calls[0][0]).toMatchObject({ batchId: "b1", attempt: 0 });
+    expect(beacon).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(0);
+  });
+
+  it("parks the batch in the emergency queue when transportOnExit refuses it", () => {
+    const { flush } = setup({
+      records: [record("bye")],
+      config: { endpoint: null, transport, transportOnExit: () => false },
+    });
+
+    flush.flush("pagehide");
+
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("parks the batch and reports when transportOnExit throws", () => {
+    const { flush, codes } = setup({
+      records: [record("bye")],
+      config: {
+        endpoint: null,
+        transport,
+        transportOnExit: () => {
+          throw new Error("channel closed");
+        },
+      },
+    });
+
+    flush.flush("pagehide");
+
+    expect(emergencyKeys()).toHaveLength(1);
+    expect(codes()).toContain("transport.http_error");
+  });
+
+  it("parks the batch on pagehide when there is no transportOnExit", () => {
+    const beacon = stubBeacon();
+    const { flush } = setup({ records: [record("bye")], config: { endpoint: null, transport } });
+
+    flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("does nothing on hidden when there is no transportOnExit", () => {
+    // The page keeps running after a tab switch. The pipeline sends the records later.
+    const { flush, drainPending } = setup({
+      records: [record("bye")],
+      config: { endpoint: null, transport },
+    });
+
+    flush.flush("hidden");
+
+    expect(drainPending).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(0);
+  });
+
+  it("drops a batch that the serializer cannot encode", () => {
+    const onExit = vi.fn<ExitTransport>(() => true);
+    const { flush, codes } = setup({
+      records: [record("bye")],
+      config: {
+        endpoint: null,
+        transport,
+        transportOnExit: onExit,
+        serializer: {
+          name: "broken",
+          serialize: () => {
+            throw new Error("cannot encode");
+          },
+        },
+      },
+    });
+
+    flush.flush("pagehide");
+
+    expect(onExit).not.toHaveBeenCalled();
+    expect(codes()).toContain("transport.serialize_failed");
+  });
+
+  it("does nothing when nothing is pending", () => {
+    const onExit = vi.fn<ExitTransport>(() => true);
+    const { flush } = setup({ config: { endpoint: null, transport, transportOnExit: onExit } });
+
+    flush.flush("pagehide");
+
+    expect(onExit).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,9 @@ const INGEST_ENDPOINT = `${MOCK_SERVER}/v1/logs`;
 /** Number of log records generated in a single test burst. */
 const BURST_SIZE = 250;
 
+/** Time that the long frame button blocks the main thread, in milliseconds. */
+const LONG_FRAME_MS = 300;
+
 /** Query parameter carrying the journey token to a second window. */
 const JOURNEY_PARAM = "__uiobs_journey";
 
@@ -79,6 +82,8 @@ configure({
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console from DEBUG up.
   console: "DEBUG",
+  // Reads sampling rules from the X-UiObs-Sampling header of the mock server.
+  sampling: { remote: true },
   // Origins allowed to transmit records over the window bus.
   bus: { trustedOrigins: [location.origin, "http://localhost:5174"] },
   capture: {
@@ -94,6 +99,9 @@ configure({
     // holds it in a variable so a bundler cannot resolve it at build time,
     // which leaves the browser unable to resolve the bare specifier at runtime.
     webVitalsLoader: () => import("web-vitals"),
+    longFrames: true,
+    // Records console.error and console.warn. console.info gives a breadcrumb.
+    console: ["error", "warn", "info"],
   },
   onDiagnostic: (event) => {
     note(event.code, event.message);
@@ -171,6 +179,20 @@ on("circular", () => {
   log.info("circular payload", a);
 });
 
+on("long-frame", () => {
+  // Blocks the main thread. The long frame capture records ui.long_frame.duration.
+  const end = performance.now() + LONG_FRAME_MS;
+  while (performance.now() < end) {
+    // Wait.
+  }
+});
+
+on("console-error", () => {
+  // The console capture records this call as an ERROR record.
+
+  console.error("grid failed to render", new Error("row 7 has no id"), { grid: "blotter" });
+});
+
 on("burst", () => {
   // Generates records exceeding batch capacity to verify buffer splitting.
   for (let i = 0; i < BURST_SIZE; i++) {
@@ -190,6 +212,24 @@ on("burst", () => {
     "playground.burst",
     `pushed ${String(BURST_SIZE)}, record.dropped_by_sampling total ${String(dropped)}`,
   );
+});
+
+/** Tracks whether the mock server sends sampling rules. */
+let remoteSampling = false;
+
+on("remote-sampling", () => {
+  remoteSampling = !remoteSampling;
+  // Keeps 10% of the "playground" records for one minute. The next accepted batch carries the rules.
+  const rules = remoteSampling ? '{"v":1,"ttlMs":60000,"rates":{"playground":0.1}}' : "";
+  const control = `${MOCK_SERVER}/__sampling?rules=${encodeURIComponent(rules)}`;
+
+  void fetch(control, { method: "POST" })
+    .then(() => {
+      note("playground.remote_sampling", `server sends sampling rules: ${String(remoteSampling)}`);
+    })
+    .catch((err: unknown) => {
+      note("playground.control_failed", toMessage(err));
+    });
 });
 
 on("queue", () => {

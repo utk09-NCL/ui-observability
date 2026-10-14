@@ -4,6 +4,7 @@ import { resolveConfig } from "../src/core/config";
 import { ContextStore } from "../src/core/context";
 import { Diagnostics } from "../src/core/diagnostics";
 import { JOURNEY_OPTIONS, JourneyEngine } from "../src/core/journey";
+import { RemoteSampling } from "../src/core/remote-sampling";
 import {
   type BuildInput,
   RecordBuilder,
@@ -68,6 +69,7 @@ function makeBuilder(
     sequence: new Sequence(),
     identity: { sessionId: "s1", tabId: "t1", contextId: "c1" },
     platform,
+    remote: { sampling: null },
   };
   return { builder: new RecordBuilder(deps), config, context, deps, diagnostics, journey };
 }
@@ -116,6 +118,17 @@ describe("the level gate", () => {
     builder.build({ ...input, level: "DEBUG" });
 
     expect(built(builder).attributes["log.seq"]).toBe(1);
+  });
+
+  it("applies the remote rules to the level gate and to sampling", () => {
+    const { builder, deps, config } = makeBuilder({ sampling: { defaultRate: 0, remote: true } });
+    const sampling = new RemoteSampling(config);
+    deps.remote.sampling = sampling;
+
+    sampling.apply({ rules: { rates: { test: 1 }, minLevel: "DEBUG" }, ttlMs: 60_000 });
+
+    expect(builder.isEnabled("DEBUG")).toBe(true);
+    expect(built(builder, { level: "DEBUG" }).severityText).toBe("DEBUG");
   });
 
   it("drops a sampled-out record before it walks the payload", () => {

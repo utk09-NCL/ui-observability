@@ -5,10 +5,10 @@
 import {
   ERROR_DEDUPE_MS,
   ERROR_STORM_MAX_PER_WINDOW,
-  ERROR_STORM_WINDOW_MS,
   MAX_TRACKED_ERROR_SIGNATURES,
 } from "../constants";
 import { stripUrlQuery } from "../utils/platform";
+import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
 
 /** Tracking metadata for a deduplicated error signature. */
@@ -30,11 +30,8 @@ export class ErrorCapture implements Capture {
   /** Recently reported error signatures in LRU order. */
   private readonly seen = new Map<string, SeenError>();
 
-  /** Start timestamp of the active throttling window in epoch milliseconds. */
-  private windowStart = 0;
-
-  /** Errors reported during the active throttling window. */
-  private windowCount = 0;
+  /** Rate limit of this capture. Console noise has its own window and cannot use it. */
+  private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
    * @param ctx Capture context containing configuration, diagnostics, logger, and breadcrumbs.
@@ -131,24 +128,11 @@ export class ErrorCapture implements Capture {
    * @param extra Contextual error attributes.
    */
   private report(source: string, error: unknown, extra: Record<string, unknown>): void {
-    const now = Date.now();
-
-    if (now - this.windowStart > ERROR_STORM_WINDOW_MS) {
-      this.windowStart = now;
-      this.windowCount = 0;
-    }
-
-    this.windowCount++;
-    if (this.windowCount > ERROR_STORM_MAX_PER_WINDOW) {
-      // A render loop that throws in requestAnimationFrame makes thousands of errors each second.
-      // Sending all of them is a denial of service on the ingest endpoint.
-      this.ctx.diagnostics.report(
-        "capture.rate_limited",
-        `More than ${String(ERROR_STORM_MAX_PER_WINDOW)} errors occurred in ${String(ERROR_STORM_WINDOW_MS)} ms. The library ignores the other errors in this window.`,
-      );
+    if (!allowInWindow(this.window, ERROR_STORM_MAX_PER_WINDOW, this.ctx.diagnostics, "errors")) {
       return;
     }
 
+    const now = Date.now();
     const asError = error instanceof Error ? error : new Error(String(error));
     const frame = (asError.stack ?? "").split("\n")[1] ?? "";
     const key = `${asError.name}|${asError.message}|${frame}`;

@@ -21,7 +21,7 @@ import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
 import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
-import type { HttpTransport } from "./http-transport";
+import type { BatchTransport } from "./status-transport";
 
 /**
  * This class sends persisted offline batches again on a timer. It uses backoff, a cross-tab
@@ -55,7 +55,7 @@ export class RetryEngine {
    */
   constructor(
     private readonly storage: StorageAdapter,
-    private readonly transport: HttpTransport,
+    private readonly transport: BatchTransport,
     private readonly diagnostics: Diagnostics,
     private readonly config: ResolvedConfig,
     private readonly batchesPerDrain = BATCHES_PER_DRAIN,

@@ -5,6 +5,17 @@
 
 import { unrefTimer } from "./unref";
 
+/** Error of a promise that did not settle before its deadline. */
+export class DeadlineError extends Error {
+  /**
+   * @param ms Deadline in milliseconds.
+   */
+  constructor(ms: number) {
+    super(`The operation took longer than ${String(ms)} ms.`);
+    this.name = "DeadlineError";
+  }
+}
+
 /**
  * Rejects when a promise does not settle within a deadline.
  * @param work Promise to bound.
@@ -16,7 +27,7 @@ export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 
   const deadline = new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`The operation took longer than ${String(ms)} ms.`));
+      reject(new DeadlineError(ms));
     }, ms);
 
     expire = timer;
