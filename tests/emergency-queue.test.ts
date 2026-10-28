@@ -55,8 +55,8 @@ describe("the emergency queue", () => {
   });
 
   it("claims each key before the save, so a second window finds nothing", async () => {
-    // Five windows can restore at once after a crash. The key is removed
-    // synchronously, so the race window is one statement rather than an await.
+    // Five windows can restore at the same time after a crash. The code removes the key
+    // synchronously. The race window is then one statement, not an await.
     saveToEmergencyQueue(batch("b1"), quiet());
     const storage = new MemoryStorage(limits);
 
@@ -108,8 +108,8 @@ describe("the emergency queue", () => {
   });
 
   it("reports rather than throwing when the store refuses the write", () => {
-    // This runs while a document is unloading. Throwing here is the last thing
-    // that happens in that window, and nothing is left to catch it.
+    // This code runs while a document unloads. A throw here is the last event in that window. No
+    // code can catch it.
     const blocked = useFakeLocalStorage();
     const { handler, diagnostics } = listening();
     blocked.add("setItem");

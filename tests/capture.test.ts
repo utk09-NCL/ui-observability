@@ -13,7 +13,7 @@ import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config"
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { TraceEngine } from "../src/utils/tracing";
 
-/** A logger whose every method is a spy, so a test can read what was recorded. */
+/** A logger with a spy for each method. A test can read what the logger recorded. */
 interface SpyLogger {
   error: ReturnType<typeof vi.fn<CaptureLogger["error"]>>;
   warn: ReturnType<typeof vi.fn<CaptureLogger["warn"]>>;
@@ -79,6 +79,10 @@ describe("capture/types: matchesAny", () => {
     expect(matchesAny("https://api.internal/orders", ["other", /nope/])).toBe(false);
   });
 
+  it("matches nothing for a URL that is not a string", () => {
+    expect(matchesAny(undefined as unknown as string, ["https://api.internal"])).toBe(false);
+  });
+
   it("matches nothing against an empty pattern list", () => {
     expect(matchesAny("https://api.internal/orders", [])).toBe(false);
   });
@@ -138,9 +142,9 @@ describe("ErrorCapture", () => {
     const capture = new ErrorCapture(c);
     capture.install();
 
-    // No error object and no message: the built Error carries the fallback.
+    // The call gives no error object and no message. The built Error has the fallback message.
     dispatchEvent(new ErrorEvent("error", { message: "" }));
-    // An error object whose own message is empty: nothing is left to name it by.
+    // The own message of the error object is empty. The error has no other text that names it.
     dispatchEvent(new ErrorEvent("error", { error: new Error(""), message: "" }));
 
     expect(logger.error.mock.calls[0][0]).toBe("unknown error");
@@ -253,7 +257,62 @@ describe("ErrorCapture", () => {
     dispatchEvent(rejectionEvent("just a string"));
 
     expect(logger.error).toHaveBeenCalledTimes(2);
-    expect(logger.error.mock.calls[1][1]).toBeInstanceOf(Error);
+    // The logger converts the reason. It keeps a non-Error reason as error.data.
+    expect(logger.error.mock.calls[1][0]).toBe("just a string");
+    expect(logger.error.mock.calls[1][1]).toBe("just a string");
+    capture.uninstall();
+  });
+
+  it("gives an Error to the logger for a rejection with no reason", () => {
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    dispatchEvent(rejectionEvent(undefined));
+
+    const reason = logger.error.mock.calls[0][1];
+    expect(reason).toBeInstanceOf(Error);
+    expect((reason as Error).message).toBe("undefined");
+    capture.uninstall();
+  });
+
+  it("reads the message and stack of an error from another realm", () => {
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+    // An error from an iframe fails instanceof Error in this realm.
+    const foreign = {
+      name: "TypeError",
+      message: "x is undefined",
+      stack: "TypeError: x is undefined\n    at render (app.js:1:1)",
+    };
+
+    dispatchEvent(rejectionEvent(foreign));
+    dispatchEvent(rejectionEvent(foreign));
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "x is undefined",
+      foreign,
+      expect.objectContaining({ "error.captured_by": "unhandledrejection" }),
+    );
+    capture.uninstall();
+  });
+
+  it("records a reason that has no text form, and reports it", () => {
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+    const reason = Object.create(null) as object;
+
+    dispatchEvent(rejectionEvent(reason));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "unhandledrejection",
+      reason,
+      expect.objectContaining({ "error.captured_by": "unhandledrejection" }),
+    );
+    expect(c.diagnostics.snapshot()["capture.record_failed"]).toBe(1);
     capture.uninstall();
   });
 
@@ -275,8 +334,8 @@ describe("ErrorCapture", () => {
     }
     vi.useRealTimers();
 
-    // The map is bounded, so eviction ran without throwing and the module kept
-    // reporting after passing the cap.
+    // The map has a size limit. The eviction ran without a throw. The module continued to report
+    // after the cap.
     expect(logger.error.mock.calls.length).toBeGreaterThan(200);
     capture.uninstall();
   });
@@ -323,7 +382,7 @@ describe("ErrorCapture", () => {
     const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
 
-    // A second install would chain a duplicate listener and double every record.
+    // A second install adds a duplicate listener. Each record then occurs two times.
     capture.install();
     capture.install();
     dispatchEvent(new ErrorEvent("error", { error: new Error("boom"), message: "boom" }));
@@ -450,6 +509,118 @@ describe("NetworkCapture: fetch", () => {
     expect(globalThis.fetch).toBe(before);
   });
 
+  it("leaves a later fetch wrapper in place on uninstall and stops recording", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    const ours = globalThis.fetch;
+    const later: typeof fetch = (input, init) => ours(input, init);
+    globalThis.fetch = later;
+
+    capture.uninstall();
+    await fetch("https://api.internal/after");
+
+    expect(globalThis.fetch).toBe(later);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("reads the URL of a fetch input that is only stringifiable", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+    const input = { toString: () => "https://api.internal/text" } as unknown as string;
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await expect(fetch(input)).resolves.toBeInstanceOf(Response);
+    expect(logger.warn.mock.calls[0][1]).toMatchObject({
+      "url.full": "https://api.internal/text",
+    });
+    capture.uninstall();
+  });
+
+  it("reads the URL and method of a Request from another realm", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+    // A Request from an iframe fails instanceof Request in this realm.
+    const foreign = { url: "https://api.internal/foreign", method: "delete" } as unknown as Request;
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch(foreign);
+
+    expect(logger.warn.mock.calls[0][1]).toMatchObject({
+      "url.full": "https://api.internal/foreign",
+      "http.request.method": "DELETE",
+    });
+    capture.uninstall();
+  });
+
+  it("records the init method over the Request method", async () => {
+    const { ctx: c, logger } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch(new Request("https://api.internal/orders", { method: "PUT" }), { method: "post" });
+
+    expect(logger.warn.mock.calls[0][1]).toMatchObject({ "http.request.method": "POST" });
+    capture.uninstall();
+  });
+
+  it("sends a fetch unchanged when the library cannot read its input", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const seen: unknown[] = [];
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      seen.push(input);
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+    const hostile = Object.defineProperty({}, "url", {
+      get() {
+        throw new Error("unreadable url");
+      },
+    }) as Request;
+
+    const { ctx: c, logger } = ctx({ fetch: true });
+    c.diagnostics.setHandler(handler);
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await expect(fetch(hostile)).resolves.toBeInstanceOf(Response);
+    expect(seen[0]).toBe(hostile);
+    expect(logger.debug).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "capture.record_failed" }),
+    );
+    capture.uninstall();
+  });
+
+  it("ignores an uninstall before install", () => {
+    const { ctx: c } = ctx({ fetch: true });
+    const before = globalThis.fetch;
+    const capture = new NetworkCapture(c);
+
+    capture.uninstall();
+
+    expect(globalThis.fetch).toBe(before);
+  });
+
+  it("patches nothing in a realm without fetch or XMLHttpRequest", () => {
+    const { ctx: c } = ctx({ fetch: true, xhr: true });
+    vi.stubGlobal("fetch", undefined);
+    vi.stubGlobal("XMLHttpRequest", undefined);
+
+    const capture = new NetworkCapture(c);
+    expect(() => {
+      capture.install();
+    }).not.toThrow();
+
+    vi.unstubAllGlobals();
+    capture.uninstall();
+  });
+
   it("patches nothing when neither fetch nor xhr capture is on", () => {
     const { ctx: c } = ctx();
     const before = globalThis.fetch;
@@ -488,9 +659,89 @@ describe("NetworkCapture: fetch", () => {
 
     await fetch("https://api.internal/orders");
     await fetch("https://third-party.example/widget");
+    await fetch(new URL("https://api.internal/by-url"));
 
     expect(seen[0].get("traceparent")).toBeTruthy();
     expect(seen[1].get("traceparent")).toBeNull();
+    expect(seen[2].get("traceparent")).toBeTruthy();
+    capture.uninstall();
+  });
+
+  it("matches a string entry on the origin of the URL only", async () => {
+    // A substring test also matches a query value or a longer host name of a third party.
+    const seen: Headers[] = [];
+    globalThis.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+
+    const { ctx: c } = ctx({
+      fetch: true,
+      propagateTraceHeaderTo: ["https://api.example.com", location.origin],
+    });
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await fetch("https://tracker.example.net/p?ref=https://api.example.com/x");
+    await fetch("https://api.example.com.evil.example/");
+    await fetch("https://api.example.com/v1/orders");
+    await fetch("/api/orders");
+
+    expect(seen.map((headers) => headers.get("traceparent") !== null)).toEqual([
+      false,
+      false,
+      true,
+      true,
+    ]);
+    capture.uninstall();
+  });
+
+  it("reports a URL with no origin, and still sends and records the request", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const seen: Headers[] = [];
+    globalThis.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+
+    const { ctx: c, logger } = ctx({
+      fetch: true,
+      propagateTraceHeaderTo: ["https://api.example.com", /\[/],
+    });
+    c.diagnostics.setHandler(handler);
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await fetch("http://[");
+
+    expect(seen[0].get("traceparent")).not.toBeNull();
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "capture.header_failed" }),
+    );
+    capture.uninstall();
+  });
+
+  it("sends an allowlisted Request from another realm unchanged", async () => {
+    const seen: { input: unknown; init: RequestInit | undefined }[] = [];
+    globalThis.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ input, init });
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+    // An init with headers replaces all headers of the Request, for example Authorization.
+    const foreign = {
+      url: "https://api.internal/orders",
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer token" }),
+    } as unknown as Request;
+
+    const { ctx: c } = ctx({ fetch: true, propagateTraceHeaderTo: ["https://api.internal"] });
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch(foreign);
+
+    expect(seen[0].input).toBe(foreign);
+    expect(seen[0].init).toBeUndefined();
     capture.uninstall();
   });
 
@@ -610,7 +861,7 @@ describe("NetworkCapture: XMLHttpRequest", () => {
   }
 
   beforeEach(() => {
-    // happy-dom would otherwise attempt a real request on send().
+    // Without this stub, happy-dom tries a real request on send().
     vi.spyOn(XMLHttpRequest.prototype, "send").mockImplementation(() => undefined);
     vi.spyOn(XMLHttpRequest.prototype, "open").mockImplementation(() => undefined);
   });
@@ -717,6 +968,128 @@ describe("NetworkCapture: XMLHttpRequest", () => {
     expect(XMLHttpRequest.prototype.open).toBe(patched);
     capture.uninstall();
   });
+
+  it("leaves later open and send wrappers in place on uninstall and stops recording", () => {
+    type XhrFn = (this: XMLHttpRequest, ...args: never[]) => void;
+    const { ctx: c, logger } = ctx({ xhr: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+    const ourOpen: XhrFn = XMLHttpRequest.prototype.open;
+    const ourSend: XhrFn = XMLHttpRequest.prototype.send;
+    const laterOpen = function (this: XMLHttpRequest, ...args: never[]): void {
+      ourOpen.apply(this, args);
+    };
+    const laterSend = function (this: XMLHttpRequest, ...args: never[]): void {
+      ourSend.apply(this, args);
+    };
+    XMLHttpRequest.prototype.open = laterOpen;
+    XMLHttpRequest.prototype.send = laterSend;
+
+    capture.uninstall();
+    sendXhr("https://api.internal/after", 200);
+
+    expect(XMLHttpRequest.prototype.open).toBe(laterOpen);
+    expect(XMLHttpRequest.prototype.send).toBe(laterSend);
+    expect(logger.debug).not.toHaveBeenCalled();
+  });
+
+  it("records an XHR whose method is not a string", () => {
+    const { ctx: c, logger } = ctx({ xhr: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+    const method = { toString: () => "PATCH" } as unknown as string;
+
+    const xhr = new XMLHttpRequest();
+    vi.spyOn(xhr, "status", "get").mockReturnValue(200);
+    expect(() => {
+      xhr.open(method, "https://api.internal/orders");
+      xhr.send();
+    }).not.toThrow();
+    xhr.dispatchEvent(new Event("loadend"));
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      "PATCH https://api.internal/orders",
+      expect.objectContaining({ "http.request.method": "PATCH" }),
+    );
+    capture.uninstall();
+  });
+
+  it("records an XHR opened with a null URL as the text null", () => {
+    const { ctx: c, logger } = ctx({ xhr: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    sendXhr(null as unknown as string, 200);
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      "GET null",
+      expect.objectContaining({ "url.full": "null" }),
+    );
+    capture.uninstall();
+  });
+
+  it("opens an XHR unchanged and records nothing when its method cannot be read", () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const { ctx: c, logger } = ctx({ xhr: true });
+    c.diagnostics.setHandler(handler);
+    const capture = new NetworkCapture(c);
+    capture.install();
+    const method = {
+      toString: () => {
+        throw new Error("unreadable method");
+      },
+    } as unknown as string;
+
+    const xhr = new XMLHttpRequest();
+    expect(() => {
+      xhr.open(method, "https://api.internal/orders");
+      xhr.send();
+    }).not.toThrow();
+    xhr.dispatchEvent(new Event("loadend"));
+
+    expect(logger.debug).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "capture.record_failed" }),
+    );
+    capture.uninstall();
+  });
+
+  it("adds traceparent only to an allowlisted XHR", () => {
+    const setHeader = vi
+      .spyOn(XMLHttpRequest.prototype, "setRequestHeader")
+      .mockImplementation(() => undefined);
+    const { ctx: c } = ctx({ xhr: true, propagateTraceHeaderTo: ["https://api.internal"] });
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    sendXhr("https://third.party/widget", 200);
+    expect(setHeader).not.toHaveBeenCalled();
+
+    sendXhr("https://api.internal/orders", 200);
+    expect(setHeader).toHaveBeenCalledWith("traceparent", expect.any(String));
+    capture.uninstall();
+  });
+
+  it("sends the XHR when the trace header cannot be attached", () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    vi.spyOn(XMLHttpRequest.prototype, "setRequestHeader").mockImplementation(() => {
+      throw new Error("header refused");
+    });
+    const send = vi.mocked(XMLHttpRequest.prototype.send);
+    const { ctx: c, logger } = ctx({ xhr: true, propagateTraceHeaderTo: ["https://api.internal"] });
+    c.diagnostics.setHandler(handler);
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    sendXhr("https://api.internal/orders", 200);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "capture.header_failed" }),
+    );
+    capture.uninstall();
+  });
 });
 
 describe("InteractionCapture", () => {
@@ -802,19 +1175,48 @@ describe("InteractionCapture", () => {
     expect(history.pushState).not.toBe(original);
 
     history.pushState({}, "", "/orders/1");
-    // onNavigate is queued as a microtask: location.href only updates once
-    // pushState returns.
+    // onNavigate runs as a microtask. location.href changes only after pushState returns.
     await Promise.resolve();
 
     expect(logger.logEvent).toHaveBeenCalledWith("NAVIGATION", {
       "page.url.previous": expect.any(String) as string,
     });
-    // Not `url.full`: that name belongs to an HTTP request, and the record
-    // builder stamps the new URL as `page.url` on its own.
+    // Do not use `url.full`. That name is for an HTTP request. The record builder sets the new URL
+    // as `page.url` itself.
     expect(logger.logEvent.mock.calls[0][1]).not.toHaveProperty("url.full");
 
     capture.uninstall();
     expect(history.pushState).toBe(original);
+  });
+
+  it("leaves later history wrappers in place on uninstall and stops recording", async () => {
+    type HistoryFn = (this: History, ...args: Parameters<History["pushState"]>) => void;
+    const { ctx: c, logger } = ctx({ navigation: true });
+    const nativePush = history.pushState;
+    const nativeReplace = history.replaceState;
+    const capture = new InteractionCapture(c);
+    capture.install();
+    const ourPush: HistoryFn = history.pushState;
+    const ourReplace: HistoryFn = history.replaceState;
+    const routerPush: HistoryFn = function (this: History, ...args) {
+      ourPush.apply(this, args);
+    };
+    const routerReplace: HistoryFn = function (this: History, ...args) {
+      ourReplace.apply(this, args);
+    };
+    history.pushState = routerPush;
+    history.replaceState = routerReplace;
+
+    capture.uninstall();
+    history.pushState({}, "", "/after-uninstall");
+    history.replaceState({}, "", "/after-uninstall-2");
+    await Promise.resolve();
+
+    expect(history.pushState).toBe(routerPush);
+    expect(history.replaceState).toBe(routerReplace);
+    expect(logger.logEvent).not.toHaveBeenCalled();
+    history.pushState = nativePush;
+    history.replaceState = nativeReplace;
   });
 
   it("reports the previous route without its query string", async () => {
@@ -931,7 +1333,7 @@ describe("InteractionCapture", () => {
 });
 
 describe("WebVitalsCapture", () => {
-  /** Nothing here loads the real package: the loader is the injectable seam. */
+  /** Nothing here loads the real package. The loader is the seam for the test. */
   const nullLoader = (): Promise<never> =>
     Promise.reject(new Error("Cannot find module 'web-vitals'"));
 
@@ -1022,6 +1424,75 @@ describe("WebVitalsCapture", () => {
     second.uninstall();
   });
 
+  it("loads web-vitals again on a later install after a failed load", async () => {
+    let subscriptions = 0;
+    const subscribe = () => () => {
+      subscriptions++;
+    };
+    let loads = 0;
+    const { ctx: c } = ctx({
+      webVitals: true,
+      webVitalsLoader: () => {
+        loads++;
+        // The first load fails, for example a chunk that the network did not deliver.
+        return loads === 1
+          ? Promise.reject(new Error("chunk failed"))
+          : Promise.resolve({
+              onLCP: subscribe(),
+              onCLS: subscribe(),
+              onINP: subscribe(),
+              onFCP: subscribe(),
+              onTTFB: subscribe(),
+            });
+      },
+    });
+
+    const first = new WebVitalsCapture(c);
+    first.install();
+    await vi.waitFor(() => {
+      expect(c.diagnostics.snapshot()["capture.install_failed"]).toBeGreaterThan(0);
+    });
+    first.uninstall();
+
+    const second = new WebVitalsCapture(c);
+    second.install();
+    await vi.waitFor(() => {
+      expect(subscriptions).toBe(5);
+    });
+    second.uninstall();
+  });
+
+  it("subscribes one set of reporters when two installs load in the same turn", async () => {
+    let subscriptions = 0;
+    const subscribe = () => () => {
+      subscriptions++;
+    };
+    const { ctx: c } = ctx({
+      webVitals: true,
+      webVitalsLoader: () =>
+        Promise.resolve({
+          onLCP: subscribe(),
+          onCLS: subscribe(),
+          onINP: subscribe(),
+          onFCP: subscribe(),
+          onTTFB: subscribe(),
+        }),
+    });
+
+    const first = new WebVitalsCapture(c);
+    const second = new WebVitalsCapture(c);
+    first.install();
+    second.install();
+    await vi.waitFor(() => {
+      expect(subscriptions).toBe(5);
+    });
+    await Promise.resolve();
+
+    expect(subscriptions).toBe(5);
+    first.uninstall();
+    second.uninstall();
+  });
+
   it("emits navigation timing, and skips a measurement that is not real", () => {
     const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([
@@ -1060,7 +1531,7 @@ describe("WebVitalsCapture", () => {
 
   it("reads navigation timing once, however many times it is installed", () => {
     const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
-    // happy-dom reports no navigation entry, so one is supplied here.
+    // happy-dom has no navigation entry. This test supplies one.
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([
       { domainLookupEnd: 10, domainLookupStart: 5, type: "navigate" } as never,
     ]);
@@ -1102,8 +1573,8 @@ describe("WebVitalsCapture", () => {
       expect(subscriptions).toBe(5);
     });
 
-    // web-vitals offers no unsubscribe, so the rebuilt instance must not call
-    // the reporters again. It would report every LCP twice.
+    // web-vitals has no unsubscribe. The rebuilt instance must not call the reporters again. If it
+    // does, it reports each LCP two times.
     first.uninstall();
     const second = new WebVitalsCapture(c);
     second.install();

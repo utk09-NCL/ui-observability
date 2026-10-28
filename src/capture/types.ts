@@ -105,12 +105,17 @@ export interface Capture {
 }
 
 /**
- * Evaluates whether a URL matches any string substring or regular expression pattern.
- * @param url Target URL to test.
+ * Tests if a URL matches any string substring or regular expression pattern.
+ * @param url Target URL to test. A value that is not a string matches nothing.
  * @param patterns Substrings and regular expressions to test against.
  * @returns True if any pattern matches the URL.
  */
-export function matchesAny(url: string, patterns: (string | RegExp)[]): boolean {
+export function matchesAny(url: unknown, patterns: (string | RegExp)[]): boolean {
+  // Guard against a URL that is not a string. includes() on it throws in the call of the host.
+  if (typeof url !== "string") {
+    return false;
+  }
+
   return patterns.some((pattern) =>
     typeof pattern === "string" ? url.includes(pattern) : pattern.test(url),
   );

@@ -12,13 +12,14 @@ import {
   ERROR_STORM_WINDOW_MS,
   FNV_OFFSET_BASIS,
   FNV_PRIME,
+  LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
   UINT32_MAX,
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
-import type { LogLevel, LogRecord } from "../models/log-record";
+import type { LogLevel, LogRecord, LogType } from "../models/log-record";
 import type { RemoteRules } from "./remote-sampling";
 
 /**
@@ -40,7 +41,7 @@ function hash(value: string): number {
 /**
  * Reads a string attribute from a log record. It returns an empty string for an absent
  * or non-string value. A forwarded record has passed only a shape check.
- * @param record Log record being evaluated.
+ * @param record Log record to test.
  * @param key Attribute key.
  * @returns String attribute value, or empty string if missing or non-string.
  */
@@ -91,7 +92,8 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
   const local = longestPrefix(namespace, rates);
   const fromRemote = remote ? longestPrefix(namespace, remote.rates) : undefined;
 
-  // Cap a remote rate when sampling reads it. A configure() that lowers the cap then applies at once.
+  // Cap a remote rate when sampling reads it. A configure() that lowers the cap then applies
+  // immediately.
   if (fromRemote && fromRemote.length >= (local?.length ?? -1)) {
     return Math.min(fromRemote.rate, remoteMaxRate);
   }
@@ -144,7 +146,9 @@ export function shouldSampleInput(
   let rate = rateFor(input.namespace, config, remote);
 
   // A remote minLevel adds the records below minLevel. Cap them too, or they ship at the config rate.
-  if (remote && LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[config.minLevel]) {
+  // minLevel does not apply to an action or a metric. Do not cap them.
+  const belowMinLevel = LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[config.minLevel];
+  if (remote && belowMinLevel && !LEVEL_BYPASS_TYPES.includes(input.type as LogType)) {
     rate = Math.min(rate, config.sampling.remoteMaxRate);
   }
 

@@ -50,8 +50,9 @@ function toAnyValue(value: unknown): AnyValue | null {
 
   // Encode int64 as a decimal string. The OTLP protobuf JSON mapping requires it. A conforming
   // collector returns a 400 status for a number. The response does not give the cause.
+  // An integer above MAX_SAFE_INTEGER goes to doubleValue. Its text can be "1e+21" or overflow int64.
   if (typeof value === "number") {
-    return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+    return Number.isSafeInteger(value) ? { intValue: String(value) } : { doubleValue: value };
   }
 
   // Convert a BigInt to a decimal string. JSON.stringify throws on a BigInt and loses the

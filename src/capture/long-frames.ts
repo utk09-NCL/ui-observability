@@ -155,7 +155,7 @@ export class LongFrameCapture implements Capture {
 
     const script = longestScript(entry.scripts);
 
-    // A signed URL is a credential. Keep the query only if fullUrls is set.
+    // A signed URL is a credential. Keep the query only if you set fullUrls.
     const url = (value: string): string =>
       this.ctx.config.capture.fullUrls ? value : stripUrlQuery(value);
 

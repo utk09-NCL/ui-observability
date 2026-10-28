@@ -12,7 +12,7 @@ export interface GlobalScope {
    */
   run<T>(fn: () => T): T;
   /**
-   * Tests whether a scope is open.
+   * Tests if a scope is open.
    * @returns True while a function runs inside the scope.
    */
   open(): boolean;

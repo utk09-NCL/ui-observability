@@ -1,10 +1,12 @@
 // vite.config.ts
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   build: {
     lib: {
-      entry: { index: new URL("src/index.ts", import.meta.url).pathname },
+      // Use fileURLToPath. On Windows, URL.pathname gives "/C:/..." and the build fails.
+      entry: { index: fileURLToPath(new URL("src/index.ts", import.meta.url)) },
       formats: ["es", "cjs"],
       fileName: (format, entryName) => `${entryName}.${format === "es" ? "js" : "cjs"}`,
     },

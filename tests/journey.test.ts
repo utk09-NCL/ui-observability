@@ -3,8 +3,8 @@ import { Diagnostics } from "../src/core/diagnostics";
 import { JourneyEngine, type Journey, type JourneyOptions } from "../src/core/journey";
 import { memoryStores } from "../src/utils/identity";
 
-// Own copies of both literals: a test that reads the constant it checks cannot
-// catch a typo in that constant.
+// This file has its own copy of both literals. A test that reads the constant that it checks cannot
+// find a typo in that constant.
 const STORAGE_KEY = "ui-observability.journey";
 const URL_PARAM = "__uiobs_journey";
 
@@ -16,8 +16,8 @@ const OPTIONS: JourneyOptions = {
 
 function makeEngine(overrides: Partial<JourneyOptions> = {}, contextId = "ctx-1") {
   const handler = vi.fn();
-  // Zero throttle. `journey.expired` covers three distinct situations, and the
-  // default throttle would hide every one after the first in a single tick.
+  // No throttle. `journey.expired` covers three different cases. In one tick, the default throttle
+  // hides each case after the first.
   const diagnostics = new Diagnostics(handler, 0);
   const onLocalChange = vi.fn();
   const engine = new JourneyEngine(
@@ -30,8 +30,8 @@ function makeEngine(overrides: Partial<JourneyOptions> = {}, contextId = "ctx-1"
 }
 
 /**
- * Encode a token the way the library does, kept independent of the library's
- * own encoder so that a change to either one shows up as a failure here.
+ * Encodes a token as the library does. This encoder is separate from the encoder of the library. A
+ * change to either one then causes a failure here.
  */
 function tokenFor(payload: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
@@ -52,12 +52,11 @@ const atUrl = (href: string): void => {
 };
 
 /**
- * A sessionStorage whose one named method throws, and whose others work.
+ * A sessionStorage with one named method that throws. The other methods work.
  *
- * The whole global is replaced rather than spied on, because happy-dom's
- * Storage is a Proxy whose `deleteProperty` trap refuses anything that is not a
- * stored item: a spy installed on it survives `restoreMocks` and stays wrapped
- * around the real method for every test that follows.
+ * The test replaces the whole global. It does not spy on it. The Storage of happy-dom is a Proxy.
+ * Its `deleteProperty` trap refuses each key that is not a stored item. A spy on it stays after
+ * `restoreMocks`. It stays around the real method for each later test.
  */
 function storageThatThrowsOn(
   method: "getItem" | "setItem" | "removeItem",
@@ -154,8 +153,8 @@ describe("end", () => {
   });
 
   it("says nothing at all when there is no journey to end", () => {
-    // Ending nothing is not an error, but announcing it would tell every other
-    // window to drop a journey this one was never in.
+    // An end with no journey is not an error. An announcement tells each other window to drop a
+    // journey. This window never had that journey.
     const { engine, onLocalChange } = makeEngine();
 
     engine.end();
@@ -183,8 +182,8 @@ describe("applyRemote", () => {
   });
 
   it("ignores an echo of the journey already in force", () => {
-    // An echo that restarted the expiry timer would keep a journey alive for as
-    // long as any window kept repeating it.
+    // An echo that restarts the expiry timer keeps a journey alive. The journey then stays alive
+    // while any window repeats the echo.
     const { engine } = makeEngine();
     const started = engine.start("checkout");
 
@@ -270,9 +269,8 @@ describe("getToken", () => {
   });
 
   it("refuses to issue a token past the size cap", () => {
-    // A tripwire on the query-string budget rather than input validation:
-    // three fields and a truncated name cannot reach it, so a token that does
-    // is one whose id came from a caller.
+    // This check is a limit on the query-string budget. It is not input validation. Three fields
+    // and a truncated name cannot reach the limit. A token that reaches it has an id from a caller.
     const { diagnostics, engine } = makeEngine();
     engine.start("checkout", { id: "x".repeat(300) });
 
@@ -299,8 +297,8 @@ describe("adopt", () => {
     expect(engine.adopt(tokenAged(1000), "url")).toBe(true);
     expect(engine.current()?.id).toBe("j-1");
     expect(diagnostics.snapshot()["journey.adopted"]).toBe(1);
-    // Seeding at boot does not broadcast: every window in that flow gets its
-    // own seed, and telling the others would overwrite theirs.
+    // A seed at boot does not broadcast. Each window in that flow gets its own seed. A broadcast
+    // replaces the seeds of the other windows.
     expect(onLocalChange).not.toHaveBeenCalled();
   });
 
@@ -339,8 +337,8 @@ describe("adopt", () => {
   });
 
   it("treats a token with no usable start time as starting now", () => {
-    // An inaccurate age costs less than discarding a journey that is probably
-    // real, and the id is the field everything correlates on.
+    // An age that is not accurate costs less than the loss of a journey that is probably real. All
+    // correlation uses the id.
     const { engine } = makeEngine({ maxAgeMs: 1000 });
 
     expect(engine.adopt(tokenFor({ i: "j-1", n: "checkout" }), "url")).toBe(true);
@@ -360,6 +358,50 @@ describe("bootstrap", () => {
     await engine.bootstrap();
 
     expect(engine.current()?.id).toBe("j-1");
+  });
+
+  it("removes the token from the URL after it adopts it, and keeps the rest of the URL", async () => {
+    // A copied link with the token starts the same journey in another session.
+    atUrl(`https://app.test/orders?view=grid&${URL_PARAM}=${tokenAged(1000)}#row-4`);
+    const replaceState = vi.fn();
+    vi.stubGlobal("history", { state: { page: 1 }, replaceState });
+    const { engine } = makeEngine();
+
+    await engine.bootstrap();
+
+    expect(engine.current()?.id).toBe("j-1");
+    expect(replaceState).toHaveBeenCalledWith(
+      { page: 1 },
+      "",
+      "https://app.test/orders?view=grid#row-4",
+    );
+  });
+
+  it("keeps the token in the URL when it does not adopt it", async () => {
+    atUrl(`https://app.test/orders?${URL_PARAM}=${tokenAged(50_000)}`);
+    const replaceState = vi.fn();
+    vi.stubGlobal("history", { state: null, replaceState });
+    const { engine } = makeEngine({ maxAgeMs: 10_000 });
+
+    await engine.bootstrap();
+
+    expect(replaceState).not.toHaveBeenCalled();
+  });
+
+  it("keeps the journey and reports when the URL cannot change", async () => {
+    atUrl(`https://app.test/orders?${URL_PARAM}=${tokenAged(1000)}`);
+    vi.stubGlobal("history", {
+      state: null,
+      replaceState: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    });
+    const { diagnostics, engine } = makeEngine();
+
+    await engine.bootstrap();
+
+    expect(engine.current()?.id).toBe("j-1");
+    expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
   });
 
   it("falls through to the persisted journey when the URL token is too old", async () => {
@@ -382,9 +424,8 @@ describe("bootstrap", () => {
   });
 
   it("resumes a journey persisted before a reload, keeping its parent link", async () => {
-    // The reason the whole journey is persisted rather than the lossy token: a
-    // reload that dropped the parent link could never honour endOnOwnerClose
-    // again afterwards.
+    // The engine keeps the whole journey, not the lossy token. A reload that drops the parent link
+    // can never apply endOnOwnerClose again.
     sessionStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -451,9 +492,9 @@ describe("bootstrap", () => {
     ["a non-string name", JSON.stringify({ id: "j", name: 7, startedAt: 1 })],
     ["no start time", JSON.stringify({ id: "j", name: "n" })],
     ["a non-numeric start time", JSON.stringify({ id: "j", name: "n", startedAt: "today" })],
-    // Anything on the origin can write this key, and a non-finite start time
-    // poisons every comparison it reaches: an age computed from Infinity is
-    // never greater than maxAgeMs, so such a journey would never expire.
+    // Any code on the origin can write this key. A start time that is not finite breaks each
+    // comparison. An age from Infinity is never greater than maxAgeMs. Such a journey never
+    // expires.
     ["an infinite start time", '{"id":"j","name":"n","startedAt":1e999}'],
   ])("refuses a persisted journey with %s", async (_label, raw) => {
     sessionStorage.setItem(STORAGE_KEY, raw);
@@ -536,8 +577,8 @@ describe("reading OpenFin customData", () => {
   });
 
   it("gives up on a getOptions that never settles", async () => {
-    // A stalled bridge would otherwise leave bootstrap pending, and with it the
-    // runtime's init(), so records queue in the boot buffer until it evicts.
+    // Without this, a stalled bridge keeps bootstrap pending. The init() of the runtime then stays
+    // pending too. Records stay in the boot buffer until the buffer evicts them.
     vi.useFakeTimers();
     vi.stubGlobal("fin", { me: { getOptions: () => new Promise(() => undefined) } });
     const { engine, handler } = makeEngine();
@@ -687,8 +728,8 @@ describe("expiry", () => {
 
 describe("the expiry timer handle", () => {
   it("releases a Node-style handle, so a pending journey cannot hold a process open", () => {
-    // Half an hour is the default, and under server-side rendering or a test
-    // runner that one timer keeps the process alive until it fires.
+    // The default is half an hour. Under server-side rendering or in a test runner, that one timer
+    // keeps the process alive until it fires.
     const unref = vi.fn();
     vi.stubGlobal("setTimeout", () => ({ unref }));
     vi.stubGlobal("clearTimeout", vi.fn());
@@ -704,8 +745,8 @@ describe("the expiry timer handle", () => {
     vi.stubGlobal("clearTimeout", vi.fn());
     const { engine } = makeEngine();
 
-    // Zero is a legal handle, and a truth test on it would leave exactly that
-    // timer running when the journey is replaced.
+    // Zero is a legal handle. A truth test on it does not clear that timer when a new journey
+    // replaces the old one.
     expect(() => {
       engine.start("checkout");
       engine.start("second");
@@ -725,8 +766,8 @@ describe("the expiry timer handle", () => {
 
 describe("ownerClosed", () => {
   it("does nothing while endOnOwnerClose is off, which is the default", () => {
-    // Whether a journey outlives its opener is a product question: a trade
-    // ticket's journey should end with the ticket, a research task's should not.
+    // The product decides if a journey continues after its opener closes. A journey for a trade
+    // ticket ends with the ticket. A journey for a research task does not end.
     const { engine } = makeEngine();
     engine.start("checkout");
 

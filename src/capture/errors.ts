@@ -7,6 +7,7 @@ import {
   ERROR_STORM_MAX_PER_WINDOW,
   MAX_TRACKED_ERROR_SIGNATURES,
 } from "../constants";
+import { isErrorLike } from "../utils/error-like";
 import { stripUrlQuery } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
@@ -17,6 +18,31 @@ interface SeenError {
   at: number;
   /** Occurrences recorded since the last report. */
   count: number;
+}
+
+/** Message and deduplication key of a thrown value. */
+interface Signature {
+  /** Message of the record. */
+  message: string;
+  /** Deduplication key. */
+  key: string;
+}
+
+/**
+ * Reads the message and the deduplication key of a thrown value.
+ * Duck typing reads an error from another realm. That error fails `instanceof Error`.
+ * @param value Thrown value or rejection reason.
+ * @returns The signature.
+ * @throws When a getter or the text form of the value throws. Call it inside a guard.
+ */
+function signatureOf(value: unknown): Signature {
+  if (isErrorLike(value)) {
+    const frame = (value.stack ?? "").split("\n")[1] ?? "";
+    return { message: value.message, key: `${value.name}|${value.message}|${frame}` };
+  }
+
+  const message = String(value);
+  return { message, key: `${typeof value}|${message}|` };
 }
 
 /** Captures uncaught exceptions, unhandled promise rejections, and failed resource loads. */
@@ -78,7 +104,7 @@ export class ErrorCapture implements Capture {
       }
 
       // A cache buster is noise. A signed URL is a credential.
-      // The record keeps neither unless fullUrls is set.
+      // The record keeps neither unless you set fullUrls.
       const url = this.ctx.config.capture.fullUrls ? resourceUrl : stripUrlQuery(resourceUrl);
 
       this.ctx.breadcrumbs.push({
@@ -133,9 +159,13 @@ export class ErrorCapture implements Capture {
     }
 
     const now = Date.now();
-    const asError = error instanceof Error ? error : new Error(String(error));
-    const frame = (asError.stack ?? "").split("\n")[1] ?? "";
-    const key = `${asError.name}|${asError.message}|${frame}`;
+    // A reason with no text form, for example a null-prototype object, gets an empty message.
+    // The record then uses the source as its message.
+    const { message, key } = this.ctx.diagnostics.guard(
+      "capture.record_failed",
+      "The library could not read the error reason. It records the error without its message.",
+      () => signatureOf(error),
+    ) ?? { message: "", key: `${typeof error}||` };
     const previous = this.seen.get(key);
 
     if (previous && now - previous.at < ERROR_DEDUPE_MS) {
@@ -160,7 +190,10 @@ export class ErrorCapture implements Capture {
       this.seen.delete(oldest);
     }
 
-    this.ctx.logger.error(asError.message === "" ? source : asError.message, asError, {
+    // Give the original value to the logger. It converts the reason and keeps its data.
+    // Without a reason, the record still needs error.message and error.stack_trace.
+    const reason = error === undefined ? new Error(message) : error;
+    this.ctx.logger.error(message === "" ? source : message, reason, {
       ...extra,
       "error.captured_by": source,
       "error.suppressed_count": suppressed,

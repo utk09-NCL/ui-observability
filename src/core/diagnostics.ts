@@ -18,6 +18,8 @@ export type DiagnosticCode =
   | "record.dropped_by_redact"
   | "record.dropped_boot_buffer_full"
   | "record.dropped_malformed"
+  | "record.dropped_no_destination"
+  | "runtime.version_mismatch"
   | "journey.expired"
   | "journey.adopted"
   | "journey.token_too_large"
@@ -183,7 +185,7 @@ export class Diagnostics {
    * @param code Diagnostic code to report on rejection.
    * @param message ASD-STE100 sentence that states the failure. The handler gets it as the event message.
    * @param fn Async function to execute.
-   * @returns Promise resolving to the return value, or undefined on rejection.
+   * @returns Promise that resolves to the return value, or undefined on rejection.
    */
   async guardAsync<T>(
     code: DiagnosticCode,

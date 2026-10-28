@@ -11,18 +11,17 @@ import {
 
 const diag = (): Diagnostics => new Diagnostics(vi.fn(), 0);
 
-// The shared setup resets the cache after every test, but a stub applied inside
-// one must not outlive it, and the cache must be cold when the stub goes.
+// The shared setup resets the cache after each test. A stub inside one test must not stay after it.
+// The cache must be cold when the stub goes.
 afterEach(() => {
   vi.unstubAllGlobals();
   resetPlatformCache();
 });
 
 /**
- * `globalThis instanceof X` is decided entirely by X, so an object carrying
- * Symbol.hasInstance is enough to impersonate a worker scope constructor. This
- * is the only seam that makes all three worker branches reachable from a
- * document, and it needs no class.
+ * `globalThis instanceof X` depends only on X. An object with Symbol.hasInstance can act as a
+ * worker scope constructor. Only this seam lets a document reach all three worker branches. It
+ * needs no class.
  */
 const alwaysAnInstance = { [Symbol.hasInstance]: () => true };
 
@@ -41,8 +40,8 @@ describe("detectPlatform", () => {
     ["SharedWorkerGlobalScope", "shared_worker"],
     ["WorkerGlobalScope", "web_worker"],
   ])("detects %s", (globalName, expected) => {
-    // Order matters: the detector checks service worker first, so stubbing only
-    // the one under test is what reaches the later branches.
+    // The order is important. The detector checks the service worker first. A stub of only the
+    // scope under test reaches the later branches.
     vi.stubGlobal(globalName, alwaysAnInstance);
 
     const meta = detectPlatform(diag());
@@ -115,10 +114,9 @@ describe("detectPlatform", () => {
   });
 
   it("calls an Android webview a webview and iOS Safari a browser", () => {
-    // The half that is easy to get backwards. Matching `Mobile.*Safari`, which
-    // is the obvious version of this check, calls every iPhone on ordinary
-    // Safari an in-app webview, and then every dashboard split by platform is
-    // wrong for all iOS traffic.
+    // This half is easy to get wrong. The obvious check matches `Mobile.*Safari`. That check calls
+    // each iPhone on ordinary Safari an in-app webview. Each dashboard that splits by platform is
+    // then wrong for all iOS traffic.
     const androidWebview = "Mozilla/5.0 (Linux; Android 14; wv) AppleWebKit/537.36";
     const iosWebview =
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
@@ -151,9 +149,9 @@ describe("detectPlatform", () => {
   });
 
   it("is Node only when there is no document, not merely because process exists", () => {
-    // process is defined in this test run, and the default detection above
-    // still reports a browser. That is the whole point: bundlers inject a
-    // process shim into browser bundles, so process alone proves nothing.
+    // This test run defines process. The default detection above still reports a browser. That is
+    // the purpose of the test. Bundlers put a process shim into browser bundles. process alone
+    // proves nothing.
     vi.stubGlobal("document", undefined);
 
     expect(detectPlatform(diag()).platform).toBe("node");

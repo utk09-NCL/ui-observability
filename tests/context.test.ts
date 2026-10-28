@@ -19,9 +19,9 @@ describe("ContextStore", () => {
   });
 
   it("is instance-owned, so two runtimes cannot leak into each other", () => {
-    // The reason this is not a module-level Map. A static store makes every
-    // test in the suite depend on the order the files happened to run in, and
-    // makes two runtimes in one document share one user's identifiers.
+    // This is why the store is not a module-level Map. A static store makes each test depend on the
+    // order of the test files. It also makes two runtimes in one document share the identifiers of
+    // one user.
     const a = new ContextStore();
     const b = new ContextStore();
 
@@ -41,8 +41,8 @@ describe("ContextStore", () => {
   });
 
   it("merges on setMany rather than replacing what is already there", () => {
-    // A caller that sets a region must not silently drop the user id some
-    // other part of the application set a moment earlier.
+    // A caller that sets a region must not drop a user id. Another part of the application can set
+    // that id just before.
     const store = new ContextStore();
     store.set("user", "u1");
 
@@ -62,8 +62,8 @@ describe("ContextStore", () => {
   });
 
   it("stays usable after clear", () => {
-    // clear() empties the store, it does not retire it. A sign-out is followed
-    // by a sign-in.
+    // clear() empties the store. It does not end the use of the store. A sign-in comes after a
+    // sign-out.
     const store = new ContextStore();
     store.set("user", "u1");
 
@@ -74,9 +74,8 @@ describe("ContextStore", () => {
   });
 
   it("stores values verbatim, because sanitizing belongs where the record is built", () => {
-    // The limits that govern sanitizing come from a config the consumer can
-    // replace at any time. A value cleaned on the way in would have been
-    // cleaned against limits that no longer apply by the time it is sent.
+    // The consumer can replace the config that sets the sanitize limits at any time. A value that
+    // the store cleans on input uses old limits. Those limits do not apply at the time of the send.
     const store = new ContextStore();
     const value = { nested: { deep: true } };
 
@@ -86,9 +85,9 @@ describe("ContextStore", () => {
   });
 
   it("returns a fresh snapshot from getAll, so a caller cannot mutate the store", () => {
-    // The record builder merges this object under the scoped and per-call
-    // attributes. Handing out the live map would let that merge, a sanitizer,
-    // or a consumer holding the result rewrite the context by accident.
+    // The record builder merges this object under the scoped and per-call attributes. If the store
+    // gives out the live map, three parties can change the context by accident. They are that
+    // merge, a sanitizer and a consumer that keeps the result.
     const store = new ContextStore();
     store.set("user", "u1");
 
@@ -101,9 +100,8 @@ describe("ContextStore", () => {
   });
 
   it("keeps prototype keys as ordinary data, which is why the store is a Map", () => {
-    // On a plain object `__proto__` is a setter, so this pair would write to
-    // the prototype chain instead of being stored. Consumers do echo
-    // user-supplied keys into the context.
+    // On a plain object, `__proto__` is a setter. This pair then writes to the prototype chain. The
+    // store does not keep it. Consumers do put keys from users into the context.
     const store = new ContextStore();
     const payload = { polluted: true };
 
@@ -115,17 +113,15 @@ describe("ContextStore", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 
     const snapshot = store.getAll();
-    // Object.fromEntries defines properties rather than assigning them, so the
-    // key survives the round trip as an own property and the snapshot's own
-    // prototype is untouched.
+    // Object.fromEntries defines properties. It does not assign them. The key stays an own
+    // property. The prototype of the snapshot does not change.
     expect(Object.getOwnPropertyNames(snapshot)).toEqual(["__proto__", "constructor"]);
     expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
   });
 
   it("cannot tell a stored undefined from an absent key, and does not pretend to", () => {
-    // Both serialize to the same absence on a record, so the ambiguity costs
-    // nothing and keeping the store dumb is worth more than a has() method
-    // nothing calls.
+    // Both values serialize to the same absence on a record. The difference has no cost. A simple
+    // store is better than a has() method that no code calls.
     const store = new ContextStore();
 
     store.set("user", undefined);

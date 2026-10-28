@@ -9,11 +9,11 @@ const ENDPOINT = "https://ingest.example/v1/logs";
 const OTHER_ENDPOINT = "https://ingest-two.example/v1/logs";
 
 /**
- * A diagnostics instance with the throttle disabled.
+ * A diagnostics instance with no throttle.
  *
- * The default one-second window would hide every message after the first, and
- * a single resolve can legitimately report several distinct problems. Throttling
- * is covered by the diagnostics tests; here it would only obscure the subject.
+ * The default window of one second hides each message after the first. One resolve can report many
+ * different problems. The diagnostics tests cover the throttle. Here, the throttle hides the
+ * subject of the test.
  */
 function collect(): { events: DiagnosticEvent[]; diagnostics: Diagnostics } {
   const events: DiagnosticEvent[] = [];
@@ -50,7 +50,7 @@ describe("resolveConfig", () => {
     expect(resolved.capture.fullUrls).toBe(false);
     expect(resolved.console.level).toBeNull();
 
-    // The only complaint should be the absent serviceName.
+    // The only problem must be the absent serviceName.
     expect(messages(events)).toHaveLength(1);
     expect(events[0].code).toBe("config.invalid");
   });
@@ -328,8 +328,8 @@ describe("resolveConfig", () => {
     it("falls back to 1 when the rate is not a number at all", () => {
       const { events, diagnostics } = collect();
       const input: Partial<ObservabilityConfig> = { ...valid() };
-      // A JavaScript consumer can pass anything, which is the case this guard
-      // exists for and the only place in the library that will ever notice.
+      // A JavaScript consumer can pass any value. This guard is for that case. No other part of the
+      // library sees the problem.
       input.sampling = { defaultRate: "high" } as unknown as Partial<SamplingOptions>;
 
       const resolved = resolveConfig(input, diagnostics);
@@ -451,7 +451,7 @@ describe("resolveConfig", () => {
 
       const second = resolveConfig({ endpoint: OTHER_ENDPOINT }, diagnostics, first);
 
-      // The stale entry is gone, so the live endpoint is the one that is covered.
+      // The old entry is gone. The test now covers the live endpoint.
       expect(second.capture.ignoreUrls).toEqual(["/health", OTHER_ENDPOINT]);
     });
   });
@@ -465,7 +465,7 @@ describe("resolveConfig", () => {
 
     const second = resolveConfig({ enabled: false }, diagnostics, first);
 
-    // A one-key kill switch must not throw away everything else.
+    // A call with one key must not discard all other settings.
     expect(second.enabled).toBe(false);
     expect(second.endpoint).toBe(ENDPOINT);
     expect(second.serviceName).toBe("checkout");
@@ -476,8 +476,8 @@ describe("resolveConfig", () => {
   describe("unknown keys", () => {
     it("reports an unknown key by name rather than ignoring it silently", () => {
       const { events, diagnostics } = collect();
-      // The failure this catches: every type checks out, because the argument
-      // is a Partial, and nothing is ever sent.
+      // This test finds this failure. Each type is correct, because the argument is a Partial. The
+      // library sends nothing.
       const input: Partial<ObservabilityConfig> & Record<string, unknown> = {
         ...valid(),
         remoteUrl: "https://typo.example",
@@ -597,14 +597,235 @@ describe("resolveConfig", () => {
       expect(events).toHaveLength(2);
     });
   });
+
+  describe("value checks", () => {
+    /**
+     * Resolves a config with values that the type does not accept.
+     * @param input Values to put over the valid config.
+     * @returns The resolved config and the diagnostic messages.
+     */
+    function resolveLoose(input: Record<string, unknown>) {
+      const { events, diagnostics } = collect();
+      const config = resolveConfig({ ...valid(), ...input }, diagnostics);
+      return { config, texts: messages(events) };
+    }
+
+    it("reads a level name in any case", () => {
+      const { config, texts } = resolveLoose({ minLevel: "warn", console: "debug" });
+
+      expect(config.minLevel).toBe("WARN");
+      expect(config.console.level).toBe("DEBUG");
+      expect(texts).toEqual([]);
+    });
+
+    it("reports an unknown minLevel and keeps the level in force", () => {
+      const { config, texts } = resolveLoose({ minLevel: "verbose" });
+
+      expect(config.minLevel).toBe("INFO");
+      expect(texts).toEqual([
+        'minLevel must be a level name: "TRACE", "DEBUG", "INFO", "WARN", "ERROR" or "FATAL". The value is "verbose". The library keeps "INFO".',
+      ]);
+    });
+
+    it("keeps the minLevel of the config in force on a later bad value", () => {
+      const { diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), minLevel: "WARN" }, diagnostics);
+
+      const next = resolveConfig(
+        { minLevel: "loud" } as unknown as Partial<ObservabilityConfig>,
+        diagnostics,
+        first,
+      );
+
+      expect(next.minLevel).toBe("WARN");
+    });
+
+    it("reports an unknown console level and keeps the console settings in force", () => {
+      const asString = resolveLoose({ console: "loud" });
+      const asObject = resolveLoose({ console: { level: 3 } });
+
+      expect(asString.config.console.level).toBeNull();
+      expect(asObject.config.console.level).toBeNull();
+      expect(asString.texts[0]).toContain("console must be a level name");
+      expect(asObject.texts[0]).toContain("console.level must be a level name");
+    });
+
+    it("reports each top-level value outside its choices and keeps the default", () => {
+      const { config, texts } = resolveLoose({
+        enabled: "yes",
+        compression: "brotli",
+        credentials: "all",
+        storage: "session",
+        identity: "cookie",
+        headers: 42,
+      });
+
+      expect(config).toMatchObject({
+        enabled: true,
+        compression: "gzip",
+        credentials: "omit",
+        storage: "auto",
+        identity: "storage",
+      });
+      expect(config.headers).toBeUndefined();
+      expect(texts).toEqual([
+        'enabled must be true or false. The value is "yes". The library keeps true.',
+        'compression must be "gzip" or "none". The value is "brotli". The library keeps "gzip".',
+        'credentials must be "omit", "same-origin" or "include". The value is "all". The library keeps "omit".',
+        "headers must be an object of strings or a function. The value is 42. The library keeps the headers in force.",
+        'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The value is "session". The library keeps "auto".',
+        'identity must be "storage" or "memory". The value is "cookie". The library keeps "storage".',
+      ]);
+    });
+
+    it("clears the headers on an explicit undefined, and keeps them on a missing key", () => {
+      // On logout, the old Authorization header must not go on the next send.
+      const { diagnostics } = collect();
+      const first = resolveConfig(
+        { ...valid(), headers: { authorization: "Bearer t" } },
+        diagnostics,
+      );
+
+      expect(resolveConfig({}, diagnostics, first).headers).toEqual({ authorization: "Bearer t" });
+      expect(resolveConfig({ headers: undefined }, diagnostics, first).headers).toBeUndefined();
+    });
+
+    it("reads each propagateTraceHeaderTo string as its origin, and keeps each RegExp", () => {
+      const pattern = /\/api\//;
+      const { config, texts } = resolveLoose({
+        capture: { propagateTraceHeaderTo: ["https://api.example/v1/", pattern, "/api/", 5] },
+      });
+
+      expect(config.capture.propagateTraceHeaderTo).toEqual(["https://api.example", pattern]);
+      expect(texts).toEqual([
+        'The library ignores the capture.propagateTraceHeaderTo entry "/api/". capture.propagateTraceHeaderTo must be a list of origin URLs such as "https://api.example" and RegExp patterns.',
+        'The library ignores the capture.propagateTraceHeaderTo entry 5. capture.propagateTraceHeaderTo must be a list of origin URLs such as "https://api.example" and RegExp patterns.',
+      ]);
+    });
+
+    it("accepts headers as an object of strings or as a function", () => {
+      const fn = () => ({ authorization: "Bearer t" });
+
+      expect(resolveLoose({ headers: { "x-app": "a" } }).config.headers).toEqual({ "x-app": "a" });
+      expect(resolveLoose({ headers: fn }).config.headers).toBe(fn);
+      expect(resolveLoose({ headers: { "x-app": 1 } }).texts).toHaveLength(1);
+    });
+
+    it("reads each trusted origin as its origin, and drops an entry that is not an origin", () => {
+      const { config, texts } = resolveLoose({
+        bus: {
+          trustedOrigins: [
+            "https://parent.example/app/",
+            "null",
+            "not a url",
+            5,
+            "data:text/plain,x",
+          ],
+        },
+      });
+
+      // One "null" entry trusts each sandboxed and data: document, for example a frame in an ad.
+      expect(config.bus.trustedOrigins).toEqual(["https://parent.example"]);
+      expect(texts).toHaveLength(4);
+      expect(texts[0]).toBe(
+        'The library ignores the bus.trustedOrigins entry "null". bus.trustedOrigins must be a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame.',
+      );
+    });
+
+    it("reports a bus value outside its choices, and a list that is not a list", () => {
+      const { config, texts } = resolveLoose({
+        bus: { mode: "leader", openFinRole: "host", trustedOrigins: "https://a.example" },
+      });
+
+      expect(config.bus).toEqual({ mode: "auto", trustedOrigins: [], openFinRole: "auto" });
+      expect(texts).toHaveLength(3);
+      expect(texts[1]).toBe(
+        'bus.trustedOrigins must be a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame. The value is "https://a.example". The library keeps the list in force.',
+      );
+    });
+
+    it("defaults journey.scope to auto, accepts each scope and reports another value", () => {
+      expect(resolveLoose({}).config.journey).toEqual({ scope: "auto" });
+      expect(resolveLoose({ journey: { scope: "tab" } }).config.journey.scope).toBe("tab");
+
+      const { config, texts } = resolveLoose({ journey: { scope: "window", maxAge: 1 } });
+
+      expect(config.journey.scope).toBe("auto");
+      expect(texts).toEqual([
+        'journey.scope must be "auto", "context", "tab" or "origin". The value is "window". The library keeps "auto".',
+        'The library ignores the unknown config key "journey.maxAge". Check the spelling.',
+      ]);
+    });
+
+    it("reports each capture value of the wrong type and keeps the default", () => {
+      const { config, texts } = resolveLoose({
+        capture: {
+          fetch: "yes",
+          console: "error",
+          longFrameThresholdMs: -1,
+          propagateTraceHeaderTo: "https://api.internal",
+        },
+      });
+
+      expect(config.capture).toMatchObject({
+        fetch: false,
+        console: false,
+        longFrameThresholdMs: 100,
+        propagateTraceHeaderTo: [],
+      });
+      expect(texts).toHaveLength(4);
+      expect(texts).toContain(
+        'capture.fetch must be true or false. The value is "yes". The library keeps false.',
+      );
+      expect(texts).toContain(
+        "capture.longFrameThresholdMs must be a finite number of 0 or more. The value is -1. The library keeps 100.",
+      );
+    });
+
+    it("keeps the valid entries of each capture list and reports the others", () => {
+      const pattern = /internal/;
+      const { config, texts } = resolveLoose({
+        capture: { console: ["error", "debug"], ignoreUrls: [pattern, "health", 5] },
+      });
+
+      expect(config.capture.console).toEqual(["error"]);
+      expect(config.capture.ignoreUrls).toEqual([pattern, "health", ENDPOINT]);
+      expect(texts).toEqual([
+        'The library ignores the capture.console entry "debug". capture.console must be true, false or a list of "error", "warn", "info" or "log".',
+        "The library ignores the capture.ignoreUrls entry 5. capture.ignoreUrls must be a list of strings and RegExp patterns.",
+      ]);
+    });
+
+    it("reports a sampling list entry and a remote flag of the wrong type", () => {
+      const { config, texts } = resolveLoose({
+        sampling: { alwaysSampleTypes: ["action", { type: "metric" }], remote: "true" },
+      });
+
+      expect(config.sampling.alwaysSampleTypes).toEqual(["action"]);
+      expect(config.sampling.remote).toBe(false);
+      expect(texts).toEqual([
+        "The library ignores the sampling.alwaysSampleTypes entry an object. sampling.alwaysSampleTypes must be a list of strings.",
+        'sampling.remote must be true or false. The value is "true". The library keeps false.',
+      ]);
+    });
+
+    it("names a function and null in a message", () => {
+      const { texts } = resolveLoose({ enabled: () => true, compression: null });
+
+      expect(texts).toEqual([
+        "enabled must be true or false. The value is a function. The library keeps true.",
+        'compression must be "gzip" or "none". The value is null. The library keeps "gzip".',
+      ]);
+    });
+  });
 });
 
 describe("applyResolvedConfig", () => {
   it("copies scalars in place and merges sections into the objects already there", () => {
     const { diagnostics } = collect();
     const live = resolveConfig({ ...valid(), capture: { fetch: false } }, diagnostics);
-    // Half the library captures these references once at construction and never
-    // looks them up again, so their identity is the thing under test.
+    // Many parts of the library keep these references from construction. They do not read them
+    // again. The identity of each reference is the subject of this test.
     const capture = live.capture;
     const sampling = live.sampling;
     const bus = live.bus;

@@ -9,11 +9,11 @@ import {
   REMOTE_SAMPLING_POLL_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
-import type { Journey } from "../core/journey";
+import { type Journey, parseJourney } from "../core/journey";
 import { applyRemote, parseRemoteRules } from "../core/remote-rules";
 import type { RemoteSlot } from "../core/remote-sampling";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
-import type { ResolvedConfig } from "../models/config";
+import type { JourneyScope, ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 import type { PlatformMetadata } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
@@ -61,6 +61,9 @@ export interface BusHandlers {
 /** Link types that a sender context may claim ownership over during handshakes. */
 const OWNED: readonly LinkKind[] = ["children", "direct", "worker"];
 
+/** Journey scope after the bus resolves "auto". */
+type ResolvedScope = Exclude<JourneyScope, "auto">;
+
 /** Structural shape of fin.me identity metadata. */
 interface OpenFinMe {
   isView?: boolean;
@@ -77,14 +80,16 @@ export class Bus {
   private readonly links: Link[] = [];
   /** Shared OpenFin InterApplicationBus link instance. */
   private openFinLink: Link | null = null;
-  /** Indicates whether this context is the OpenFin platform provider. */
+  /** True if this context is the OpenFin platform provider. */
   private isOpenFinProvider = false;
-  /** Indicates whether role resolution has completed. */
+  /** True if role resolution is complete. */
   private resolved = false;
   /** Timer that asks the upstream owner for the remote sampling rules. */
   private rulesPoll: ReturnType<typeof setInterval> | undefined;
   /** True after destroy(). A handshake that ends later must not start a timer. */
   private destroyed = false;
+  /** Context id of the owner that answered the handshake. Null with no handshake. */
+  private ownerId: string | null = null;
   /** Active handshake state awaiting welcome response. */
   private awaitingWelcome: {
     link: LinkKind;
@@ -114,7 +119,7 @@ export class Bus {
     return this.role;
   }
 
-  /** Returns whether role resolution has completed. */
+  /** Returns true if role resolution is complete. */
   isResolved(): boolean {
     return this.resolved;
   }
@@ -252,8 +257,8 @@ export class Bus {
     }
     if (message.t === "journey?") {
       const current = this.handlers.onJourneyRequest();
-      if (current) {
-        reply({ t: "journey", from: this.contextId, journey: current }, source);
+      if (current && this.journeyLink("direct")) {
+        reply({ t: "journey", from: this.contextId, to: message.from, journey: current }, source);
       }
       return;
     }
@@ -274,11 +279,11 @@ export class Bus {
   }
 
   /**
-   * Broadcasts journey state changes to all connected links.
+   * Sends journey state changes over each link of the journey scope.
    * @param journey Active journey or null if ended.
    */
   broadcastJourney(journey: Journey | null): void {
-    this.post({ t: "journey", from: this.contextId, journey });
+    this.postJourney({ t: "journey", from: this.contextId, journey });
   }
 
   /** Closes all open links and clears internal state. */
@@ -291,6 +296,7 @@ export class Bus {
     }
     this.links.length = 0;
     this.upstream = null;
+    this.ownerId = null;
     this.openFinLink = null;
   }
 
@@ -302,18 +308,20 @@ export class Bus {
     return [...this.links, this.upstream];
   }
 
-  /** Broadcasts a message across all open links. */
-  private post(message: BusMessage): void {
-    for (const link of this.allLinks()) {
-      link.post(message);
-    }
-  }
-
   /** Sends a message only over links of the given kind. */
   private postOver(link: LinkKind, message: BusMessage): void {
     for (const candidate of this.allLinks()) {
       if (candidate.kind === link) {
         candidate.post(message);
+      }
+    }
+  }
+
+  /** Sends a journey message over each link of the journey scope. */
+  private postJourney(message: BusMessage): void {
+    for (const link of this.allLinks()) {
+      if (this.journeyLink(link.kind)) {
+        link.post(message);
       }
     }
   }
@@ -341,6 +349,8 @@ export class Bus {
           break;
         }
         if (this.awaitingWelcome?.link === source.link) {
+          // Keep the owner. Only it can set the journey of this context on a shared link.
+          this.ownerId = message.from;
           this.awaitingWelcome.settle(true);
         }
         break;
@@ -355,15 +365,19 @@ export class Bus {
         break;
 
       case "journey":
-        this.handlers.onJourney(message.journey);
+        if (this.acceptsJourney(message, source)) {
+          this.applyJourney(message.journey);
+        }
         break;
 
       case "journey?": {
         const current = this.handlers.onJourneyRequest();
-        if (current) {
+        // Address the answer. On a shared link, each other context ignores it.
+        if (current && this.journeyLink(source.link)) {
           this.postOver(source.link, {
             t: "journey",
             from: this.contextId,
+            to: message.from,
             journey: current,
           });
         }
@@ -402,7 +416,7 @@ export class Bus {
   };
 
   /**
-   * Tells whether records from a link can go upstream. Records that go back on
+   * Tells if records from a link can go upstream. Records that go back on
    * their arrival link return to their sender. A direct link is an exception.
    * Each direct link is one call into one parent. Thus two direct links in a
    * chain are different links.
@@ -413,7 +427,7 @@ export class Bus {
     return link === "direct" || link !== this.upstream?.kind;
   }
 
-  /** Returns whether this context can accept ownership over the given link type. */
+  /** Returns true if this context can be the owner of the given link type. */
   private canOwn(link: LinkKind): boolean {
     if (this.role !== "sender") {
       return false;
@@ -424,7 +438,7 @@ export class Bus {
     return OWNED.includes(link);
   }
 
-  /** Resolves whether this context represents the OpenFin platform provider. */
+  /** Finds if this context is the OpenFin platform provider. */
   private resolveOpenFinProvider(): boolean {
     const configured = this.config.bus.openFinRole;
     if (configured !== "auto") {
@@ -446,7 +460,7 @@ export class Bus {
     return this.isCrossOriginFrame() ? "retry" : "promote";
   }
 
-  /** Tests whether the parent window is inaccessible due to cross-origin boundaries. */
+  /** Tests if a cross-origin boundary blocks access to the parent window. */
   private isCrossOriginFrame(): boolean {
     if (typeof window === "undefined" || window.parent === window) {
       return false;
@@ -466,7 +480,7 @@ export class Bus {
       return createOwnerLink(this.receive, this.diagnostics);
     }
     if (!this.platform.isTopLevelDocument) {
-      return createParentLink(this.receive, this.diagnostics);
+      return createParentLink(this.receive, this.config.bus.trustedOrigins, this.diagnostics);
     }
     if (this.platform.platform === "openfin" && !this.isOpenFinProvider) {
       return this.ensureOpenFinLink();
@@ -539,8 +553,96 @@ export class Bus {
       from: this.contextId,
       tabId: this.tabId,
     });
-    this.post({ t: "journey?", from: this.contextId });
+    this.postJourney({ t: "journey?", from: this.contextId });
     this.pollRules();
+  }
+
+  /**
+   * Resolves the journey scope. "auto" gives "origin" in OpenFin and "tab" in a browser.
+   * @returns The scope in force.
+   */
+  private journeyScope(): ResolvedScope {
+    const { scope } = this.config.journey;
+    if (scope !== "auto") {
+      return scope;
+    }
+
+    const { platform } = this.platform;
+    return platform === "openfin" || platform === "openfin_web" ? "origin" : "tab";
+  }
+
+  /**
+   * Tests if a link carries journey messages in the scope in force.
+   * Only "origin" uses the broadcast link. That link reaches each tab of the origin.
+   * @param link Link kind.
+   * @returns True if the link carries journey messages.
+   */
+  private journeyLink(link: LinkKind): boolean {
+    const scope = this.journeyScope();
+    if (scope === "context") {
+      return false;
+    }
+
+    return scope === "origin" || link !== "broadcast";
+  }
+
+  /**
+   * Tests if this context adopts a journey message.
+   * @param message Journey message.
+   * @param source Link and origin of the message.
+   * @returns True for a message on a journey link, to this context, from an accepted sender.
+   * In "tab" scope, only the owner of a forwarder is an accepted sender.
+   */
+  private acceptsJourney(
+    message: Extract<BusMessage, { t: "journey" }>,
+    source: MessageSource,
+  ): boolean {
+    if (!this.journeyLink(source.link)) {
+      return false;
+    }
+
+    if (message.to !== undefined && message.to !== this.contextId) {
+      return false;
+    }
+
+    return this.journeyScope() === "origin" || this.fromOwner(message.from, source.link);
+  }
+
+  /**
+   * Tests if a message comes from the upstream owner of this forwarder.
+   * @param from Context id of the sender.
+   * @param link Link kind of the message.
+   * @returns True for the upstream link and, after a handshake, the owner that answered it.
+   */
+  private fromOwner(from: string, link: LinkKind): boolean {
+    if (this.role !== "forwarder" || link !== this.upstream?.kind) {
+      return false;
+    }
+
+    return this.ownerId === null || from === this.ownerId;
+  }
+
+  /**
+   * Parses a journey payload from another realm and gives it to the runtime.
+   * @param payload Journey, or null when the journey ended.
+   */
+  private applyJourney(payload: unknown): void {
+    if (payload === null) {
+      this.handlers.onJourney(null);
+      return;
+    }
+
+    const journey = parseJourney(payload);
+    if (journey === null) {
+      this.diagnostics.report(
+        "record.dropped_malformed",
+        "The bus dropped a journey message. Its payload is not a journey.",
+        { type: "journey" },
+      );
+      return;
+    }
+
+    this.handlers.onJourney(journey);
   }
 
   /**
@@ -555,7 +657,7 @@ export class Bus {
   }
 
   /**
-   * Tests whether this context accepts sampling rules from a source.
+   * Tests if this context accepts sampling rules from a source.
    * @param to Context id that the answer names.
    * @param source Link and origin of the answer.
    * @returns True only for an answer from the upstream owner to this context.

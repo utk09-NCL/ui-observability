@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
-import { BUS_MAX_BOOT_BUFFER_RECORDS, CONSOLE_DEFAULT_STYLES as STYLES } from "../src/constants";
+import {
+  BUS_MAX_BOOT_BUFFER_RECORDS,
+  CONSOLE_DEFAULT_STYLES as STYLES,
+  TELEMETRY_SDK_VERSION,
+} from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { JourneyEngine } from "../src/core/journey";
 import { ObservabilityRuntime } from "../src/core/runtime";
@@ -144,7 +148,8 @@ describe("runtime lifecycle", () => {
 
     configure({ storage: "indexeddb" });
 
-    // The adapter is chosen once. A swap strands the batches already persisted under it.
+    // The runtime selects the adapter one time. After a swap, the runtime cannot get to the batches
+    // in the old adapter.
     expect(runtime().config.storage).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
@@ -299,7 +304,7 @@ describe("runtime lifecycle", () => {
     configure(base);
     const log = getLogger("test");
 
-    // The bus has not resolved, so this is buffered.
+    // The bus has no role yet. The runtime keeps this record in the buffer.
     log.info("during boot");
     const journey = startJourney("order-lifecycle");
 
@@ -320,7 +325,7 @@ describe("runtime lifecycle", () => {
 
     const bodies = runtime()["bootBuffer"].map((record: LogRecord) => record.body);
     expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
-    // The first record was evicted, so the oldest survivor is the second.
+    // The buffer evicted the first record. The second record is now the oldest.
     expect(bodies[0]).toBe("record 1");
     expect(runtime().diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
   });
@@ -472,7 +477,8 @@ describe("runtime lifecycle", () => {
   });
 
   it("applies a journey update routed from the bus", async () => {
-    configure(base);
+    // In "tab" scope, a sender does not adopt the journey of a child. "origin" adopts each.
+    configure({ ...base, journey: { scope: "origin" } });
     await ready();
     const applyRemote = vi.spyOn(runtime().journey, "applyRemote");
 
@@ -707,8 +713,8 @@ describe("runtime lifecycle", () => {
     const pending = vi.spyOn(pipeline, "drainPending");
     const forExit = vi.spyOn(pipeline, "drainForExit");
 
-    // A tab switch. The document keeps running, so an in-flight batch is still
-    // on its way, and taken here those records go out a second time.
+    // A tab switch. The document continues to run. A batch in flight is still on its way. A take of
+    // it here sends those records two times.
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
     // A second switch, with nothing buffered behind it.
@@ -821,7 +827,7 @@ describe("delivery stack loading", () => {
 
     configure({ transport });
 
-    // The HTTP stack is already built. It would ignore the new transport without a word.
+    // The HTTP stack exists. It ignores a new transport with no message.
     expect(runtime().config.transport).toBeUndefined();
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
@@ -966,7 +972,7 @@ describe("delivery stack loading", () => {
   });
 
   it("loads the delivery stack for an endpoint set during startup", async () => {
-    // Mode "off" decides the role at once. The endpoint arrives before startup completes.
+    // Mode "off" decides the role immediately. The endpoint arrives before startup completes.
     configure({ ...base, endpoint: null, bus: { mode: "off" } });
     configure({ endpoint: base.endpoint });
     await ready();
@@ -1146,7 +1152,7 @@ describe("runtime flush as a sender", () => {
   it("stores the batch and nudges retry when the send fails", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["sender"]?.["transport"];
+    const transport = runtime()["sender"]?.["pipeline"]["transport"];
     const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
@@ -1164,7 +1170,7 @@ describe("runtime flush as a sender", () => {
   it("reports a full store rather than rejecting the caller", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["sender"]?.["transport"];
+    const transport = runtime()["sender"]?.["pipeline"]["transport"];
     const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
@@ -1181,7 +1187,7 @@ describe("runtime flush as a sender", () => {
   it("splits the batch the server refused as too large", async () => {
     configure(base);
     await ready();
-    const transport = runtime()["sender"]?.["transport"];
+    const transport = runtime()["sender"]?.["pipeline"]["transport"];
     const storage = runtime()["sender"]?.["storage"];
     if (!transport || !storage) {
       throw new Error("sender was not built");
@@ -1287,20 +1293,42 @@ describe("OneLogger", () => {
     expect(printed).not.toHaveProperty("card");
   });
 
-  it("prints the message only when redact drops the record", () => {
+  it("prints no line when redact drops the record", () => {
+    // The message did not pass redact. A host can record console arguments.
     configure({ ...base, console: "DEBUG", redact: () => null });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    getLogger("pay").info("charged", { card: "4111" });
+    getLogger("pay").info("charged 4111", { card: "4111" });
 
-    expect(spy).toHaveBeenCalledWith(
-      "%c[%s]%c[INFO]%c",
-      STYLES.namespace,
-      "pay",
-      STYLES.INFO,
-      "",
-      "charged",
-    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("prints no line for an error when redact throws", () => {
+    const redact = (): never => {
+      throw new Error("hook");
+    };
+    configure({ ...base, console: "DEBUG", redact });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    getLogger("pay").error("failed 4111", Object.assign(new Error("boom"), { card: "4111" }));
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("prints no line when redact changes the record to a broken shape", () => {
+    configure({
+      ...base,
+      console: "DEBUG",
+      redact: (record) => {
+        (record as unknown as Record<string, unknown>).attributes = null;
+        return record;
+      },
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("pay").info("charged 4111");
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("prints the message only below minLevel when a redact hook is set", () => {
@@ -1777,5 +1805,168 @@ describe("public API", () => {
 
   it("shuts down cleanly when nothing was ever configured", async () => {
     await expect(shutdown()).resolves.toBeUndefined();
+  });
+});
+
+describe("runtime version guard", () => {
+  const KEY = Symbol.for("ui-observability.runtime");
+
+  /**
+   * Pins a runtime of another copy of the library on the page.
+   * @param sdkVersion Version of that copy. Undefined is a copy before 0.9.0.
+   * @returns The stand-in for the runtime of the other copy.
+   */
+  function pinOther(sdkVersion?: string) {
+    const other = { sdkVersion, destroyed: false, reconfigure: vi.fn() };
+    (globalThis as Record<symbol, unknown>)[KEY] = other;
+    return other;
+  }
+
+  beforeEach(() => {
+    // The stopped local runtime of a previous test takes each log call.
+    ObservabilityRuntime["local"] = null;
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, KEY);
+  });
+
+  it("runs console-only and installs no capture when another version owns the page", async () => {
+    const other = pinOther("0.8.5");
+    const fetchBefore = globalThis.fetch;
+    const handler = vi.fn();
+
+    configure({ ...base, capture: { fetch: true }, onDiagnostic: handler });
+    await ready();
+
+    expect(other.reconfigure).not.toHaveBeenCalled();
+    expect(runtime()).not.toBe(other);
+    expect(runtime().config.endpoint).toBeNull();
+    expect(runtime().config.bus.mode).toBe("off");
+    expect(globalThis.fetch).toBe(fetchBefore);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "runtime.version_mismatch",
+        detail: { found: "0.8.5", own: TELEMETRY_SDK_VERSION },
+      }),
+    );
+  });
+
+  it("names a copy before 0.9.0 when the runtime on the page has no version", async () => {
+    pinOther();
+    const handler = vi.fn();
+
+    configure({ ...base, onDiagnostic: handler });
+    await ready();
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { found: "before 0.9.0", own: TELEMETRY_SDK_VERSION } }),
+    );
+  });
+
+  it("updates its own runtime on a later configure, and leaves the other runtime alone", () => {
+    const other = pinOther("0.8.5");
+    configure(base);
+    const local = runtime();
+
+    configure({ serviceVersion: "2.0.0" });
+
+    expect(runtime()).toBe(local);
+    expect(local.config.serviceVersion).toBe("2.0.0");
+    expect(other.reconfigure).not.toHaveBeenCalled();
+  });
+
+  it("keeps its own runtime console-only on a later configure", async () => {
+    pinOther("0.8.5");
+    // React StrictMode calls configure() two times.
+    configure(base);
+    configure({ ...base, transport: vi.fn(), bus: { mode: "auto" } });
+    const local = runtime();
+    await ready();
+
+    expect(local.config.endpoint).toBeNull();
+    expect(local.config.transport).toBeUndefined();
+    expect(local.config.bus.mode).toBe("off");
+    expect(local["senderLoad"]).toBeUndefined();
+  });
+
+  it("starts a console-only runtime on a first log call, and stops only that", async () => {
+    const other = Object.assign(pinOther("0.8.5"), { destroy: vi.fn() });
+
+    expect(() => {
+      getLogger("blotter").info("loaded");
+    }).not.toThrow();
+
+    const local = ObservabilityRuntime.current();
+    expect(local).not.toBe(other);
+    expect(local?.sdkVersion).toBe(TELEMETRY_SDK_VERSION);
+
+    await shutdown();
+
+    expect(other.destroy).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stopped runtime of another version", () => {
+    (globalThis as Record<symbol, unknown>)[Symbol.for("ui-observability.stopped")] = {
+      sdkVersion: "0.8.5",
+    };
+
+    expect(ObservabilityRuntime.stopped()).toBeNull();
+  });
+
+  it("stops only its own runtime on shutdown, and starts a new one on the next configure", async () => {
+    pinOther("0.8.5");
+    configure(base);
+    const local = runtime();
+
+    await shutdown();
+
+    expect(ObservabilityRuntime.current()).toBeNull();
+    expect(ObservabilityRuntime.stopped()).toBe(local);
+    expect((globalThis as Record<symbol, unknown>)[KEY]).toBeDefined();
+
+    configure(base);
+    expect(runtime()).not.toBe(local);
+  });
+});
+
+describe("runtime reconfigure", () => {
+  it("reinstalls the capture modules only when the capture section changed", async () => {
+    configure(base);
+    await ready();
+    const install = vi.spyOn(
+      runtime() as unknown as { installCaptures: () => Promise<void> },
+      "installCaptures",
+    );
+
+    configure({ serviceVersion: "2.0.0" });
+    expect(install).not.toHaveBeenCalled();
+
+    configure({ capture: { fetch: true } });
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it("starts a new runtime when configure runs during a shutdown", async () => {
+    configure(base);
+    await ready();
+    const old = runtime();
+
+    // destroy() marks the runtime immediately. It clears the global key after its awaits.
+    const closing = shutdown();
+    configure(base);
+    const fresh = runtime();
+    await closing;
+
+    expect(fresh).not.toBe(old);
+    expect(runtime()).toBe(fresh);
+  });
+
+  it("counts a record that has no destination", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    info("console only");
+
+    expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
   });
 });

@@ -31,7 +31,7 @@ function keyFor(batch: LogBatch): string {
  * Reads the creation time from a storage key. prune() runs after each save. A
  * read from the batch parses the full store for each save.
  * @param key Prefixed storage key.
- * @returns Creation time in epoch milliseconds, or null if the key is malformed.
+ * @returns Creation time in epoch milliseconds, or null for a malformed key.
  */
 function createdAtOf(key: string): number | null {
   const start = BATCH_STORAGE_KEY_PREFIX.length;
@@ -68,8 +68,8 @@ export class LocalStorageStorage implements StorageAdapter {
 
     this.evictForQuota();
 
-    // The eviction makes room for this batch. Without a second write, save() resolves but the
-    // batch is lost and not counted.
+    // The eviction makes room for this batch. Without a second write, save() resolves.
+    // The library then loses the batch. No counter shows the loss.
     if (!this.write(batch, "localStorage refused a batch even after evicting")) {
       this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" });
     }
@@ -78,14 +78,14 @@ export class LocalStorageStorage implements StorageAdapter {
   /**
    * Returns up to `limit` batches in FIFO order. It does not delete them.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise resolving to an array of valid batches.
+   * @returns Promise that resolves to an array of valid batches.
    */
   take(limit: number): Promise<LogBatch[]> {
     const out: LogBatch[] = [];
 
     for (const key of this.keys().slice(0, limit)) {
       const batch = this.read(key);
-      // The entry is corrupt and cannot be recovered. Remove it without a gap count. It has
+      // The entry is corrupt. The library cannot recover it. Remove it without a gap count. It has
       // no readable record count.
       if (batch === null) {
         this.removeKey(key);
@@ -140,7 +140,7 @@ export class LocalStorageStorage implements StorageAdapter {
   /**
    * Deletes expired batches. It then removes the oldest batches above the
    * capacity limit.
-   * @returns Promise resolving to prune summary metrics.
+   * @returns Promise that resolves to prune summary metrics.
    */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
@@ -182,7 +182,7 @@ export class LocalStorageStorage implements StorageAdapter {
 
   /**
    * Returns the number of stored batch keys. It does not deserialize the batches.
-   * @returns Promise resolving to batch count.
+   * @returns Promise that resolves to batch count.
    */
   count(): Promise<number> {
     return Promise.resolve(this.keys().length);

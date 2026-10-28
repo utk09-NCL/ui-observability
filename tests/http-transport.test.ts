@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { COMPRESSION_THRESHOLD_BYTES, REQUEST_TIMEOUT_MS } from "../src/constants";
+import {
+  BEACON_LIMIT_BYTES,
+  COMPRESSION_THRESHOLD_BYTES,
+  REQUEST_TIMEOUT_MS,
+  RETRY_MAX_DELAY_MS,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -16,7 +21,9 @@ const config = (over: Partial<ObservabilityConfig> = {}) =>
     diagnostics(),
   );
 
-/** `count` of 0 is used below: an empty batch must be a no-op, not a request. */
+/**
+ * The tests below use a `count` of 0. An empty batch must do nothing. It must not send a request.
+ */
 const batch = (count = 2): LogBatch => ({
   id: "batch-1",
   createdAt: Date.now(),
@@ -49,7 +56,7 @@ const stubFetch = (impl: (url: string, init: RequestInit) => Promise<Response>) 
   return fetchMock;
 };
 
-/** Body defaults to null: 204 is a null-body status, and a Response with both throws. */
+/** The body is null by default. 204 is a null-body status. A Response with both throws. */
 const answer = (status: number, body: string | null = null, headers: Record<string, string> = {}) =>
   stubFetch(() => Promise.resolve(new Response(body, { status, headers })));
 
@@ -105,6 +112,17 @@ describe("HttpTransport", () => {
     expect(t.throttledForMs()).toBeGreaterThan(6000);
   });
 
+  it("caps Retry-After at RETRY_MAX_DELAY_MS", async () => {
+    answer(429, null, { "Retry-After": "86400" });
+    const t = new HttpTransport(config(), diagnostics());
+
+    await expect(t.send(batch())).rejects.toMatchObject({
+      kind: "throttled",
+      retryAfterMs: RETRY_MAX_DELAY_MS,
+    });
+    expect(t.throttledForMs()).toBeLessThanOrEqual(RETRY_MAX_DELAY_MS);
+  });
+
   it("classifies a 413 as too_large and surfaces the limit the server reported", async () => {
     answer(413, JSON.stringify({ maxBytes: 65536 }));
     const t = new HttpTransport(config(), diagnostics());
@@ -144,9 +162,9 @@ describe("HttpTransport", () => {
   });
 
   it("overwrites our headers whatever case the consumer spells them in", async () => {
-    // Header names are case-insensitive, so with a plain object BOTH keys
-    // survive and fetch folds them into "spoofed, batch-1", which matches no
-    // batch the server has seen and quietly defeats deduplication.
+    // Header names ignore case. With a plain object, BOTH keys stay. fetch joins them into
+    // "spoofed, batch-1". That id matches no batch on the server. Deduplication then fails with no
+    // sign.
     const fetchMock = answer(204);
     const headers = { "x-uiobs-batch-id": "spoofed", "content-type": "text/csv" };
     const t = new HttpTransport(config({ headers }), diagnostics());
@@ -178,7 +196,8 @@ describe("HttpTransport", () => {
           });
         }),
     );
-    const t = new HttpTransport(config(), diagnostics());
+    const handler = vi.fn();
+    const t = new HttpTransport(config(), new Diagnostics(handler, 0));
 
     const pending = t.send(batch()).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
@@ -186,7 +205,155 @@ describe("HttpTransport", () => {
 
     expect(failure).toBeInstanceOf(TransportError);
     expect(failure).toMatchObject({ kind: "timeout" });
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "transport.timeout" }));
     vi.useRealTimers();
+  });
+
+  it("bounds a headers() that never settles by the request deadline", async () => {
+    vi.useFakeTimers();
+    const fetchMock = answer(204);
+    const handler = vi.fn();
+    const stalled = () => new Promise<Record<string, string>>(() => undefined);
+    const t = new HttpTransport(config({ headers: stalled }), new Diagnostics(handler, 0));
+
+    const pending = t.send(batch()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(await pending).toMatchObject({ kind: "timeout" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "transport.timeout" }));
+    vi.useRealTimers();
+  });
+
+  it("sends one time more with new headers after a 401, when headers is a function", async () => {
+    let token = 0;
+    const headers = () => ({ authorization: `Bearer t${String(++token)}` });
+    const statuses = [401, 204];
+    const fetchMock = stubFetch(() =>
+      Promise.resolve(new Response(null, { status: statuses.shift() ?? 204 })),
+    );
+
+    await new HttpTransport(config({ headers }), diagnostics()).send(batch());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(headersOf(fetchMock, 1).get("authorization")).toBe("Bearer t2");
+  });
+
+  it("drops the batch after a second 403, and does not retry static headers", async () => {
+    const fetchMock = answer(403);
+    const headers = () => ({ authorization: "Bearer expired" });
+
+    await expect(
+      new HttpTransport(config({ headers }), diagnostics()).send(batch()),
+    ).rejects.toMatchObject({ kind: "permanent", status: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockClear();
+    await expect(
+      new HttpTransport(config({ headers: { authorization: "Bearer x" } }), diagnostics()).send(
+        batch(),
+      ),
+    ).rejects.toMatchObject({ kind: "permanent" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the last headers that it sent, for the exit flush", async () => {
+    answer(204);
+    let fail = false;
+    const headers = () => {
+      if (fail) {
+        throw new Error("token refresh failed");
+      }
+      return { authorization: "Bearer t1" };
+    };
+    const dynamic = new HttpTransport(config({ headers }), diagnostics());
+
+    expect(new HttpTransport(config(), diagnostics()).lastHeaders()).toBeUndefined();
+    expect(
+      new HttpTransport(config({ headers: { "x-app": "a" } }), diagnostics()).lastHeaders(),
+    ).toEqual({ "x-app": "a" });
+    expect(dynamic.lastHeaders()).toBeUndefined();
+
+    await dynamic.send(batch());
+    fail = true;
+    await dynamic.send(batch());
+
+    expect(dynamic.lastHeaders()).toEqual({ authorization: "Bearer t1" });
+  });
+
+  it("gives no cached headers after configure() replaces the headers function", async () => {
+    // At a tenant switch, the old Authorization value must not go to the new endpoint.
+    answer(204);
+    const live = config({ headers: () => ({ authorization: "Bearer tenant-a" }) });
+    const t = new HttpTransport(live, diagnostics());
+
+    await t.send(batch());
+    live.headers = () => ({ authorization: "Bearer tenant-b" });
+
+    expect(t.lastHeaders()).toBeUndefined();
+  });
+
+  it("gives no cached headers after configure() changes the endpoint", async () => {
+    // One headers function can give the token of each tenant. The old token is for the old endpoint.
+    answer(204);
+    const live = config({ headers: () => ({ authorization: "Bearer tenant-a" }) });
+    const t = new HttpTransport(live, diagnostics());
+
+    await t.send(batch());
+    live.endpoint = "https://tenant-b/v1/logs";
+
+    expect(t.lastHeaders()).toBeUndefined();
+  });
+
+  it("calls onKeepalive only for a send that uses keepalive", async () => {
+    // A keepalive send continues after unload. The pipeline must not give it to the exit flush.
+    answer(204);
+    const t = new HttpTransport(config(), diagnostics());
+    const onKeepalive = vi.fn<() => void>();
+
+    await t.send(batch(), onKeepalive);
+    expect(onKeepalive).not.toHaveBeenCalled();
+
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await t.send(batch(), onKeepalive);
+    expect(onKeepalive).toHaveBeenCalledOnce();
+  });
+
+  it("sends with keepalive while the document is hidden and the body fits the budget", async () => {
+    // A mobile OS can stop a hidden page with no pagehide. A keepalive request continues.
+    const fetchMock = answer(204);
+    const t = new HttpTransport(config(), diagnostics());
+
+    await t.send(batch());
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await t.send(batch());
+    await t.send({
+      ...batch(1),
+      records: [{ ...batch(1).records[0], body: "x".repeat(BEACON_LIMIT_BYTES) }],
+    });
+
+    expect(initOf(fetchMock, 0).keepalive).toBe(false);
+    expect(initOf(fetchMock, 1).keepalive).toBe(true);
+    expect(initOf(fetchMock, 2).keepalive).toBe(false);
+  });
+
+  it("measures a gzip body by its bytes for keepalive", async () => {
+    const fetchMock = answer(204);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+
+    await new HttpTransport(config({ compression: "gzip" }), diagnostics()).send(bigBatch());
+
+    expect(headersOf(fetchMock).get("content-encoding")).toBe("gzip");
+    expect(initOf(fetchMock).keepalive).toBe(true);
+  });
+
+  it("sends without keepalive in a realm with no document", async () => {
+    const fetchMock = answer(204);
+    vi.stubGlobal("document", undefined);
+
+    await new HttpTransport(config(), diagnostics()).send(batch());
+
+    expect(initOf(fetchMock).keepalive).toBe(false);
   });
 
   it("names third-party cookie blocking on a 401, because a bare 401 explains nothing", async () => {
@@ -257,8 +424,8 @@ describe("HttpTransport", () => {
     };
     const t = new HttpTransport(config({ serializer: broken }), new Diagnostics(handler, 0));
 
-    // Resolves: the same records fail the same way forever, so there is nothing
-    // for a caller to react to and nothing worth storing.
+    // The send resolves. The same records fail in the same way each time. The caller cannot do
+    // anything about it. A stored copy of the batch has no value.
     await expect(t.send(batch())).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
@@ -316,8 +483,8 @@ describe("HttpTransport", () => {
   });
 
   it("sends the plain body, unlabelled, when the runtime cannot gzip", async () => {
-    // The header is the dangerous half: a Content-Encoding: gzip on a body that
-    // is not gzip is a 400 the server cannot explain.
+    // The header is the dangerous part. A Content-Encoding header of gzip on a body that is not
+    // gzip gives a 400. The server cannot tell the cause.
     const fetchMock = answer(204);
     vi.stubGlobal("CompressionStream", undefined);
     const t = new HttpTransport(config({ compression: "gzip" }), diagnostics());

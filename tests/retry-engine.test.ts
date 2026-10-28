@@ -53,7 +53,10 @@ const batch = (id: string, { attempts = 0, records = 1 } = {}): LogBatch => ({
 
 type Send = (batch: LogBatch) => Promise<void>;
 
-/** What a stubbed lock manager hands back: a grant, or null for one held elsewhere. */
+/**
+ * What a stubbed lock manager gives back. It is a grant, or null for a lock that another context
+ * holds.
+ */
 type LockCallback = (lock: { name: string } | null) => Promise<unknown>;
 
 /** A real MemoryStorage, a stubbed transport, and an engine wired to both. */
@@ -72,7 +75,7 @@ const makeEngine = (options: { send?: Send; batchesPerDrain?: number } = {}) => 
   return { engine, storage, send, handler };
 };
 
-/** A promise resolved by the test, so a drain can be held mid-send. */
+/** A promise that the test resolves. The test can then hold a drain in the middle of a send. */
 const gate = () => {
   // The executor runs synchronously, so `open` is the real resolver by the time
   // this returns.
@@ -152,8 +155,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     engine.nudge();
     await tick(BASE_DELAY_MS);
-    // One millisecond, not zero: fake timers push a zero-delay timer armed
-    // during a tick to the next millisecond, to stay out of an infinite loop.
+    // Use one millisecond, not zero. Fake timers move a zero-delay timer that a tick arms to the
+    // next millisecond. This prevents an infinite loop.
     await tick(1);
 
     expect(send).toHaveBeenCalledTimes(2);
@@ -175,7 +178,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     await tick(IDLE_DELAY_MS);
 
-    // The literal, not the constant it checks: importing it would pass on a typo.
+    // Use the literal, not the constant that the test checks. An import of the constant passes with
+    // a typo.
     expect(take).toHaveBeenCalledWith(20);
     engine.stop();
   });
@@ -187,8 +191,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     await tick(IDLE_DELAY_MS * 2);
 
-    // An empty queue that advanced the attempt counter would back off to a
-    // shorter, jittered delay and look here more often than twice.
+    // An empty queue that advances the attempt counter backs off to a shorter, jittered delay. It
+    // then looks here more than two times.
     expect(take).toHaveBeenCalledTimes(2);
     engine.stop();
   });
@@ -259,8 +263,8 @@ describe("RetryEngine failure handling", () => {
     await tick(BASE_DELAY_MS);
     expect(send).toHaveBeenCalledOnce();
 
-    // A jittered backoff is at most `baseDelayMs * 2`, so a second send before
-    // this point would mean Retry-After was ignored.
+    // A jittered backoff is at most `baseDelayMs * 2`. A second send before this point shows that
+    // the engine ignored Retry-After.
     await tick(retryAfterMs - 1);
     expect(send).toHaveBeenCalledOnce();
 
@@ -343,9 +347,8 @@ describe("RetryEngine splitting", () => {
 
     engine.start();
     engine.nudge();
-    // Three drains: 4 splits to 2x2, those split to 4x1, then the four send. A
-    // split does not back off, so the nudge arms the first and each drain after
-    // it re-arms at the idle delay.
+    // Three drains. 4 splits to 2x2. Those split to 4x1. Then the four send. A split does not back
+    // off. The nudge arms the first drain. Each drain after it arms the idle delay again.
     await tick(BASE_DELAY_MS + IDLE_DELAY_MS * 2 + 1000);
 
     expect(await storage.count()).toBe(0);
@@ -458,8 +461,8 @@ describe("RetryEngine connectivity", () => {
       dispatchEvent(new Event("online"));
     }
 
-    // One arm on start, then an arm and a clear per event. A chain would arm 21
-    // times and clear none.
+    // One arm at start. Then one arm and one clear for each event. A chain arms 21 times and clears
+    // none.
     expect(arm).toHaveBeenCalledTimes(21);
     expect(clear).toHaveBeenCalledTimes(20);
 
@@ -502,8 +505,7 @@ describe("RetryEngine reentrancy", () => {
     await tick(BASE_DELAY_MS);
     expect(send).toHaveBeenCalledOnce();
 
-    // The online handler arms a timer of its own: the one path that fires
-    // during a drain.
+    // The online handler arms its own timer. That is the one path that fires during a drain.
     dispatchEvent(new Event("online"));
     await tick(0);
     expect(send).toHaveBeenCalledOnce();

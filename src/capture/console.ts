@@ -4,7 +4,9 @@
 
 import { CONSOLE_BREADCRUMB_MAX_CHARS, ERROR_STORM_MAX_PER_WINDOW } from "../constants";
 import type { CapturedConsoleMethod } from "../models/config";
+import { type ErrorLike, isErrorLike } from "../utils/error-like";
 import { isLibraryConsole, runAsLibraryConsole } from "../utils/library-console";
+import { patch } from "../utils/patch";
 import { truncate } from "../utils/sanitize";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
@@ -24,14 +26,12 @@ interface Target {
   record: ((args: unknown[]) => void) | null;
 }
 
-/** Original method, the wrapper that replaced it, and the target of the wrapper. */
+/** Target of a wrapper and the restore function of its patch. */
 interface Wrapped {
-  /** Method that was in place before the wrap. */
-  original: ConsoleFn;
-  /** Wrapper of this capture. */
-  wrapper: ConsoleFn;
   /** Target of the wrapper. */
   target: Target;
+  /** Writes the original back if the method still holds the wrapper. Returns true then. */
+  restore: () => boolean;
 }
 
 /**
@@ -94,11 +94,10 @@ export class ConsoleCapture implements Capture {
     }
     this.installed = false;
 
-    for (const [method, { original, wrapper, target }] of this.wrapped) {
+    for (const [method, { target, restore }] of this.wrapped) {
       target.record = null;
 
-      if (console[method] === wrapper) {
-        console[method] = original;
+      if (restore()) {
         continue;
       }
 
@@ -143,10 +142,6 @@ export class ConsoleCapture implements Capture {
    * @param method Console method to wrap.
    */
   private wrap(method: CapturedConsoleMethod): void {
-    // Keep the unbound method. Uninstall must restore the same function, not a bound copy.
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- Reflect.apply binds console.
-    const original = console[method] as ConsoleFn;
-
     const target: Target = {
       record: (args) => {
         // The scope stops a console call in the record path from a second capture.
@@ -161,10 +156,10 @@ export class ConsoleCapture implements Capture {
         });
       },
     };
-    const wrapper = makeWrapper(original, target);
 
-    this.wrapped.set(method, { original, wrapper, target });
-    console[method] = wrapper;
+    // patch keeps the unbound method. Uninstall restores the same function, not a bound copy.
+    const restore = patch(console, method, (original) => makeWrapper(original, target));
+    this.wrapped.set(method, { target, restore });
   }
 
   /**
@@ -173,9 +168,10 @@ export class ConsoleCapture implements Capture {
    * @param args Arguments of the call.
    */
   private record(method: CapturedConsoleMethod, args: unknown[]): void {
-    const errorAt = args.findIndex((arg) => arg instanceof Error);
+    // Duck typing finds an error from another realm. That error fails `instanceof Error`.
+    const errorAt = args.findIndex((arg) => isErrorLike(arg));
     const textAt = args.findIndex((arg) => typeof arg === "string");
-    const error = args[errorAt] as Error | undefined;
+    const error = args[errorAt] as ErrorLike | undefined;
     const message = (args[textAt] as string | undefined) ?? error?.message ?? `console.${method}`;
 
     if (method === "info" || method === "log") {

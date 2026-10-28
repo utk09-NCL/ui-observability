@@ -147,7 +147,7 @@ export const ATTR_LOG_SEQ = "log.seq";
 /** Logger namespace attribute key. */
 export const ATTR_APP_NAMESPACE = "app.namespace";
 
-/** Document URL when the record was built. */
+/** Document URL when the library built the record. */
 export const ATTR_PAGE_URL = "page.url";
 
 /**
@@ -168,6 +168,12 @@ export const ATTR_JOURNEY_PARENT_ID = "journey.parent_id";
 
 /** Marks a record whose attributes failed to sanitize. */
 export const ATTR_SANITIZE_FAILED = "uiobs.sanitize_failed";
+
+/** Own fields of an Error reason, or the whole reason when it is not an Error. */
+export const ATTR_ERROR_DATA = "error.data";
+
+/** Breadcrumb history of an error record. */
+export const ATTR_BREADCRUMBS = "breadcrumbs";
 
 /**
  * Marks a record when the library drops its attributes because they exceed the byte budget.
@@ -240,7 +246,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Change it by hand when you change the version in package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.8.0";
+export const TELEMETRY_SDK_VERSION = "0.9.0";
 
 /**
  * Value of `telemetry.sdk.language`.
@@ -275,7 +281,7 @@ export const CONTENT_TYPE_NDJSON = "application/x-ndjson";
 export const NANOS_PER_MILLI = 1000000n;
 
 /**
- * Matches a nanosecond epoch written as decimal digits, e.g. "1755543600123000000".
+ * Matches a nanosecond epoch in decimal digits, for example "1755543600123000000".
  * @see {@link NANOS_PER_MILLI}
  */
 export const NANOS_PATTERN = /^\d+$/;
@@ -376,10 +382,10 @@ export const BATCH_KEY_TIME_WIDTH = 14;
 /** localStorage key prefix for a batch that exit flush stores. */
 export const EMERGENCY_STORAGE_KEY_PREFIX = "ui-observability.emergency.";
 
-/** Max exit batches held at once. */
+/** Maximum number of exit batches in the emergency queue. */
 export const EMERGENCY_MAX_ENTRIES = 20;
 
-/** Key used to test whether localStorage accepts writes. */
+/** Key that the library writes to test if localStorage accepts writes. */
 export const STORAGE_PROBE_KEY = "ui-observability.probe";
 
 /** Fraction of the store to evict on a quota error (1 in N). */
@@ -411,7 +417,7 @@ export const STORAGE_NAME_LOCAL = "localstorage";
 /** In-memory adapter/strategy name. */
 export const STORAGE_NAME_MEMORY = "memory";
 
-/** No-op adapter/strategy name. */
+/** Name of the storage adapter that keeps nothing. */
 export const STORAGE_NAME_NONE = "none";
 
 // ----------------------------------
@@ -532,6 +538,12 @@ export const FNV_PRIME = 0x01000193;
 /** Largest 32-bit unsigned value. */
 export const UINT32_MAX = 0xffffffff;
 
+/**
+ * Types that minLevel does not drop. An action is an audit fact and a metric is a measurement.
+ * The remote rate cap for records below minLevel does not apply to them.
+ */
+export const LEVEL_BYPASS_TYPES: readonly LogType[] = ["action", "metric"];
+
 // ----------------------------------
 // Pipeline
 // ----------------------------------
@@ -623,7 +635,7 @@ export const CAPTURE_NAMESPACE = "uiobs.capture";
 /** Default namespace for telemetry records emitted by storage subsystems. */
 export const STORAGE_NAMESPACE = "uiobs.storage";
 
-/** Fallback measurement unit applied when none is specified. */
+/** Measurement unit that the library uses when the call gives no unit. */
 export const DEFAULT_METRIC_UNIT = "count";
 
 // ----------------------------------
@@ -678,7 +690,7 @@ export const UNDEFAULTED_CONFIG_KEYS = [
  * Nested config section keys.
  * @see {@link ResolvedConfig}
  */
-export const CONFIG_SECTIONS = ["sampling", "bus", "capture"] as const;
+export const CONFIG_SECTIONS = ["sampling", "bus", "journey", "capture"] as const;
 
 /**
  * Section keys with no default, excluded from their section of `DEFAULT_CONFIG`.
@@ -687,6 +699,7 @@ export const CONFIG_SECTIONS = ["sampling", "bus", "capture"] as const;
 export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], string[]> = {
   sampling: [],
   bus: [],
+  journey: [],
   capture: ["webVitalsLoader"],
 };
 
@@ -715,6 +728,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     remoteMaxRate: 1,
   },
   bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
+  journey: { scope: "auto" },
   capture: {
     errors: true,
     rejections: true,
@@ -810,7 +824,7 @@ export const RETRY_IDLE_DELAY_MS = 30_000;
 /** Max time a journey stays open, in milliseconds. Then the library treats it as abandoned. */
 export const JOURNEY_MAX_AGE_MS = 30 * 60 * 1000;
 
-/** Whether closing the owning context ends the journey for everyone. */
+/** True if the journey ends for all contexts when the owning context closes. */
 export const JOURNEY_END_ON_OWNER_CLOSE = false;
 
 /** Query parameter checked at boot for a seeded journey token. */
@@ -831,6 +845,9 @@ export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
 /** Max records a context buffers before it knows its bus role. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
+
+/** Max characters of an untrusted message type in a diagnostic detail. The sender sets the text. */
+export const BUS_TYPE_DETAIL_MAX_CHARS = 32;
 
 // ----------------------------------
 // Capture

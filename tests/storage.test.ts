@@ -21,13 +21,13 @@ const batch = (id: string, createdAt = Date.now(), records = 0): LogBatch => ({
 const quiet = () => new Diagnostics(vi.fn(), 0);
 
 /**
- * Stands in for a request that fails. fake-indexeddb has no way to make a real one
- * fail, and every driver method funnels its failure through onerror.
+ * Takes the place of a request that fails. fake-indexeddb cannot make a real request fail. Each
+ * driver method sends its failure through onerror.
  *
- * Build it inside mockImplementationOnce, never as a mockReturnValueOnce argument.
- * The microtask below is queued the moment the request is built, and one built at
- * setup time fires while the test is still awaiting something else, long before
- * promisify has assigned onerror. Nothing then settles and the test times out.
+ * Build it inside mockImplementationOnce. Never give it as a mockReturnValueOnce argument. The
+ * microtask below starts when the code builds the request. A request from setup time fires while
+ * the test awaits a different step. That occurs long before promisify sets onerror. Nothing then
+ * settles. The test times out.
  */
 const failingRequest = <T>(error: Error | null): IDBRequest<T> => {
   const request = { error, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
@@ -66,8 +66,8 @@ describe("storage factory", () => {
     expect(indexeddb.name).toBe("indexeddb");
     await indexeddb.close();
 
-    // The whole reason the import is dynamic: a consumer who asked for memory
-    // must not pay to parse the IndexedDB driver.
+    // This is why the import is dynamic. A consumer that asked for memory must not pay to parse the
+    // IndexedDB driver.
     const memory = await createStorage("memory", "db", limits, quiet());
     expect(memory.name).toBe("memory");
   });
@@ -111,8 +111,8 @@ describe("storage factory", () => {
   });
 
   it("falls back when the IndexedDB chunk itself cannot be loaded", async () => {
-    // A code-split chunk that fails to load is a real production failure, and
-    // it must cost a fallback rather than the whole logger.
+    // A code-split chunk that does not load is a real production failure. It must cost a fallback,
+    // not the whole logger.
     vi.resetModules();
     vi.doMock("../src/storage/indexeddb-storage", () => {
       throw new Error("chunk load failed");
@@ -211,8 +211,8 @@ describe("MemoryStorage", () => {
     await s.save(batch("a"));
 
     await s.bumpAttempts("a", 4);
-    // An id that is not there is not an error: the batch may have been
-    // delivered by another tab between the take and the bump.
+    // A missing id is not an error. Another tab can deliver the batch between the take and the
+    // bump.
     await s.bumpAttempts("gone", 9);
 
     expect((await s.take(1))[0].attempts).toBe(4);
@@ -241,8 +241,8 @@ describe("LocalStorageStorage", () => {
     new LocalStorageStorage(lsLimits, quiet(), onGap);
 
   it("returns oldest first even though the ids are random", async () => {
-    // The regression test for the key format. Keyed on the batch id alone, the
-    // sort is a sort by random uuid and this passes or fails by luck.
+    // This is the regression test for the key format. With only the batch id as the key, the sort
+    // is a sort by random uuid. The test then passes or fails by chance.
     const s = make();
     const now = Date.now();
     await s.save(batch("zzz-oldest", now - 2000));
@@ -326,8 +326,8 @@ describe("LocalStorageStorage", () => {
   });
 
   it("drops anything under our prefix that parses but is not a batch", async () => {
-    // Written by an older version of this library, or by something else on the
-    // origin. Every field the adapter reads is checked before it is used.
+    // An older version of this library, or other code on the origin, wrote this entry. The adapter
+    // checks each field before it uses it.
     const s = make();
     const planted = {
       "ui-observability.batch.00000000000001.empty": "",
@@ -368,7 +368,7 @@ describe("LocalStorageStorage", () => {
     const key = "ui-observability.batch.00000000000007.zombie";
     localStorage.setItem(key, "not json");
 
-    // The key still names an id, so it is found, but there is nothing to update.
+    // The adapter finds the key, because it still names an id. The entry has nothing to update.
     await s.bumpAttempts("zombie", 3);
     await s.prune();
 
@@ -392,7 +392,7 @@ describe("LocalStorageStorage", () => {
     blocked.delete("setItem");
 
     expect(await s.count()).toBe(2);
-    // The eviction, then the batch that could not be written even after it.
+    // First the eviction. Then the batch that the adapter cannot write, even after the eviction.
     expect(gaps.at(-2)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
     expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 4, reason: "quota" });
   });
@@ -421,8 +421,8 @@ describe("LocalStorageStorage", () => {
     const gaps: PruneResult[] = [];
     const s = make((result) => gaps.push(result));
     await s.save(batch("b1", Date.now(), 2));
-    // Oldest by key, so the quota eviction reaches it first. Planted after the
-    // save above, which would have pruned it.
+    // This entry is the oldest by key. The quota eviction gets to it first. The test adds it after
+    // the save above. That save prunes old entries.
     localStorage.setItem("ui-observability.batch.00000000000001.corrupt", "not json");
 
     const setItem = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
@@ -470,8 +470,8 @@ describe("LocalStorageStorage", () => {
 });
 
 describe("IndexedDbStorage", () => {
-  // fake-indexeddb is loaded by tests/setup.ts, so the driver has a real store here.
-  // A fresh database name per test, because the store outlives the adapter.
+  // tests/setup.ts loads fake-indexeddb. The driver has a real store here. Each test uses a new
+  // database name, because the store stays after the adapter.
   const idbLimits = { maxBatches: 3, maxAgeMs: 60_000, maxAttempts: 5 };
   let counter = 0;
 
@@ -592,8 +592,8 @@ describe("IndexedDbStorage", () => {
     const { storage, handler } = await make();
     vi.spyOn(storage["db"], "put")
       .mockRejectedValueOnce(new Error("boom"))
-      // Not every store rejects with an Error, and `error.name` on a string is
-      // undefined rather than a throw.
+      // Some stores reject with a value that is not an Error. `error.name` on a string gives
+      // undefined. It does not throw.
       .mockRejectedValueOnce("boom");
 
     await storage.save(batch("b1"));
@@ -671,8 +671,8 @@ describe("IdbDriver", () => {
   });
 
   it("adopts a database left by an earlier release rather than recreating its store", async () => {
-    // Dexie opened this database at ten times its declared version, so an
-    // installation upgrading from it is at native version 10 with data in it.
+    // Dexie opened this database at ten times its declared version. An installation that upgrades
+    // from it is at native version 10, with data in it.
     const dbName = name();
     const legacy = await openLegacy(dbName);
     await new Promise<void>((resolve, reject) => {

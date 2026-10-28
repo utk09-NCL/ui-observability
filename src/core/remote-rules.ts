@@ -27,7 +27,7 @@ import {
 class RuleError extends Error {}
 
 /**
- * Tests whether a value is a rate.
+ * Tests if a value is a rate.
  * @param value Value to test.
  * @returns True for a number from 0 to 1. NaN fails.
  */
@@ -36,7 +36,7 @@ function isRate(value: unknown): value is number {
 }
 
 /**
- * Tests whether a value is a plain object.
+ * Tests if a value is a plain object.
  * @param value Value to test.
  * @returns True for an object that is not null and not an array.
  */

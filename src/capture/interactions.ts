@@ -3,6 +3,7 @@
 // Captures clicks and in-page navigations as breadcrumbs and trace boundaries.
 
 import { ARIA_LABEL_MAX_CHARS, CLICK_TEXT_MAX_CHARS, SELECTOR_MAX_CLASSES } from "../constants";
+import { patch } from "../utils/patch";
 import { stripUrlQuery } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
@@ -70,11 +71,8 @@ export class InteractionCapture implements Capture {
   /** Prevents duplicate listener registration. */
   private installed = false;
 
-  /** Unpatched History.pushState implementation. */
-  private originalPushState: HistoryMethods["pushState"] | null = null;
-
-  /** Unpatched History.replaceState implementation. */
-  private originalReplaceState: HistoryMethods["replaceState"] | null = null;
+  /** Restore functions of the history wrappers. */
+  private readonly restores: (() => void)[] = [];
 
   /** Tracked URL prior to the latest navigation event. */
   private lastUrl = "";
@@ -103,7 +101,10 @@ export class InteractionCapture implements Capture {
     }
   }
 
-  /** Removes interaction listeners and restores native history methods. */
+  /**
+   * Removes interaction listeners and restores each history method that still holds the
+   * wrapper. A wrapper that another script wrapped again stays in place and records nothing.
+   */
   uninstall(): void {
     if (!this.installed) {
       return;
@@ -114,14 +115,9 @@ export class InteractionCapture implements Capture {
     removeEventListener("popstate", this.onNavigate);
     removeEventListener("hashchange", this.onNavigate);
 
-    if (this.originalPushState) {
-      historyMethods().pushState = this.originalPushState;
+    for (const restore of this.restores.splice(0)) {
+      restore();
     }
-    if (this.originalReplaceState) {
-      historyMethods().replaceState = this.originalReplaceState;
-    }
-    this.originalPushState = null;
-    this.originalReplaceState = null;
   }
 
   /** Rotates trace context and records a click breadcrumb. */
@@ -144,7 +140,7 @@ export class InteractionCapture implements Capture {
     });
   };
 
-  /** Rotates trace context and records a navigation breadcrumb and event on URL changes. */
+  /** On a URL change, rotates the trace context. It also records a breadcrumb and an event. */
   private readonly onNavigate = (): void => {
     const from = this.lastUrl;
     const to = location.href;
@@ -154,7 +150,7 @@ export class InteractionCapture implements Capture {
     this.lastUrl = to;
 
     // The comparison above uses the full URL. A change to the query only is a navigation.
-    // The record does not keep the query unless fullUrls is set.
+    // The record does not keep the query unless you set fullUrls.
     const full = this.ctx.config.capture.fullUrls;
     const fromUrl = full ? from : stripUrlQuery(from);
     const toUrl = full ? to : stripUrlQuery(to);
@@ -173,30 +169,47 @@ export class InteractionCapture implements Capture {
 
   /** Patches History.pushState and replaceState to observe programmatic navigations. */
   private installHistory(): void {
-    if (typeof history === "undefined" || this.originalPushState) {
+    if (typeof history === "undefined") {
       return;
     }
 
-    // Keep the originals unbound and call them through apply. A read from History.prototype
-    // skips a patch that a router installed on the instance. Uninstall then adds an own
-    // property that was not there before.
+    // Wrap the instance, not History.prototype. A read from the prototype skips a patch
+    // that a router installed on the instance. patch keeps the originals unbound.
     const target = historyMethods();
-    const originalPushState = target.pushState;
-    const originalReplaceState = target.replaceState;
-    this.originalPushState = originalPushState;
-    this.originalReplaceState = originalReplaceState;
     const onNavigate = this.onNavigate;
+    // Uninstall clears the flag. A wrapper that stays in place then only calls the original.
+    let active = true;
 
-    target.pushState = function (this: History, ...args: never[]): void {
-      originalPushState.apply(this, args);
-      // Queue the handler. The browser updates location.href after the call returns.
-      // A synchronous read gives the previous URL as the new URL.
-      queueMicrotask(onNavigate);
-    };
+    const restorePushState = patch(
+      target,
+      "pushState",
+      (original) =>
+        function (this: History, ...args: never[]): void {
+          original.apply(this, args);
+          // Queue the handler. The browser updates location.href after the call returns.
+          // A synchronous read gives the previous URL as the new URL.
+          if (active) {
+            queueMicrotask(onNavigate);
+          }
+        },
+    );
 
-    target.replaceState = function (this: History, ...args: never[]): void {
-      originalReplaceState.apply(this, args);
-      queueMicrotask(onNavigate);
-    };
+    const restoreReplaceState = patch(
+      target,
+      "replaceState",
+      (original) =>
+        function (this: History, ...args: never[]): void {
+          original.apply(this, args);
+          if (active) {
+            queueMicrotask(onNavigate);
+          }
+        },
+    );
+
+    this.restores.push(() => {
+      active = false;
+      restorePushState();
+      restoreReplaceState();
+    });
   }
 }

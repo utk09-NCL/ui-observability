@@ -25,7 +25,7 @@ const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 const NON_ZERO = /[1-9a-f]/;
 
 /**
- * Evaluates whether a span context can carry correlation. It replaces isSpanContextValid
+ * Tests if a span context can carry correlation. It replaces isSpanContextValid
  * from the peer package. That function is not available when the peer is not installed.
  * @param context Span context reported by the host.
  * @returns True if both ids have the W3C width and neither is all zeros.
@@ -49,7 +49,7 @@ export interface TraceContext {
   traceFlags: number;
 }
 
-/** Trigger classification for rotating the ambient trace context. */
+/** Cause of a rotation of the ambient trace context. */
 export type RotateReason = "start" | "interaction" | "navigation" | "explicit" | "maxAge";
 
 /** Internal trace context tracking creation timestamp for expiration. */
@@ -129,7 +129,7 @@ export class TraceEngine {
   /**
    * Loads the OpenTelemetry API. Until the load completes, records use the ambient trace.
    * If there is no loader or the load fails, all records use the ambient trace.
-   * @returns Promise resolving once the attempt has settled.
+   * @returns Promise that resolves when the attempt settles.
    */
   async loadOtel(): Promise<void> {
     if (!this.load) {
@@ -167,7 +167,7 @@ export class TraceEngine {
   }
 
   /**
-   * Reads the host's active span, if the peer is loaded and a span is running.
+   * Reads the active span of the host if the peer module loaded and a span runs.
    * @returns Trace context of the active span, or undefined.
    */
   private activeSpanContext(): TraceContext | undefined {

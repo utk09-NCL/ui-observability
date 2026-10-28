@@ -28,7 +28,7 @@ import type { BatchTransport } from "./status-transport";
  * drain lock and batch splitting.
  */
 export class RetryEngine {
-  /** This field holds the active retry timer handle. It is null when no timer is armed. */
+  /** This field holds the active retry timer handle. It is null when no timer runs. */
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   /** This field counts consecutive failed deliveries. The backoff calculation uses it. */
@@ -37,7 +37,7 @@ export class RetryEngine {
   /** This flag is true while a storage drain runs. */
   private draining = false;
 
-  /** This flag is true when the engine is stopped. */
+  /** This flag is true after stop(). */
   private stopped = false;
 
   /** This listener runs on the online event. It resets the attempt count and starts a drain. */
@@ -181,7 +181,7 @@ export class RetryEngine {
   /**
    * Processes batches while it holds the Web Lock. It schedules the next tick.
    * It always resolves. A throw leaves the engine idle with no armed timer.
-   * @returns Promise resolving to true on completion.
+   * @returns Promise that resolves to true on completion.
    */
   private async drainLocked(): Promise<true> {
     try {
@@ -225,8 +225,8 @@ export class RetryEngine {
   }
 
   /**
-   * Tries to deliver one batch. It removes the batch on success. It handles each
-   * failure kind on failure.
+   * Tries to deliver one batch. It removes the batch on success. On failure, it applies the
+   * rule for the failure kind.
    * @param batch Log batch to deliver.
    * @returns True to continue with the next batch. False to stop the current drain.
    */

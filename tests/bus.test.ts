@@ -239,76 +239,212 @@ describe("createDirectLink", () => {
 });
 
 describe("createParentLink", () => {
+  const PARENT = "https://app.example";
+
+  /**
+   * Makes this document a frame whose parent is on an origin.
+   * @param origin Origin that document.referrer gives.
+   * @returns The fake parent window.
+   */
+  function frameOf(origin: string) {
+    const postMessage = vi.fn();
+    const fakeParent = { postMessage } as unknown as Window & typeof globalThis;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    vi.spyOn(document, "referrer", "get").mockReturnValue(`${origin}/page`);
+    return { fakeParent, postMessage };
+  }
+
+  /**
+   * Dispatches a bus message as if a window posted it.
+   * @param source Window that posted the message.
+   * @param origin Origin of the poster.
+   */
+  function postFrom(source: unknown, origin: string): void {
+    dispatchEvent(
+      Object.assign(
+        new MessageEvent("message", {
+          data: envelope({ t: "hello", from: "parent-ctx", tabId: "tab-9" }),
+        }),
+        { source, origin },
+      ),
+    );
+  }
+
   it("returns null when there is no window", () => {
     vi.stubGlobal("window", undefined);
-    expect(createParentLink(vi.fn<Receive>(), diag())).toBeNull();
+    expect(createParentLink(vi.fn<Receive>(), [], diag())).toBeNull();
   });
 
   it("returns null at the top level", () => {
-    expect(createParentLink(vi.fn<Receive>(), diag())).toBeNull();
+    expect(createParentLink(vi.fn<Receive>(), [], diag())).toBeNull();
   });
 
-  it("delivers a message from window.parent and ignores one from elsewhere", () => {
-    const fakeParent = { postMessage: vi.fn() } as unknown as Window & typeof globalThis;
-    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+  it("returns null and reports when the origin of the parent is unknown", () => {
+    vi.spyOn(window, "parent", "get").mockReturnValue({} as Window & typeof globalThis);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
 
-    const receive = vi.fn<Receive>();
-    const link = createParentLink(receive, diag());
-    expect(link).not.toBeNull();
-
-    const message = envelope({
-      t: "hello",
-      from: "parent-ctx",
-      tabId: "tab-9",
-    });
-    dispatchEvent(
-      Object.assign(new MessageEvent("message", { data: message }), {
-        source: fakeParent,
-        origin: "https://app.example",
+    expect(createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message: "The origin of the parent frame is unknown. This context sends its own records.",
       }),
     );
+  });
+
+  it("reads a referrer that is not a URL as an unknown origin", () => {
+    frameOf(PARENT);
+    vi.spyOn(document, "referrer", "get").mockReturnValue("not a url");
+
+    expect(createParentLink(vi.fn<Receive>(), [PARENT], diag())).toBeNull();
+  });
+
+  it("returns null and reports when the parent is on an origin that is not trusted", () => {
+    frameOf("https://evil.example");
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    expect(createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message:
+          "The parent frame is on https://evil.example. This origin is not in bus.trustedOrigins. This context sends its own records.",
+        detail: { origin: "https://evil.example", type: "parent" },
+      }),
+    );
+  });
+
+  it("returns null and names the fix when this frame is sandboxed", () => {
+    frameOf(PARENT);
+    vi.stubGlobal("location", { origin: "null" });
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    expect(createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message:
+          'This frame is sandboxed without allow-same-origin. It has an opaque origin. No parent can trust it. This context sends its own records. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+      }),
+    );
+  });
+
+  it("reads the parent origin from location.ancestorOrigins before the referrer", () => {
+    const { postMessage } = frameOf("https://other.example");
+    vi.stubGlobal("location", {
+      origin: location.origin,
+      ancestorOrigins: { length: 1, item: () => PARENT },
+    });
+
+    const link = createParentLink(vi.fn<Receive>(), [PARENT], diag());
+    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+
+    expect(postMessage).toHaveBeenCalledWith(expect.anything(), PARENT);
+    link?.close();
+  });
+
+  it("trusts a parent on its own origin without a list", () => {
+    frameOf(location.origin);
+
+    const link = createParentLink(vi.fn<Receive>(), [], diag());
+
+    expect(link).not.toBeNull();
+    link?.close();
+  });
+
+  it("delivers a message from the trusted parent and ignores one from elsewhere", () => {
+    const { fakeParent } = frameOf(PARENT);
+    const receive = vi.fn<Receive>();
+    const link = createParentLink(receive, [PARENT], diag());
+
+    postFrom(fakeParent, PARENT);
     expect(receive).toHaveBeenCalledWith(
       { t: "hello", from: "parent-ctx", tabId: "tab-9" },
-      { link: "parent", origin: "https://app.example" },
+      { link: "parent", origin: PARENT },
     );
 
     receive.mockClear();
-    dispatchEvent(
-      Object.assign(new MessageEvent("message", { data: message }), {
-        source: {},
-        origin: "https://app.example",
-      }),
-    );
+    postFrom({}, PARENT);
     expect(receive).not.toHaveBeenCalled();
 
     link?.close();
   });
 
-  it("ignores a message with no protocol envelope", () => {
-    const fakeParent = {} as unknown as Window & typeof globalThis;
-    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+  it("drops a message from the parent window on another origin, and reports each origin once", () => {
+    const { fakeParent } = frameOf(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const receive = vi.fn<Receive>();
-    createParentLink(receive, diag());
+    const link = createParentLink(receive, [PARENT], new Diagnostics(handler, 0));
+
+    // The parent navigated to another origin after this frame loaded.
+    postFrom(fakeParent, "https://evil.example");
+    postFrom(fakeParent, "https://evil.example");
+    postFrom(fakeParent, "null");
+
+    expect(receive).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          "The bus ignored a message from https://evil.example. If you own this origin, add it to bus.trustedOrigins.",
+        detail: { origin: "https://evil.example", type: "hello" },
+      }),
+    );
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("from a sandboxed frame") as string,
+      }),
+    );
+    link?.close();
+  });
+
+  it("keeps the message type of an untrusted parent out of the message, and cuts it", () => {
+    const { fakeParent } = frameOf(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const link = createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0));
+    const type = `Click here to fix: https://evil.example/${"x".repeat(100)}`;
+
+    dispatchEvent(
+      Object.assign(new MessageEvent("message", { data: envelope({ t: type } as never) }), {
+        source: fakeParent,
+        origin: "https://evil.example",
+      }),
+    );
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          "The bus ignored a message from https://evil.example. If you own this origin, add it to bus.trustedOrigins.",
+        detail: { origin: "https://evil.example", type: type.slice(0, 32) },
+      }),
+    );
+    link?.close();
+  });
+
+  it("ignores a message with no protocol envelope", () => {
+    const { fakeParent } = frameOf(PARENT);
+    const receive = vi.fn<Receive>();
+    const link = createParentLink(receive, [PARENT], diag());
 
     dispatchEvent(
       Object.assign(new MessageEvent("message", { data: { not: "ours" } }), {
         source: fakeParent,
+        origin: PARENT,
       }),
     );
     expect(receive).not.toHaveBeenCalled();
+    link?.close();
   });
 
-  it("posts to the parent with a wildcard origin, and reports a failure when it throws", () => {
-    const postMessage = vi.fn();
-    const fakeParent = { postMessage } as unknown as Window & typeof globalThis;
-    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+  it("posts to the origin of the parent, not to *, and reports a failure when it throws", () => {
+    const { postMessage } = frameOf(PARENT);
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
-    const link = createParentLink(vi.fn<Receive>(), new Diagnostics(handler, 0));
+    const link = createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0));
 
     link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
     expect(postMessage).toHaveBeenCalledWith(
       envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
-      "*",
+      PARENT,
     );
 
     postMessage.mockImplementationOnce(() => {
@@ -316,25 +452,16 @@ describe("createParentLink", () => {
     });
     link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
+    link?.close();
   });
 
   it("stops delivering once closed", () => {
-    const fakeParent = {} as unknown as Window & typeof globalThis;
-    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    const { fakeParent } = frameOf(PARENT);
     const receive = vi.fn<Receive>();
-    const link = createParentLink(receive, diag());
+    const link = createParentLink(receive, [PARENT], diag());
     link?.close();
 
-    dispatchEvent(
-      Object.assign(
-        new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "x", tabId: "t" }),
-        }),
-        {
-          source: fakeParent,
-        },
-      ),
-    );
+    postFrom(fakeParent, PARENT);
     expect(receive).not.toHaveBeenCalled();
   });
 });
@@ -374,6 +501,53 @@ describe("createChildrenLink", () => {
       expect.objectContaining({
         code: "bus.untrusted_origin",
         detail: { origin: "https://evil.example", type: "hello" },
+      }),
+    );
+    link?.close();
+  });
+
+  it("names a sandboxed child and its fix in the report", () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const link = createChildrenLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0));
+
+    dispatchEvent(
+      Object.assign(
+        new MessageEvent("message", {
+          data: envelope({ t: "records", from: "child", records: [] }),
+        }),
+        { origin: "null" },
+      ),
+    );
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          'The bus ignored a message from a sandboxed frame. The frame has an opaque origin. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+      }),
+    );
+    link?.close();
+  });
+
+  it("drops a message from a sandboxed child when this frame is sandboxed too", () => {
+    vi.stubGlobal("location", { origin: "null" });
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const receive = vi.fn<Receive>();
+    const link = createChildrenLink(receive, [], new Diagnostics(handler, 0));
+
+    dispatchEvent(
+      Object.assign(
+        new MessageEvent("message", {
+          data: envelope({ t: "records", from: "child", records: [] }),
+        }),
+        { origin: "null" },
+      ),
+    );
+
+    expect(receive).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        detail: { origin: "null", type: "records" },
       }),
     );
     link?.close();
@@ -561,8 +735,8 @@ describe("createBroadcastLink", () => {
   });
 
   it("returns null and reports when the channel cannot be opened", () => {
-    // A function expression, not vi.fn: the constructor is invoked with `new`,
-    // and vitest warns when a mock implementation is not a function or class.
+    // Use a function expression, not vi.fn. The code calls the constructor with `new`. Vitest warns
+    // when a mock implementation is not a function or a class.
     vi.stubGlobal("BroadcastChannel", function ThrowingChannel(): never {
       throw new Error("channel unavailable");
     });
@@ -922,8 +1096,8 @@ describe("Bus role resolution: auto mode", () => {
       { timeoutMs: 20, maxAttempts: 3 },
     );
 
-    // No parent replies: window.parent === window in this environment, so
-    // createParentLink returns null and the role resolves without a handshake.
+    // No parent replies. In this environment, window.parent === window. createParentLink then
+    // returns null. The role resolves without a handshake.
     expect(await bus.start()).toBe("sender");
     bus.destroy();
   });
@@ -996,9 +1170,9 @@ describe("Bus role resolution: auto mode", () => {
       },
       diagnostics,
     );
-    // Realistic OpenFin desktop shape: a genuine view is always its own
-    // top-level document, so the control-link and candidate-link paths for
-    // "openfin" both run, and share the one memoized subscription.
+    // This is the real OpenFin desktop shape. A real view is always its own top-level document. The
+    // control-link path and the candidate-link path for "openfin" both run. They share the one
+    // memoized subscription.
     const bus = new Bus(
       config,
       diagnostics,
@@ -1061,9 +1235,8 @@ describe("Bus role resolution: auto mode", () => {
 
 describe("Bus handshake", () => {
   it("settles a handshake from a welcome that was never a DOM message event", async () => {
-    // The OpenFin and worker case. A handshake that only listened for a
-    // `message` event would time out here every time, because neither
-    // channel ever fires one.
+    // This is the OpenFin and worker case. Neither channel fires a `message` event. A handshake
+    // that listens only for that event times out here each time.
     const { bus } = make({ timeoutMs: 1000 });
     const upstream = fakeLink("openfin");
     upstream.post.mockImplementation((message: BusMessage) => {
@@ -1395,8 +1568,9 @@ describe("Bus receive: welcome, records and journey", () => {
     expect(upstream.post).not.toHaveBeenCalled();
   });
 
-  it("adopts a journey pushed from elsewhere, including a cleared one", () => {
-    const { bus, handlers: h } = make();
+  it("adopts a journey pushed from elsewhere in origin scope, including a cleared one", () => {
+    const { bus, handlers: h, config } = make();
+    config.journey.scope = "origin";
     const j = fakeJourney();
 
     deliver(
@@ -1404,7 +1578,7 @@ describe("Bus receive: welcome, records and journey", () => {
       { t: "journey", from: "peer", journey: j },
       { link: "broadcast", origin: "same-origin" },
     );
-    expect(h.onJourney).toHaveBeenCalledWith(j);
+    expect(h.onJourney).toHaveBeenCalledWith(expect.objectContaining({ id: j.id }));
 
     deliver(
       bus,
@@ -1437,6 +1611,7 @@ describe("Bus receive: welcome, records and journey", () => {
     expect(link.post).toHaveBeenCalledWith({
       t: "journey",
       from: "ctx-1",
+      to: "child",
       journey: j,
     });
   });
@@ -1539,11 +1714,16 @@ describe("Bus internals: candidateUpstream", () => {
     expect(call({}, { isWorker: true })?.kind).toBe("owner");
   });
 
-  it("asks the parent link when this document is not top level", () => {
+  it("asks the parent link with bus.trustedOrigins when this document is not top level", () => {
     vi.spyOn(window, "parent", "get").mockReturnValue({
       postMessage: vi.fn(),
     } as unknown as Window & typeof globalThis);
-    expect(call({}, { isTopLevelDocument: false })?.kind).toBe("parent");
+    vi.spyOn(document, "referrer", "get").mockReturnValue("https://app.example/page");
+
+    expect(call({}, { isTopLevelDocument: false })).toBeNull();
+    expect(
+      call({ trustedOrigins: ["https://app.example"] }, { isTopLevelDocument: false })?.kind,
+    ).toBe("parent");
   });
 
   it("forwards to the OpenFin provider only when it is not the provider itself", () => {
@@ -1611,8 +1791,8 @@ describe("Bus internals: openControlLinks", () => {
   });
 
   it("skips a control link whose factory declines to build one", () => {
-    // No BroadcastChannel: createBroadcastLink returns null and nothing is
-    // pushed, so a top-level document opens the children link alone.
+    // Without BroadcastChannel, createBroadcastLink returns null. The bus adds no link. A top-level
+    // document then opens only the children link.
     vi.stubGlobal("BroadcastChannel", undefined);
 
     const { bus } = make();
@@ -1740,9 +1920,20 @@ describe("Bus public methods", () => {
     h.onJourneyRequest.mockReturnValueOnce(j);
     bus.acceptDirect({ t: "journey?", from: "child" }, reply);
     expect(reply).toHaveBeenCalledWith(
-      { t: "journey", from: "ctx-1", journey: j },
+      { t: "journey", from: "ctx-1", to: "child", journey: j },
       { link: "direct", origin: "same-origin" },
     );
+  });
+
+  it("answers no direct journey question in context scope", () => {
+    const { bus, handlers: h, config } = make();
+    config.journey.scope = "context";
+    const reply = vi.fn<Receive>();
+
+    h.onJourneyRequest.mockReturnValueOnce(fakeJourney());
+    bus.acceptDirect({ t: "journey?", from: "child" }, reply);
+
+    expect(reply).not.toHaveBeenCalled();
   });
 
   it("falls through to the general handler for any other direct message", () => {
@@ -1772,19 +1963,209 @@ describe("Bus public methods", () => {
     expect(h.onRecords).toHaveBeenCalledWith(records);
   });
 
-  it("posts a journey message to every open link", () => {
-    const { bus } = make();
-    const link = fakeLink("broadcast");
-    (bus as unknown as { links: Link[] }).links.push(link);
-
+  it("posts a journey message to each link of the journey scope", () => {
+    const { bus, config } = make();
+    const broadcast = fakeLink("broadcast");
+    const children = fakeLink("children");
+    (bus as unknown as { links: Link[] }).links.push(broadcast, children);
     const j = fakeJourney();
-    bus.broadcastJourney(j);
+    const message = { t: "journey", from: "ctx-1", journey: j };
 
-    expect(link.post).toHaveBeenCalledWith({
-      t: "journey",
-      from: "ctx-1",
-      journey: j,
-    });
+    bus.broadcastJourney(j);
+    expect(children.post).toHaveBeenCalledWith(message);
+    expect(broadcast.post).not.toHaveBeenCalled();
+
+    config.journey.scope = "origin";
+    bus.broadcastJourney(j);
+    expect(broadcast.post).toHaveBeenCalledWith(message);
+  });
+});
+
+describe("Bus journey scope", () => {
+  const internals = (bus: Bus) =>
+    bus as unknown as {
+      role: string;
+      upstream: Link | null;
+      ownerId: string | null;
+      awaitingWelcome: { link: LinkKind; settle: (ok: boolean) => void } | null;
+    };
+
+  /**
+   * Makes a forwarder whose owner sits on a parent link.
+   * @param ownerId Context id of the owner, or null for a link with no handshake.
+   * @returns The bus and its handlers.
+   */
+  function forwarderOf(ownerId: string | null) {
+    const made = make();
+    const state = internals(made.bus);
+    state.role = "forwarder";
+    state.upstream = fakeLink("parent");
+    state.ownerId = ownerId;
+    return made;
+  }
+
+  const fromParent: MessageSource = { link: "parent", origin: "https://app.example" };
+
+  it("tab: a sender adopts no journey from a child or from another tab", () => {
+    const { bus, handlers: h } = make();
+
+    deliver(
+      bus,
+      { t: "journey", from: "child", journey: fakeJourney() },
+      {
+        link: "children",
+        origin: "https://app.example",
+      },
+    );
+    deliver(
+      bus,
+      { t: "journey", from: "tab-2", journey: fakeJourney() },
+      {
+        link: "broadcast",
+        origin: "same-origin",
+      },
+    );
+
+    expect(h.onJourney).not.toHaveBeenCalled();
+  });
+
+  it("tab: a forwarder adopts a journey from its owner only", () => {
+    const { bus, handlers: h } = forwarderOf("owner-ctx");
+    const j = fakeJourney();
+
+    deliver(bus, { t: "journey", from: "sibling", journey: fakeJourney({ id: "j2" }) }, fromParent);
+    deliver(bus, { t: "journey", from: "owner-ctx", journey: j }, fromParent);
+    deliver(
+      bus,
+      { t: "journey", from: "owner-ctx", journey: j },
+      {
+        link: "children",
+        origin: "https://app.example",
+      },
+    );
+
+    expect(h.onJourney).toHaveBeenCalledTimes(1);
+    expect(h.onJourney).toHaveBeenCalledWith(expect.objectContaining({ id: "j1" }));
+  });
+
+  it("tab: a forwarder with no handshake adopts each journey on its upstream link", () => {
+    const { bus, handlers: h } = forwarderOf(null);
+
+    deliver(bus, { t: "journey", from: "parent-ctx", journey: fakeJourney() }, fromParent);
+
+    expect(h.onJourney).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the owner that answered the handshake, and forgets it on destroy", () => {
+    const { bus } = make();
+    const state = internals(bus);
+    state.awaitingWelcome = { link: "parent", settle: vi.fn() };
+
+    deliver(bus, { t: "welcome", from: "owner-ctx", to: "ctx-1", tabId: "t" }, fromParent);
+    expect(state.ownerId).toBe("owner-ctx");
+
+    bus.destroy();
+    expect(state.ownerId).toBeNull();
+  });
+
+  it("ignores a journey reply addressed to another context", () => {
+    const { bus, handlers: h } = forwarderOf("owner-ctx");
+
+    deliver(
+      bus,
+      { t: "journey", from: "owner-ctx", to: "ctx-9", journey: fakeJourney() },
+      fromParent,
+    );
+    deliver(
+      bus,
+      { t: "journey", from: "owner-ctx", to: "ctx-1", journey: fakeJourney() },
+      fromParent,
+    );
+
+    expect(h.onJourney).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a journey whose payload is not a journey, and reports it", () => {
+    const { bus, handlers: h, diagnostics } = forwarderOf("owner-ctx");
+
+    deliver(bus, { t: "journey", from: "owner-ctx", journey: { id: 1 } }, fromParent);
+
+    expect(h.onJourney).not.toHaveBeenCalled();
+    expect(diagnostics.snapshot()["record.dropped_malformed"]).toBe(1);
+  });
+
+  it("origin: adopts a journey from each context, also from another tab", () => {
+    const { bus, handlers: h, config } = make();
+    config.journey.scope = "origin";
+
+    deliver(
+      bus,
+      { t: "journey", from: "child", journey: fakeJourney() },
+      {
+        link: "children",
+        origin: "https://app.example",
+      },
+    );
+    deliver(
+      bus,
+      { t: "journey", from: "tab-2", journey: fakeJourney() },
+      {
+        link: "broadcast",
+        origin: "same-origin",
+      },
+    );
+
+    expect(h.onJourney).toHaveBeenCalledTimes(2);
+  });
+
+  it("auto: uses origin scope in OpenFin", () => {
+    const { bus, handlers: h } = make({}, { platform: "openfin" });
+
+    deliver(
+      bus,
+      { t: "journey", from: "view-2", journey: fakeJourney() },
+      {
+        link: "openfin",
+        origin: "openfin",
+      },
+    );
+
+    expect(h.onJourney).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto: uses origin scope in OpenFin Core Web", () => {
+    // View B of a Core Web platform adopts the journey of view A over the broadcast link.
+    const { bus, handlers: h } = make({}, { platform: "openfin_web" });
+
+    deliver(
+      bus,
+      { t: "journey", from: "view-a", journey: fakeJourney() },
+      { link: "broadcast", origin: "same-origin" },
+    );
+
+    expect(h.onJourney).toHaveBeenCalledTimes(1);
+  });
+
+  it("context: adopts no journey, sends none and answers no question", () => {
+    const { bus, handlers: h, config } = forwarderOf(null);
+    config.journey.scope = "context";
+    const children = fakeLink("children");
+    (bus as unknown as { links: Link[] }).links.push(children);
+    h.onJourneyRequest.mockReturnValue(fakeJourney());
+
+    deliver(bus, { t: "journey", from: "parent-ctx", journey: fakeJourney() }, fromParent);
+    deliver(
+      bus,
+      { t: "journey?", from: "child" },
+      {
+        link: "children",
+        origin: "https://app.example",
+      },
+    );
+    bus.broadcastJourney(fakeJourney());
+
+    expect(h.onJourney).not.toHaveBeenCalled();
+    expect(children.post).not.toHaveBeenCalled();
   });
 });
 

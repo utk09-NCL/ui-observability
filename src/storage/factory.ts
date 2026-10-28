@@ -33,7 +33,7 @@ const noop: StorageAdapter = {
 };
 
 /**
- * Checks whether IndexedDB is available in the current context.
+ * Checks if IndexedDB is available in the current context.
  * @param diagnostics Diagnostics reporter.
  * @returns True if IDBFactory is available.
  */
@@ -51,7 +51,7 @@ function hasIndexedDb(diagnostics: Diagnostics): boolean {
 }
 
 /**
- * Checks whether localStorage is available and accepts writes.
+ * Checks if localStorage is available and accepts writes.
  * @param diagnostics Diagnostics reporter.
  * @returns True if localStorage probe write succeeds.
  */
@@ -77,7 +77,7 @@ function hasLocalStorage(diagnostics: Diagnostics): boolean {
  * @param limits Storage retention and capacity thresholds.
  * @param diagnostics Diagnostics reporter.
  * @param onGap Optional callback for telemetry gap reporting.
- * @returns Promise resolving to the selected StorageAdapter instance.
+ * @returns Promise that resolves to the selected StorageAdapter instance.
  */
 export async function createStorage(
   strategy: StorageStrategy,

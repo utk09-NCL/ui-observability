@@ -89,7 +89,7 @@ configure({
 - `identity: "memory"` writes no key to `localStorage` or `sessionStorage`.
 - `console` and `minLevel` are independent. `console` sets what the library prints. `minLevel` sets what the library sends.
 - The console output does not depend on the bus or the endpoint.
-- With a `redact` hook, the console shows only what `redact` returns. A record below `minLevel` shows its message and error only, because the library does not build it.
+- With a `redact` hook, the console shows only what `redact` returns. A record that `redact` drops prints no line. A record below `minLevel` shows its message and error only, because the library does not build it.
 
 ### Console Output
 
@@ -249,11 +249,14 @@ X-UiObs-Sampling: {"v":1,"ttlMs":600000,"defaultRate":0.1,"rates":{"blotter.grid
 | `info(msg, payload?)`                          | Logs an INFO record.                                                                                   |
 | `warn(msg, payload?)`                          | Logs a WARN record.                                                                                    |
 | `error(msg, err?, payload?)`                   | Logs an ERROR record with the error and the breadcrumb trail.                                          |
+| `fatal(msg, err?, payload?)`                   | Logs a FATAL record with the error and the breadcrumb trail.                                           |
 | `logAction(name, payload?)`                    | Logs one user action.                                                                                  |
 | `logEvent(name, payload?)`                     | Logs one domain or lifecycle event.                                                                    |
 | `logMetric(name, value, unit?, type?, attrs?)` | Logs a measurement (`gauge`, `counter`, `histogram`).                                                  |
-| `timeSync(label, fn, attrs?)`                  | Times a function and emits a duration histogram.                                                       |
-| `timeAsync(label, fn, attrs?)`                 | Times a promise and emits a duration histogram.                                                        |
+| `timeSync(label, fn, attrs?)`                  | Times a function and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                  |
+| `timeAsync(label, fn, attrs?)`                 | Times a promise and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                   |
+
+The level methods give records with `log.type: "log"`. Records of the library itself have `log.type: "system"`. `logMetric` drops a value that is not finite and counts `record.dropped_malformed`.
 
 ### Context & Correlation
 
@@ -273,47 +276,48 @@ X-UiObs-Sampling: {"v":1,"ttlMs":600000,"defaultRate":0.1,"rates":{"blotter.grid
 
 ### Delivery & Diagnostics
 
-| Function                  | Description                                                   |
-| ------------------------- | ------------------------------------------------------------- |
-| `flush()`                 | Sends the records held in the pipeline or the forward buffer. |
-| `getQueueDepth()`         | Returns the number of batches in storage.                     |
-| `getDiagnosticCounters()` | Returns the count of each diagnostic code.                    |
+| Function                  | Description                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `flush()`                 | Sends the records held in the pipeline or the forward buffer, and waits for the batches in flight. |
+| `getQueueDepth()`         | Returns the number of batches in storage.                                                          |
+| `getDiagnosticCounters()` | Returns the count of each diagnostic code.                                                         |
 
 ---
 
 ## Configuration Options
 
-No key is required. Set `endpoint` to send records.
+No key is required. Set `endpoint` to send records. A value of the wrong type reports `config.invalid`, and the value in force stays. Level names can have any case.
 
-| Key                          | Default      | Description                                                                                                                                                                                    |
-| ---------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `endpoint`                   | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                                                      |
-| `serviceName`                | `""`         | `service.name` on every record.                                                                                                                                                                |
-| `serviceVersion`             | `""`         | `service.version` on every record.                                                                                                                                                             |
-| `environment`                | `""`         | `deployment.environment` on every record.                                                                                                                                                      |
-| `enabled`                    | `true`       | Set `false` to stop all logging. Every log call then does nothing.                                                                                                                             |
-| `minLevel`                   | `"INFO"`     | Lowest level that the library sends (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).                                                                                                      |
-| `compression`                | `"gzip"`     | `gzip` or `none`. The library compresses a payload above 1 KB only.                                                                                                                            |
-| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                                                                                                                                    |
-| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                                                                                                                                       |
-| `headers`                    | `{}`         | Static headers, or a function that returns them.                                                                                                                                               |
-| `storage`                    | `"auto"`     | Store for undelivered batches: `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.                                                                                      |
-| `identity`                   | `"storage"`  | Store for session, tab and journey ids. `memory` writes no key. Fixed at startup.                                                                                                              |
-| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                                                                        |
-| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                                                                     |
-| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                                                             |
-| `sampling.remote`            | `false`      | Reads sampling rules from the `X-UiObs-Sampling` header of each accepted batch (see Remote Sampling).                                                                                          |
-| `sampling.remoteMaxRate`     | `1`          | Highest rate that a remote rule can set. It applies to the remote `defaultRate` and to each remote namespace rate.                                                                             |
-| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. With `off`, this context sends its own records and opens no link. A same-origin child frame can still forward to it.                                   |
-| `bus.trustedOrigins`         | `[]`         | Origins that may post records from a cross-origin frame.                                                                                                                                       |
-| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                                                                |
-| `capture`                    | See below    | Auto-capture settings.                                                                                                                                                                         |
-| `console`                    | `false`      | Prints records to devtools. `true` prints from `DEBUG` up. A level name prints from that level up. An object sets `level` and `styles` (see Console Output). It does not depend on `minLevel`. |
-| `transport(request)`         | `undefined`  | Sends batches through a channel of your app in place of HTTP (see Custom Transport).                                                                                                           |
-| `transportOnExit(request)`   | `undefined`  | Sends the last batch while the page closes. It must return a boolean and must not wait.                                                                                                        |
-| `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                                                           |
-| `redact(record)`             | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record.                                                                                                      |
-| `onDiagnostic(event)`        | `undefined`  | Receives the faults of the library itself.                                                                                                                                                     |
+| Key                          | Default      | Description                                                                                                                                                                                                                                                                                                      |
+| ---------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`                   | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                                                                                                                                                                        |
+| `serviceName`                | `""`         | `service.name` on every record.                                                                                                                                                                                                                                                                                  |
+| `serviceVersion`             | `""`         | `service.version` on every record.                                                                                                                                                                                                                                                                               |
+| `environment`                | `""`         | `deployment.environment` on every record.                                                                                                                                                                                                                                                                        |
+| `enabled`                    | `true`       | Set `false` to stop all logging. Every log call then does nothing.                                                                                                                                                                                                                                               |
+| `minLevel`                   | `"INFO"`     | Lowest level that the library sends (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`). It does not drop actions and metrics.                                                                                                                                                                                  |
+| `compression`                | `"gzip"`     | `gzip` or `none`. The library compresses a payload above 1 KB only.                                                                                                                                                                                                                                              |
+| `serializer`                 | `"otlp"`     | `otlp`, `ecs`, or a custom `LogSerializer`.                                                                                                                                                                                                                                                                      |
+| `credentials`                | `"omit"`     | Fetch credentials mode. Set `"include"` for cookie auth.                                                                                                                                                                                                                                                         |
+| `headers`                    | `{}`         | Static headers, or a function that returns them. After a 401 or 403, a function gets one more call and the batch one more send. The exit flush sends the last headers. Before a function gives its first result, the exit flush puts the batch in the emergency queue. `headers: undefined` removes the headers. |
+| `storage`                    | `"auto"`     | Store for undelivered batches: `auto`, `indexeddb`, `localstorage`, `memory` or `none`. Fixed at startup.                                                                                                                                                                                                        |
+| `identity`                   | `"storage"`  | Store for session, tab and journey ids. `memory` writes no key. Fixed at startup.                                                                                                                                                                                                                                |
+| `sampling.defaultRate`       | `1`          | Keep rate for a namespace with no rule.                                                                                                                                                                                                                                                                          |
+| `sampling.rates`             | `{}`         | Keep rate per namespace. The longest matching prefix wins.                                                                                                                                                                                                                                                       |
+| `sampling.alwaysSampleTypes` | `["action"]` | Record types that ignore the rate.                                                                                                                                                                                                                                                                               |
+| `sampling.remote`            | `false`      | Reads sampling rules from the `X-UiObs-Sampling` header of each accepted batch (see Remote Sampling).                                                                                                                                                                                                            |
+| `sampling.remoteMaxRate`     | `1`          | Highest rate that a remote rule can set. It applies to the remote `defaultRate` and to each remote namespace rate.                                                                                                                                                                                               |
+| `bus.mode`                   | `"auto"`     | `auto`, `sender`, `forwarder` or `off`. With `off`, this context sends its own records and opens no link. A same-origin child frame can still forward to it.                                                                                                                                                     |
+| `bus.trustedOrigins`         | `[]`         | Origins of other documents that this document trusts. A parent accepts records from a child frame on these origins. A cross-origin child frame forwards its records only to a parent on these origins. The library keeps the origin of each URL. For a sandboxed frame, set `bus.mode: "sender"` in the frame.   |
+| `bus.openFinRole`            | `"auto"`     | `auto`, `provider` or `client`.                                                                                                                                                                                                                                                                                  |
+| `journey.scope`              | `"auto"`     | Which contexts adopt a journey. `context`: each context keeps its own. `tab`: a frame or a worker adopts the journey of its owner. `origin`: each context of the origin, also in other tabs. `auto` is `origin` in OpenFin and `tab` in a browser.                                                               |
+| `capture`                    | See below    | Auto-capture settings.                                                                                                                                                                                                                                                                                           |
+| `console`                    | `false`      | Prints records to devtools. `true` prints from `DEBUG` up. A level name prints from that level up. An object sets `level` and `styles` (see Console Output). It does not depend on `minLevel`.                                                                                                                   |
+| `transport(request)`         | `undefined`  | Sends batches through a channel of your app in place of HTTP (see Custom Transport).                                                                                                                                                                                                                             |
+| `transportOnExit(request)`   | `undefined`  | Sends the last batch while the page closes. It must return a boolean and must not wait.                                                                                                                                                                                                                          |
+| `otelLoader()`               | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                                                                                                                                                                             |
+| `redact(record)`             | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record. If the hook throws or returns a value that is not a record, the library drops the record. It counts `record.dropped_by_redact`.                                                                                        |
+| `onDiagnostic(event)`        | `undefined`  | Receives the faults of the library itself.                                                                                                                                                                                                                                                                       |
 
 ### Auto-Capture Options
 
@@ -332,7 +336,7 @@ capture: {
   console: false,        // App console calls: true, or a list such as ["error", "warn", "info"]
   fullUrls: false,       // Keep query strings and fragments on recorded URLs
   ignoreUrls: [],        // URL patterns excluded from network capture
-  propagateTraceHeaderTo: [], // Target origins allowed to receive traceparent
+  propagateTraceHeaderTo: [], // Origins, or RegExp patterns, that receive traceparent
 }
 ```
 
@@ -355,7 +359,9 @@ capture: {
 - To record an argument, the library reads each property, also a getter. A getter with a side effect then runs during the console call.
 - On `shutdown()`, the library restores each method. If another script wrapped the method later, the library leaves it and reports `capture.install_failed`.
 
-`fullUrls` is off by default. The library then cuts each recorded URL at the first `?` or `#`. This applies to the page URL, the request target and the URL of a failed resource. `ignoreUrls` and `propagateTraceHeaderTo` match the full URL.
+`fullUrls` is off by default. The library then cuts each recorded URL at the first `?` or `#`. This applies to the page URL, the request target and the URL of a failed resource. `ignoreUrls` and a RegExp in `propagateTraceHeaderTo` match the full URL.
+
+A string in `propagateTraceHeaderTo` is an origin, for example `"https://api.example"`. It matches a request to that origin only. A URL with a path gives its origin. A relative request URL resolves against the page. To match a path, use a RegExp. A RegExp tests the request URL in the form that the caller gives. Start each RegExp with `^`. Without it, `/\/api\//` also matches `https://vendor.example/api/`. For example, `/^https:\/\/api\.example\/v2\//` matches one path on one origin. `/^\/api\//` matches a relative request URL only.
 
 ### Browser Storage Keys
 
@@ -378,7 +384,8 @@ IndexedDB holds undelivered batches with `storage: "auto"` or `"indexeddb"`.
 - **Document singleton:** The library keeps the runtime at `globalThis[Symbol.for("ui-observability.runtime")]`. Federated microfrontends and separate bundles share one buffer, one sequence and one transport.
 - **One sender:** Iframes, workers and OpenFin views find the nearest long-lived context. They forward their records to it over the bus. That context batches, stores and sends for all of them.
 - **Five correlation ids:** Each record carries `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
-- **Durability and exit flush:** The library stores a batch that fails to send, in IndexedDB or localStorage. It sends the batch again with exponential backoff and jitter. On `pagehide` or `freeze`, it sends pending records with `navigator.sendBeacon` if they are below 60 KB. A larger payload goes to the emergency queue.
+- **Durability and exit flush:** The library stores a batch that fails to send, in IndexedDB or localStorage. It sends the batch again with exponential backoff and jitter. When the document becomes hidden, the library runs a normal flush with the headers, gzip and retry. While the document is hidden, a send of 60 KB or less uses `keepalive`. A mobile OS can stop a hidden page with no `pagehide`. On `pagehide`, `freeze` or OpenFin close, it sends pending records with `navigator.sendBeacon` if they are below 60 KB. With `headers`, it uses a keepalive fetch with the last headers, because a beacon cannot set a header. A larger payload goes to the emergency queue. `shutdown()` runs a normal flush before the exit flush.
+- **One library version on a page:** If a copy of another version owns the page runtime, this copy runs console-only. It installs no capture and reports `runtime.version_mismatch`. Load one version of the library on the page.
 - **Emergency queue:** The emergency queue is best effort. It writes to `localStorage` synchronously, because no other storage works while the page unloads. If the browser refuses the write, the library reports `storage.quota_exceeded`. The library then loses the batch.
 - **Configuration after startup:** A second `configure()` call merges the new options into the live runtime. The runtime refuses 3 changes and reports `config.invalid` for each:
   - A change to `storage`. The stored batches stay in the adapter that the runtime built at startup.
@@ -403,11 +410,11 @@ The ingest server must meet these requirements:
    - Above 1 KiB, it also sends `Content-Encoding: gzip`.
    - Each of these headers causes a CORS preflight. If the server does not allow them, each preflight fails.
    - After a failed preflight, the library tries the batch 5 more times. It then drops the batch.
-   - Only the exit flush records arrive, because the exit flush sends no custom header.
+   - Only the beacon records of the exit flush arrive, because a beacon sends no custom header.
 
 3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours.
-4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`.
-5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the library split the batch. The library drops a batch that gets any other `4xx`.
+4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`. The library waits 60 s at most.
+5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the library split the batch. With a `headers` function, a `401` or `403` gets one more send with new headers. The library drops a batch that gets any other `4xx`.
 6. **Remote sampling (optional):** To send sampling rules, add `X-UiObs-Sampling` to a `2xx` answer. Expose the header with `Access-Control-Expose-Headers: x-uiobs-sampling`.
 
 ---

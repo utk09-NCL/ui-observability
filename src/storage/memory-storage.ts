@@ -45,7 +45,7 @@ export class MemoryStorage implements StorageAdapter {
   /**
    * Returns up to `limit` batches in FIFO order. It does not delete them.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise resolving to an array of batches.
+   * @returns Promise that resolves to an array of batches.
    */
   take(limit: number): Promise<LogBatch[]> {
     return Promise.resolve(this.batches.slice(0, limit));
@@ -76,7 +76,7 @@ export class MemoryStorage implements StorageAdapter {
   /**
    * Removes expired batches. It then removes the oldest batches above the
    * capacity limit.
-   * @returns Promise resolving to prune summary metrics.
+   * @returns Promise that resolves to prune summary metrics.
    */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
@@ -105,7 +105,7 @@ export class MemoryStorage implements StorageAdapter {
 
   /**
    * Returns the number of stored batches.
-   * @returns Promise resolving to batch count.
+   * @returns Promise that resolves to batch count.
    */
   count(): Promise<number> {
     return Promise.resolve(this.batches.length);

@@ -17,6 +17,7 @@ import {
   UTF8_TWO_BYTE_CEILING,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import { ERROR_OWN_KEYS, isDataField } from "./error-like";
 
 /** Structural depth and size limits enforced during object sanitization. */
 export interface SanitizeLimits {
@@ -52,7 +53,7 @@ export function truncate(value: string, max: number): string {
 }
 
 /**
- * Evaluates whether a UTF-16 code unit is a leading surrogate.
+ * Tests if a UTF-16 code unit is a leading surrogate.
  * @param code UTF-16 character code.
  * @returns True if character is a high surrogate.
  */
@@ -204,14 +205,28 @@ function walk(
   state.bytes += BYTES_PER_CONTAINER;
 
   try {
-    if (value instanceof Error) {
+    // An Error from another realm fails instanceof. Its built-in tag still names an Error.
+    if (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]") {
+      const error = value as Error;
+      // Keep the own fields of the error, for example a code or an HTTP status.
+      const extra: Record<string, unknown> = {};
+      let extraCount = 0;
+      for (const key of Object.keys(error)) {
+        const field = (error as unknown as Record<string, unknown>)[key];
+        if (!ERROR_OWN_KEYS.has(key) && isDataField(field)) {
+          extra[key] = field;
+          extraCount++;
+        }
+      }
+
       return {
-        name: counted(value.name, state),
-        message: counted(truncate(value.message, limits.maxAttributeChars), state),
-        stack: value.stack
-          ? counted(truncate(value.stack, limits.maxStackChars), state)
+        name: counted(error.name, state),
+        message: counted(truncate(error.message, limits.maxAttributeChars), state),
+        stack: error.stack
+          ? counted(truncate(error.stack, limits.maxStackChars), state)
           : undefined,
-        cause: value.cause ? walk(value.cause, limits, seen, depth + 1, state) : undefined,
+        cause: error.cause ? walk(error.cause, limits, seen, depth + 1, state) : undefined,
+        data: extraCount > 0 ? walk(extra, limits, seen, depth + 1, state) : undefined,
       };
     }
     if (value instanceof Date) {
@@ -289,7 +304,7 @@ function walk(
     const name = error instanceof Error ? error.name : "error";
     return counted(`[Unserializable: ${name}]`, state);
   } finally {
-    // Remove the object from the ancestor set on unwind. Otherwise a repeated sibling
+    // Remove the object from the ancestor set on unwind. If not, a repeated sibling
     // shows as a cycle.
     seen.delete(value);
   }

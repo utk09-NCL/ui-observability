@@ -21,7 +21,7 @@ export function runAsLibraryRequest<T>(fn: () => T): T {
 }
 
 /**
- * Tests whether a library request scope is open.
+ * Tests if a library request scope is open.
  * @returns True while the library starts a request.
  */
 export function isLibraryRequest(): boolean {

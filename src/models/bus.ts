@@ -3,10 +3,9 @@
 // Protocol types, message definitions, and envelope encoding for bus messages between realms.
 
 import { BUS_PROTOCOL } from "../constants";
-import type { Journey } from "../core/journey";
 import type { LogRecord } from "./log-record";
 
-/** Delivery role indicating whether this context sends records directly or forwards upstream. */
+/** Delivery role. It tells if this context sends its records or forwards them upstream. */
 export type BusRole = "sender" | "forwarder";
 
 /**
@@ -50,8 +49,11 @@ export type BusMessage =
   | { t: "welcome"; from: string; to: string; tabId: string }
   /** Telemetry log records forwarded to an upstream sender. */
   | { t: "records"; from: string; records: LogRecord[] }
-  /** Broadcast update announcing a new or ended journey state. */
-  | { t: "journey"; from: string; journey: Journey | null }
+  /**
+   * Journey update, or the answer to a journey question. An answer holds the address of the
+   * context that asked in `to`. The payload comes from another realm. The receiver parses it.
+   */
+  | { t: "journey"; from: string; to?: string; journey: unknown }
   /** Query requesting active journey state from connected peers. */
   | { t: "journey?"; from: string }
   /** Tab identifier claim broadcast to detect collisions across windows. */

@@ -3,15 +3,26 @@
 // Instruments fetch and XMLHttpRequest to record network request outcomes and timing.
 
 import { isLibraryRequest } from "../utils/library-request";
+import { patch } from "../utils/patch";
 import { stripUrlQuery } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
 /** Signature of the global fetch function. */
 type FetchFn = typeof fetch;
 
+/** Request data that the XHR wrapper keeps from open to send. */
+interface XhrMeta {
+  /** Uppercase HTTP method. */
+  method: string;
+  /** Request target URL. */
+  url: string;
+  /** Performance timestamp at send. */
+  startedAt: number;
+}
+
 /** XMLHttpRequest extended with internal telemetry tracking metadata. */
 type Tracked = XMLHttpRequest & {
-  __uiobs?: { method: string; url: string; startedAt: number };
+  __uiobs?: XhrMeta;
 };
 
 /** Unbound prototype methods intercepted on XMLHttpRequest. */
@@ -25,19 +36,90 @@ function xhrMethods(): XhrMethods {
   return XMLHttpRequest.prototype;
 }
 
+/** The fetch call to make, and the method and URL to record. */
+interface FetchPlan {
+  /** Uppercase HTTP method. */
+  method: string;
+  /** Request target URL. */
+  url: string;
+  /** Input to pass to the original fetch. */
+  input: RequestInfo | URL;
+  /** Init to pass to the original fetch. */
+  init: RequestInit | undefined;
+}
+
+/**
+ * Reads the URL of a fetch input or an XHR URL argument.
+ * A Request from another realm fails `instanceof Request`. Its `url` property still works.
+ * @param input String, URL, Request, or an object with a text form.
+ * @returns The URL.
+ * @throws TypeError when the input has no text form. Call it inside a diagnostics guard.
+ */
+function readUrl(input: unknown): string {
+  if (typeof input === "string") {
+    return input;
+  }
+
+  if (input instanceof URL) {
+    return input.href;
+  }
+
+  if (typeof input === "object" && input !== null) {
+    const { url } = input as { url?: unknown };
+    if (typeof url === "string") {
+      return url;
+    }
+  }
+
+  // fetch accepts each value with a text form.
+  return String(input);
+}
+
+/**
+ * Reads the method of a fetch call. The init method wins over the Request method.
+ * @param input Fetch input.
+ * @param init Fetch init.
+ * @returns Uppercase method. The default is GET.
+ */
+function readFetchMethod(input: unknown, init: RequestInit | undefined): string {
+  let requested: unknown = init?.method;
+
+  if (requested === undefined && typeof input === "object" && input !== null) {
+    requested = (input as { method?: unknown }).method;
+  }
+
+  return toMethod(requested ?? "GET");
+}
+
+/**
+ * Tests if a fetch input is an object that is not a Request or a URL of this realm.
+ * An example is a Request from an iframe.
+ * @param input Fetch input.
+ * @returns True for a foreign object.
+ */
+function isForeignInput(input: unknown): boolean {
+  return typeof input === "object" && !(input instanceof URL) && !(input instanceof Request);
+}
+
+/**
+ * Converts a method argument to text. A method that is not a string does not throw.
+ * @param method Method argument of the caller.
+ * @returns Uppercase method for a string, or the text form of another value.
+ */
+function toMethod(method: unknown): string {
+  return typeof method === "string" ? method.toUpperCase() : String(method);
+}
+
 /** Instruments global fetch and XMLHttpRequest to capture request durations and outcomes. */
 export class NetworkCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "network";
 
-  /** Original uninstrumented fetch implementation. */
-  private originalFetch: FetchFn | null = null;
+  /** Prevents a second wrap on a wrapped function. */
+  private installed = false;
 
-  /** Original uninstrumented XMLHttpRequest.open implementation. */
-  private originalOpen: XhrMethods["open"] | null = null;
-
-  /** Original uninstrumented XMLHttpRequest.send implementation. */
-  private originalSend: XhrMethods["send"] | null = null;
+  /** Restore functions of the installed wrappers. */
+  private readonly restores: (() => void)[] = [];
 
   /**
    * @param ctx Capture context containing configuration, diagnostics, logger, breadcrumbs, and tracing.
@@ -46,6 +128,11 @@ export class NetworkCapture implements Capture {
 
   /** Instruments configured network transport APIs. */
   install(): void {
+    if (this.installed) {
+      return;
+    }
+    this.installed = true;
+
     if (this.ctx.config.capture.fetch) {
       this.installFetch();
     }
@@ -54,24 +141,23 @@ export class NetworkCapture implements Capture {
     }
   }
 
-  /** Restores native network transport implementations and clears references. */
+  /**
+   * Restores each host function that still holds the wrapper of this capture.
+   * A wrapper that another script wrapped again stays in place and records nothing.
+   */
   uninstall(): void {
-    if (this.originalFetch) {
-      globalThis.fetch = this.originalFetch;
-      this.originalFetch = null;
+    if (!this.installed) {
+      return;
     }
-    if (this.originalOpen) {
-      xhrMethods().open = this.originalOpen;
-      this.originalOpen = null;
-    }
-    if (this.originalSend) {
-      xhrMethods().send = this.originalSend;
-      this.originalSend = null;
+    this.installed = false;
+
+    for (const restore of this.restores.splice(0)) {
+      restore();
     }
   }
 
   /**
-   * Evaluates whether a URL matches ignore patterns.
+   * Tests if a URL matches ignore patterns.
    * @param url Request target URL.
    * @returns True if telemetry must exclude the URL.
    */
@@ -82,17 +168,41 @@ export class NetworkCapture implements Capture {
     return isLibraryRequest() || matchesAny(url, this.ctx.config.capture.ignoreUrls);
   }
 
+  /**
+   * Tests if a request gets the trace headers.
+   * @param url Request target URL.
+   * @returns True if the URL is in propagateTraceHeaderTo.
+   */
+  private propagates(url: string): boolean {
+    // Add headers only to allowlisted URLs. A traceparent on a third-party request causes
+    // a CORS preflight. The third party does not answer it, and its API stops working.
+    const targets = this.ctx.config.capture.propagateTraceHeaderTo;
+    if (targets.length === 0) {
+      return false;
+    }
+
+    // A string target is an origin. A relative URL resolves against the page.
+    const origin = this.ctx.diagnostics.guard(
+      "capture.header_failed",
+      "The library could not read the origin of a request URL. Only a RegExp target can match it.",
+      () => new URL(url, location.href).origin,
+    );
+
+    return targets.some((target) =>
+      typeof target === "string" ? target === origin : target.test(url),
+    );
+  }
+
   /** Instruments globalThis.fetch with tracing injection and outcome logging. */
   private installFetch(): void {
-    if (typeof globalThis.fetch !== "function" || this.originalFetch) {
+    if (typeof globalThis.fetch !== "function") {
       return;
     }
 
-    const original = globalThis.fetch.bind(globalThis);
-    this.originalFetch = globalThis.fetch;
-
-    const ctx = this.ctx;
-    const ignored = (url: string): boolean => this.ignored(url);
+    // Uninstall clears the flag. A wrapper that stays in place then only calls the original.
+    let active = true;
+    const prepare = (input: RequestInfo | URL, init: RequestInit | undefined) =>
+      this.prepareFetch(input, init);
     const record = (
       method: string,
       url: string,
@@ -103,108 +213,182 @@ export class NetworkCapture implements Capture {
       this.record(method, url, status, durationMs, error);
     };
 
-    globalThis.fetch = async function instrumentedFetch(input, init) {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const requested = init?.method ?? (input instanceof Request ? input.method : "GET");
-      const method = requested.toUpperCase();
+    const restore = patch(globalThis, "fetch", (original: FetchFn) => {
+      const call = original.bind(globalThis);
 
-      if (ignored(url)) {
-        return original(input, init);
-      }
-
-      let fetchInput = input;
-      let fetchInit = init;
-
-      // Add headers only to allowlisted URLs. A traceparent on a third-party request causes
-      // a CORS preflight. The third party does not answer it, and its API stops working.
-      if (matchesAny(url, ctx.config.capture.propagateTraceHeaderTo)) {
-        try {
-          const injected = Object.entries(ctx.tracing.headers());
-
-          if (input instanceof Request) {
-            // Do not spread a non-empty init with a Request input. That runs the Request
-            // constructor on `input` again and reads its body. A body that was read
-            // before causes a TypeError.
-            const headers = new Headers(input.headers);
-            for (const [key, value] of injected) {
-              headers.set(key, value);
-            }
-            fetchInput = new Request(input, { headers });
-          } else {
-            const headers = new Headers(init?.headers);
-            for (const [key, value] of injected) {
-              headers.set(key, value);
-            }
-            fetchInit = { ...init, headers };
-          }
-        } catch (error) {
-          // Send the request that the caller gave, without changes. A missing header is
-          // better than a failed request.
-          fetchInput = input;
-          fetchInit = init;
-          ctx.diagnostics.report(
-            "capture.header_failed",
-            "The library could not add the traceparent header. It sends the request unchanged.",
-            { url },
-            error,
-          );
+      return async function instrumentedFetch(input, init) {
+        const plan = active ? prepare(input, init) : undefined;
+        if (!plan) {
+          return call(input, init);
         }
-      }
 
-      const startedAt = performance.now();
-      try {
-        const response = await original(fetchInput, fetchInit);
-        record(method, url, response.status, performance.now() - startedAt, undefined);
-        return response;
-      } catch (error) {
-        record(method, url, 0, performance.now() - startedAt, error);
-        throw error;
+        const startedAt = performance.now();
+        try {
+          const response = await call(plan.input, plan.init);
+          record(plan.method, plan.url, response.status, performance.now() - startedAt, undefined);
+          return response;
+        } catch (error) {
+          record(plan.method, plan.url, 0, performance.now() - startedAt, error);
+          throw error;
+        }
+      };
+    });
+
+    this.restores.push(() => {
+      active = false;
+      restore();
+    });
+  }
+
+  /**
+   * Reads a fetch call and adds the trace headers to an allowlisted request.
+   * @param input Fetch input of the caller.
+   * @param init Fetch init of the caller.
+   * @returns The plan, or undefined to send the request unchanged and record nothing.
+   */
+  private prepareFetch(
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+  ): FetchPlan | undefined {
+    // A read here runs inside the fetch call of the caller. A throw must not fail the request.
+    const read = this.ctx.diagnostics.guard(
+      "capture.record_failed",
+      "The library could not read a fetch request. It sends the request unchanged.",
+      (): { method: string; url: string; propagate: boolean } | undefined => {
+        const url = readUrl(input);
+        if (this.ignored(url)) {
+          return undefined;
+        }
+
+        return { method: readFetchMethod(input, init), url, propagate: this.propagates(url) };
+      },
+    );
+
+    if (!read) {
+      return undefined;
+    }
+
+    const { method, url } = read;
+    const plan: FetchPlan = { method, url, input, init };
+    // An init with headers replaces all headers of a foreign Request, for example
+    // Authorization. Send a foreign input without the trace headers.
+    if (!read.propagate || isForeignInput(input)) {
+      return plan;
+    }
+
+    try {
+      const injected = Object.entries(this.ctx.tracing.headers());
+
+      if (input instanceof Request) {
+        // Do not spread a non-empty init with a Request input. That runs the Request
+        // constructor on `input` again and reads its body. A second read of a body
+        // causes a TypeError.
+        const headers = new Headers(input.headers);
+        for (const [key, value] of injected) {
+          headers.set(key, value);
+        }
+        plan.input = new Request(input, { headers });
+      } else {
+        const headers = new Headers(init?.headers);
+        for (const [key, value] of injected) {
+          headers.set(key, value);
+        }
+        plan.init = { ...init, headers };
       }
-    };
+    } catch (error) {
+      // Send the request that the caller gave, without changes. A missing header is
+      // better than a failed request.
+      plan.input = input;
+      plan.init = init;
+      this.ctx.diagnostics.report(
+        "capture.header_failed",
+        "The library could not add the traceparent header. It sends the request unchanged.",
+        { url },
+        error,
+      );
+    }
+
+    return plan;
   }
 
   /** Instruments XMLHttpRequest open and send prototype methods. */
   private installXhr(): void {
-    if (typeof XMLHttpRequest === "undefined" || this.originalOpen) {
+    if (typeof XMLHttpRequest === "undefined") {
       return;
     }
 
+    // Uninstall clears the flag. A wrapper that stays in place then only calls the original.
+    let active = true;
+    const ctx = this.ctx;
     const ignored = (url: string): boolean => this.ignored(url);
+    const propagates = (url: string): boolean => this.propagates(url);
     const record = (method: string, url: string, status: number, durationMs: number): void => {
       this.record(method, url, status, durationMs, undefined);
     };
 
     const proto = xhrMethods();
-    const originalOpen = proto.open;
-    const originalSend = proto.send;
-    this.originalOpen = originalOpen;
-    this.originalSend = originalSend;
 
-    proto.open = function (this: Tracked, method: string, url: string | URL, ...rest: never[]) {
-      this.__uiobs = {
-        method: method.toUpperCase(),
-        url: String(url),
-        startedAt: 0,
-      };
-      originalOpen.apply(this, [method, url, ...rest] as never[]);
-    };
+    const restoreOpen = patch(
+      proto,
+      "open",
+      (originalOpen) =>
+        function (this: Tracked, method: unknown, url: unknown, ...rest: never[]) {
+          if (active) {
+            // A read here runs inside the open call of the caller. A throw must not fail it.
+            ctx.diagnostics.guard(
+              "capture.record_failed",
+              "The library could not read an XMLHttpRequest. It does not record the request.",
+              () => {
+                this.__uiobs = { method: toMethod(method), url: readUrl(url), startedAt: 0 };
+              },
+            );
+          }
+          originalOpen.apply(this, [method, url, ...rest] as never[]);
+        },
+    );
 
-    proto.send = function (this: Tracked, ...args: never[]) {
-      const meta = this.__uiobs;
-      if (meta && !ignored(meta.url)) {
-        meta.startedAt = performance.now();
-        this.addEventListener("loadend", () => {
-          record(meta.method, meta.url, this.status, performance.now() - meta.startedAt);
-        });
-      }
-      originalSend.apply(this, args);
-    };
+    const restoreSend = patch(
+      proto,
+      "send",
+      (originalSend) =>
+        function (this: Tracked, ...args: never[]) {
+          const meta = active ? this.__uiobs : undefined;
+          if (meta) {
+            ctx.diagnostics.guard(
+              "capture.record_failed",
+              `The library could not record ${meta.method} ${meta.url}.`,
+              () => {
+                if (ignored(meta.url)) {
+                  return;
+                }
+
+                meta.startedAt = performance.now();
+                this.addEventListener("loadend", () => {
+                  record(meta.method, meta.url, this.status, performance.now() - meta.startedAt);
+                });
+
+                // setRequestHeader works only between open and send.
+                if (propagates(meta.url)) {
+                  addTraceHeaders(this, meta.url, ctx);
+                }
+              },
+            );
+          }
+          originalSend.apply(this, args);
+        },
+    );
+
+    this.restores.push(() => {
+      active = false;
+      restoreOpen();
+      restoreSend();
+    });
   }
 
   /**
    * Records request outcome attributes and breadcrumb entry.
    * @param method Uppercase HTTP method.
-   * @param target Request target URL. The method removes the query unless fullUrls is set.
+   * @param target Request target URL. The method removes the query unless you set fullUrls.
    * @param status HTTP response status code, or 0 on failure.
    * @param durationMs Request duration in milliseconds.
    * @param error Caught error instance on failed requests.
@@ -255,6 +439,27 @@ export class NetworkCapture implements Capture {
         // Only failures use bandwidth.
         this.ctx.logger.debug(`${method} ${url}`, attributes);
       },
+    );
+  }
+}
+
+/**
+ * Adds the trace headers to an open XHR. A failure sends the request without them.
+ * @param xhr Request between open and send.
+ * @param url Request target URL, for the diagnostic.
+ * @param ctx Capture context with tracing and diagnostics.
+ */
+function addTraceHeaders(xhr: XMLHttpRequest, url: string, ctx: CaptureContext): void {
+  try {
+    for (const [key, value] of Object.entries(ctx.tracing.headers())) {
+      xhr.setRequestHeader(key, value);
+    }
+  } catch (error) {
+    ctx.diagnostics.report(
+      "capture.header_failed",
+      "The library could not add the traceparent header. It sends the request unchanged.",
+      { url },
+      error,
     );
   }
 }

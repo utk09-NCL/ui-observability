@@ -22,7 +22,7 @@ export interface LogBatch {
 }
 
 /**
- * Tells whether a value from storage has all fields of a batch. `keyOf` cannot match
+ * Tells if a value from storage has all fields of a batch. `keyOf` cannot match
  * an entry without `id` after delivery. The library then retries that entry with no
  * end, and the entry blocks each batch behind it. An entry without `attempts` counts
  * as NaN. That count never reaches `maxAttempts`. Thus the library never drops the

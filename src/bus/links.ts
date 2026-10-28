@@ -2,7 +2,7 @@
 //
 // Communication link implementations for direct, frame, broadcast, OpenFin, and worker channels.
 
-import { RUNTIME_GLOBAL_KEY } from "../constants";
+import { BUS_TYPE_DETAIL_MAX_CHARS, RUNTIME_GLOBAL_KEY } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import {
   type BusMessage,
@@ -73,6 +73,53 @@ export interface WorkerLike {
 /** Global symbol used to look up same-origin parent runtime instances. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
+/** Origin of a sandboxed frame without allow-same-origin. */
+const OPAQUE_ORIGIN = "null";
+
+/** Location with the ancestor list that Chromium and WebKit give. */
+interface LocationWithAncestors {
+  origin: string;
+  ancestorOrigins?: { length: number; item: (index: number) => string | null };
+}
+
+/**
+ * Builds the message for an ignored message from an untrusted origin.
+ * @param origin Origin of the sender.
+ * @param what What the bus ignored, for example "a message".
+ * @returns The message. A sandboxed sender gets the fix for its frame.
+ */
+function untrustedText(origin: string, what: string): string {
+  if (origin === OPAQUE_ORIGIN) {
+    return `The bus ignored ${what} from a sandboxed frame. The frame has an opaque origin. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.`;
+  }
+
+  return `The bus ignored ${what} from ${origin}. If you own this origin, add it to bus.trustedOrigins.`;
+}
+
+/**
+ * Reads the origin of the parent frame. A cross-origin parent does not give its location.
+ * @returns The origin, or null when the browser does not give it.
+ */
+function parentOrigin(): string | null {
+  const ancestors = (location as LocationWithAncestors).ancestorOrigins;
+  if (ancestors && ancestors.length > 0) {
+    return ancestors.item(0);
+  }
+
+  // Firefox has no ancestorOrigins. The referrer of a frame is the page that loaded it.
+  // A Referrer-Policy of no-referrer gives "". The caller reports an unknown origin.
+  const referrer = document.referrer;
+  if (referrer === "") {
+    return null;
+  }
+
+  try {
+    return new URL(referrer).origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Establishes direct synchronous communication with a same-origin parent runtime.
  * @param receive Callback for parent replies.
@@ -122,22 +169,70 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
 }
 
 /**
- * Creates a postMessage link to the parent window.
+ * Creates a postMessage link to a parent window on a trusted origin. Records hold user data.
+ * A page on another origin that frames this app must not get them.
  * @param receive Callback for incoming parent messages.
+ * @param trustedOrigins Origins of a parent that can get the records, in addition to this origin.
  * @param diagnostics Diagnostics reporter.
- * @returns Link to parent window, or null if running in top-level window.
+ * @returns Link to the parent window, or null at the top level or with an untrusted parent.
+ * With null, this context sends its own records.
  */
-export function createParentLink(receive: Receive, diagnostics: Diagnostics): Link | null {
+export function createParentLink(
+  receive: Receive,
+  trustedOrigins: string[],
+  diagnostics: Diagnostics,
+): Link | null {
   if (typeof window === "undefined" || window.parent === window) {
     return null;
   }
 
+  // A sandboxed frame has an opaque origin. No parent can list it in its own trust list.
+  const self = location.origin;
+  if (self === OPAQUE_ORIGIN) {
+    diagnostics.report(
+      "bus.untrusted_origin",
+      'This frame is sandboxed without allow-same-origin. It has an opaque origin. No parent can trust it. This context sends its own records. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+      { origin: self, type: "parent" },
+    );
+    return null;
+  }
+
+  const trusted = new Set([self, ...trustedOrigins]);
+  const target = parentOrigin();
+  if (target === null || !trusted.has(target)) {
+    diagnostics.report(
+      "bus.untrusted_origin",
+      target === null
+        ? "The origin of the parent frame is unknown. This context sends its own records."
+        : `The parent frame is on ${target}. This origin is not in bus.trustedOrigins. This context sends its own records.`,
+      { origin: target ?? "", type: "parent" },
+    );
+    return null;
+  }
+
+  // Report each untrusted origin one time. A hostile parent can send many messages.
+  const reported = new Set<string>();
+
   const onMessage = (event: MessageEvent): void => {
     const message = unwrap(event.data);
-    // This context trusts the parent because it selected the parent as its upstream.
-    if (message && event.source === window.parent) {
-      receive(message, { link: "parent", origin: event.origin });
+    if (!message || event.source !== window.parent) {
+      return;
     }
+
+    // The parent can navigate to another origin after this frame loads.
+    if (!trusted.has(event.origin)) {
+      if (!reported.has(event.origin)) {
+        reported.add(event.origin);
+        // The parent sets message.t. Keep it out of the message text. Cut it in the detail.
+        diagnostics.report("bus.untrusted_origin", untrustedText(event.origin, "a message"), {
+          origin: event.origin,
+          type: message.t.slice(0, BUS_TYPE_DETAIL_MAX_CHARS),
+        });
+      }
+      return;
+    }
+
+    receive(message, { link: "parent", origin: event.origin });
   };
   addEventListener("message", onMessage);
 
@@ -145,10 +240,9 @@ export function createParentLink(receive: Receive, diagnostics: Diagnostics): Li
     kind: "parent",
     post(message) {
       diagnostics.guard("bus.send_failed", "The postMessage call to the parent failed.", () => {
-        // An outbound "*" target is safe. The payload holds only this context's records.
-        // The parent already gets these records by another path.
-        // For inbound trust, see createChildrenLink.
-        window.parent.postMessage(envelope(message), "*");
+        // Target the trusted origin, not "*". The browser drops the message if the parent
+        // navigated to another origin.
+        window.parent.postMessage(envelope(message), target);
       });
     },
     close() {
@@ -173,7 +267,10 @@ export function createChildrenLink(
     return null;
   }
 
-  const trusted = new Set([window.location.origin, ...trustedOrigins]);
+  // A sandboxed page has the opaque origin "null". Each sandboxed child also has it.
+  const trusted = new Set([location.origin, ...trustedOrigins]);
+  trusted.delete(OPAQUE_ORIGIN);
+
   // The map keeps the origin of each source.
   // A child that navigates must not get the ids of its previous origin.
   const sources = new Map<MessageEventSource, string>();
@@ -184,11 +281,10 @@ export function createChildrenLink(
       return;
     }
     if (!trusted.has(event.origin)) {
-      diagnostics.report(
-        "bus.untrusted_origin",
-        `The bus ignored a message from ${event.origin}. If you own this origin, add it to bus.trustedOrigins.`,
-        { origin: event.origin, type: message.t },
-      );
+      diagnostics.report("bus.untrusted_origin", untrustedText(event.origin, "a message"), {
+        origin: event.origin,
+        type: message.t.slice(0, BUS_TYPE_DETAIL_MAX_CHARS),
+      });
       return;
     }
 

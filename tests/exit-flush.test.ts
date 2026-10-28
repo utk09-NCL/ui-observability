@@ -22,9 +22,9 @@ const record = (body: string): LogRecord => ({
 });
 
 /**
- * Listeners outlive a test, since happy-dom gives the whole file one window. A
- * failed assertion would otherwise leave an instance flushing on the next
- * test's pagehide. `uninstall` is idempotent, so a test may still call it.
+ * Listeners stay after a test. happy-dom gives one window to the whole file. Without this, a failed
+ * assertion leaves an instance that flushes on the pagehide of the next test. `uninstall` is
+ * idempotent. A test can still call it.
  */
 const built: ExitFlush[] = [];
 
@@ -39,14 +39,18 @@ interface Options {
   config?: Partial<ObservabilityConfig>;
   /** Replaces the default drain, for the shapes a real pipeline cannot produce. */
   drain?: () => LogBatch | null;
+  /** Headers that the HTTP transport resolved last. */
+  headers?: Record<string, string>;
+  /** Replaces the normal flush of the pipeline. */
+  alive?: () => void | Promise<void>;
 }
 
 /**
- * The default drain empties a real array, exactly as the pipeline does. One that
- * simply answers null the second time passes the "sends once" test without
- * exercising the thing that actually prevents the double send.
+ * The default drain empties a real array, as the pipeline does. A drain that gives null on the
+ * second call also passes the "sends once" test. That drain does not test the code that stops the
+ * double send.
  */
-function setup({ records = [], config = {}, drain }: Options = {}) {
+function setup({ records = [], config = {}, drain, headers, alive }: Options = {}) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -70,13 +74,14 @@ function setup({ records = [], config = {}, drain }: Options = {}) {
         };
 
   const drainForExit = vi.fn<() => LogBatch | null>(drain ?? take);
-  const drainPending = vi.fn<() => LogBatch | null>(take);
+  const flushAlive = vi.fn<() => void | Promise<void>>(alive ?? (() => undefined));
 
   const flush = new ExitFlush({
     config: resolved,
     diagnostics,
     drainForExit,
-    drainPending,
+    flushAlive,
+    exitHeaders: () => headers,
   });
 
   built.push(flush);
@@ -85,7 +90,7 @@ function setup({ records = [], config = {}, drain }: Options = {}) {
     pending,
     events,
     drainForExit,
-    drainPending,
+    flushAlive,
     codes: () => events.map((event) => event.code),
   };
 }
@@ -96,7 +101,7 @@ const stubBeacon = (impl: (url: string, data: Blob) => boolean = () => true) => 
   return beacon;
 };
 
-/** Body defaults to null: 204 is a null-body status, and a Response with both throws. */
+/** The body is null by default. 204 is a null-body status. A Response with both throws. */
 const stubFetch = (
   impl: (url: string, init: RequestInit) => Promise<Response> = () =>
     Promise.resolve(new Response(null, { status: 204 })),
@@ -111,7 +116,9 @@ const stubFin = (me: unknown) => {
   vi.stubGlobal("fin", { me });
 };
 
-/** Indexed rather than enumerated: happy-dom's Storage is a Proxy and does not enumerate its items. */
+/**
+ * Read the items by index. The Storage of happy-dom is a Proxy that does not enumerate its items.
+ */
 const emergencyKeys = () => {
   const keys: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
@@ -124,16 +131,18 @@ const emergencyKeys = () => {
 };
 
 describe("ExitFlush install", () => {
-  it("flushes when the document becomes hidden", () => {
+  it("runs a normal flush, not a beacon, when the document becomes hidden", () => {
+    // The document keeps running. A normal flush keeps the headers, gzip and the retry.
     const beacon = stubBeacon();
-    const { flush } = setup({ records: [record("bye")] });
+    const { flush, flushAlive, drainForExit } = setup({ records: [record("bye")] });
     flush.install();
 
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
 
-    expect(beacon).toHaveBeenCalledOnce();
-    expect(new URL(beacon.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("hidden");
+    expect(flushAlive).toHaveBeenCalledOnce();
+    expect(drainForExit).not.toHaveBeenCalled();
+    expect(beacon).not.toHaveBeenCalled();
     flush.uninstall();
   });
 
@@ -299,48 +308,44 @@ describe("ExitFlush flush", () => {
     expect(beacon.mock.calls[0][1].type).toBe("text/plain;charset=utf-8");
   });
 
-  it("sends once even when hidden is followed by pagehide", () => {
-    const beacon = stubBeacon();
-    const { flush } = setup({ records: [record("bye")] });
-
-    flush.flush("hidden");
-    flush.flush("pagehide");
-
-    expect(beacon).toHaveBeenCalledOnce();
-  });
-
-  it("sends again when new records arrived between hidden and pagehide", () => {
-    const beacon = stubBeacon();
-    const { flush, pending } = setup({ records: [record("first")] });
-
-    flush.flush("hidden");
-    pending.push(record("second"));
-    flush.flush("pagehide");
-
-    expect(beacon).toHaveBeenCalledTimes(2);
-  });
-
   it("leaves the in-flight batches alone when the tab is only hidden", () => {
     stubBeacon();
-    const { flush, drainForExit, drainPending } = setup({ records: [record("bye")] });
+    const { flush, drainForExit, flushAlive } = setup({ records: [record("bye")] });
 
-    // hidden fires on every tab switch and minimise. The document keeps running
-    // and its in-flight sends still complete, so taking them here delivers the
-    // same records twice under an id the server cannot deduplicate.
+    // hidden fires at each tab switch and each minimize. The document continues to run. Its sends
+    // in flight still complete. A take of them here sends the same records two times. The server
+    // cannot find the copy, because the id is new.
     flush.flush("hidden");
 
-    expect(drainPending).toHaveBeenCalledOnce();
+    expect(flushAlive).toHaveBeenCalledOnce();
     expect(drainForExit).not.toHaveBeenCalled();
+  });
+
+  it("reports a normal flush that rejects or throws", async () => {
+    const rejected = setup({ alive: () => Promise.reject(new Error("store failed")) });
+    const thrown = setup({
+      alive: () => {
+        throw new Error("pipeline gone");
+      },
+    });
+
+    rejected.flush.flush("hidden");
+    thrown.flush.flush("hidden");
+
+    expect(thrown.codes()).toEqual(["pipeline.crashed"]);
+    await vi.waitFor(() => {
+      expect(rejected.codes()).toEqual(["pipeline.crashed"]);
+    });
   });
 
   it("takes the in-flight batches when the document is closing", () => {
     stubBeacon();
-    const { flush, drainForExit, drainPending } = setup({ records: [record("bye")] });
+    const { flush, drainForExit, flushAlive } = setup({ records: [record("bye")] });
 
     flush.flush("pagehide");
 
     expect(drainForExit).toHaveBeenCalledOnce();
-    expect(drainPending).not.toHaveBeenCalled();
+    expect(flushAlive).not.toHaveBeenCalled();
   });
 
   it("sends nothing when there is no endpoint to send to", () => {
@@ -418,10 +423,63 @@ describe("ExitFlush keepalive fallback", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const init = fetchMock.mock.calls[0][1];
-    const headers = init.headers as Record<string, string>;
+    const headers = init.headers as Headers;
     expect(init.keepalive).toBe(true);
     expect(init.credentials).toBe("omit");
-    expect(headers["Content-Type"]).toBe("text/plain;charset=UTF-8");
+    expect(headers.get("Content-Type")).toBe("text/plain;charset=UTF-8");
+  });
+
+  it("sends a keepalive fetch with the last headers, not a beacon, when headers is set", () => {
+    // sendBeacon cannot set a header. Without the authorization header, the server drops it.
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      headers: { authorization: "Bearer t1" },
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(init.keepalive).toBe(true);
+    expect(headers.get("authorization")).toBe("Bearer t1");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("x-uiobs-batch-id")).toBe("b1");
+    expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
+  });
+
+  it("parks the batch, and sends no beacon, while a headers function has no result", () => {
+    // Before the first send and after a 401, the library has no headers.
+    // The server refuses a beacon without them.
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      config: { headers: () => ({ authorization: "Bearer t1" }) },
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("reports headers that the browser cannot build, and does not throw", () => {
+    // A header value outside ISO-8859-1, for example "张三", makes the Headers constructor throw.
+    vi.stubGlobal("Headers", function BrokenHeaders() {
+      throw new TypeError("Invalid header value");
+    });
+    const fetchMock = stubFetch();
+    const { flush, codes } = setup({ records: [record("bye")], headers: { "x-user": "张三" } });
+
+    expect(() => {
+      flush.flush("shutdown");
+    }).not.toThrow();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(codes()).toContain("transport.http_error");
   });
 
   it("parks the batch when the browser refuses the beacon", () => {
@@ -533,16 +591,18 @@ describe("ExitFlush with a custom transport", () => {
     expect(emergencyKeys()).toHaveLength(1);
   });
 
-  it("does nothing on hidden when there is no transportOnExit", () => {
-    // The page keeps running after a tab switch. The pipeline sends the records later.
-    const { flush, drainPending } = setup({
+  it("runs a normal flush on hidden, also with transportOnExit", () => {
+    // The page keeps running after a tab switch. The async transport can still send.
+    const onExit = vi.fn<ExitTransport>(() => true);
+    const { flush, flushAlive } = setup({
       records: [record("bye")],
-      config: { endpoint: null, transport },
+      config: { endpoint: null, transport, transportOnExit: onExit },
     });
 
     flush.flush("hidden");
 
-    expect(drainPending).not.toHaveBeenCalled();
+    expect(flushAlive).toHaveBeenCalledOnce();
+    expect(onExit).not.toHaveBeenCalled();
     expect(emergencyKeys()).toHaveLength(0);
   });
 

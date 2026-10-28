@@ -19,7 +19,7 @@ const PAST_METRIC_FLUSH_MS = METRIC_FLUSH_MS - LOG_FLUSH_MS + 100;
 
 const limits = { maxBatches: 100, maxAgeMs: 60_000, maxAttempts: 5 };
 
-type Send = (batch: LogBatch) => Promise<void>;
+type Send = (batch: LogBatch, onKeepalive?: () => void) => Promise<void>;
 
 const record = (over: Partial<LogRecord> = {}): LogRecord => ({
   timeUnixNano: "1755543600123000000",
@@ -55,8 +55,8 @@ const setup = (
   const storage = override ?? new MemoryStorage(limits);
   const nudge = vi.fn<() => void>();
 
-  // Stands in for the engine's classification: the split itself is proved in
-  // retry-engine.test.ts, so here it only has to store and nudge.
+  // This stub takes the place of the classification of the engine. retry-engine.test.ts proves the
+  // split. Here, the stub only stores and nudges.
   const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<void>>(async (failed) => {
     await storage.save(failed);
     nudge();
@@ -150,8 +150,8 @@ describe("LogPipeline", () => {
   });
 
   it("counts the live delivery when it stores a batch the transport refused", async () => {
-    // Stored at zero, this batch would get one request more than maxAttempts
-    // allows, and every X-UiObs-Attempt header would under-report by one.
+    // A batch that the pipeline stores with zero attempts gets one request more than the
+    // maxAttempts limit. Each X-UiObs-Attempt header then shows one attempt too few.
     const { pipeline, send, storage, nudge, diagnostics } = setup();
     send.mockRejectedValueOnce(new Error("network"));
 
@@ -167,7 +167,7 @@ describe("LogPipeline", () => {
   });
 
   it("hands a refused batch to the retry engine to classify", async () => {
-    // Storing it here would park an oversized batch that only the drain can split.
+    // A store here keeps an oversized batch that only the drain can split.
     const { pipeline, send, storeFailed } = setup();
     const refused = new TransportError("too_large", "413", 413);
     send.mockRejectedValueOnce(refused);
@@ -180,7 +180,7 @@ describe("LogPipeline", () => {
   });
 
   it("stores without spending an attempt while the server is throttling us", async () => {
-    // Nothing was sent, so nothing may count against the batch.
+    // The pipeline sent nothing. No attempt counts against the batch.
     const { pipeline, send, throttledForMs, storage, nudge, diagnostics } = setup();
     throttledForMs.mockReturnValue(5000);
 
@@ -212,8 +212,8 @@ describe("LogPipeline", () => {
   });
 
   it("contains a dispatch that rejects instead of stopping delivery", async () => {
-    // dispatch is written never to reject. When it does anyway, the batch is
-    // lost and reported, and the records behind it still go out.
+    // dispatch must never reject. If it rejects, the pipeline loses the batch and reports it. The
+    // records after it still go to the transport.
     const { pipeline, send, throttledForMs, diagnostics } = setup();
     throttledForMs.mockImplementationOnce(() => {
       throw new Error("clock gone");
@@ -290,9 +290,9 @@ describe("LogPipeline", () => {
   });
 
   it("leaves in-flight batches alone on an explicit flush", async () => {
-    // A send that never settles holds a claimed batch unconfirmed. An explicit
-    // flush that takes it resends those records under a fresh batch id, which
-    // the server cannot deduplicate against the id still in flight.
+    // A send that never settles keeps a claimed batch unconfirmed. An explicit flush that takes it
+    // sends those records again under a new batch id. The server cannot match that id to the id
+    // still in flight.
     const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
@@ -309,9 +309,9 @@ describe("LogPipeline", () => {
   });
 
   it("hands over batches that are claimed but not yet confirmed sent", async () => {
-    // Requests that never settle, so every claimed batch sits between the claim
-    // and the network. Three batches form; MAX_CONCURRENT_REQUESTS lets two go
-    // in flight and holds the third. A closing document takes all of them.
+    // These requests never settle. Each claimed batch stays between the claim and the network.
+    // Three batches form. MAX_CONCURRENT_REQUESTS lets two go in flight. It holds the third. A
+    // document that closes takes all of them.
     const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
@@ -330,6 +330,25 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
+  it("does not hand over a batch that the transport sends with keepalive", async () => {
+    // A keepalive request continues after unload. A second copy under a new id is a duplicate.
+    const { pipeline, send } = setup();
+    send.mockImplementation((_batch, onKeepalive) => {
+      onKeepalive?.();
+      return new Promise<void>(() => undefined);
+    });
+
+    pipeline.push(record({ body: "sent" }));
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+    pipeline.push(record({ body: "buffered" }));
+
+    const batch = pipeline.drainForExit();
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(batch?.records.map((one) => one.body)).toEqual(["buffered"]);
+    pipeline.destroy();
+  });
+
   it("accepts nothing once destroyed", async () => {
     const { pipeline, send } = setup();
     pipeline.destroy();
@@ -340,5 +359,163 @@ describe("LogPipeline", () => {
     expect(send).not.toHaveBeenCalled();
     expect(pipeline.drainPending()).toBeNull();
     pipeline.destroy();
+  });
+});
+
+describe("LogPipeline flushPending", () => {
+  /**
+   * Makes a send that settles only when the test releases it.
+   * @returns The send and the release function of each call.
+   */
+  function heldSend() {
+    const releases: (() => void)[] = [];
+    const send = vi.fn<Send>(
+      () =>
+        new Promise<void>((resolve) => {
+          releases.push(resolve);
+        }),
+    );
+    return { send, releases };
+  }
+
+  /**
+   * Tracks if a promise settled.
+   * @param work Promise to watch.
+   * @returns A function that tells if it settled.
+   */
+  function watch(work: Promise<void>): () => boolean {
+    let settled = false;
+    void work.then(() => {
+      settled = true;
+    });
+    return () => settled;
+  }
+
+  it("sends the buffered records and waits for the batch in flight", async () => {
+    const { pipeline, send } = setup();
+    const held = heldSend();
+    send.mockImplementation(held.send);
+
+    pipeline.push(record({ body: "first" }));
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+    pipeline.push(record({ body: "second" }));
+
+    const done = watch(pipeline.flushPending());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send.mock.calls.map(([batch]) => bodiesOf(batch))).toEqual([["first"], ["second"]]);
+    expect(done()).toBe(false);
+
+    held.releases[0]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done()).toBe(false);
+
+    held.releases[1]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done()).toBe(true);
+    pipeline.destroy();
+  });
+
+  it("keeps the concurrency limit, and waits for a batch it queued", async () => {
+    const { pipeline, send } = setup(undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+    });
+    const held = heldSend();
+    send.mockImplementation(held.send);
+
+    // Two full batches take both slots. The third record stays in the buffer for the flush.
+    for (let i = 0; i < 4; i++) {
+      pipeline.push(record());
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    pipeline.push(record({ body: "queued" }));
+    const done = watch(pipeline.flushPending());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send).toHaveBeenCalledTimes(2);
+
+    held.releases[0]();
+    held.releases[1]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bodiesOf(send.mock.calls[2][0])).toEqual(["queued"]);
+    expect(done()).toBe(false);
+
+    held.releases[2]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done()).toBe(true);
+    pipeline.destroy();
+  });
+
+  it("waits for a batch that is still in the queue", async () => {
+    const { pipeline, send } = setup(undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+    });
+    const held = heldSend();
+    send.mockImplementation(held.send);
+
+    // Three full batches in one task. Two take the slots. The third waits in the queue.
+    for (let i = 0; i < 6; i++) {
+      pipeline.push(record());
+    }
+    const done = watch(pipeline.flushPending());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    held.releases[0]();
+    held.releases[1]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(done()).toBe(false);
+
+    held.releases[2]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done()).toBe(true);
+    pipeline.destroy();
+  });
+
+  it("stores the batch for the retry engine while the server throttles", async () => {
+    const { pipeline, send, throttledForMs, storage, nudge } = setup();
+    throttledForMs.mockReturnValue(5000);
+
+    pipeline.push(record());
+    await pipeline.flushPending();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(await storage.count()).toBe(1);
+    expect(nudge).toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it("resolves at once with nothing buffered and nothing in flight", async () => {
+    const { pipeline, send } = setup();
+
+    await pipeline.flushPending();
+
+    expect(send).not.toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it("releases a waiting flush on destroy", async () => {
+    const { pipeline, send } = setup();
+    send.mockImplementation(heldSend().send);
+
+    pipeline.push(record());
+    const done = watch(pipeline.flushPending());
+    await vi.advanceTimersByTimeAsync(0);
+    pipeline.destroy();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(done()).toBe(true);
+  });
+
+  it("sends nothing on a flush after destroy", async () => {
+    const { pipeline, send } = setup();
+    pipeline.destroy();
+
+    await pipeline.flushPending();
+
+    expect(send).not.toHaveBeenCalled();
   });
 });

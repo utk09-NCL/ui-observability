@@ -68,7 +68,39 @@ describe("timeSync", () => {
       boom,
       expect.objectContaining({ status: "FAILURE", "action.duration_ms": expect.any(Number) }),
     );
-    expect(l.logMetric).not.toHaveBeenCalled();
+  });
+
+  it("records a FAILURE duration histogram when the function throws", () => {
+    const l = logger();
+
+    expect(() =>
+      timeSync(l, "CALC", () => {
+        throw new Error("calculation");
+      }),
+    ).toThrow();
+
+    expect(l.logMetric).toHaveBeenCalledWith(
+      "CALC.duration",
+      expect.any(Number) as number,
+      "ms",
+      "histogram",
+      expect.objectContaining({ status: "FAILURE" }),
+    );
+  });
+
+  it("gives the error record and the FAILURE metric the same duration", () => {
+    const l = logger();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => (now += 5));
+
+    expect(() =>
+      timeSync(l, "CALC", () => {
+        throw new Error("calculation");
+      }),
+    ).toThrow();
+
+    expect(l.error.mock.calls[0][2]).toMatchObject({ "action.duration_ms": 5 });
+    expect(l.logMetric.mock.calls[0][1]).toBe(5);
   });
 
   it("carries the caller's attributes onto a failure", () => {
@@ -114,6 +146,24 @@ describe("timeAsync", () => {
       "FETCH failed",
       boom,
       expect.objectContaining({ status: "FAILURE" }),
+    );
+  });
+
+  it("records a FAILURE duration histogram when the promise rejects", async () => {
+    const l = logger();
+
+    await expect(
+      timeAsync(l, "FETCH", () => Promise.reject(new Error("network")), {
+        "http.route": "/orders",
+      }),
+    ).rejects.toThrow();
+
+    expect(l.logMetric).toHaveBeenCalledWith(
+      "FETCH.duration",
+      expect.any(Number) as number,
+      "ms",
+      "histogram",
+      expect.objectContaining({ status: "FAILURE", "http.route": "/orders" }),
     );
   });
 
@@ -168,6 +218,14 @@ describe("ConsoleSink", () => {
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
     sinkOf("WARN").sink.write("app", "DEBUG", "quiet");
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("prints nothing when its level is not a log level", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    sinkOf("toString" as LogLevel).sink.write("app", "FATAL", "unknown level");
 
     expect(spy).not.toHaveBeenCalled();
   });

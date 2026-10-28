@@ -133,7 +133,7 @@ export function saveToEmergencyQueue(batch: LogBatch, diagnostics: Diagnostics):
  * Recovers the batches that earlier shutdowns saved to emergency storage.
  * @param storage Destination storage adapter.
  * @param diagnostics Diagnostics reporter.
- * @returns Promise resolving to the number of recovered batches.
+ * @returns Promise that resolves to the number of recovered batches.
  */
 export async function drainEmergencyQueue(
   storage: StorageAdapter,

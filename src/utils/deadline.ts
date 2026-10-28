@@ -34,7 +34,7 @@ export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
     unrefTimer(timer);
   });
 
-  // Clear the timer on success and on failure. Otherwise each storage call leaves an armed timer.
+  // Clear the timer on success and on failure. If not, each storage call leaves an armed timer.
   return Promise.race([work, deadline]).finally(() => {
     clearTimeout(expire);
   });

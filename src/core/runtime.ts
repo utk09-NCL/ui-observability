@@ -15,9 +15,11 @@ import {
   RUNTIME_GLOBAL_KEY,
   RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
+  TELEMETRY_SDK_VERSION,
 } from "../constants";
 import type { BusMessage, BusRole } from "../models/bus";
 import type {
+  CaptureOptions,
   IdentityStrategy,
   ObservabilityConfig,
   ResolvedConfig,
@@ -75,8 +77,60 @@ const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 /** Global symbol key of the runtime that shutdown() stopped. */
 const STOPPED_KEY = Symbol.for(RUNTIME_STOPPED_KEY);
 
+/**
+ * Makes a text key of the capture section. A later configure() reinstalls the capture
+ * modules only when the key changes. A reinstall unpatches and patches each host function.
+ * @param capture Capture section.
+ * @returns The key. A function and a RegExp give a fixed text.
+ */
+function captureKey(capture: CaptureOptions): string {
+  return JSON.stringify({
+    ...capture,
+    webVitalsLoader: capture.webVitalsLoader !== undefined,
+    ignoreUrls: capture.ignoreUrls.map(String),
+    propagateTraceHeaderTo: capture.propagateTraceHeaderTo.map(String),
+  });
+}
+
+/**
+ * Removes the delivery settings from a configuration. A console-only runtime must not send
+ * or join a bus. The runtime of the other version does both.
+ * @param input Consumer configuration options.
+ * @returns The options with no endpoint, no transport and bus mode "off".
+ */
+function consoleOnly(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
+  return {
+    ...input,
+    endpoint: null,
+    transport: undefined,
+    transportOnExit: undefined,
+    bus: { ...input.bus, mode: "off" },
+  };
+}
+
+/**
+ * Tests if a runtime on a global key comes from this version of the library.
+ * @param runtime Runtime on the global key. A runtime before 0.9.0 has no sdkVersion.
+ * @returns True if this copy can call the methods of the runtime.
+ */
+function ownVersion(runtime: ObservabilityRuntime): boolean {
+  return runtime.sdkVersion === TELEMETRY_SDK_VERSION;
+}
+
 /** Manages subsystem lifecycles, bus coordination and record delivery. */
 export class ObservabilityRuntime {
+  /**
+   * Runtime of this copy of the library when another version owns the page runtime.
+   * It stays off the global key.
+   */
+  private static local: ObservabilityRuntime | null = null;
+
+  /**
+   * Library version of this runtime. Another copy reads it from the global key.
+   * Two versions with one runtime call methods that the other version does not have.
+   */
+  readonly sdkVersion: string = TELEMETRY_SDK_VERSION;
+
   /** Diagnostics reporter for internal faults. */
   readonly diagnostics: Diagnostics;
 
@@ -165,19 +219,19 @@ export class ObservabilityRuntime {
   /** Batch buffer staging records for microtask forwarding. */
   private forwardBuffer: LogRecord[] = [];
 
-  /** Indicates whether a microtask drain is scheduled for the forward buffer. */
+  /** True if a microtask drain of the forward buffer is pending. */
   private forwardScheduled = false;
 
-  /** Indicates whether startup has decided the bus role. A sender load waits for it. */
+  /** True if startup has decided the bus role. A sender load waits for it. */
   private roleResolved = false;
 
   /** Resolves when startup releases the boot records. flush() waits for it. init() sets it. */
   private started: Promise<void> = Promise.resolve();
 
-  /** Indicates whether asynchronous initialization has completed. */
+  /** True if asynchronous initialization is complete. */
   private ready = false;
 
-  /** Indicates whether shutdown stopped the runtime. */
+  /** True if shutdown stopped the runtime. */
   private destroyed = false;
 
   /** Timestamp of the last reported storage gap warning in epoch milliseconds. */
@@ -185,8 +239,13 @@ export class ObservabilityRuntime {
 
   /**
    * @param input Initial consumer configuration options.
+   * @param degraded True for a console-only runtime next to another version. It installs
+   * no capture.
    */
-  private constructor(input: Partial<ObservabilityConfig>) {
+  private constructor(
+    input: Partial<ObservabilityConfig>,
+    private readonly degraded = false,
+  ) {
     this.diagnostics = new Diagnostics(input.onDiagnostic);
 
     this.platform = detectPlatform(this.diagnostics);
@@ -197,7 +256,7 @@ export class ObservabilityRuntime {
     this.sessionTouch = new SessionTouch(this.diagnostics, this.stores);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
     this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
-    // Do not await. Without OTel, records use the ambient trace. No record is lost.
+    // Do not await. Without OTel, records use the ambient trace. The library loses no record.
     void this.tracing.loadOtel();
     this.console = new ConsoleSink(this.config.console, this.diagnostics);
 
@@ -252,10 +311,10 @@ export class ObservabilityRuntime {
   };
 
   /**
-   * Returns the singleton runtime instance pinned to this realm.
-   * @returns Active runtime instance or null.
+   * Returns the runtime on the global key of this realm. Another copy of the library can own it.
+   * @returns Pinned runtime instance or null.
    */
-  static current(): ObservabilityRuntime | null {
+  private static pinned(): ObservabilityRuntime | null {
     return (
       ((globalThis as Record<symbol, unknown>)[RUNTIME_KEY] as ObservabilityRuntime | undefined) ??
       null
@@ -263,18 +322,38 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Returns the runtime that shutdown() stopped, until the next configure().
-   * @returns Stopped runtime instance or null.
+   * Returns the local runtime of this copy. Without one, it returns the pinned runtime.
+   * A pinned runtime of another version gives null. A log call then starts the local runtime.
+   * @returns Active runtime instance or null.
    */
-  static stopped(): ObservabilityRuntime | null {
-    return (
-      ((globalThis as Record<symbol, unknown>)[STOPPED_KEY] as ObservabilityRuntime | undefined) ??
-      null
-    );
+  static current(): ObservabilityRuntime | null {
+    const local = ObservabilityRuntime.local;
+    if (local) {
+      return local.destroyed ? null : local;
+    }
+
+    const pinned = ObservabilityRuntime.pinned();
+    return pinned && ownVersion(pinned) ? pinned : null;
   }
 
   /**
-   * Tests whether shutdown() stopped this runtime.
+   * Returns the runtime that shutdown() stopped, until the next configure().
+   * A stopped runtime of another version gives null.
+   * @returns Stopped runtime instance or null.
+   */
+  static stopped(): ObservabilityRuntime | null {
+    const local = ObservabilityRuntime.local;
+    if (local?.destroyed) {
+      return local;
+    }
+
+    const stopped = (globalThis as Record<symbol, unknown>)[STOPPED_KEY] as
+      ObservabilityRuntime | undefined;
+    return stopped && ownVersion(stopped) ? stopped : null;
+  }
+
+  /**
+   * Tests if shutdown() stopped this runtime.
    * @returns True after destroy() starts.
    */
   isDestroyed(): boolean {
@@ -287,10 +366,25 @@ export class ObservabilityRuntime {
    * @returns Active runtime instance.
    */
   static configure(input: Partial<ObservabilityConfig>): ObservabilityRuntime {
-    const existing = ObservabilityRuntime.current();
-    if (existing && !existing.destroyed) {
-      existing.reconfigure(input);
-      return existing;
+    const local = ObservabilityRuntime.local;
+    if (local && !local.destroyed) {
+      // The local runtime stays console-only. React StrictMode calls configure() two times.
+      local.reconfigure(consoleOnly(input));
+      return local;
+    }
+    ObservabilityRuntime.local = null;
+
+    const pinned = ObservabilityRuntime.pinned();
+    if (pinned) {
+      // A runtime before 0.9.0 has no sdkVersion. It is also another version.
+      if (!ownVersion(pinned)) {
+        return ObservabilityRuntime.startDegraded(input, pinned.sdkVersion);
+      }
+
+      if (!pinned.destroyed) {
+        pinned.reconfigure(input);
+        return pinned;
+      }
     }
 
     const runtime = new ObservabilityRuntime(input);
@@ -301,11 +395,37 @@ export class ObservabilityRuntime {
   }
 
   /**
+   * Starts a console-only runtime next to the runtime of another version. It sends nothing,
+   * joins no bus and installs no capture. The other version keeps the page runtime.
+   * @param input Consumer configuration options.
+   * @param found sdkVersion of the pinned runtime. A runtime before 0.9.0 has none.
+   * @returns The local runtime.
+   */
+  private static startDegraded(
+    input: Partial<ObservabilityConfig>,
+    found: unknown,
+  ): ObservabilityRuntime {
+    const runtime = new ObservabilityRuntime(consoleOnly(input), true);
+    ObservabilityRuntime.local = runtime;
+
+    const foundText = typeof found === "string" ? found : "before 0.9.0";
+    runtime.diagnostics.report(
+      "runtime.version_mismatch",
+      `Another copy of the library, version ${foundText}, owns the page runtime. This copy, version ${TELEMETRY_SDK_VERSION}, runs in console-only mode and installs no capture. Load one version of the library on the page.`,
+      { found: foundText, own: TELEMETRY_SDK_VERSION },
+    );
+
+    void runtime.init();
+    return runtime;
+  }
+
+  /**
    * Updates runtime configuration and refreshes affected subsystems.
    * @param input Partial configuration to merge.
    */
   private reconfigure(input: Partial<ObservabilityConfig>): void {
     const accepted = this.keepDestination(input);
+    const capturesBefore = captureKey(this.config.capture);
     applyResolvedConfig(this.config, resolveConfig(accepted, this.diagnostics, this.config));
     this.diagnostics.setHandler(this.config.onDiagnostic);
 
@@ -314,8 +434,11 @@ export class ObservabilityRuntime {
     this.keepBuiltStorage();
     this.keepBuiltIdentity();
 
+    // Reinstall only on a change. A reinstall unpatches and patches each host function.
     // A stale capture load stops at its generation check. A reinstall is safe at any time.
-    void this.installCaptures();
+    if (captureKey(this.config.capture) !== capturesBefore) {
+      void this.installCaptures();
+    }
 
     if (this.roleResolved) {
       void this.syncSender();
@@ -345,7 +468,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Refuses a change that would leave the built delivery stack with nowhere to send.
+   * Refuses a change that leaves the built delivery stack with no destination.
    * Without a destination, the retry engine removes each stored batch as delivered.
    * @param input Partial configuration to merge.
    * @returns Input without the refused changes.
@@ -442,7 +565,7 @@ export class ObservabilityRuntime {
 
   /**
    * Starts the load of the bus one time.
-   * @returns Promise resolving to the started bus, or null if it did not load.
+   * @returns Promise that resolves to the started bus, or null if it did not load.
    */
   private ensureBus(): Promise<Bus | null> {
     this.busLoad ??= this.startBus();
@@ -451,7 +574,7 @@ export class ObservabilityRuntime {
 
   /**
    * Loads and constructs the bus one time. It does not call start().
-   * @returns Promise resolving to the constructed bus, or null if it did not load.
+   * @returns Promise that resolves to the constructed bus, or null if it did not load.
    */
   private constructBus(): Promise<Bus | null> {
     this.busBuilt ??= this.buildBus();
@@ -460,7 +583,7 @@ export class ObservabilityRuntime {
 
   /**
    * Starts the constructed bus. It never rejects.
-   * @returns Promise resolving to the started bus, or null if it did not load or start.
+   * @returns Promise that resolves to the started bus, or null if it did not load or start.
    */
   private async startBus(): Promise<Bus | null> {
     const bus = await this.constructBus();
@@ -540,7 +663,7 @@ export class ObservabilityRuntime {
 
   /**
    * Loads the delivery stack if this context is the sender and has an endpoint.
-   * @returns Promise resolving when the load completes, or immediately when nothing loads.
+   * @returns Promise that resolves when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
     const hasDestination = Boolean(this.config.endpoint) || this.config.transport !== undefined;
@@ -554,7 +677,7 @@ export class ObservabilityRuntime {
 
   /**
    * Starts the load of the delivery stack one time.
-   * @returns Promise resolving when the load completes or fails.
+   * @returns Promise that resolves when the load completes or fails.
    */
   private loadSender(): Promise<void> {
     this.senderLoad ??= this.buildSender();
@@ -604,6 +727,11 @@ export class ObservabilityRuntime {
 
   /** Loads, builds and installs the enabled capture modules. It never rejects. */
   private async installCaptures(): Promise<void> {
+    // A console-only runtime next to another version patches nothing. The other version does.
+    if (this.degraded) {
+      return;
+    }
+
     const generation = ++this.captureGeneration;
     const settings = this.config.capture;
     const names: CaptureName[] = [];
@@ -685,7 +813,7 @@ export class ObservabilityRuntime {
   /**
    * Imports one capture module. A failed import reports and skips that module only.
    * @param name Capture module name.
-   * @returns Promise resolving to the class, or undefined if the import failed.
+   * @returns Promise that resolves to the class, or undefined if the import failed.
    */
   private loadCapture(name: CaptureName): Promise<CaptureClass | undefined> {
     return this.diagnostics.guardAsync(
@@ -732,8 +860,8 @@ export class ObservabilityRuntime {
 
     this.uninstallCaptures();
 
-    // Sender.destroy runs its synchronous steps before its first await. Thus the exit
-    // flush runs before the journey and the bus stop.
+    // Sender.destroy awaits a normal flush, then runs the exit flush. The records hold
+    // their journey already. The journey and the bus can stop first.
     const closing = this.sender?.destroy();
     this.journey.destroy();
     this.bus?.destroy();
@@ -743,10 +871,11 @@ export class ObservabilityRuntime {
     // A load in progress destroys its own stack. shutdown() resolves only after that.
     await this.senderLoad;
 
-    if (ObservabilityRuntime.current() === this) {
+    // A local runtime must not remove the runtime of the other version from the global key.
+    if (ObservabilityRuntime.pinned() === this) {
       Reflect.deleteProperty(globalThis, RUNTIME_KEY);
       // Calls after shutdown() go to this runtime and do nothing.
-      // A new default runtime would drop the app's settings.
+      // A new default runtime drops the settings of the app.
       (globalThis as Record<symbol, unknown>)[STOPPED_KEY] = this;
     }
   }
@@ -795,7 +924,9 @@ export class ObservabilityRuntime {
       return;
     }
 
+    // Console-only mode has no destination. Count the drop. If not, no counter shows the loss.
     if (!this.senderLoad) {
+      this.diagnostics.count("record.dropped_no_destination");
       return;
     }
 
@@ -914,7 +1045,7 @@ export class ObservabilityRuntime {
 
   /**
    * Counts the batches held in storage after a failed or deferred delivery.
-   * @returns Promise resolving to the number of stored batches. A forwarder stores
+   * @returns Promise that resolves to the number of stored batches. A forwarder stores
    * nothing and reports 0.
    */
   async queueDepth(): Promise<number> {
@@ -924,7 +1055,7 @@ export class ObservabilityRuntime {
 
   /**
    * Flushes all pending records in the pipeline or forward buffer.
-   * @returns Promise resolving when queued records are transmitted or handed off.
+   * @returns Promise that resolves when the library sends or hands off the queued records.
    */
   async flush(): Promise<void> {
     // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.

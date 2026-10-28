@@ -12,6 +12,7 @@ import {
   CONSOLE_DEFAULT_LEVEL,
   CONSOLE_DEFAULT_STYLES,
   DEFAULT_CONFIG,
+  LEVEL_ORDER,
   SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
@@ -22,15 +23,390 @@ import {
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
 import type {
+  BusOptions,
+  CaptureOptions,
+  CapturedConsoleMethod,
   ConsoleOption,
   ConsoleStyles,
+  JourneyOptions,
   ObservabilityConfig,
   ResolvedConfig,
   ResolvedConsole,
+  SamplingOptions,
   SerializerChoice,
 } from "../models/config";
+import type { LogLevel } from "../models/log-record";
 import type { LogSerializer } from "../models/serializer";
 import type { Diagnostics } from "./diagnostics";
+
+/** Level names in severity order. */
+const LEVEL_NAMES = Object.keys(LEVEL_ORDER) as readonly LogLevel[];
+
+/** Accepted values of each choice option. */
+const COMPRESSION_VALUES = ["gzip", "none"] as const;
+const CREDENTIALS_VALUES = ["omit", "same-origin", "include"] as const;
+const STORAGE_VALUES = ["auto", "indexeddb", "localstorage", "memory", "none"] as const;
+const IDENTITY_VALUES = ["storage", "memory"] as const;
+const BUS_MODE_VALUES = ["auto", "sender", "forwarder", "off"] as const;
+const OPENFIN_ROLE_VALUES = ["auto", "provider", "client"] as const;
+const JOURNEY_SCOPE_VALUES = ["auto", "context", "tab", "origin"] as const;
+const CONSOLE_METHOD_VALUES = ["error", "warn", "info", "log"] as const;
+
+/** Boolean keys of the capture section. */
+const CAPTURE_FLAG_KEYS = [
+  "errors",
+  "rejections",
+  "resourceErrors",
+  "fetch",
+  "xhr",
+  "interactions",
+  "navigation",
+  "webVitals",
+  "longFrames",
+  "fullUrls",
+] as const;
+
+/** Origin of a sandboxed frame without allow-same-origin. */
+const SANDBOX_ORIGIN = "null";
+
+/** Text of each expected value in a config.invalid message. */
+const LEVEL_EXPECTED = `a level name: ${listOf(LEVEL_NAMES)}`;
+const CONSOLE_CAPTURE_EXPECTED = `true, false or a list of ${listOf(CONSOLE_METHOD_VALUES)}`;
+const PATTERN_LIST_EXPECTED = "a list of strings and RegExp patterns";
+const TARGET_LIST_EXPECTED =
+  'a list of origin URLs such as "https://api.example" and RegExp patterns';
+const ORIGIN_LIST_EXPECTED =
+  'a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame';
+const STRING_LIST_EXPECTED = "a list of strings";
+
+/** Function form of the headers option. */
+type HeadersFunction = () => Record<string, string> | Promise<Record<string, string>>;
+
+/** The headers option. */
+type HeadersOption = ObservabilityConfig["headers"];
+
+/**
+ * Writes a list of values as text, for example `"a", "b" or "c"`.
+ * @param values Values to list.
+ * @returns The text.
+ */
+function listOf(values: readonly string[]): string {
+  const quoted = values.map((value) => `"${value}"`);
+  return `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * Describes a config value for a message. It does not print an object or a function.
+ * @param value Value that the consumer passed.
+ * @returns Short text for the value.
+ */
+function describeValue(value: unknown): string {
+  if (typeof value === "string") {
+    return `"${value}"`;
+  }
+
+  if (typeof value === "function") {
+    return "a function";
+  }
+
+  if (typeof value === "object" && value !== null) {
+    return "an object";
+  }
+
+  return String(value);
+}
+
+/**
+ * Reports a value that the option does not accept.
+ * @param diagnostics Diagnostics reporter.
+ * @param key Config key, for example `bus.mode`.
+ * @param expected Text of the accepted values.
+ * @param value Value that the consumer passed.
+ * @param kept Text of the value that stays in force.
+ */
+function reportInvalid(
+  diagnostics: Diagnostics,
+  key: string,
+  expected: string,
+  value: unknown,
+  kept: string,
+): void {
+  diagnostics.report(
+    "config.invalid",
+    `${key} must be ${expected}. The value is ${describeValue(value)}. The library keeps ${kept}.`,
+  );
+}
+
+/**
+ * Reads an option that accepts one value from a fixed list.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param accepted Accepted values.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value, or the fallback when the value is not accepted.
+ */
+function resolveChoice<T extends string>(
+  key: string,
+  value: unknown,
+  accepted: readonly T[],
+  fallback: T,
+  diagnostics: Diagnostics,
+): T {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const match = accepted.find((entry) => entry === value);
+  if (match !== undefined) {
+    return match;
+  }
+
+  reportInvalid(diagnostics, key, listOf(accepted), value, `"${fallback}"`);
+  return fallback;
+}
+
+/**
+ * Reads a boolean option.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value, or the fallback when the value is not a boolean.
+ */
+function resolveBoolean(
+  key: string,
+  value: unknown,
+  fallback: boolean,
+  diagnostics: Diagnostics,
+): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  reportInvalid(diagnostics, key, "true or false", value, String(fallback));
+  return fallback;
+}
+
+/**
+ * Reads an option that accepts a finite number of 0 or more.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value, or the fallback when the value is not accepted.
+ */
+function resolveNonNegative(
+  key: string,
+  value: unknown,
+  fallback: number,
+  diagnostics: Diagnostics,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+
+  reportInvalid(diagnostics, key, "a finite number of 0 or more", value, String(fallback));
+  return fallback;
+}
+
+/**
+ * Reads a level name in any case.
+ * @param value Value that the consumer passed.
+ * @returns The level, or undefined when the value is not a level name.
+ */
+function toLevel(value: unknown): LogLevel | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const upper = value.toUpperCase();
+  return LEVEL_NAMES.find((level) => level === upper);
+}
+
+/**
+ * Reads a level option. Without this check, an unknown level drops each record with no message.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param fallback Level in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The level, or the fallback when the value is not a level name.
+ */
+function resolveLevel(
+  key: string,
+  value: unknown,
+  fallback: LogLevel,
+  diagnostics: Diagnostics,
+): LogLevel {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const level = toLevel(value);
+  if (level !== undefined) {
+    return level;
+  }
+
+  reportInvalid(diagnostics, key, LEVEL_EXPECTED, value, `"${fallback}"`);
+  return fallback;
+}
+
+/**
+ * Reads a list option. It keeps each accepted entry and reports each other entry.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param fallback List in force.
+ * @param expected Text of the accepted list.
+ * @param accept Converts an entry, or returns undefined to reject it.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The accepted entries, or the fallback when the value is not a list.
+ */
+function resolveList<T>(
+  key: string,
+  value: unknown,
+  fallback: T[],
+  expected: string,
+  accept: (entry: unknown) => T | undefined,
+  diagnostics: Diagnostics,
+): T[] {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (!Array.isArray(value)) {
+    reportInvalid(diagnostics, key, expected, value, "the list in force");
+    return fallback;
+  }
+
+  const kept: T[] = [];
+  const entries: unknown[] = value;
+
+  for (const entry of entries) {
+    const accepted = accept(entry);
+    if (accepted === undefined) {
+      diagnostics.report(
+        "config.invalid",
+        `The library ignores the ${key} entry ${describeValue(entry)}. ${key} must be ${expected}.`,
+      );
+      continue;
+    }
+    kept.push(accepted);
+  }
+
+  return kept;
+}
+
+/**
+ * Accepts a string entry.
+ * @param entry List entry.
+ * @returns The entry, or undefined.
+ */
+function toStringEntry(entry: unknown): string | undefined {
+  return typeof entry === "string" ? entry : undefined;
+}
+
+/**
+ * Accepts a string or a RegExp entry.
+ * @param entry List entry.
+ * @returns The entry, or undefined.
+ */
+function toPattern(entry: unknown): string | RegExp | undefined {
+  return typeof entry === "string" || entry instanceof RegExp ? entry : undefined;
+}
+
+/**
+ * Accepts a console method name.
+ * @param entry List entry.
+ * @returns The method, or undefined.
+ */
+function toConsoleMethod(entry: unknown): CapturedConsoleMethod | undefined {
+  return CONSOLE_METHOD_VALUES.find((method) => method === entry);
+}
+
+/**
+ * Reads an origin entry. A URL with a path gives its origin.
+ * @param entry List entry.
+ * @returns The origin, or undefined. resolveList reports the rejected entry.
+ */
+function toOrigin(entry: unknown): string | undefined {
+  if (typeof entry !== "string") {
+    return undefined;
+  }
+
+  // Each sandboxed and data: document has the opaque origin "null". One entry trusts all of them.
+  try {
+    const { origin } = new URL(entry);
+    return origin === SANDBOX_ORIGIN ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reads a trace header target. A string gives its origin. A RegExp stays as it is.
+ * @param entry List entry.
+ * @returns The target, or undefined. resolveList reports the rejected entry.
+ */
+function toTarget(entry: unknown): string | RegExp | undefined {
+  return entry instanceof RegExp ? entry : toOrigin(entry);
+}
+
+/**
+ * Tests if a value is an object of string values.
+ * @param value Value to test.
+ * @returns True for an object whose values are all strings.
+ */
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const values: unknown[] = Object.values(value);
+  return values.every((entry) => typeof entry === "string");
+}
+
+/**
+ * Reads the headers option.
+ * @param value Value that the consumer passed.
+ * @param fallback Headers in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The headers, undefined for an explicit undefined, or the fallback for a bad value.
+ */
+function resolveHeaders(
+  value: unknown,
+  fallback: HeadersOption,
+  diagnostics: Diagnostics,
+): HeadersOption {
+  // An explicit undefined clears the headers. After logout, the old token must not go on a send.
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "function") {
+    return value as HeadersFunction;
+  }
+
+  if (isStringRecord(value)) {
+    return value;
+  }
+
+  reportInvalid(
+    diagnostics,
+    "headers",
+    "an object of strings or a function",
+    value,
+    "the headers in force",
+  );
+  return fallback;
+}
 
 /**
  * Checks if a value implements the LogSerializer interface.
@@ -112,6 +488,37 @@ function validStyles(styles: ConsoleStyles | undefined, diagnostics: Diagnostics
 }
 
 /**
+ * Reads the level of the console object form.
+ * @param requested Level that the consumer passed.
+ * @param previous Console level in force. Null means the console is off.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The level. An unknown level keeps the level in force.
+ */
+function resolveConsoleLevel(
+  requested: unknown,
+  previous: LogLevel | null,
+  diagnostics: Diagnostics,
+): LogLevel | null {
+  if (requested === undefined) {
+    return previous ?? CONSOLE_DEFAULT_LEVEL;
+  }
+
+  const level = toLevel(requested);
+  if (level !== undefined) {
+    return level;
+  }
+
+  reportInvalid(
+    diagnostics,
+    "console.level",
+    LEVEL_EXPECTED,
+    requested,
+    "the console level in force",
+  );
+  return previous;
+}
+
+/**
  * Normalizes the console option into a level and a set of styles.
  * @param requested Consumer console option.
  * @param previous Console settings in force.
@@ -133,10 +540,22 @@ function resolveConsole(
     return { level: CONSOLE_DEFAULT_LEVEL, styles: previous.styles };
   }
   if (typeof requested === "string") {
-    return { level: requested, styles: previous.styles };
+    const level = toLevel(requested);
+    if (level === undefined) {
+      reportInvalid(
+        diagnostics,
+        "console",
+        LEVEL_EXPECTED,
+        requested,
+        "the console level in force",
+      );
+      return previous;
+    }
+
+    return { level, styles: previous.styles };
   }
 
-  // Guard against null and other values that the type does not allow.
+  // Guard against null and other values that the type does not accept.
   if (typeof requested !== "object" || (requested as unknown) === null) {
     diagnostics.report(
       "config.invalid",
@@ -146,9 +565,189 @@ function resolveConsole(
   }
 
   return {
-    level: requested.level ?? previous.level ?? CONSOLE_DEFAULT_LEVEL,
+    level: resolveConsoleLevel(requested.level, previous.level, diagnostics),
     styles: { ...previous.styles, ...validStyles(requested.styles, diagnostics) },
   };
+}
+
+/**
+ * Merges and checks the sampling section. resolveConfig checks the rates after the merge.
+ * @param input Sampling options that the consumer passed.
+ * @param base Sampling options in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The sampling options.
+ */
+function resolveSampling(
+  input: Partial<SamplingOptions> | undefined,
+  base: SamplingOptions,
+  diagnostics: Diagnostics,
+): SamplingOptions {
+  const given = input ?? {};
+
+  return {
+    ...base,
+    ...given,
+    rates: { ...base.rates, ...given.rates },
+    alwaysSampleTypes: resolveList(
+      "sampling.alwaysSampleTypes",
+      given.alwaysSampleTypes,
+      base.alwaysSampleTypes,
+      STRING_LIST_EXPECTED,
+      toStringEntry,
+      diagnostics,
+    ),
+    remote: resolveBoolean("sampling.remote", given.remote, base.remote, diagnostics),
+  };
+}
+
+/**
+ * Merges and checks the bus section.
+ * @param input Bus options that the consumer passed.
+ * @param base Bus options in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The bus options. Each trusted origin is a bare origin.
+ */
+function resolveBus(
+  input: Partial<BusOptions> | undefined,
+  base: BusOptions,
+  diagnostics: Diagnostics,
+): BusOptions {
+  const given = input ?? {};
+
+  return {
+    mode: resolveChoice("bus.mode", given.mode, BUS_MODE_VALUES, base.mode, diagnostics),
+    // Compare origins, not URLs. If not, an entry with a path never matches event.origin.
+    trustedOrigins: resolveList(
+      "bus.trustedOrigins",
+      given.trustedOrigins,
+      base.trustedOrigins,
+      ORIGIN_LIST_EXPECTED,
+      toOrigin,
+      diagnostics,
+    ),
+    openFinRole: resolveChoice(
+      "bus.openFinRole",
+      given.openFinRole,
+      OPENFIN_ROLE_VALUES,
+      base.openFinRole,
+      diagnostics,
+    ),
+  };
+}
+
+/**
+ * Merges and checks the journey section.
+ * @param input Journey options that the consumer passed.
+ * @param base Journey options in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The journey options.
+ */
+function resolveJourney(
+  input: Partial<JourneyOptions> | undefined,
+  base: JourneyOptions,
+  diagnostics: Diagnostics,
+): JourneyOptions {
+  const given = input ?? {};
+
+  return {
+    scope: resolveChoice(
+      "journey.scope",
+      given.scope,
+      JOURNEY_SCOPE_VALUES,
+      base.scope,
+      diagnostics,
+    ),
+  };
+}
+
+/**
+ * Reads capture.console.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns A boolean, or the accepted method names.
+ */
+function resolveCaptureConsole(
+  value: unknown,
+  fallback: boolean | CapturedConsoleMethod[],
+  diagnostics: Diagnostics,
+): boolean | CapturedConsoleMethod[] {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (!Array.isArray(value)) {
+    reportInvalid(
+      diagnostics,
+      "capture.console",
+      CONSOLE_CAPTURE_EXPECTED,
+      value,
+      "the value in force",
+    );
+    return fallback;
+  }
+
+  return resolveList(
+    "capture.console",
+    value,
+    [],
+    CONSOLE_CAPTURE_EXPECTED,
+    toConsoleMethod,
+    diagnostics,
+  );
+}
+
+/**
+ * Merges and checks the capture section.
+ * @param input Capture options that the consumer passed.
+ * @param base Capture options in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The capture options.
+ */
+function resolveCapture(
+  input: Partial<CaptureOptions> | undefined,
+  base: CaptureOptions,
+  diagnostics: Diagnostics,
+): CaptureOptions {
+  const given = input ?? {};
+  const capture: CaptureOptions = {
+    ...base,
+    ...given,
+    console: resolveCaptureConsole(given.console, base.console, diagnostics),
+    longFrameThresholdMs: resolveNonNegative(
+      "capture.longFrameThresholdMs",
+      given.longFrameThresholdMs,
+      base.longFrameThresholdMs,
+      diagnostics,
+    ),
+    ignoreUrls: resolveList(
+      "capture.ignoreUrls",
+      given.ignoreUrls,
+      base.ignoreUrls,
+      PATTERN_LIST_EXPECTED,
+      toPattern,
+      diagnostics,
+    ),
+    // A string target is an origin. A substring test also matches a query value or a longer host.
+    propagateTraceHeaderTo: resolveList(
+      "capture.propagateTraceHeaderTo",
+      given.propagateTraceHeaderTo,
+      base.propagateTraceHeaderTo,
+      TARGET_LIST_EXPECTED,
+      toTarget,
+      diagnostics,
+    ),
+  };
+
+  for (const key of CAPTURE_FLAG_KEYS) {
+    capture[key] = resolveBoolean(`capture.${key}`, given[key], base[key], diagnostics);
+  }
+
+  return capture;
 }
 
 /**
@@ -170,16 +769,41 @@ export function resolveConfig(
     ...input,
     // An unset environment variable gives undefined. Keep the current endpoint.
     endpoint: input.endpoint === undefined ? base.endpoint : input.endpoint,
+    // A bad value reports config.invalid. The value in force stays. Without this check, a bad
+    // minLevel drops each record with no message.
+    enabled: resolveBoolean("enabled", input.enabled, base.enabled, diagnostics),
+    minLevel: resolveLevel("minLevel", input.minLevel, base.minLevel, diagnostics),
+    compression: resolveChoice(
+      "compression",
+      input.compression,
+      COMPRESSION_VALUES,
+      base.compression,
+      diagnostics,
+    ),
+    credentials: resolveChoice(
+      "credentials",
+      input.credentials,
+      CREDENTIALS_VALUES,
+      base.credentials,
+      diagnostics,
+    ),
+    headers:
+      "headers" in input ? resolveHeaders(input.headers, base.headers, diagnostics) : base.headers,
+    storage: resolveChoice("storage", input.storage, STORAGE_VALUES, base.storage, diagnostics),
+    identity: resolveChoice(
+      "identity",
+      input.identity,
+      IDENTITY_VALUES,
+      base.identity,
+      diagnostics,
+    ),
     // A serializer instance replaces the string name after the object merge.
     serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
     console: resolveConsole(input.console, base.console, diagnostics),
-    sampling: {
-      ...base.sampling,
-      ...input.sampling,
-      rates: { ...base.sampling.rates, ...input.sampling?.rates },
-    },
-    bus: { ...base.bus, ...input.bus },
-    capture: { ...base.capture, ...input.capture },
+    sampling: resolveSampling(input.sampling, base.sampling, diagnostics),
+    bus: resolveBus(input.bus, base.bus, diagnostics),
+    journey: resolveJourney(input.journey, base.journey, diagnostics),
+    capture: resolveCapture(input.capture, base.capture, diagnostics),
   };
 
   // Guard against a value that cannot send. Keep the function in force.

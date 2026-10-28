@@ -37,7 +37,6 @@ export interface SenderDeps {
 export class Sender {
   /**
    * @param storage Storage adapter for undelivered batches.
-   * @param transport HTTP transport for live delivery.
    * @param retry Retry engine for stored batches.
    * @param pipeline Pipeline that batches records.
    * @param exitFlush Handler that sends pending records on unload.
@@ -45,7 +44,6 @@ export class Sender {
    */
   private constructor(
     private readonly storage: StorageAdapter,
-    private readonly transport: BatchTransport,
     private readonly retry: RetryEngine,
     private readonly pipeline: LogPipeline,
     private readonly exitFlush: ExitFlush,
@@ -53,9 +51,10 @@ export class Sender {
   ) {}
 
   /**
-   * Builds the delivery stack, drains the emergency queue and starts the retry loop.
+   * Builds the delivery stack and starts the retry loop. The emergency queue import runs
+   * after the start. A slow IndexedDB open then does not hold the boot buffer.
    * @param deps Configuration, diagnostics and gap reporter.
-   * @returns Promise resolving to the started sender.
+   * @returns Promise that resolves to the started sender.
    */
   static async create(deps: SenderDeps): Promise<Sender> {
     const { config, diagnostics } = deps;
@@ -76,9 +75,9 @@ export class Sender {
     };
 
     // The stack keeps one transport for its life. The runtime refuses a later change.
-    const transport: BatchTransport = config.transport
-      ? new CustomTransport(config, diagnostics, onSampling)
-      : new HttpTransport(config, diagnostics, onSampling);
+    // The exit flush reads the last headers from the HTTP transport.
+    const http = config.transport ? undefined : new HttpTransport(config, diagnostics, onSampling);
+    const transport: BatchTransport = http ?? new CustomTransport(config, diagnostics, onSampling);
     const retry = new RetryEngine(storage, transport, diagnostics, config);
     const pipeline = new LogPipeline(transport, storage, retry, diagnostics);
 
@@ -86,10 +85,9 @@ export class Sender {
       config,
       diagnostics,
       drainForExit: () => pipeline.drainForExit(),
-      drainPending: () => pipeline.drainPending(),
+      flushAlive: () => pipeline.flushPending(),
+      exitHeaders: () => http?.lastHeaders(),
     });
-
-    await drainEmergencyQueue(storage, diagnostics);
 
     // If one step fails, stop both. A retry loop with no owner sends after load reports failure.
     let started = false;
@@ -105,7 +103,9 @@ export class Sender {
       }
     }
 
-    return new Sender(storage, transport, retry, pipeline, exitFlush, diagnostics);
+    const sender = new Sender(storage, retry, pipeline, exitFlush, diagnostics);
+    void sender.importEmergency();
+    return sender;
   }
 
   /**
@@ -117,39 +117,16 @@ export class Sender {
   }
 
   /**
-   * Sends the records held in the stream buffers.
-   * @returns Promise resolving when the batch is sent or stored for retry.
+   * Sends the records in the stream buffers. Then it waits for each batch in flight.
+   * @returns Promise that resolves when the pipeline sends or stores each batch.
    */
   async flush(): Promise<void> {
-    const batch = this.pipeline.drainPending();
-
-    if (!batch) {
-      return;
-    }
-
-    try {
-      await this.transport.send(batch);
-    } catch (error) {
-      await this.diagnostics.guardAsync(
-        "storage.degraded",
-        "The library could not store the batch that flush() drained.",
-        // The retry engine classifies the failure. It splits the batch on a 413, as the drain does.
-        async () => {
-          await this.retry.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
-        },
-      );
-      this.diagnostics.report(
-        "transport.http_error",
-        "The send from flush() failed. The library stored the batch for a retry.",
-        { batchId: batch.id, records: batch.records.length },
-        error,
-      );
-    }
+    await this.pipeline.flushPending();
   }
 
   /**
    * Counts the batches held in storage.
-   * @returns Promise resolving to the batch count, or 0 if storage fails.
+   * @returns Promise that resolves to the batch count, or 0 if storage fails.
    */
   async queueDepth(): Promise<number> {
     const count = await this.diagnostics.guardAsync(
@@ -162,16 +139,37 @@ export class Sender {
   }
 
   /**
-   * Sends pending records and stops all timers and listeners. Then it closes storage.
-   * The synchronous steps run before the first await. The runtime relies on this order.
-   * @returns Promise resolving when storage is closed.
+   * Sends pending records with a normal flush, then with the exit flush. Then it stops all
+   * timers and listeners. Then it closes storage. The normal flush keeps the headers, gzip
+   * and the retry. The exit flush takes the records that the normal flush did not confirm.
+   * @returns Promise that resolves when storage closes.
    */
   async destroy(): Promise<void> {
+    await this.diagnostics.guardAsync("pipeline.crashed", "The flush before shutdown failed.", () =>
+      this.flush(),
+    );
+
     this.exitFlush.flush("shutdown");
     this.exitFlush.uninstall();
     this.retry.stop();
     this.pipeline.destroy();
 
     await this.storage.close();
+  }
+
+  /**
+   * Moves the batches of the emergency queue into storage, then wakes the retry engine.
+   * The previous page load parked them during its unload.
+   */
+  private async importEmergency(): Promise<void> {
+    const moved = await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The emergency import failed.",
+      () => drainEmergencyQueue(this.storage, this.diagnostics),
+    );
+
+    if (moved !== undefined && moved > 0) {
+      this.retry.nudge();
+    }
   }
 }

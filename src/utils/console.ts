@@ -39,12 +39,21 @@ export class ConsoleSink {
   }
 
   /**
-   * Tests whether a level clears the console threshold.
+   * Tests if a level clears the console threshold.
    * @param level Severity level of the record.
    * @returns True if the sink prints this level.
    */
   accepts(level: LogLevel): boolean {
-    return this.settings.level !== null && LEVEL_ORDER[level] >= LEVEL_ORDER[this.settings.level];
+    if (this.settings.level === null) {
+      return false;
+    }
+
+    // Guard against a level that is not a key of LEVEL_ORDER, for example "toString".
+    if (!Object.hasOwn(LEVEL_ORDER, this.settings.level)) {
+      return false;
+    }
+
+    return LEVEL_ORDER[level] >= LEVEL_ORDER[this.settings.level];
   }
 
   /**

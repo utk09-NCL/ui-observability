@@ -8,6 +8,8 @@ import {
   ATTR_APP_NAMESPACE,
   ATTR_ATTRIBUTES_BYTES,
   ATTR_ATTRIBUTES_DROPPED,
+  ATTR_BREADCRUMBS,
+  ATTR_ERROR_DATA,
   ATTR_JOURNEY_ID,
   ATTR_JOURNEY_NAME,
   ATTR_JOURNEY_PARENT_ID,
@@ -15,6 +17,7 @@ import {
   ATTR_LOG_TYPE,
   ATTR_PAGE_URL,
   ATTR_SANITIZE_FAILED,
+  LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
   RESOURCE_BROWSER_USER_AGENT,
   RESOURCE_CONTEXT_ID,
@@ -36,6 +39,7 @@ import {
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import {
+  isLogLevel,
   isLogRecord,
   type LogLevel,
   type LogRecord,
@@ -52,6 +56,12 @@ import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
 import { shouldSampleInput } from "./sampling";
+
+/** Prefix of the error fields. An oversized error record keeps them. */
+const ERROR_ATTR_PREFIX = "error.";
+
+/** Index keys that an oversized record keeps in the form that redact gave them. */
+const REDACTABLE_INDEX_KEYS = [ATTR_PAGE_URL, ATTR_JOURNEY_ID, ATTR_JOURNEY_NAME] as const;
 
 /** Injected dependencies required by RecordBuilder. */
 export interface RecordBuilderDeps {
@@ -85,12 +95,15 @@ export interface RecordLimits extends SanitizeLimits {
   maxRecordBytes: number;
 }
 
-/** Reason a record was not built. */
-export type DropReason = "level" | "sampling" | "redact";
+/**
+ * Reason a record was not built. "malformed" means the redact hook broke the record shape
+ * or set an unknown severityText.
+ */
+export type DropReason = "level" | "sampling" | "redact" | "malformed";
 
 /** Outcome of one build call. */
 export interface BuildResult {
-  /** Completed record, or null when it was dropped. */
+  /** Completed record, or null when the builder drops it. */
   record: LogRecord | null;
   /** Reason for the drop. It is absent when the builder built a record. */
   dropped?: DropReason;
@@ -138,14 +151,21 @@ export class RecordBuilder {
 
   /**
    * Checks if logging is on and the level is at or above minLevel.
+   * minLevel does not apply to an action or a metric.
    * @param level Target log severity level.
-   * @returns True if the level is enabled.
+   * @param type Record type. Without it, the check applies minLevel.
+   * @returns True if the library builds a record of this level and type.
    */
-  isEnabled(level: LogLevel): boolean {
+  isEnabled(level: LogLevel, type?: LogType): boolean {
     const { config } = this.deps;
     if (!config.enabled) {
       return false;
     }
+
+    if (type !== undefined && LEVEL_BYPASS_TYPES.includes(type)) {
+      return true;
+    }
+
     // A remote rule can lower minLevel during an incident.
     const minLevel = this.deps.remote.sampling?.minLevel() ?? config.minLevel;
 
@@ -155,12 +175,12 @@ export class RecordBuilder {
   /**
    * Builds a structured LogRecord from the input. It sanitizes attributes and applies size limits.
    * @param input Logger call input parameters.
-   * @returns The record, or null with the reason it was dropped.
+   * @returns The record, or null with the reason of the drop.
    */
   build(input: BuildInput): BuildResult {
     const { config, diagnostics, tracing, journey, sequence, limits, remote } = this.deps;
 
-    if (!this.isEnabled(input.level)) {
+    if (!this.isEnabled(input.level, input.type)) {
       diagnostics.count("record.dropped_by_level");
       return { record: null, dropped: "level" };
     }
@@ -248,39 +268,73 @@ export class RecordBuilder {
 
     const redact = config.redact;
     if (redact) {
-      const redacted = diagnostics.guard(
-        "record.sanitize_failed",
-        "The redact hook threw an error.",
-        () => redact(record),
-      );
+      // A plain JavaScript hook can edit the record in place without a return value.
+      let redacted: unknown;
+      try {
+        redacted = redact(record);
+      } catch (error) {
+        // Drop the record. A record that redact did not clean must not leave the page.
+        diagnostics.report(
+          "record.dropped_by_redact",
+          "The redact hook threw an error. The library dropped the record.",
+          undefined,
+          error,
+        );
+        return { record: null, dropped: "redact" };
+      }
+
       if (redacted === null) {
         diagnostics.count("record.dropped_by_redact");
         return { record: null, dropped: "redact" };
       }
 
-      if (redacted !== undefined && redacted !== record) {
-        if (isLogRecord(redacted)) {
+      const candidate: unknown = redacted ?? record;
+
+      if (!isLogRecord(candidate)) {
+        // The hook changed the record in place. The library has no intact copy.
+        if (candidate === record) {
+          diagnostics.report(
+            "record.dropped_malformed",
+            "The redact hook changed the record to a shape that is not a record. The library dropped it.",
+          );
+          return { record: null, dropped: "malformed" };
+        }
+
+        // A plain JavaScript hook can return a string or a Promise. The record did not pass redact.
+        diagnostics.report(
+          "record.dropped_by_redact",
+          "The redact hook returned a value that is not a record. The library dropped the record.",
+        );
+        return { record: null, dropped: "redact" };
+      } else if (!isLogLevel(candidate.severityText)) {
+        // An unknown level has no severity number. The serializer cannot map it.
+        diagnostics.report(
+          "record.dropped_malformed",
+          "The redact hook set a severityText that is not a log level. The library dropped the record.",
+        );
+        return { record: null, dropped: "malformed" };
+      } else {
+        if (candidate !== record) {
           // Sanitize the record from the redact hook again. The hook is consumer code.
           // A cycle, a hostile getter or a BigInt throws at serialization. The transport
           // then loses the batch.
-          const remeasured = sanitizeWithSize(redacted.attributes, limits, diagnostics);
-          record = { ...redacted, attributes: asAttributes(remeasured.value) };
+          const remeasured = sanitizeWithSize(candidate.attributes, limits, diagnostics);
+          record = { ...candidate, attributes: asAttributes(remeasured.value) };
           bytes = remeasured.bytes;
-        } else {
-          diagnostics.report(
-            "record.sanitize_failed",
-            "The redact hook returned a value that is not a record. The library keeps the original record.",
-          );
         }
+
+        // The hook can change severityText. Keep the number in step with the text.
+        record.severityNumber = SEVERITY_NUMBER[record.severityText];
       }
     }
 
-    // Drop the attributes when their size exceeds maxRecordBytes. Keep the index keys.
-    // A search cannot find a record without journey.id and trace_id.
+    // Drop the caller attributes when their size exceeds maxRecordBytes. Keep the index keys.
+    // A search cannot find a record without journey.id and trace_id. Keep the error fields,
+    // then the breadcrumbs if they fit. They tell why the record exists.
     if (bytes > limits.maxRecordBytes) {
       diagnostics.report(
         "record.truncated",
-        "The attributes are larger than the size limit. The library dropped them.",
+        "The attributes are larger than the size limit. The library dropped the caller attributes.",
         { bytes, body: record.body },
       );
 
@@ -288,14 +342,38 @@ export class RecordBuilder {
         [ATTR_LOG_TYPE]: input.type,
         [ATTR_LOG_SEQ]: seq,
         [ATTR_APP_NAMESPACE]: input.namespace,
-        [ATTR_PAGE_URL]: pageUrl,
         [ATTR_ATTRIBUTES_DROPPED]: true,
         [ATTR_ATTRIBUTES_BYTES]: bytes,
       };
-      if (activeJourney) {
-        kept[ATTR_JOURNEY_ID] = activeJourney.id;
-        kept[ATTR_JOURNEY_NAME] = activeJourney.name;
+
+      // Read these keys after redact. The hook can remove a token from page.url.
+      for (const key of REDACTABLE_INDEX_KEYS) {
+        if (key in record.attributes) {
+          kept[key] = record.attributes[key];
+        }
       }
+
+      for (const [key, value] of Object.entries(record.attributes)) {
+        if (key.startsWith(ERROR_ATTR_PREFIX)) {
+          kept[key] = value;
+        }
+      }
+
+      // error.data can be large. Drop it first, before the other error fields.
+      let keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
+      if (keptBytes > limits.maxRecordBytes && ATTR_ERROR_DATA in kept) {
+        Reflect.deleteProperty(kept, ATTR_ERROR_DATA);
+        keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
+      }
+
+      const breadcrumbs = record.attributes[ATTR_BREADCRUMBS];
+      if (breadcrumbs !== undefined) {
+        const crumbBytes = sanitizeWithSize(breadcrumbs, limits, diagnostics).bytes;
+        if (keptBytes + crumbBytes <= limits.maxRecordBytes) {
+          kept[ATTR_BREADCRUMBS] = breadcrumbs;
+        }
+      }
+
       record.attributes = kept;
     }
 

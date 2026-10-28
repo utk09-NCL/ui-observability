@@ -1,7 +1,7 @@
 // src/models/storage.ts
 //
 // Storage interface for undelivered batches, with adapters for IndexedDB,
-// localStorage, memory, and a no-op fallback.
+// localStorage, memory, and a fallback that does nothing.
 
 import type { LogBatch } from "./batch";
 

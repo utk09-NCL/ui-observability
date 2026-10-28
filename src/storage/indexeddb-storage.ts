@@ -71,8 +71,8 @@ export class IndexedDbStorage implements StorageAdapter {
           this.reportGap({ ...evicted, reason: "quota" });
         }
 
-        // The eviction makes room for this batch. Without a second write, save() resolves
-        // but the batch is lost and not counted.
+        // The eviction makes room for this batch. Without a second write, save() resolves.
+        // The library then loses the batch. No counter shows the loss.
         const stored = await this.diagnostics.guardAsync(
           "storage.degraded",
           "The library could not write the batch after it removed old batches.",

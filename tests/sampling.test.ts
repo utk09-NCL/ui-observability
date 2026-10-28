@@ -193,6 +193,24 @@ describe("shouldSample with remote rules", () => {
     expect(shouldSample(record(), rates, { rates: {}, minLevel: "DEBUG" })).toBe(true);
   });
 
+  it("does not cap an action or a metric below minLevel", () => {
+    // minLevel does not apply to an action or a metric. A remote rule must not drop them.
+    const rates = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        minLevel: "WARN",
+        sampling: { remoteMaxRate: 0, alwaysSampleTypes: [] },
+      },
+      new Diagnostics(vi.fn(), 0),
+    );
+    const remote = { rates: {}, minLevel: "DEBUG" as const };
+
+    expect(shouldSample(record({ [ATTR_LOG_TYPE]: "metric" }), rates, remote)).toBe(true);
+    expect(shouldSample(record({ [ATTR_LOG_TYPE]: "action" }), rates, remote)).toBe(true);
+    expect(shouldSample(record(), rates, remote)).toBe(false);
+  });
+
   it("lets a longer config prefix win over a shorter remote prefix", () => {
     const rates = config({ defaultRate: 0, rates: { "app.grid": 0 } });
 

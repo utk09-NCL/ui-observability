@@ -4,15 +4,17 @@
 //
 // `src/constants.ts` contains the severity tables.
 
+import { LEVEL_ORDER } from "../constants";
+
 /** OpenTelemetry severity levels, in ascending order. */
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
 
 /**
- * Kind of thing a record describes: `action` (something a person did),
- * `event` (something the application did), `metric` (a measurement), or
- * `system` (this library's own diagnostic output).
+ * Kind of thing that a record tells about. `action` is something that a person did.
+ * `event` is something that the application did. `metric` is a measurement.
+ * `log` is a log call of the application. `system` is the output of this library.
  */
-export type LogType = "action" | "event" | "metric" | "system";
+export type LogType = "action" | "event" | "metric" | "log" | "system";
 
 /** Metric value type: level, running total, or distribution. */
 export type MetricType = "gauge" | "counter" | "histogram";
@@ -59,12 +61,21 @@ export function nowUnixNano(): string {
 }
 
 /**
- * Checks whether a value has the shape `LogRecord` requires.
+ * Checks if a value is a known log level. An own-key check rejects "toString".
+ * @param value The value to check.
+ * @returns True if `value` is a key of the severity table.
+ */
+export function isLogLevel(value: unknown): value is LogLevel {
+  return typeof value === "string" && Object.hasOwn(LEVEL_ORDER, value);
+}
+
+/**
+ * Checks if a value has the shape `LogRecord` requires.
  * Use it to validate records from another realm. A malformed record throws
  * during serialization. The check accepts any string as `severityText`, not only
  * a known level. Thus an unknown level from a newer version passes.
  * @param value The value to check.
- * @returns Whether `value` has the shape `LogRecord` requires.
+ * @returns True if `value` has the shape `LogRecord` requires.
  */
 export function isLogRecord(value: unknown): value is LogRecord {
   if (typeof value !== "object" || value === null) {

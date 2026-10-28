@@ -17,10 +17,10 @@ function collect(): { events: DiagnosticEvent[]; diagnostics: Diagnostics } {
 const codes = (events: DiagnosticEvent[]): string[] => events.map((event) => event.code);
 
 /**
- * A Storage that throws on every access, which is what a sandboxed iframe
- * without allow-same-origin actually does. It does not return null.
+ * A Storage that throws on each access. A sandboxed iframe without allow-same-origin does this. It
+ * does not return null.
  *
- * `clear` has to work, because the shared teardown calls it.
+ * `clear` must work, because the shared teardown calls it.
  */
 const throwingStorage = {
   getItem(): string | null {
@@ -169,7 +169,7 @@ describe("resolveIdentity", () => {
 
     const identity = resolveIdentity(diagnostics);
 
-    // Still usable: nothing persisted, but the ids are real.
+    // Nothing persists. The ids are still real.
     expect(identity.sessionId).toBeTruthy();
     expect(identity.tabId).toBeTruthy();
     expect(codes(events)).toContain("storage.unavailable");

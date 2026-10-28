@@ -32,7 +32,7 @@ export class WebVitalsCapture implements Capture {
     }
 
     // Do not import the peer by name. The Vite dev server fails if the peer is not installed.
-    // Do not set once here. A later configure() call with a loader must subscribe.
+    // Do not set `once` here. A later configure() call with a loader must subscribe.
     const loader = this.ctx.config.capture.webVitalsLoader;
     if (!loader) {
       this.ctx.diagnostics.report(
@@ -42,10 +42,8 @@ export class WebVitalsCapture implements Capture {
       return;
     }
 
-    // Set the flag before the load, not after. Without this order, two configure() calls
-    // in one turn both pass this check and subscribe two times.
-    this.ctx.once.webVitals = true;
-
+    // Set the flag after a successful load, not before. A failed load then gets a new
+    // attempt on a later install.
     void this.loadWebVitals(loader);
   }
 
@@ -75,6 +73,13 @@ export class WebVitalsCapture implements Capture {
       );
       return;
     }
+
+    // Two installs in one turn both load the module. Only the first subscribes.
+    // web-vitals has no unsubscribe, and a second set reports each metric two times.
+    if (this.ctx.once.webVitals) {
+      return;
+    }
+    this.ctx.once.webVitals = true;
 
     const send =
       (name: string, unit: string): WebVitalsReporter =>

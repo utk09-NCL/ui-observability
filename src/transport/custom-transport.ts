@@ -36,7 +36,7 @@ export function toTransportRequest(batch: LogBatch, serialized: SerializedBatch)
 }
 
 /**
- * Tests whether a value is a usable transport response.
+ * Tests if a value is a usable transport response.
  * @param value Value that the transport resolved to.
  * @returns True if the value has an integer status from 100 to 599.
  */

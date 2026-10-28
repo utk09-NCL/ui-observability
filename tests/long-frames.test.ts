@@ -51,7 +51,7 @@ function support(types: readonly string[] | undefined): void {
   vi.stubGlobal("PerformanceObserver", FakeObserver);
 }
 
-/** Builds the once flags of a new document. */
+/** Builds the `once` flags of a new document. */
 const freshOnce = (): CaptureOnce => ({
   webVitals: false,
   navigationTiming: false,
@@ -61,7 +61,7 @@ const freshOnce = (): CaptureOnce => ({
 /**
  * Builds a capture around a spy logger, with the diagnostics throttle off.
  * @param capture Capture settings over longFrames on.
- * @param once Once flags. Two captures with one object act as a reinstall in one document.
+ * @param once The `once` flags. Two captures with one object act as a reinstall in one document.
  * @returns The capture, its spy metric logger, its breadcrumbs and its diagnostic events.
  */
 function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
@@ -84,7 +84,7 @@ function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
   };
   events.length = 0;
 
-  return { sut: new LongFrameCapture(ctx), logMetric, breadcrumbs, events };
+  return { sut: new LongFrameCapture(ctx), ctx, logMetric, breadcrumbs, events };
 }
 
 /**
@@ -253,7 +253,9 @@ describe("LongFrameCapture", () => {
 
   it("reports a threshold that is not usable, and uses the default", () => {
     support(["long-animation-frame"]);
-    const { sut, logMetric, events } = setup({ longFrameThresholdMs: -1 });
+    const { sut, ctx, logMetric, events } = setup();
+    // resolveConfig rejects -1. Set it after the resolve to reach the guard of the capture.
+    ctx.config.capture.longFrameThresholdMs = -1;
     sut.install();
 
     active()?.emit(frame(99), frame(100));

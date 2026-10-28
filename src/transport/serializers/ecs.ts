@@ -57,7 +57,7 @@ function toLabelValue(value: unknown): LabelValue | null {
 /**
  * Writes one label. It folds a repeated key into an array. Elasticsearch reads
  * a repeated leaf as one multi-valued field. An array of objects maps the same way.
- * @param labels Label map being built.
+ * @param labels Label map that the function builds.
  * @param key Dotted label key.
  * @param value Scalar label value.
  */
@@ -80,7 +80,7 @@ function pushLabel(labels: Record<string, unknown>, key: string, value: LabelVal
 /**
  * Flattens one value into dotted label keys. ECS `labels` is a flat map. A
  * nested object under it causes an Elasticsearch dynamic mapping conflict.
- * @param labels Label map being built.
+ * @param labels Label map that the function builds.
  * @param key Dotted key for this value.
  * @param value Value to flatten.
  * @param seen Active ancestor objects. This set stops infinite recursion on a cycle.
@@ -115,7 +115,7 @@ function flattenLabel(
     }
   }
 
-  // Remove the object on unwind. Otherwise a repeated sibling reads as a cycle.
+  // Remove the object on unwind. If not, a repeated sibling reads as a cycle.
   seen.delete(value);
 }
 

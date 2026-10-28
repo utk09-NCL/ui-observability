@@ -4,10 +4,10 @@ import { Diagnostics } from "../src/core/diagnostics";
 import type { OtelApi, OtelSpan } from "../src/models/config";
 import { newSpanId, newTraceId, TraceEngine } from "../src/utils/tracing";
 
-/** Zero throttle, so a count can be read back on the same tick it was reported. */
+/** No throttle. A test can read a count back in the same tick as the report. */
 const diagnostics = (): Diagnostics => new Diagnostics(vi.fn(), 0);
 
-/** Ids the W3C spec would accept, kept here rather than generated so assertions can name them. */
+/** Ids that the W3C specification accepts. They are constants here. Assertions can name them. */
 const VALID_TRACE_ID = "a".repeat(32);
 const VALID_SPAN_ID = "b".repeat(16);
 
@@ -42,8 +42,8 @@ const fakeApi = (span: OtelSpan | undefined): OtelApi => ({
 
 describe("newTraceId and newSpanId", () => {
   it("mint the widths the W3C format fixes, in lower-case hex", () => {
-    // A twenty-eight character trace id is accepted by every type in this
-    // library and silently dropped by the backend.
+    // Each type in this library accepts a trace id of twenty-eight characters. The backend drops it
+    // with no message.
     expect(newTraceId()).toMatch(/^[0-9a-f]{32}$/);
     expect(newSpanId()).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -56,9 +56,8 @@ describe("newTraceId and newSpanId", () => {
 
 describe("TraceEngine.resolve", () => {
   it("keeps one trace id across consecutive records, and changes it on rotate", () => {
-    // The whole point of the module. One id per record would give every trace
-    // in the backend exactly one span, and correlation would silently do
-    // nothing while looking entirely healthy.
+    // This is the purpose of the module. With one id for each record, each trace in the backend has
+    // exactly one span. Correlation then does nothing, but it looks healthy.
     const engine = new TraceEngine(diagnostics());
     const first = engine.resolve();
     const second = engine.resolve();
@@ -103,9 +102,9 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("falls back to the ambient trace when the active span reports an unusable context", async () => {
-    // An all-zero id is what a span that was never started reports. Passing it
-    // through would put records on a trace that correlates with nothing, which
-    // is worse than the ambient trace it would have used anyway.
+    // A span that never started reports an all-zero id. If the engine passes it on, records go on a
+    // trace that correlates with nothing. That is worse than the ambient trace that the engine uses
+    // in its place.
     const engine = await loaded();
     const ambient = engine.resolve().traceId;
     activeSpan(
@@ -120,8 +119,8 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("falls back to the ambient trace and reports when reading the span throws", async () => {
-    // The OTel API is a global somebody else registered. It is guarded rather
-    // than trusted, and a fault in it must cost the trace fields, not the record.
+    // Another party registered the OTel API as a global. The engine guards it and does not trust
+    // it. A fault in it must cost the trace fields, not the record.
     const reporter = diagnostics();
     const engine = await loaded(reporter);
     const ambient = engine.resolve().traceId;
@@ -136,8 +135,8 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("carries on when the OpenTelemetry package is not installed", async () => {
-    // The package is an optional peer. A consumer who never asked for it must
-    // still get trace ids, and must be told once why they are the library's own.
+    // The package is an optional peer. A consumer that did not ask for it must still get trace ids.
+    // The library must tell the consumer one time why the ids are its own.
     const reporter = diagnostics();
     const engine = new TraceEngine(reporter, undefined, () =>
       Promise.reject(new Error("Cannot find module '@opentelemetry/api'")),
@@ -232,9 +231,8 @@ describe("TraceEngine.rotate", () => {
 
 describe("TraceEngine.headers", () => {
   it("emits a W3C traceparent matching the context a record would carry", () => {
-    // The bug this pins down: an earlier design minted a fresh id here, so the
-    // header on the request matched no record ever emitted and the advertised
-    // log-to-backend correlation quietly did nothing.
+    // This test finds this bug. An earlier design made a new id here. The header on the request
+    // matched no record. The log-to-backend correlation then did nothing with no sign.
     const engine = new TraceEngine(diagnostics());
     const ctx = engine.resolve();
 
@@ -242,8 +240,8 @@ describe("TraceEngine.headers", () => {
   });
 
   it("prints trace-flags as two hex digits, keeping flags a boolean would discard", async () => {
-    // trace-flags is a bitfield whose further bits are already defined.
-    // Collapsing it to sampled or not would pass every other test in this file.
+    // trace-flags is a bitfield. Its other bits also have definitions. A change to only sampled or
+    // not sampled passes each other test in this file.
     const engine = await loaded();
     activeSpan(
       spanReporting({
@@ -257,9 +255,8 @@ describe("TraceEngine.headers", () => {
   });
 
   it("leaves a header a host propagator wrote exactly as it found it", async () => {
-    // The host's propagator knows about tracestate, baggage and vendor headers
-    // this library has never heard of, so it gets first refusal and its answer
-    // is never overwritten.
+    // The propagator of the host knows tracestate, baggage and vendor headers that this library
+    // does not know. It goes first. The engine never replaces its answer.
     const fromHost = `00-${"c".repeat(32)}-${"d".repeat(16)}-01`;
     vi.spyOn(propagation, "inject").mockImplementation((_context, carrier) => {
       (carrier as Record<string, string>).traceparent = fromHost;

@@ -113,6 +113,20 @@ describe("ConsoleCapture", () => {
     ]);
   });
 
+  it("records an error from another realm as the error of the record", () => {
+    const { logger } = setup(["error"]);
+    // An error from an iframe fails instanceof Error in this realm.
+    const foreign = { name: "TypeError", message: "x is undefined", stack: "TypeError: x" };
+
+    console.error(foreign);
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "x is undefined",
+      foreign,
+      expect.not.objectContaining({ "console.args": expect.anything() as unknown }),
+    );
+  });
+
   it("records warn as a WARN record, and keeps its Error in the arguments", () => {
     const { logger } = setup(["warn"]);
     const cause = new Error("slow");

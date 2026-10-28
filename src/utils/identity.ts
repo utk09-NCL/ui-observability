@@ -1,6 +1,6 @@
 // src/utils/identity.ts
 //
-// Generates and manages session, tab, and context correlation identifiers. In a
+// Makes and keeps the session, tab, and context correlation identifiers. In a
 // sandboxed iframe and in private mode, Storage throws instead of returning null.
 // An unguarded read breaks the library at import.
 
@@ -82,7 +82,7 @@ export function memoryStores(): IdentityStores {
 
 /**
  * Generates a random lowercase hexadecimal string of the specified byte length.
- * It uses crypto.getRandomValues when it is available. Otherwise it uses Math.random.
+ * It uses crypto.getRandomValues when it is available. If not, it uses Math.random.
  * @param byteLength Number of random bytes to generate.
  * @returns Hexadecimal string of length byteLength * 2.
  */

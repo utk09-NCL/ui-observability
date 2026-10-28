@@ -4,7 +4,7 @@
 // `ResolvedConfig` is the configuration that the runtime holds after it applies defaults.
 //
 // `ResolvedConfig` does not use `Required<ObservabilityConfig>`. That type removes `?`
-// only at the top level. A nested field such as `sampling.defaultRate` can then be undefined.
+// only at the top level. A nested field such as `sampling.defaultRate` can then hold undefined.
 
 import type { DiagnosticHandler } from "../core/diagnostics";
 import type { LogLevel, LogRecord } from "./log-record";
@@ -38,7 +38,7 @@ export interface WebVitalsMetric {
 
 /**
  * Callback `web-vitals` invokes with a measurement.
- * @param metric The measurement being reported.
+ * @param metric The measurement that `web-vitals` reports.
  */
 export type WebVitalsReporter = (metric: WebVitalsMetric) => void;
 
@@ -124,7 +124,7 @@ export interface OtelApi {
 
 /**
  * Supplies the `@opentelemetry/api` module without a hard dependency on it.
- * @returns A promise resolving to the module.
+ * @returns A promise that resolves to the module.
  */
 export type OtelLoader = () => Promise<OtelApi>;
 
@@ -168,6 +168,7 @@ export interface BusOptions {
   /**
    * Origins that can send postMessage records to this document.
    * A document that gets records from a cross-origin iframe must list the iframe origin.
+   * The library does not accept "null". A sandboxed frame must set `mode: "sender"`.
    * @default []
    */
   trustedOrigins: string[];
@@ -178,6 +179,26 @@ export interface BusOptions {
    * @default "auto"
    */
   openFinRole: "auto" | "provider" | "client";
+}
+
+/**
+ * Where a journey id applies.
+ * - "context": each document, frame or worker keeps its own journey.
+ * - "tab": a frame or a worker adopts the journey of the context that owns it. A journey
+ *   does not go to another tab.
+ * - "origin": each context of the origin adopts each journey. The broadcast link also reaches
+ *   other tabs.
+ * - "auto": "origin" in OpenFin and "tab" in a browser.
+ */
+export type JourneyScope = "auto" | "context" | "tab" | "origin";
+
+/** Journey settings. */
+export interface JourneyOptions {
+  /**
+   * Which contexts adopt a journey that one context starts.
+   * @default "auto"
+   */
+  scope: JourneyScope;
 }
 
 /** Console method that the console capture can wrap. */
@@ -258,14 +279,15 @@ export interface CaptureOptions {
    */
   ignoreUrls: (string | RegExp)[];
   /**
-   * Targets that receive a `traceparent` header. A pattern that matches all URLs breaks
-   * CORS on third-party endpoints.
+   * Targets that receive a `traceparent` header. A string is an origin and matches a request
+   * to that origin only. A RegExp tests the full URL. Start each RegExp with `^`. A pattern that
+   * matches all URLs breaks CORS on third-party endpoints.
    * @default []
    */
   propagateTraceHeaderTo: (string | RegExp)[];
   /**
    * Supplies the `web-vitals` module without a hard dependency on the package.
-   * @returns A promise resolving to the `web-vitals` module.
+   * @returns A promise that resolves to the `web-vitals` module.
    */
   webVitalsLoader?: () => Promise<WebVitalsModule>;
 }
@@ -343,7 +365,7 @@ export interface TransportResponse {
  * Sends one batch through a channel of the app, such as an API client, a WebSocket or IPC.
  * A rejected promise counts as a network error. The library then sends the batch again.
  * @param request Batch to send.
- * @returns Promise resolving to the answer of the server.
+ * @returns Promise that resolves to the answer of the server.
  */
 export type Transport = (request: TransportRequest) => Promise<TransportResponse>;
 
@@ -381,7 +403,7 @@ export interface ObservabilityConfig {
   environment?: string;
 
   /**
-   * Master switch. False makes every log call a no-op.
+   * Master switch. With false, each log call does nothing.
    * @default true
    */
   enabled?: boolean;
@@ -392,7 +414,7 @@ export interface ObservabilityConfig {
   minLevel?: LogLevel;
 
   /**
-   * Whether to gzip a payload that is larger than the compression threshold.
+   * Set "gzip" to compress a payload that is larger than the compression threshold.
    * Set "none" for an ingest endpoint that rejects gzip.
    * @default "gzip"
    */
@@ -408,7 +430,7 @@ export interface ObservabilityConfig {
    * @default "omit"
    */
   credentials?: RequestCredentials;
-  /** Extra request headers, or a function returning them. */
+  /** Extra request headers, or a function returning them. `undefined` removes the headers. */
   headers?:
     Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
 
@@ -435,6 +457,11 @@ export interface ObservabilityConfig {
    * @see {@link BusOptions}
    */
   bus?: Partial<BusOptions>;
+  /**
+   * Journey settings.
+   * @see {@link JourneyOptions}
+   */
+  journey?: Partial<JourneyOptions>;
   /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}
@@ -467,7 +494,8 @@ export interface ObservabilityConfig {
   otelLoader?: OtelLoader;
 
   /**
-   * Rewrites or drops a record before the library sends it.
+   * Rewrites or drops a record before the library sends it. If the hook throws or returns a
+   * value that is not a record, the library drops the record.
    * @param record The record that the library is about to send.
    * @returns The record to send, or `null` to drop it.
    */
@@ -490,11 +518,11 @@ export interface ResolvedConfig {
   serviceVersion: string;
   /** The library reports this value as `deployment.environment`. */
   environment: string;
-  /** Master switch. False makes every log call a no-op. */
+  /** Master switch. With false, each log call does nothing. */
   enabled: boolean;
   /** Minimum level that the library logs. */
   minLevel: LogLevel;
-  /** Whether to gzip a payload that is larger than the compression threshold. */
+  /** "gzip" compresses a payload that is larger than the compression threshold. */
   compression: "gzip" | "none";
   /** The library passes this value to `fetch`. */
   credentials: RequestCredentials;
@@ -512,6 +540,11 @@ export interface ResolvedConfig {
    * @see {@link BusOptions}
    */
   bus: BusOptions;
+  /**
+   * Journey settings.
+   * @see {@link JourneyOptions}
+   */
+  journey: JourneyOptions;
   /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}

@@ -13,6 +13,7 @@ import {
   HTTP_TOO_MANY_REQUESTS,
   HTTP_UNAUTHORIZED,
   RETRY_BASE_DELAY_MS,
+  RETRY_MAX_DELAY_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
@@ -26,9 +27,10 @@ export interface BatchTransport {
   /**
    * Sends one batch.
    * @param batch Batch to send.
+   * @param onKeepalive Runs when a request of the batch starts with keepalive.
    * @throws TransportError when the batch is not accepted.
    */
-  send(batch: LogBatch): Promise<void>;
+  send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
   /**
    * Returns the remaining throttle delay.
    * @returns Milliseconds until the throttle ends, or 0.
@@ -65,9 +67,10 @@ export abstract class StatusTransport implements BatchTransport {
   /**
    * Sends one batch.
    * @param batch Batch to send.
+   * @param onKeepalive Runs when a request of the batch starts with keepalive.
    * @throws TransportError when the batch is not accepted.
    */
-  abstract send(batch: LogBatch): Promise<void>;
+  abstract send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
 
   /**
    * Returns the remaining throttle delay in milliseconds.
@@ -138,11 +141,16 @@ export abstract class StatusTransport implements BatchTransport {
 
     if (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_SERVICE_UNAVAILABLE) {
       const throttled = status === HTTP_TOO_MANY_REQUESTS;
-      this.throttledUntil = Date.now() + (hints.retryAfterMs ?? RETRY_BASE_DELAY_MS);
+      // Cap the server delay. Without the cap, a large Retry-After stops delivery for hours.
+      const retryAfterMs =
+        hints.retryAfterMs === undefined
+          ? undefined
+          : Math.min(hints.retryAfterMs, RETRY_MAX_DELAY_MS);
+      this.throttledUntil = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
 
       if (throttled) {
         this.diagnostics.report("transport.throttled", "The server throttles the requests.", {
-          retryAfterMs: hints.retryAfterMs,
+          retryAfterMs,
         });
       }
 
@@ -150,7 +158,7 @@ export abstract class StatusTransport implements BatchTransport {
         "throttled",
         throttled ? "The server throttles the requests." : "The service is not available.",
         status,
-        hints.retryAfterMs,
+        retryAfterMs,
       );
     }
 

@@ -2,11 +2,23 @@
 //
 // This module gives a namespaced logger facade. It has scoped log methods and metric timers.
 
-import { DEFAULT_METRIC_UNIT } from "../constants";
+import {
+  ATTR_BREADCRUMBS,
+  ATTR_ERROR_DATA,
+  ATTR_SANITIZE_FAILED,
+  CAPTURE_NAMESPACE,
+  DEFAULT_METRIC_UNIT,
+  STORAGE_NAMESPACE,
+} from "../constants";
 import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
+import { ERROR_OWN_KEYS, isDataField, isErrorLike } from "../utils/error-like";
 import { timeAsync, timeSync } from "../utils/timer";
 import type { Diagnostics } from "./diagnostics";
+import type { DropReason } from "./record";
 import type { ObservabilityRuntime } from "./runtime";
+
+/** Namespaces of the library. Their records have log.type "system". */
+const LIBRARY_NAMESPACES: readonly string[] = [CAPTURE_NAMESPACE, STORAGE_NAMESPACE];
 
 /** Configuration options for a scoped OneLogger instance. */
 export interface OneLoggerOptions {
@@ -16,17 +28,35 @@ export interface OneLoggerOptions {
 
 /**
  * Normalizes an unknown thrown value into an Error instance.
+ * An error becomes a copy with its name, message and stack.
  * @param value Caught error instance or primitive value.
  * @param diagnostics Diagnostics reporter.
  * @returns Normalized Error instance.
  */
 function toError(value: unknown, diagnostics: Diagnostics): Error {
-  if (value instanceof Error) {
-    return value;
+  // A Proxy reason can throw from instanceof and from each property read. A Proxy around
+  // an Error passes instanceof. Read its fields here, inside the guard.
+  const known = diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not read the error reason.",
+    (): Error | undefined => {
+      if (!(value instanceof Error) && !isErrorLike(value)) {
+        return undefined;
+      }
+
+      const copy = new Error(value.message);
+      copy.name = value.name;
+      copy.stack = value.stack;
+      return copy;
+    },
+  );
+
+  if (known) {
+    return known;
   }
 
-  // String() throws on a null-prototype object and on a throwing toString.
-  // log.error() runs inside a consumer catch block and must not throw out of it.
+  // String() throws on a null-prototype object and on a toString that throws.
+  // log.error() runs inside a consumer catch block. It must not throw out of it.
   const text = diagnostics.guard(
     "record.sanitize_failed",
     "The library could not convert the error reason to text.",
@@ -34,6 +64,69 @@ function toError(value: unknown, diagnostics: Diagnostics): Error {
   );
 
   return new Error(text ?? typeof value);
+}
+
+/**
+ * Gives the error that the console prints. The console shows the cause and the own fields
+ * of a real Error. The record keeps the copy from toError().
+ * @param reason Error reason.
+ * @param copy Normalized copy of the reason.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The reason if it is an Error, or the copy.
+ */
+function consoleError(reason: unknown, copy: Error, diagnostics: Diagnostics): Error {
+  // A Proxy reason can throw from instanceof.
+  const original = diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not read the error reason.",
+    () => (reason instanceof Error ? reason : copy),
+  );
+
+  return original ?? copy;
+}
+
+/**
+ * Reads the data of an error reason for the error.data attribute.
+ * It keeps only the own fields with a string, number or boolean value.
+ * @param value Error reason.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The fields of an object reason, a primitive reason, or undefined.
+ * A string reason gives undefined. error.message already holds it.
+ */
+function errorData(value: unknown, diagnostics: Diagnostics): unknown {
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "bigint" || typeof value === "symbol") {
+    return value;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  return diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not read the properties of the error reason.",
+    () => {
+      const source = value as Record<string, unknown>;
+      const errorLike = isErrorLike(value);
+      const data: Record<string, unknown> = {};
+      let count = 0;
+
+      // An object field, for example the config of an AxiosError, holds credentials.
+      for (const key of Object.keys(source)) {
+        const field = source[key];
+        if ((!errorLike || !ERROR_OWN_KEYS.has(key)) && isDataField(field)) {
+          data[key] = field;
+          count++;
+        }
+      }
+
+      return count === 0 ? undefined : data;
+    },
+  );
 }
 
 /**
@@ -55,8 +148,47 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === null || Object.getPrototypeOf(proto) === null;
 }
 
+/**
+ * Selects the log.type of the level methods for a namespace.
+ * @param namespace Logger namespace.
+ * @returns "system" for a namespace of the library, "log" for each other namespace.
+ */
+function levelTypeFor(namespace: string): LogType {
+  const library = LIBRARY_NAMESPACES.some(
+    (own) => namespace === own || namespace.startsWith(`${own}.`),
+  );
+
+  return library ? "system" : "log";
+}
+
+/**
+ * Copies a caller payload. A Proxy with a throwing trap must not throw out of a log call.
+ * @param payload Caller payload.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The copy, or a marker attribute when the library cannot read the payload.
+ */
+function copyPayload(
+  payload: Record<string, unknown> | undefined,
+  diagnostics: Diagnostics,
+): Record<string, unknown> {
+  if (payload === undefined) {
+    return {};
+  }
+
+  const copied = diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not read the payload.",
+    () => ({ ...payload }),
+  );
+
+  return copied ?? { [ATTR_SANITIZE_FAILED]: true };
+}
+
 /** Namespaced logger instance for recording structured events, metrics, and errors. */
 export class OneLogger {
+  /** log.type of the level methods. It is "system" only for the namespaces of the library. */
+  private readonly levelType: LogType;
+
   /**
    * @param bind Returns the runtime for each write.
    * A logger that exists before configure() writes to the configured runtime.
@@ -67,7 +199,9 @@ export class OneLogger {
     private readonly bind: () => ObservabilityRuntime,
     readonly namespace: string,
     private readonly options: OneLoggerOptions = {},
-  ) {}
+  ) {
+    this.levelType = levelTypeFor(namespace);
+  }
 
   /**
    * Creates a child logger with a nested namespace and merged scoped context.
@@ -90,7 +224,7 @@ export class OneLogger {
    * @param payload Optional contextual attributes.
    */
   trace = (message: string, payload?: Record<string, unknown>): void => {
-    this.write("TRACE", "system", message, payload);
+    this.write("TRACE", this.levelType, message, payload);
   };
 
   /**
@@ -99,7 +233,7 @@ export class OneLogger {
    * @param payload Optional contextual attributes.
    */
   debug = (message: string, payload?: Record<string, unknown>): void => {
-    this.write("DEBUG", "system", message, payload);
+    this.write("DEBUG", this.levelType, message, payload);
   };
 
   /**
@@ -108,7 +242,7 @@ export class OneLogger {
    * @param payload Optional contextual attributes.
    */
   info = (message: string, payload?: Record<string, unknown>): void => {
-    this.write("INFO", "system", message, payload);
+    this.write("INFO", this.levelType, message, payload);
   };
 
   /**
@@ -117,7 +251,7 @@ export class OneLogger {
    * @param payload Optional contextual attributes.
    */
   warn = (message: string, payload?: Record<string, unknown>): void => {
-    this.write("WARN", "system", message, payload);
+    this.write("WARN", this.levelType, message, payload);
   };
 
   /**
@@ -175,13 +309,25 @@ export class OneLogger {
     type: MetricType = "gauge",
     attributes?: Record<string, unknown>,
   ): void => {
-    this.write("INFO", "metric", name, {
+    // NaN and Infinity become null in JSON. A backend then reads a false zero.
+    if (!Number.isFinite(value)) {
+      this.bind().diagnostics.report(
+        "record.dropped_malformed",
+        "The metric value is not a finite number. The library dropped the metric.",
+        { "metric.name": name },
+      );
+      return;
+    }
+
+    // Spread the caller attributes first. The metric fields then win over a key of the same name.
+    const payload = {
+      ...copyPayload(attributes, this.bind().diagnostics),
       "metric.name": name,
       "metric.value": value,
       "metric.unit": unit,
       "metric.type": type,
-      ...attributes,
-    });
+    };
+    this.write("INFO", "metric", name, payload, true);
   };
 
   /**
@@ -199,7 +345,7 @@ export class OneLogger {
    * @param label Metric name prefix.
    * @param fn Asynchronous function to time.
    * @param attributes Optional contextual attributes.
-   * @returns Promise resolving to the result of the timed function.
+   * @returns Promise that resolves to the result of the timed function.
    */
   timeAsync = <T>(
     label: string,
@@ -213,12 +359,14 @@ export class OneLogger {
    * @param type Record classification.
    * @param body Primary message.
    * @param payload Optional contextual attributes.
+   * @param copied True when the payload is a copy that the library made. write() does not copy it.
    */
   private write(
     level: LogLevel,
     type: LogType,
     body: string,
     payload?: Record<string, unknown>,
+    copied = false,
   ): void {
     const runtime = this.bind();
 
@@ -228,7 +376,8 @@ export class OneLogger {
     }
 
     // minLevel limits what the library sends. The console level limits what it prints.
-    if (!runtime.builder.isEnabled(level)) {
+    // minLevel does not apply to an action or a metric.
+    if (!runtime.builder.isEnabled(level, type)) {
       if (this.mirrors(runtime, level)) {
         this.print(runtime, level, body, payload, undefined, null);
       }
@@ -242,21 +391,23 @@ export class OneLogger {
       body,
       namespace: this.namespace,
       scoped: this.options.scopedContext,
-      payload,
+      payload: copied ? payload : copyPayload(payload, runtime.diagnostics),
     });
 
-    // Breadcrumbs stay in memory and have no delivery cost. A record that sampling drops
-    // still adds a breadcrumb for the next error. Skip a record that redact drops.
-    // Its breadcrumb sends the removed body with the next error.
-    if (type !== "metric" && dropped !== "redact") {
+    // Breadcrumbs stay in memory and have no delivery cost. A breadcrumb keeps the body
+    // after redact. A record that sampling drops did not go through redact. It keeps its
+    // body, and redact sees it later inside the error record. A record that redact or
+    // the shape check drops adds no breadcrumb.
+    const crumb = record ? record.body : dropped === "sampling" ? body : undefined;
+    if (type !== "metric" && crumb !== undefined) {
       runtime.breadcrumbs.push({
         t: Date.now(),
         category: type === "action" ? "action" : type === "event" ? "event" : "log",
-        message: body,
+        message: crumb,
       });
     }
 
-    this.print(runtime, level, body, payload, undefined, record);
+    this.print(runtime, level, body, payload, undefined, record, dropped);
     runtime.emit(record);
   }
 
@@ -287,25 +438,36 @@ export class OneLogger {
 
     // All sibling methods take (name, payload?). Callers expect log.error("failed", { id }).
     // As an error reason, that object puts "[object Object]" in error.message.
-    // It also drops the caller fields.
-    const asPayload = payload === undefined && isPlainObject(error);
-    const attributes = asPayload ? error : payload;
-    const asError =
-      asPayload || error === undefined ? undefined : toError(error, runtime.diagnostics);
+    // It also drops the caller fields. A Proxy in the error slot can throw on the test.
+    const asPayload =
+      payload === undefined &&
+      (runtime.diagnostics.guard(
+        "record.sanitize_failed",
+        "The library could not read the error slot.",
+        () => isPlainObject(error),
+      ) ??
+        false);
+    const attributes = asPayload ? (error as Record<string, unknown>) : payload;
+    const reason = asPayload ? undefined : error;
+    const asError = reason === undefined ? undefined : toError(reason, runtime.diagnostics);
+    const shown =
+      asError === undefined ? undefined : consoleError(reason, asError, runtime.diagnostics);
 
     if (!ships) {
-      this.print(runtime, level, message, attributes, asError, null);
+      this.print(runtime, level, message, attributes, shown, null);
       return;
     }
 
-    const { record } = runtime.builder.build({
+    const data = asError ? errorData(reason, runtime.diagnostics) : undefined;
+
+    const { record, dropped } = runtime.builder.build({
       level,
-      type: "system",
+      type: this.levelType,
       body: message,
       namespace: this.namespace,
       scoped: this.options.scopedContext,
       payload: {
-        ...attributes,
+        ...copyPayload(attributes, runtime.diagnostics),
         ...(asError
           ? {
               "error.type": asError.name,
@@ -313,11 +475,12 @@ export class OneLogger {
               "error.stack_trace": asError.stack,
             }
           : {}),
-        breadcrumbs: runtime.breadcrumbs.snapshot(),
+        ...(data === undefined ? {} : { [ATTR_ERROR_DATA]: data }),
+        [ATTR_BREADCRUMBS]: runtime.breadcrumbs.snapshot(),
       },
     });
 
-    this.print(runtime, level, message, attributes, asError, record);
+    this.print(runtime, level, message, attributes, shown, record, dropped);
     runtime.emit(record);
   }
 
@@ -330,6 +493,7 @@ export class OneLogger {
    * @param payload Caller payload.
    * @param error Error of an error call.
    * @param record Built record, or null if the library did not build it or redact dropped it.
+   * @param dropped Reason of the drop when the builder dropped the record.
    */
   private print(
     runtime: ObservabilityRuntime,
@@ -338,6 +502,7 @@ export class OneLogger {
     payload: Record<string, unknown> | undefined,
     error: Error | undefined,
     record: LogRecord | null,
+    dropped?: DropReason,
   ): void {
     if (!runtime.config.redact) {
       runtime.console.write(this.namespace, level, message, payload, error);
@@ -350,11 +515,16 @@ export class OneLogger {
       return;
     }
 
+    // A record that redact or the shape check dropped prints no line. Its text did not pass redact.
+    if (dropped === "redact" || dropped === "malformed") {
+      return;
+    }
+
     runtime.console.write(this.namespace, level, message, undefined, error);
   }
 
   /**
-   * Tests whether the console prints a level that the library does not send.
+   * Tests if the console prints a level that the library does not send.
    * @param runtime Runtime of this write.
    * @param level Severity level.
    * @returns True if logging is on and the console accepts the level.

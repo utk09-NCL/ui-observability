@@ -34,11 +34,11 @@ const openfin: PlatformMetadata = {
 };
 
 /**
- * A builder wired to real collaborators rather than mocks.
+ * A builder with real collaborators, not mocks.
  *
- * The record builder's whole job is to combine what those collaborators say, so
- * stubbing them would leave the combining untested. Only the pieces a test
- * cannot otherwise reach, such as a context store that throws, get replaced.
+ * The builder combines what those collaborators give. Stubs of them leave the combination untested.
+ * The test replaces only the parts that it cannot reach in other ways. An example is a context
+ * store that throws.
  */
 function makeBuilder(
   overrides: Partial<ObservabilityConfig> = {},
@@ -76,7 +76,7 @@ function makeBuilder(
 
 const input: BuildInput = { level: "INFO", type: "event", body: "hello", namespace: "test" };
 
-/** Build and assert a record came back, so each test can read fields without repeating the check. */
+/** Builds a record and asserts that it exists. Each test can then read fields with no check. */
 const built = (builder: RecordBuilder, overrides: Partial<BuildInput> = {}): LogRecord => {
   const { record } = builder.build({ ...input, ...overrides });
   expect(record).not.toBeNull();
@@ -95,8 +95,8 @@ describe("the level gate", () => {
   });
 
   it("keeps a record at exactly the minimum level", () => {
-    // The comparison is `>=`, and an off-by-one here would silently discard an
-    // entire level's worth of records.
+    // The comparison is `>=`. An off-by-one error here discards all records of one level with no
+    // message.
     const { builder } = makeBuilder({ minLevel: "WARN" });
 
     expect(builder.isEnabled("WARN")).toBe(true);
@@ -110,9 +110,24 @@ describe("the level gate", () => {
     expect(builder.build({ ...input, level: "FATAL" }).record).toBeNull();
   });
 
+  it("keeps an action and a metric below minLevel, and drops a log record", () => {
+    const { builder } = makeBuilder({ minLevel: "ERROR" });
+
+    expect(builder.isEnabled("INFO", "action")).toBe(true);
+    expect(built(builder, { type: "action" }).attributes["log.type"]).toBe("action");
+    expect(built(builder, { type: "metric" }).attributes["log.type"]).toBe("metric");
+    expect(builder.build({ ...input, type: "log" }).dropped).toBe("level");
+  });
+
+  it("drops an action when logging is disabled", () => {
+    const { builder } = makeBuilder({ enabled: false });
+
+    expect(builder.build({ ...input, type: "action" }).record).toBeNull();
+  });
+
   it("rejects before allocating, which is what makes a hot-loop debug call cheap", () => {
-    // The sequence is only advanced by a record that survives the gate, so a
-    // gap in it would mean the gate had built something before rejecting it.
+    // Only a record that passes the gate advances the sequence. A gap in it shows that the gate
+    // built a record before it rejected it.
     const { builder } = makeBuilder();
 
     builder.build({ ...input, level: "DEBUG" });
@@ -132,8 +147,8 @@ describe("the level gate", () => {
   });
 
   it("drops a sampled-out record before it walks the payload", () => {
-    // Sanitizing attributes for a record nothing will send is the whole cost
-    // this gate exists to avoid, so the getter must never run.
+    // This gate prevents the cost of a sanitize pass for a record that the library does not send.
+    // The getter must never run.
     const { builder, diagnostics } = makeBuilder({ sampling: { defaultRate: 0 } });
     let reads = 0;
     const payload = {
@@ -215,9 +230,9 @@ describe("attributes", () => {
   });
 
   it("stamps the document URL as page.url and leaves url.full to whoever owns the request", () => {
-    // `url.full` names the target of the request a record is about. Stamping
-    // the page URL over it would rewrite every captured request to the page it
-    // was made from, leaving the real target only inside the body string.
+    // `url.full` names the target of the request that a record tells about. If the builder writes
+    // the page URL there, each captured request shows the page as its target. The real target is
+    // then only in the body string.
     const { builder } = makeBuilder();
 
     const record = built(builder, { payload: { "url.full": "https://api.internal/orders" } });
@@ -254,10 +269,9 @@ describe("attributes", () => {
   });
 
   it("marks the record and reports when the attributes cannot be read at all", () => {
-    // Sanitizing itself cannot throw. What can is reading the attributes out of
-    // an injected dependency before the sanitizer ever sees them, and that must
-    // cost this record's attributes rather than throwing back into the
-    // consumer's own logging call.
+    // The sanitizer itself cannot throw. A read of the attributes from an injected dependency can
+    // throw before the sanitizer sees them. That throw must cost the attributes of this record. It
+    // must not go back into the logging call of the consumer.
     const { deps, diagnostics } = makeBuilder();
     const unreadable = {
       getAll: (): Record<string, unknown> => {
@@ -313,22 +327,31 @@ describe("the redact hook", () => {
     expect(built(builder).attributes.masked).toBe(true);
   });
 
-  it("survives a hook that throws, rather than losing the record", () => {
+  it("drops the record when the hook throws, because the record is not redacted", () => {
     const { builder, diagnostics } = makeBuilder({
       redact: () => {
         throw new Error("consumer bug");
       },
     });
 
-    expect(built(builder).body).toBe("hello");
-    expect(diagnostics.snapshot()["record.sanitize_failed"]).toBe(1);
+    expect(builder.build(input)).toEqual({ record: null, dropped: "redact" });
+    expect(diagnostics.snapshot()["record.dropped_by_redact"]).toBe(1);
+  });
+
+  it("keeps the record when the hook edits it in place and returns nothing", () => {
+    const { builder } = makeBuilder({
+      redact: ((record: LogRecord) => {
+        record.attributes.masked = true;
+      }) as unknown as ObservabilityConfig["redact"],
+    });
+
+    expect(built(builder).attributes.masked).toBe(true);
   });
 
   it("sanitizes attributes a hook substituted, so one hook cannot poison a batch", () => {
-    // The hook can return anything, and its result has not been through the
-    // sanitizer. An unserializable value here reaches the transport, where the
-    // whole batch is classified as unserializable and a hundred good records
-    // from other loggers die with it.
+    // The hook can return any value. The sanitizer did not see its result. An unserializable value
+    // here gets to the transport. The transport then classifies the whole batch as unserializable.
+    // The batch then loses a hundred good records from other loggers.
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     const { builder } = makeBuilder({
@@ -342,8 +365,8 @@ describe("the redact hook", () => {
   });
 
   it("re-measures a record the hook replaced, rather than trusting the old total", () => {
-    // The running byte total describes the record that was built, not whatever
-    // the hook handed back.
+    // The byte total is for the record that the builder made. It is not for the value that the hook
+    // returned.
     const { builder } = makeBuilder(
       { redact: (record) => ({ ...record, attributes: { huge: "x".repeat(5000) } }) },
       browser,
@@ -356,26 +379,56 @@ describe("the redact hook", () => {
     expect(record.attributes.huge).toBeUndefined();
   });
 
-  it("keeps the original record when the hook returns something that is not a record", () => {
-    // These hooks are written in plain JavaScript, where nothing stops one
-    // returning a string. Losing the redaction is reported; shipping a
-    // malformed record would lose the batch it travels in.
+  it("drops the record when the hook returns something that is not a record", () => {
+    // A plain JavaScript hook can return a string or a Promise. The original record
+    // did not pass redact and must not leave the page.
     const { builder, diagnostics } = makeBuilder({
-      redact: (() => "not a record") as unknown as ObservabilityConfig["redact"],
+      redact: (() => Promise.resolve(null)) as unknown as ObservabilityConfig["redact"],
     });
 
-    const record = built(builder);
+    expect(builder.build(input)).toEqual({ record: null, dropped: "redact" });
+    expect(diagnostics.snapshot()["record.dropped_by_redact"]).toBe(1);
+  });
 
-    expect(record.body).toBe("hello");
-    expect(record.attributes["log.type"]).toBe("event");
-    expect(diagnostics.snapshot()["record.sanitize_failed"]).toBe(1);
+  it("drops a record that the hook changed in place to a broken shape", () => {
+    const { builder, diagnostics } = makeBuilder({
+      redact: (record) => {
+        (record as unknown as Record<string, unknown>).attributes = null;
+        return record;
+      },
+    });
+
+    expect(builder.build(input)).toEqual({ record: null, dropped: "malformed" });
+    expect(diagnostics.snapshot()["record.dropped_malformed"]).toBe(1);
+  });
+
+  it("drops a record whose hook sets a severityText that is not a level", () => {
+    const { builder, diagnostics } = makeBuilder({
+      redact: (record) => ({ ...record, severityText: "LOUD" as LogRecord["severityText"] }),
+    });
+
+    expect(builder.build(input)).toEqual({ record: null, dropped: "malformed" });
+    expect(diagnostics.snapshot()["record.dropped_malformed"]).toBe(1);
+  });
+
+  it("sets severityNumber from the severityText that the hook set", () => {
+    const replaced = makeBuilder({ redact: (record) => ({ ...record, severityText: "ERROR" }) });
+    const inPlace = makeBuilder({
+      redact: (record) => {
+        record.severityText = "WARN";
+        return record;
+      },
+    });
+
+    expect(built(replaced.builder).severityNumber).toBe(17);
+    expect(built(inPlace.builder).severityNumber).toBe(13);
   });
 });
 
 describe("the size budget", () => {
   it("keeps the keys that make a record findable when oversized attributes are dropped", () => {
-    // Dropping the journey here would leave the one record most worth looking
-    // up as the one record with nothing to look it up by.
+    // If the builder drops the journey here, the record with the most value for a search has no key
+    // for the search.
     const { builder, journey, diagnostics } = makeBuilder({}, browser, {
       ...RECORD_LIMITS,
       maxRecordBytes: 200,
@@ -395,6 +448,30 @@ describe("the size budget", () => {
     expect(diagnostics.snapshot()["record.truncated"]).toBe(1);
   });
 
+  it("keeps page.url and the journey keys after redact when it drops the attributes", () => {
+    vi.stubGlobal("location", { href: "https://app.test/checkout?token=secret" });
+    const { builder, journey } = makeBuilder(
+      {
+        capture: { fullUrls: true },
+        redact: (record) => {
+          record.attributes["page.url"] = "https://app.test/checkout";
+          delete record.attributes["journey.name"];
+          return record;
+        },
+      },
+      browser,
+      { ...RECORD_LIMITS, maxRecordBytes: 200 },
+    );
+    const started = journey.start("order-lifecycle");
+
+    const record = built(builder, { payload: { blob: "x".repeat(50_000) } });
+
+    expect(record.attributes["uiobs.attributes_dropped"]).toBe(true);
+    expect(record.attributes["page.url"]).toBe("https://app.test/checkout");
+    expect(record.attributes["journey.id"]).toBe(started.id);
+    expect(record.attributes).not.toHaveProperty("journey.name");
+  });
+
   it("drops oversized attributes with no journey running, keeping the rest", () => {
     const { builder } = makeBuilder({}, browser, { ...RECORD_LIMITS, maxRecordBytes: 200 });
 
@@ -403,6 +480,44 @@ describe("the size budget", () => {
     expect(record.attributes["uiobs.attributes_dropped"]).toBe(true);
     expect("journey.id" in record.attributes).toBe(false);
     expect(record.attributes["app.namespace"]).toBe("test");
+  });
+
+  it("keeps each error field and the breadcrumbs that fit when it drops the caller attributes", () => {
+    const { builder } = makeBuilder({}, browser, { ...RECORD_LIMITS, maxRecordBytes: 2000 });
+    const breadcrumbs = [{ t: 1, category: "log", message: "clicked save" }];
+
+    const record = built(builder, {
+      level: "ERROR",
+      payload: {
+        blob: "x".repeat(50_000),
+        "error.type": "TypeError",
+        "error.message": "boom",
+        breadcrumbs,
+      },
+    });
+
+    expect(record.attributes.blob).toBeUndefined();
+    expect(record.attributes["error.type"]).toBe("TypeError");
+    expect(record.attributes["error.message"]).toBe("boom");
+    expect(record.attributes.breadcrumbs).toEqual(breadcrumbs);
+  });
+
+  it("drops error.data, then the breadcrumbs, when the error fields are too large", () => {
+    const { builder } = makeBuilder({}, browser, { ...RECORD_LIMITS, maxRecordBytes: 2000 });
+
+    const record = built(builder, {
+      level: "ERROR",
+      payload: {
+        blob: "x".repeat(50_000),
+        "error.type": "TypeError",
+        "error.data": { dump: "y".repeat(5000) },
+        breadcrumbs: [{ t: 1, category: "log", message: "z".repeat(3000) }],
+      },
+    });
+
+    expect(record.attributes["error.type"]).toBe("TypeError");
+    expect(record.attributes["error.data"]).toBeUndefined();
+    expect(record.attributes.breadcrumbs).toBeUndefined();
   });
 
   it("leaves a record inside the budget completely alone", () => {
@@ -434,9 +549,8 @@ describe("the resource block", () => {
   });
 
   it("is the same object on every record until it is invalidated", () => {
-    // It cannot change between two records from one context, and it is the
-    // largest part of a record, so rebuilding it per record would be the
-    // biggest waste on the hottest path here.
+    // The resource cannot change between two records from one context. It is the largest part of a
+    // record. A rebuild for each record is the largest waste on this hot path.
     const { builder } = makeBuilder();
     const first = built(builder).resource;
 
@@ -478,9 +592,9 @@ describe("the record itself", () => {
   });
 
   it("timestamps in nanoseconds and leaves the observed time to whoever sends it", () => {
-    // Those two fields genuinely differ on a forwarded record, and that
-    // difference is the only measure of forwarding lag there is. Setting both
-    // here would make the second one say nothing.
+    // Those two fields have different values on a forwarded record. Their difference is the only
+    // measure of the forward lag. If the builder sets both here, the second one gives no
+    // information.
     const { builder } = makeBuilder();
 
     const record = built(builder);

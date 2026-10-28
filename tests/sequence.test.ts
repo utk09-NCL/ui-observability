@@ -2,26 +2,21 @@ import { describe, expect, it } from "vitest";
 import { Sequence } from "../src/utils/sequence";
 
 describe("Sequence", () => {
-  it("is monotonic from one, and resettable", () => {
+  it("is monotonic from one", () => {
     const seq = new Sequence();
 
     expect([seq.next(), seq.next(), seq.next()]).toEqual([1, 2, 3]);
-
-    seq.reset();
-    expect(seq.next()).toBe(1);
   });
 
   it("starts at one rather than zero, so a lost sequence cannot look like a real one", () => {
-    // Zero is worth keeping as the obviously-unset value. A record legitimately
-    // carrying sequence zero would be indistinguishable from one whose sequence
-    // never made it onto the record at all.
+    // Keep zero as the clear unset value. A record with a real sequence of zero then looks the same
+    // as a record with no sequence.
     expect(new Sequence().next()).toBe(1);
   });
 
   it("counts per instance, so two runtimes do not punch holes in each other's run", () => {
-    // A hole in a sequence is indistinguishable from a record dropped in
-    // transit, which is the one question this field exists to answer. Sharing
-    // module state between two runtimes would put holes in both.
+    // A hole in a sequence looks the same as a record that the network lost. This field exists to
+    // answer that one question. Shared module state between two runtimes puts holes in both.
     const a = new Sequence();
     const b = new Sequence();
 

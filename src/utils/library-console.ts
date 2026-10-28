@@ -20,7 +20,7 @@ export function runAsLibraryConsole<T>(fn: () => T): T {
 }
 
 /**
- * Tests whether a library console scope is open.
+ * Tests if a library console scope is open.
  * @returns True while the library writes to the console.
  */
 export function isLibraryConsole(): boolean {

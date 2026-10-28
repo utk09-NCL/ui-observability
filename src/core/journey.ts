@@ -29,7 +29,7 @@ import type { Diagnostics } from "./diagnostics";
 export interface JourneyOptions {
   /** Maximum open time of a journey, in milliseconds. After this time, the engine ends it. */
   maxAgeMs: number;
-  /** Whether closing the owning context ends the journey for everyone. */
+  /** True if the journey ends for all contexts when the owning context closes. */
   endOnOwnerClose: boolean;
   /** Query parameter checked at boot for a seeded journey token. */
   urlParam: string;
@@ -91,11 +91,12 @@ function readNumber(source: object, key: string): number | undefined {
 }
 
 /**
- * Parses and validates raw sessionStorage data into a Journey object.
+ * Parses and validates an unknown value into a Journey object. The value comes from
+ * sessionStorage or from a bus message of another realm.
  * @param value Unverified parsed JSON value.
  * @returns Validated Journey instance or null.
  */
-function journeyFromStorage(value: unknown): Journey | null {
+export function parseJourney(value: unknown): Journey | null {
   if (typeof value !== "object" || value === null) {
     return null;
   }
@@ -192,11 +193,12 @@ export class JourneyEngine {
   /**
    * Finds and adopts the initial journey. It checks the URL query, then sessionStorage,
    * then OpenFin customData.
-   * @returns Promise resolving when journey initialization completes.
+   * @returns Promise that resolves when journey initialization completes.
    */
   async bootstrap(): Promise<void> {
     const fromUrl = this.readUrlToken();
     if (fromUrl && this.adopt(fromUrl, "url")) {
+      this.removeUrlToken();
       return;
     }
 
@@ -284,7 +286,7 @@ export class JourneyEngine {
    * Validates and adopts a serialized journey token.
    * @param token Base64url journey token.
    * @param source Originating source description for diagnostics.
-   * @param broadcast Indicates whether to broadcast adoption to connected bus peers.
+   * @param broadcast True to send the adoption to the connected bus peers.
    * @returns True if the token was valid, unexpired, and adopted.
    */
   adopt(token: string, source: string, broadcast = false): boolean {
@@ -348,7 +350,7 @@ export class JourneyEngine {
       "The library could not parse the persisted journey.",
       () => JSON.parse(raw) as unknown,
     );
-    const journey = journeyFromStorage(parsed);
+    const journey = parseJourney(parsed);
     if (journey === null) {
       return false;
     }
@@ -473,10 +475,27 @@ export class JourneyEngine {
   }
 
   /**
+   * Removes the journey token from the address bar after the engine adopts it.
+   * If not, a copy or a bookmark of the link starts the same journey in another session.
+   */
+  private removeUrlToken(): void {
+    this.diagnostics.guard(
+      "platform.api_blocked",
+      "The library could not remove the journey token from the URL.",
+      () => {
+        const url = new URL(location.href);
+        url.searchParams.delete(this.options.urlParam);
+        // Keep history.state. A router stores its own state there.
+        history.replaceState(history.state, "", url.href);
+      },
+    );
+  }
+
+  /**
    * Reads the journey token from the customData of the OpenFin window options.
    * OPENFIN_OPTIONS_TIMEOUT_MS limits the wait. At the deadline, it reports
    * openfin.unavailable and returns no token. A window without a token gives the same result.
-   * @returns Promise resolving to token string or null.
+   * @returns Promise that resolves to token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
     const me = (globalThis as OpenFinGlobal).fin?.me;

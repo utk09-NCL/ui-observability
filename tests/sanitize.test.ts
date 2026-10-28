@@ -1,4 +1,5 @@
 // tests/sanitize.test.ts
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
 import {
@@ -34,8 +35,8 @@ describe("truncate", () => {
   });
 
   it("never cuts a surrogate pair in half", () => {
-    // "ab😀cd": the emoji occupies code units 2 and 3, so cutting at 3 would
-    // leave a lone high surrogate, which is not a character.
+    // In "ab😀cd", the emoji uses code units 2 and 3. A cut at 3 leaves a lone high surrogate. A
+    // lone surrogate is not a character.
     const cut = truncate("ab😀cd", 3);
 
     expect(cut).toBe("ab… [truncated 4 chars]");
@@ -223,6 +224,46 @@ describe("sanitize errors", () => {
     expect(out.stack).toBeUndefined();
     expect(out.cause).toBeUndefined();
     expect(out.message).toBe("bare");
+    expect(out.data).toBeUndefined();
+  });
+
+  it("keeps the own fields of an Error as data", () => {
+    // An assigned name is an own field. It stays out of data.
+    const err = Object.assign(new Error("failed"), {
+      name: "GatewayError",
+      code: "E42",
+      status: 503,
+    });
+
+    const out = asRecord(sanitize(err, limits, quiet));
+
+    expect(out.name).toBe("GatewayError");
+    expect(out.data).toEqual({ code: "E42", status: 503 });
+  });
+
+  it("keeps only the string, number and boolean own fields of an Error as data", () => {
+    const err = Object.assign(new Error("failed"), {
+      code: "E42",
+      retry: false,
+      config: { headers: { Authorization: "Bearer secret" } },
+    });
+    const objectsOnly = Object.assign(new Error("failed"), { request: {} });
+
+    expect(asRecord(sanitize(err, limits, quiet)).data).toEqual({ code: "E42", retry: false });
+    expect(asRecord(sanitize(objectsOnly, limits, quiet)).data).toBeUndefined();
+  });
+
+  it("flattens an Error from another realm, also as a cause", () => {
+    const foreign = runInNewContext('Object.assign(new TypeError("frame"), { code: "E1" })') as {
+      message: string;
+    };
+    const outer = new Error("outer", { cause: foreign });
+
+    const out = asRecord(sanitize(foreign, limits, quiet));
+    const cause = asRecord(asRecord(sanitize(outer, limits, quiet)).cause);
+
+    expect(out).toMatchObject({ name: "TypeError", message: "frame", data: { code: "E1" } });
+    expect(cause).toMatchObject({ name: "TypeError", message: "frame" });
   });
 
   it("never throws when a getter throws, and names the error type", () => {
@@ -274,10 +315,9 @@ describe("sanitize DOM nodes", () => {
   });
 
   it("falls back to NODE when a node-like object has no nodeName", () => {
-    // A node from another realm, or behind a proxy, can satisfy instanceof
-    // without carrying the properties the DOM says it has.
-    // A plain object is enough: `instanceof` looks up Symbol.hasInstance on
-    // whatever is on its right, so this needs no class to stand in for Node.
+    // A node from another realm, or behind a proxy, can pass instanceof without the properties of a
+    // DOM node. A plain object is sufficient. `instanceof` reads Symbol.hasInstance from the right
+    // operand. This test needs no class for Node.
     const foreignNode = { [Symbol.hasInstance]: () => true };
     vi.stubGlobal("Node", foreignNode);
 
@@ -327,8 +367,8 @@ describe("sanitize node budget", () => {
   };
 
   it("stops walking once the total node budget is spent", () => {
-    // The per-level limits cannot bound this: 4 keys at 4 levels is already
-    // 340 nodes, and the real limits are 128 keys at 6 levels.
+    // The limits for each level cannot limit this. 4 keys at 4 levels give 340 nodes. The real
+    // limits are 128 keys at 6 levels.
     const budget: SanitizeLimits = {
       ...limits,
       maxArrayLength: 10,
@@ -367,8 +407,8 @@ describe("sanitize node budget", () => {
 
     const { bytes } = sanitizeWithSize(wide(4, 12), budget, quiet);
 
-    // 12 keys at 4 levels is 22k nodes, and the shipped limits allow 128 at 6.
-    // Bounded, neither the walk nor the byte estimate runs away with it.
+    // 12 keys at 4 levels give 22k nodes. The shipped limits accept 128 keys at 6 levels. With the
+    // bound, the walk and the byte estimate stay small.
     expect(bytes).toBeLessThan(2000);
   });
 });

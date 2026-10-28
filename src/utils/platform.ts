@@ -37,9 +37,9 @@ export interface PlatformMetadata {
   openfinName?: string;
   /** Raw navigator user agent string or empty string if unavailable. */
   userAgent: string;
-  /** Indicates whether execution occurs inside any worker realm. */
+  /** True if the code runs in a worker realm. */
   isWorker: boolean;
-  /** Indicates whether this context is the top-level document rather than an iframe. */
+  /** True if this context is the top-level document rather than an iframe. */
   isTopLevelDocument: boolean;
 }
 
@@ -53,7 +53,7 @@ let cached: PlatformMetadata | null = null;
 type ScopeConstructor = abstract new (...args: never[]) => object;
 
 /**
- * Evaluates whether globalThis is an instance of a specified global scope constructor.
+ * Tests if globalThis is an instance of a specified global scope constructor.
  * @param g Global scope object.
  * @param name Scope constructor name to check.
  * @returns True if globalThis inherits from the named scope constructor.
@@ -126,7 +126,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
 }
 
 /**
- * Evaluates whether a user agent string represents an embedded mobile webview.
+ * Tests if a user agent string represents an embedded mobile webview.
  * @param ua User agent string.
  * @returns True if user agent matches Android or iOS webview signatures.
  */
@@ -140,7 +140,7 @@ function isWebView(ua: string): boolean {
 }
 
 /**
- * Determines whether the current window is the top-level browsing context.
+ * Tests if the current window is the top-level browsing context.
  * @param diagnostics Diagnostics reporter. It counts a blocked read of window.top.
  * @returns True if top-level, false if framed or inaccessible due to cross-origin boundaries.
  */

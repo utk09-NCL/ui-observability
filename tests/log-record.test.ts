@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { LEVEL_ORDER, SEVERITY_NUMBER } from "../src/constants";
 import { isLogRecord, type LogRecord, nowUnixNano } from "../src/models/log-record";
 
-// Kept here rather than imported: a test that reads the table it checks cannot
-// catch a wrong number in that table.
+// This file has its own copy of the table. It does not import it. A test that reads the table that
+// it checks cannot find a wrong number in that table.
 const LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"] as const;
 const OTEL_NUMBERS = {
   TRACE: 1,
@@ -26,7 +26,7 @@ const validRecord = (): LogRecord => ({
   resource: { "service.name": "checkout" },
 });
 
-/** A record with one field replaced by something a hostile or stale realm might send. */
+/** A record in which one field has a value from a hostile or old realm. */
 const withField = (key: string, value: unknown): unknown => ({
   ...validRecord(),
   [key]: value,
@@ -44,17 +44,16 @@ describe("nowUnixNano", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_755_000_000_123));
 
-    // Multiplying by 1e6 prints the right digits at millisecond resolution, so
-    // this is not a claim that the arithmetic is broken today. It is a claim
-    // that the value sits well outside the exactly-representable range and
-    // only survives because milliseconds leave 13 significant digits. That is
-    // a property of the clock, not of the format, and it is why the
-    // concatenation is worth keeping: a finer clock adds significant digits
-    // and the multiply then rounds with nothing to notice it by.
+    // A multiplication by 1e6 gives the correct digits at millisecond resolution. This test does
+    // not claim that the arithmetic fails today. It claims that the value is far outside the exact
+    // range of a Number. The value is correct only because milliseconds leave 13 significant
+    // digits. That is a property of the clock, not of the format. It is also the reason to keep the
+    // concatenation. A finer clock adds significant digits. The multiplication then rounds the
+    // value. Nothing shows the error.
     expect(Number.isSafeInteger(Date.now() * 1e6)).toBe(false);
 
-    // What genuinely does not survive a Number, and the reason this field is
-    // spelled as a string at every hop rather than only on the wire.
+    // This value does not survive a Number. That is why each hop keeps this field as a string, not
+    // only the wire format.
     const fullPrecision = "1755000000123456789";
     expect(String(Number(fullPrecision))).not.toBe(fullPrecision);
   });
@@ -104,9 +103,8 @@ describe("isLogRecord", () => {
     ["severityText is missing", withField("severityText", undefined)],
     ["severityText is a number", withField("severityText", 9)],
     ["timeUnixNano is missing", withField("timeUnixNano", undefined)],
-    // The realistic mistake is sending the timestamp as a number at all. At
-    // nanosecond magnitude a Number has already stopped being exact, which is
-    // the whole reason this field is spelled as a string.
+    // The real mistake is to send the timestamp as a number. At nanosecond size, a Number is not
+    // exact. That is the reason this field is a string.
     ["timeUnixNano is a number", withField("timeUnixNano", 1_755_000_000_123_000_000)],
     ["attributes is missing", withField("attributes", undefined)],
     ["attributes is null", withField("attributes", null)],
@@ -119,9 +117,9 @@ describe("isLogRecord", () => {
   });
 
   it("accepts a level it does not recognise, rather than dropping a record on a version skew", () => {
-    // Deliberate looseness. A newer version of this library could add a level;
-    // the record still carries its own severityNumber and still serializes, so
-    // passing it through beats silently deleting real records.
+    // This check is loose on purpose. A newer version of this library can add a level. The record
+    // still has its own severityNumber. It still serializes. It is better to pass it through than
+    // to delete real records with no message.
     expect(isLogRecord(withField("severityText", "NOTICE"))).toBe(true);
   });
 
@@ -130,8 +128,8 @@ describe("isLogRecord", () => {
 
     expect(isLogRecord(fromAnotherRealm)).toBe(true);
     if (isLogRecord(fromAnotherRealm)) {
-      // The point of the predicate: this line only compiles because the guard
-      // narrowed `unknown` to LogRecord.
+      // This is the purpose of the predicate. This line compiles only because the guard narrowed
+      // `unknown` to LogRecord.
       expect(fromAnotherRealm.attributes.orderId).toBe("A-1");
     }
   });

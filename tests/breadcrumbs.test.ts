@@ -16,10 +16,9 @@ describe("BreadcrumbBuffer", () => {
   });
 
   it("holds every crumb, still in order, the moment it fills exactly to capacity", () => {
-    // The push that lands on the last empty slot also wraps the write pointer
-    // back to zero, which is the same pointer value an untouched ring starts
-    // at. The `filled` flag is what keeps the two from being read as the
-    // same state, and this is the push where it first flips.
+    // The push to the last empty slot also moves the write pointer back to zero. An untouched ring
+    // starts at the same pointer value. The `filled` flag tells the two states apart. This push is
+    // the first one that sets it.
     const buffer = new BreadcrumbBuffer(3);
     buffer.push(crumb("A"));
     buffer.push(crumb("B"));
@@ -48,17 +47,17 @@ describe("BreadcrumbBuffer", () => {
   });
 
   it("clamps a zero capacity up to one instead of storing nothing or throwing", () => {
-    // The guide's version threw on this input. This constructor runs inside
-    // configure(), where a thrown error would take the host application down
-    // while it was setting logging up, so it clamps instead of rejecting.
+    // The version in the guide threw on this input. This constructor runs inside configure(). A
+    // throw there stops the host application during its logging setup. The constructor clamps the
+    // value. It does not reject it.
     expect(() => new BreadcrumbBuffer(0)).not.toThrow();
 
     const buffer = new BreadcrumbBuffer(0);
     buffer.push(crumb("A"));
-    // A true capacity of zero would make the write pointer advance modulo
-    // zero, which is NaN, so every crumb would land on index NaN and none
-    // would ever be read back. Proof that did not happen: this behaves as an
-    // ordinary capacity-one ring, one crumb in, that same crumb out.
+    // A true capacity of zero makes the write pointer advance modulo zero. The result is NaN. Each
+    // crumb then goes to index NaN. The ring gives no crumb back. This test proves that this does
+    // not occur. The ring acts as an ordinary ring of capacity one. One crumb goes in. The same
+    // crumb comes out.
     expect(messages(buffer)).toEqual(["A"]);
 
     buffer.push(crumb("B"));
@@ -74,8 +73,8 @@ describe("BreadcrumbBuffer", () => {
     buffer.clear();
 
     expect(messages(buffer)).toEqual([]);
-    // A push right after clear must not read as a continuation of the old
-    // trail: both the write pointer and the filled flag have to have reset.
+    // A push after clear() must not continue the old trail. The write pointer and the filled flag
+    // must both reset.
     buffer.push(crumb("D"));
     expect(messages(buffer)).toEqual(["D"]);
   });

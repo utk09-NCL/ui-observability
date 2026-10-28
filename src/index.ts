@@ -62,7 +62,7 @@ export function configure(config: Partial<ObservabilityConfig>): void {
  * Retrieves a cached logger for a namespace, or builds an uncached scoped logger.
  * @param namespace Application subsystem or module namespace.
  * @param options Scoped context merged into records emitted by this logger.
- * @returns Cached OneLogger instance, or a new one when options are given.
+ * @returns Cached OneLogger instance, or a new one when the call gives options.
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
   // Do not cache a scoped logger. The cache keeps its scopedContext for the life of the document.
@@ -135,6 +135,16 @@ export function error(message: string, err?: unknown, payload?: Record<string, u
 }
 
 /**
+ * Logs a fatal record with causal error and breadcrumbs.
+ * @param message Fatal error summary.
+ * @param err Caught error instance or reason.
+ * @param payload Optional contextual attributes.
+ */
+export function fatal(message: string, err?: unknown, payload?: Record<string, unknown>): void {
+  root().fatal(message, err, payload);
+}
+
+/**
  * Logs a discrete user interaction action.
  * @param name Action identifier.
  * @param payload Optional action attributes.
@@ -186,7 +196,7 @@ export function timeSync<T>(label: string, fn: () => T, attributes?: Record<stri
  * @param label Metric name prefix.
  * @param fn Asynchronous function to time.
  * @param attributes Optional contextual attributes.
- * @returns Promise resolving to the result of the timed function.
+ * @returns Promise that resolves to the result of the timed function.
  */
 export function timeAsync<T>(
   label: string,
@@ -292,7 +302,7 @@ export function flush(): Promise<void> {
 
 /**
  * Counts the batches waiting in storage for delivery.
- * @returns Promise resolving to the number of stored batches. A forwarder reports 0.
+ * @returns Promise that resolves to the number of stored batches. A forwarder reports 0.
  * A forwarder does not store batches.
  */
 export function getQueueDepth(): Promise<number> {
@@ -309,7 +319,7 @@ export function getDiagnosticCounters(): Record<string, number> {
 
 /**
  * Flushes pending records and stops all runtime subsystems.
- * @returns Promise resolving once shutdown completes.
+ * @returns Promise that resolves when shutdown completes.
  */
 export async function shutdown(): Promise<void> {
   await ObservabilityRuntime.current()?.destroy();

@@ -10,9 +10,10 @@ import { gzipSync } from "node:zlib";
 /**
  * Gzip budget of the main graph, in bytes. It is the 0.6.0 size (16,008 B) plus 10 percent,
  * raised to 18,200 B in 0.8.0 for the custom transport, the memory transport and remote sampling.
- * Raise it only in a reviewed commit.
+ * In 0.9.0 it is the 0.9.0 size (21,496 B) plus 10 percent, for the config checks and the
+ * hardening of capture, record building and delivery. Raise it only in a reviewed commit.
  */
-const SIZE_BUDGET_GZIP_BYTES = 18_200;
+const SIZE_BUDGET_GZIP_BYTES = 23_700;
 
 const DIST = new URL("../dist/", import.meta.url);
 const ENTRY = "index.js";

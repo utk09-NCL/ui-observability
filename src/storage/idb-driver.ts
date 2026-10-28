@@ -102,7 +102,7 @@ export class IdbDriver {
 
   /**
    * Sets the attempt count of a stored batch. It ignores an id that is not stored.
-   * A batch that was delivered and deleted must not come back. The get and the put use one
+   * A batch that the library delivered and deleted must not come back. The get and the put use one
    * transaction. With two transactions, a prune in another window can delete the batch
    * between them. The put then restores it.
    * @param id Batch identifier.

@@ -96,7 +96,7 @@ export class RemoteSampling {
 
   /**
    * Returns the lowest level that the library sends.
-   * @returns The remote level if it is lower than `minLevel`, or else `minLevel`.
+   * @returns The remote level if it is lower than `minLevel`. If not, `minLevel`.
    */
   minLevel(): LogLevel {
     const { minLevel } = this.config;

@@ -1,6 +1,6 @@
 // src/core/pipeline.ts
 //
-// This module buffers log and metric streams, makes batches and delivers them.
+// This module buffers the log and metric streams. It makes batches. It delivers them.
 //
 // Each stream has its own buffer and flush timer. Thus the exit flush can take each
 // record that is not yet at the transport.
@@ -54,6 +54,16 @@ export const STREAM_OPTIONS: Record<StreamName, StreamOptions> = {
   logs: { flushIntervalMs: LOG_FLUSH_INTERVAL_MS, batchSize: LOG_BATCH_SIZE },
   metrics: { flushIntervalMs: METRIC_FLUSH_INTERVAL_MS, batchSize: METRIC_BATCH_SIZE },
 };
+
+/** A closed batch in the queue or in flight. */
+interface Pending {
+  /** Batch to deliver. */
+  batch: LogBatch;
+  /** Resolves when the dispatch of the batch ends, or on destroy. */
+  done: Promise<void>;
+  /** Resolves `done`. */
+  resolve: () => void;
+}
 
 /** One stream's pending records and the timer that closes a partial batch. */
 class RecordStream {
@@ -131,7 +141,7 @@ class RecordStream {
   }
 }
 
-/** Buffers log and metric streams, makes batches and sends them over HTTP. */
+/** Buffers the log and metric streams. It makes batches. It sends them over HTTP. */
 export class LogPipeline {
   /** Buffer instances for logs and metrics streams. */
   private readonly streams: Record<StreamName, RecordStream>;
@@ -140,18 +150,21 @@ export class LogPipeline {
   private readonly unconfirmed = new Map<string, LogBatch>();
 
   /** Closed batches waiting for a free dispatch slot. */
-  private readonly queue: LogBatch[] = [];
+  private readonly queue: Pending[] = [];
+
+  /** Each batch in the queue or in flight. flushPending waits for them. destroy() resolves them. */
+  private readonly open = new Set<Pending>();
 
   /** Ceiling on the ERROR and FATAL records that bypass sampling. */
   private readonly ceiling = new ErrorCeiling();
 
-  /** Dispatches currently in flight, capped at MAX_CONCURRENT_REQUESTS. */
+  /** Number of dispatches in flight. MAX_CONCURRENT_REQUESTS is the limit. */
   private inFlight = 0;
 
   /** It is true when a pump is in the queue. One microtask then drains a burst. */
   private pumpScheduled = false;
 
-  /** Indicates whether the pipeline has been destroyed. */
+  /** True after destroy() stops the pipeline. */
   private stopped = false;
 
   /**
@@ -196,7 +209,7 @@ export class LogPipeline {
    * An in-flight batch has its own ID and its send is not complete. If this method
    * takes it, the pipeline sends each record again under a new ID. The server cannot
    * deduplicate that ID.
-   * @returns Combined LogBatch or null if no records are buffered.
+   * @returns Combined LogBatch, or null if the buffers hold no records.
    */
   drainPending(): LogBatch | null {
     return this.toBatch([...this.streams.metrics.take(), ...this.streams.logs.take()]);
@@ -216,18 +229,37 @@ export class LogPipeline {
     return this.toBatch([...inFlight, ...this.streams.metrics.take(), ...this.streams.logs.take()]);
   }
 
+  /**
+   * Sends the buffered records through the normal dispatch path. Then it waits for each
+   * batch in the queue and in flight. The throttle check and the concurrency limit apply.
+   * A direct send goes around both.
+   * @returns Promise that resolves when the pipeline sends or stores each batch, or on destroy.
+   */
+  async flushPending(): Promise<void> {
+    this.enqueue(this.stopped ? null : this.drainPending());
+
+    // A batch in the queue counts too. If not, the exit flush sends it again under a new id.
+    await Promise.all([...this.open].map((pending) => pending.done));
+  }
+
   /** Stops the flush timers and refuses further records. */
   destroy(): void {
     this.stopped = true;
     this.streams.logs.stop();
     this.streams.metrics.stop();
     this.queue.length = 0;
+
+    // destroy() drops each queued batch. Release each flushPending that waits for one.
+    for (const pending of this.open) {
+      pending.resolve();
+    }
+    this.open.clear();
   }
 
   /**
    * Wraps drained records in a batch.
    * @param records Records taken from the buffers, in delivery order.
-   * @returns New LogBatch, or null when nothing was drained.
+   * @returns New LogBatch, or null when the drain takes nothing.
    */
   private toBatch(records: LogRecord[]): LogBatch | null {
     if (records.length === 0) {
@@ -273,25 +305,28 @@ export class LogPipeline {
    * @param stream Stream buffer to drain.
    */
   private claim(stream: RecordStream): void {
-    const records = stream.take();
-
-    const batch: LogBatch = {
-      id: newId(this.diagnostics),
-      records,
-      createdAt: Date.now(),
-      attempts: 0,
-    };
-    this.unconfirmed.set(batch.id, batch);
-    this.enqueue(batch);
+    this.enqueue(this.toBatch(stream.take()));
   }
 
   /**
    * Queues a batch and schedules the pump on a microtask. An inline dispatch starts
    * a fetch inside the log call of the application.
-   * @param batch Batch ready for delivery.
+   * @param batch Batch ready for delivery, or null when the drain found no records.
    */
-  private enqueue(batch: LogBatch): void {
-    this.queue.push(batch);
+  private enqueue(batch: LogBatch | null): void {
+    if (!batch) {
+      return;
+    }
+
+    let resolve!: () => void;
+    const done = new Promise<void>((settle) => {
+      resolve = settle;
+    });
+    const pending: Pending = { batch, done, resolve };
+
+    this.unconfirmed.set(batch.id, batch);
+    this.open.add(pending);
+    this.queue.push(pending);
 
     if (this.pumpScheduled) {
       return;
@@ -307,21 +342,23 @@ export class LogPipeline {
   /** Starts queued dispatches up to the concurrency limit. */
   private pump(): void {
     while (this.inFlight < MAX_CONCURRENT_REQUESTS) {
-      const batch = this.queue.shift();
-      if (!batch) {
+      const pending = this.queue.shift();
+      if (!pending) {
         return;
       }
 
       this.inFlight++;
-      void this.run(batch);
+      void this.run(pending);
     }
   }
 
   /**
-   * Delivers one batch and frees its concurrency slot.
-   * @param batch Batch to deliver.
+   * Delivers one batch. It then frees the concurrency slot. It resolves the promise of the batch.
+   * @param pending Batch to deliver.
    */
-  private async run(batch: LogBatch): Promise<void> {
+  private async run(pending: Pending): Promise<void> {
+    const { batch } = pending;
+
     try {
       await this.dispatch(batch);
     } catch (error) {
@@ -333,6 +370,8 @@ export class LogPipeline {
       );
     } finally {
       this.inFlight--;
+      this.open.delete(pending);
+      pending.resolve();
       this.pump();
     }
   }
@@ -363,7 +402,11 @@ export class LogPipeline {
       }
 
       try {
-        await this.transport.send(batch);
+        // A keepalive request continues after unload. The exit flush must not send it again.
+        // A failed send still goes to the retry engine from this batch reference.
+        await this.transport.send(batch, () => {
+          this.unconfirmed.delete(batch.id);
+        });
       } catch (error) {
         // Increment the attempt count before the store. At 0, the batch exceeds
         // STORAGE_LIMITS.maxAttempts by one. The attempt headers then report one too few.
@@ -397,7 +440,7 @@ export class LogPipeline {
   }
 
   /**
-   * Stores an undelivered batch and triggers the retry engine. A deadline limits the
+   * Stores an undelivered batch. Then it starts the retry engine. A deadline limits the
    * wait. A storage call that does not settle holds this dispatch slot. Two such calls
    * stop the pipeline.
    * @param batch Batch to persist.

@@ -10,7 +10,7 @@ import { ENCODING_GZIP } from "../constants";
  * Compresses a string to gzip bytes with CompressionStream. The result is a
  * Uint8Array on a non-shared ArrayBuffer. fetch accepts this result as BodyInit.
  * @param text Raw serialized payload to compress.
- * @returns Promise resolving to compressed Uint8Array, or null if CompressionStream is unsupported.
+ * @returns Promise that resolves to the gzip bytes, or null without CompressionStream.
  */
 export async function gzip(text: string): Promise<Uint8Array<ArrayBuffer> | null> {
   const CS = (globalThis as { CompressionStream?: typeof CompressionStream }).CompressionStream;

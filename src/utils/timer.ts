@@ -15,28 +15,28 @@ function elapsed(startedAt: number): number {
 }
 
 /**
- * Logs a successful operation duration histogram metric.
+ * Logs the operation duration as a histogram metric, for each outcome.
  * @param logger Target telemetry logger.
  * @param label Metric name prefix.
- * @param startedAt Performance timestamp recorded at operation start.
+ * @param duration Elapsed duration in milliseconds.
  * @param status Outcome status string.
  * @param attributes Optional contextual attributes.
  */
 function finish(
   logger: CaptureLogger,
   label: string,
-  startedAt: number,
+  duration: number,
   status: string,
   attributes?: Record<string, unknown>,
 ): void {
-  logger.logMetric(`${label}.duration`, elapsed(startedAt), "ms", "histogram", {
+  logger.logMetric(`${label}.duration`, duration, "ms", "histogram", {
     status,
     ...attributes,
   });
 }
 
 /**
- * Logs an operation failure with elapsed duration attributes.
+ * Logs an operation failure and its FAILURE duration histogram.
  * @param logger Target telemetry logger.
  * @param label Operation label.
  * @param startedAt Performance timestamp recorded at operation start.
@@ -50,11 +50,14 @@ function fail(
   error: unknown,
   attributes?: Record<string, unknown>,
 ): void {
+  // Read the duration one time. The error record and the metric then give the same value.
+  const duration = elapsed(startedAt);
   logger.error(`${label} failed`, error, {
-    "action.duration_ms": elapsed(startedAt),
+    "action.duration_ms": duration,
     status: "FAILURE",
     ...attributes,
   });
+  finish(logger, label, duration, "FAILURE", attributes);
 }
 
 /**
@@ -74,7 +77,7 @@ export function timeSync<T>(
   const startedAt = performance.now();
   try {
     const result = fn();
-    finish(logger, label, startedAt, "SUCCESS", attributes);
+    finish(logger, label, elapsed(startedAt), "SUCCESS", attributes);
     return result;
   } catch (error) {
     // Throw the error again. The caller keeps its control flow.
@@ -89,7 +92,7 @@ export function timeSync<T>(
  * @param label Metric name prefix.
  * @param fn Asynchronous function to execute.
  * @param attributes Optional contextual attributes.
- * @returns Promise resolving to the result of the wrapped function.
+ * @returns Promise that resolves to the result of the wrapped function.
  */
 export async function timeAsync<T>(
   logger: CaptureLogger,
@@ -100,7 +103,7 @@ export async function timeAsync<T>(
   const startedAt = performance.now();
   try {
     const result = await fn();
-    finish(logger, label, startedAt, "SUCCESS", attributes);
+    finish(logger, label, elapsed(startedAt), "SUCCESS", attributes);
     return result;
   } catch (error) {
     // Throw the error again. The caller keeps its control flow.

@@ -71,6 +71,16 @@ describe("otlpSerializer", () => {
     expect(byKey.name).toEqual({ stringValue: "x" });
   });
 
+  it("encodes an integer above MAX_SAFE_INTEGER as a double", () => {
+    // 1e21 prints as "1e+21". That text is not a valid int64.
+    const attributes = { unsafe: 2 ** 53 + 2, huge: 1e21 };
+
+    const byKey = attrs(record({ attributes }));
+
+    expect(byKey.unsafe).toEqual({ doubleValue: 2 ** 53 + 2 });
+    expect(byKey.huge).toEqual({ doubleValue: 1e21 });
+  });
+
   it("encodes a bigint rather than letting JSON.stringify throw on it", () => {
     // Past exact double range, so the digits also prove it never went through Number.
     const attributes = { big: 9007199254740993n };
@@ -96,7 +106,7 @@ describe("otlpSerializer", () => {
 
     const byKey = attrs(record({ attributes }));
 
-    // Null is dropped inside an array too: OTLP has no field for it.
+    // The serializer also drops null inside an array. OTLP has no field for it.
     expect(byKey.tags).toEqual({ arrayValue: { values: kept } });
     expect(byKey.leg.kvlistValue.values).toContainEqual({
       key: "side",
@@ -132,8 +142,8 @@ describe("ecsSerializer", () => {
   it("converts the OTLP nanosecond string into an ISO timestamp", () => {
     expect(ecs(record())["@timestamp"]).toBe(new Date(1755543600123).toISOString());
 
-    // A record forwarded over the bus has only passed a shape check. BigInt throws
-    // on a non-numeric string, which would lose every record in the batch.
+    // A record that the bus forwards passed only a shape check. BigInt throws on a non-numeric
+    // string. That throw loses each record in the batch.
     const at = Date.parse(ecs(record({ timeUnixNano: "not-a-number" }))["@timestamp"]);
     expect(Number.isNaN(at)).toBe(false);
   });
@@ -185,7 +195,7 @@ describe("ecsSerializer", () => {
   });
 
   it("keeps an array of scalars as one multi-valued label", () => {
-    // Three elements: the third proves the second value did not replace the array.
+    // Three elements. The third proves that the second value did not replace the array.
     const attributes = { tags: ["a", "b", "c"] };
 
     expect(ecs(record({ attributes })).labels.tags).toEqual(["a", "b", "c"]);
@@ -250,10 +260,10 @@ describe("splitBatch", () => {
 
     expect(first.records).toHaveLength(2);
     expect(second.records).toHaveLength(3);
-    // Fresh ids: reusing "original" makes the server drop the second half as a duplicate.
+    // Use new ids. With the id "original" again, the server drops the second half as a duplicate.
     expect(first.id).not.toBe("original");
     expect(second.id).not.toBe(first.id);
-    // Age and attempts carry over: a split is not a second chance.
+    // The age and the attempts stay. A split does not give a second chance.
     expect(first.createdAt).toBe(1000);
     expect(first.attempts).toBe(2);
   });

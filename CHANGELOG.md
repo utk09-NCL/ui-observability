@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-28
+
+### Breaking changes - v0.9.0
+
+- The level methods (`trace`, `debug`, `info`, `warn`, `error`, `fatal`) give records with `log.type: "log"`. It was `"system"`. `"system"` is now for the records of the library itself.
+- A cross-origin child frame forwards its records only to a parent on an origin in its `bus.trustedOrigins`, or on its own origin. It posts to that origin, not to `"*"`. With no trusted parent, the frame sends its own records at once.
+- A sandboxed frame without `allow-same-origin` sends its own records. `bus.untrusted_origin` tells you to set `bus.mode: "sender"` in the frame. Add `allow-same-origin` only for content that you trust.
+- `bus.trustedOrigins` does not accept `"null"`. One `"null"` entry trusts each sandboxed and `data:` document, for example a frame in an ad. Set `bus.mode: "sender"` in your sandboxed frame.
+- `journey.scope` sets which contexts adopt a journey. The default `"auto"` is `"tab"` in a browser. A journey no longer goes to other tabs through the broadcast link. Set `"origin"` for the previous behavior. OpenFin and OpenFin Core Web keep `"origin"`.
+- `minLevel` no longer drops action and metric records. It applies to log, event and system records.
+- A string in `capture.propagateTraceHeaderTo` is an origin. It matches a request to that origin only. Before, it matched a substring of the URL. A string that is not a URL, for example `"/api/"`, reports `config.invalid`. To match a path, use a RegExp that starts with `^`.
+- If the `redact` hook throws or returns a value that is not a record, the library drops the record. It counts the drop as `record.dropped_by_redact`. Before, it sent the record without redaction.
+- This release removes `Sequence.reset()`.
+
+### Added - v0.9.0
+
+- `fatal(message, error?, payload?)` is a top-level function.
+- `configure()` checks each key: `enabled`, `minLevel`, `console`, `compression`, `credentials`, `headers`, `storage`, `identity`, each `bus`, `journey`, `capture` and `sampling` key. A value of the wrong type reports `config.invalid`. The value in force stays. Level names can have any case. Each `bus.trustedOrigins` entry becomes its origin.
+- `error.data` holds the own string, number and boolean fields of the reason, for example `code`. An object field, for example the `config` of an `AxiosError`, stays out. It holds credentials and request bodies.
+- `timeSync` and `timeAsync` also emit the duration histogram when the function throws or the promise rejects, with `status: "FAILURE"`. The error record and the histogram give the same duration.
+- If a copy of another version owns the page runtime, this copy runs console-only. It installs no capture. It reports `runtime.version_mismatch`. A later `configure()` keeps it console-only. Its log calls and its `shutdown()` do not touch the runtime of the other version.
+- New diagnostic codes: `runtime.version_mismatch` and `record.dropped_no_destination`. The library now also reports `transport.timeout`. It counts `record.dropped_malformed` and `record.sanitize_failed` in more places.
+
+### Changed - v0.9.0
+
+- When the document becomes hidden, the library runs a normal flush with the headers, gzip and retry. On `pagehide`, `freeze` and OpenFin close, it uses a keepalive fetch with the last headers when `headers` is set. It uses `sendBeacon` only with no custom headers.
+- While the document is hidden, a send of 60 KB or less uses `keepalive`. A mobile OS can stop a hidden page with no `pagehide`. The exit flush does not send that batch again.
+- Until a `headers` function gives its first result, the exit flush puts the batch in the emergency queue. The next page load sends it with the headers.
+- The exit flush sends the cached result of a `headers` function only while that function and the endpoint are in force.
+- With a `redact` hook, a record that `redact` drops prints no console line. Before, the console printed its message.
+- `shutdown()` runs a normal flush before the exit flush.
+- After a 401 or 403, the library calls a `headers` function one more time. It then sends the batch one more time. A second 401 or 403 drops the batch.
+- `flush()` waits for the batches in the queue and in flight. A flush while the server throttles stores the batch for the retry engine. It does not send around the throttle and the concurrency limit.
+- A later `configure()` reinstalls the capture modules only when the `capture` section changes.
+- A capture module restores a host function, for example `fetch` or `history.pushState`, only if the function still holds the wrapper of the library. A wrapper that another script added later stays in place.
+- The library waits 60 s at most after a `Retry-After` answer.
+- The library removes the journey token from the URL after it adopts the token.
+
+### Fixed - v0.9.0
+
+- The build works on Windows. `npm run verify` runs lint after the build.
+- `headers()` and the gzip encoding run under the 15 s request deadline. A `headers()` that never settles no longer holds a send slot.
+- The emergency queue import runs after the sender starts. It no longer delays startup. It no longer drops records from the boot buffer.
+- OTLP sends an integer above `Number.MAX_SAFE_INTEGER` as `doubleValue`, not as a broken `intValue`.
+- The fetch capture no longer throws on an input with a text form only, on a Request from another realm, or on an input it cannot read. The XHR capture no longer throws on a method that is not a string. The capture never changes the result of the call.
+- The XHR capture sends `traceparent` to the targets in `propagateTraceHeaderTo`.
+- An allowlisted Request from another realm keeps its own headers. The library sends it without `traceparent`.
+- An Error from another realm keeps its name, message and stack in the error capture, the console capture, `log.error()`, `console.args` and `cause`.
+- A failed web-vitals import gets a new attempt when a later `configure()` changes the `capture` section.
+- An oversized error record drops the caller attributes first. It keeps each `error.*` field, then the breadcrumbs if they fit.
+- A breadcrumb holds the body after `redact`.
+- The library drops a record that `redact` breaks in place, or a `redact` result with an unknown `severityText`. It counts the drop as `record.dropped_malformed`. The library sets `severityNumber` from the `severityText` that `redact` returns.
+- A payload or a reason with a throwing getter or Proxy trap no longer throws out of a log call. The record gets `uiobs.sanitize_failed: true`.
+- `logMetric` drops `NaN` and `Infinity`. It counts the drop as `record.dropped_malformed`.
+- The bus checks the shape of each journey message. A journey answer holds the address of the context that asked. Only that context adopts it.
+- A sandboxed page without `allow-same-origin` drops each message from a child frame with the origin `"null"`. Before, it trusted those frames as its own origin.
+- The `bus.untrusted_origin` detail keeps only the first 32 characters of the message type.
+- An oversized record keeps `page.url`, `journey.id` and `journey.name` as `redact` left them. Before, the size limit wrote the values from before `redact` back.
+
 ## [0.8.0] - 2026-10-14
 
 ### Added - v0.8.0
