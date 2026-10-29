@@ -4,6 +4,7 @@
 // localStorage, memory, and a fallback that does nothing.
 
 import type { LogBatch } from "./batch";
+import type { RetentionOptions } from "./config";
 
 /** Persistent batch storage interface. All methods must resolve and never throw. */
 export interface StorageAdapter {
@@ -62,18 +63,38 @@ export interface StorageLimits {
   maxAttempts: number;
 }
 
+/**
+ * Gives the storage limits of a retention setting. "until-delivered" has no age limit and no
+ * attempt limit. The batch cap still applies.
+ * @param retention Retention setting from the config.
+ * @returns The limits for the storage adapters and the retry engine.
+ */
+export function storageLimits(retention: RetentionOptions): StorageLimits {
+  const { maxBatches } = retention;
+
+  if (retention.mode === "until-delivered") {
+    return { maxBatches, maxAgeMs: Infinity, maxAttempts: Infinity };
+  }
+
+  return { maxBatches, maxAgeMs: retention.maxAgeMs, maxAttempts: retention.maxAttempts };
+}
+
 /** Metrics for batches and records dropped during storage pruning. */
 export interface PruneResult {
   /** Total batches dropped. */
   batches: number;
   /** Total records dropped within evicted batches. */
   records: number;
-  /** Eviction reason for the prune. If more than one rule applies, this is the last rule. */
-  reason: "expired" | "over_capacity" | "quota";
+  /**
+   * Cause of the drop. If more than one rule applies, this is the last rule. "not_stored" means
+   * that storage did not keep a batch after a failed send.
+   */
+  reason: "expired" | "over_capacity" | "quota" | "not_stored";
 }
 
 /**
  * Callback invoked when dropped records create a telemetry gap.
  * @param result Summary of evicted data.
+ * @param dropped The dropped batches. A corrupt entry has no batch. The list then has none for it.
  */
-export type GapReporter = (result: PruneResult) => void;
+export type GapReporter = (result: PruneResult, dropped: readonly LogBatch[]) => void;

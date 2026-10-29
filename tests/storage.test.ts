@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BATCH_STORAGE_KEY_PREFIX, INDEXEDDB_SCHEMA_VERSION } from "../src/constants";
+import {
+  BATCH_KEY_TIME_WIDTH,
+  BATCH_STORAGE_KEY_PREFIX,
+  INDEXEDDB_SCHEMA_VERSION,
+} from "../src/constants";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
-import type { PruneResult } from "../src/models/storage";
+import type { GapReporter, PruneResult } from "../src/models/storage";
 import { createStorage } from "../src/storage/factory";
 import { IdbDriver } from "../src/storage/idb-driver";
 import { LocalStorageStorage } from "../src/storage/local-storage";
@@ -17,6 +21,26 @@ const batch = (id: string, createdAt = Date.now(), records = 0): LogBatch => ({
   attempts: 0,
   records: Array.from({ length: records }, () => ({}) as never),
 });
+
+/** A batch with one action record. Storage evicts it after each batch without an action. */
+const actionBatch = (id: string, createdAt = Date.now()): LogBatch => ({
+  id,
+  createdAt,
+  attempts: 0,
+  records: [{ body: "submit order", attributes: { "log.type": "action" } } as never],
+});
+
+/**
+ * Collects the ids of the batches that a storage adapter drops.
+ * @returns The ids and the gap reporter that collects them.
+ */
+const droppedIds = () => {
+  const ids: string[] = [];
+  const onGap = (_result: PruneResult, batches: readonly LogBatch[]): void => {
+    ids.push(...batches.map((one) => one.id));
+  };
+  return { ids, onGap };
+};
 
 const quiet = () => new Diagnostics(vi.fn(), 0);
 
@@ -59,6 +83,16 @@ describe("storage factory", () => {
     expect(await adapter.prune()).toMatchObject({ batches: 0, records: 0 });
     await adapter.clear();
     await adapter.close();
+  });
+
+  it("gives each batch that strategy none does not keep to the gap handler", async () => {
+    const onGap = vi.fn<GapReporter>();
+    const adapter = await createStorage("none", "db", limits, quiet(), onGap);
+    const lost = batch("a", Date.now(), 2);
+
+    await adapter.save(lost);
+
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 2, reason: "not_stored" }, [lost]);
   });
 
   it("uses IndexedDB when it is there, and never loads the chunk when it is not asked to", async () => {
@@ -206,6 +240,35 @@ describe("MemoryStorage", () => {
     expect(gaps).toEqual([{ batches: 1, records: 2, reason: "over_capacity" }]);
   });
 
+  it("evicts a batch without an action before an older batch with an action", async () => {
+    const { ids, onGap } = droppedIds();
+    const s = new MemoryStorage(limits, onGap);
+    await s.save(actionBatch("audit"));
+    for (const id of ["a", "b", "c"]) {
+      await s.save(batch(id));
+    }
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["audit", "b", "c"]);
+    expect(ids).toEqual(["a"]);
+  });
+
+  it("reports the expired batches and the evicted batches with their own reasons", async () => {
+    const gaps: PruneResult[] = [];
+    const s = new MemoryStorage(limits, (result) => gaps.push(result));
+    // save() prunes. A direct write puts both rules in one prune.
+    s["batches"].push(
+      batch("old", Date.now() - 5000, 1),
+      ...["a", "b", "c", "d"].map((id) => batch(id, Date.now(), 2)),
+    );
+
+    await s.prune();
+
+    expect(gaps).toEqual([
+      { batches: 1, records: 1, reason: "expired" },
+      { batches: 1, records: 2, reason: "over_capacity" },
+    ]);
+  });
+
   it("persists the attempt count so a poison batch can be given up on", async () => {
     const s = new MemoryStorage(limits);
     await s.save(batch("a"));
@@ -237,8 +300,60 @@ describe("MemoryStorage", () => {
 
 describe("LocalStorageStorage", () => {
   const lsLimits = { maxBatches: 3, maxAgeMs: 60_000, maxAttempts: 5 };
-  const make = (onGap?: (result: PruneResult) => void) =>
-    new LocalStorageStorage(lsLimits, quiet(), onGap);
+  const make = (onGap?: GapReporter) => new LocalStorageStorage(lsLimits, quiet(), onGap);
+
+  /**
+   * Writes an entry with the key format of the adapter. save() prunes. This write does not.
+   * @param stored Batch to write.
+   */
+  const put = (stored: LogBatch): void => {
+    const at = String(stored.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
+    localStorage.setItem(`${BATCH_STORAGE_KEY_PREFIX}${at}.${stored.id}`, JSON.stringify(stored));
+  };
+
+  it("reports the expired batches and the evicted batches with their own reasons", async () => {
+    const gaps: PruneResult[] = [];
+    const s = make((result) => gaps.push(result));
+    const now = Date.now();
+    put(batch("old", now - 120_000, 1));
+    for (const id of ["a", "b", "c", "d"]) {
+      put(batch(id, now, 2));
+    }
+
+    await s.prune();
+
+    expect(gaps).toEqual([
+      { batches: 1, records: 1, reason: "expired" },
+      { batches: 1, records: 2, reason: "over_capacity" },
+    ]);
+  });
+
+  it("reads only the batch that it evicts at the cap", async () => {
+    useFakeLocalStorage();
+    const s = make();
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      await s.save(batch(`b${String(i)}`, now - (3 - i) * 1000, 2));
+    }
+
+    const getItem = vi.spyOn(localStorage, "getItem");
+    await s.save(batch("new", now, 2));
+
+    // A parse of each stored batch at each save blocks the main thread during an outage.
+    expect(getItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts at the cap when a stored batch holds a null record", async () => {
+    const { ids, onGap } = droppedIds();
+    const s = make(onGap);
+    const now = Date.now();
+    put({ ...batch("corrupt", now - 3000), records: [null as never] });
+    put(batch("a", now - 2000));
+    put(batch("b", now - 1000));
+
+    await expect(s.save(batch("c", now))).resolves.toBeUndefined();
+    expect(ids).toEqual(["corrupt"]);
+  });
 
   it("returns oldest first even though the ids are random", async () => {
     // This is the regression test for the key format. With only the batch id as the key, the sort
@@ -397,6 +512,26 @@ describe("LocalStorageStorage", () => {
     expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 4, reason: "quota" });
   });
 
+  it("evicts a batch without an action first, for capacity and for quota", async () => {
+    const blocked = useFakeLocalStorage();
+    const { ids, onGap } = droppedIds();
+    const s = make(onGap);
+    const now = Date.now();
+    await s.save(actionBatch("audit", now - 5000));
+    for (let i = 0; i < 3; i++) {
+      await s.save(batch(`b${String(i)}`, now - (4 - i) * 1000, 2));
+    }
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["audit", "b1", "b2"]);
+
+    blocked.add("setItem");
+    await s.save(batch("overflow", now, 4));
+    blocked.delete("setItem");
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["audit", "b2"]);
+    expect(ids).toEqual(["b0", "b1", "overflow"]);
+  });
+
   it("retries the write after evicting, so the batch that hit the ceiling survives", async () => {
     useFakeLocalStorage();
     const gaps: PruneResult[] = [];
@@ -478,7 +613,7 @@ describe("IndexedDbStorage", () => {
   const make = async (
     over: Partial<typeof idbLimits> = {},
     handler = vi.fn(),
-    onGap?: (result: PruneResult) => void,
+    onGap?: GapReporter,
   ) => {
     const { IndexedDbStorage } = await import("../src/storage/indexeddb-storage");
     return {
@@ -538,6 +673,54 @@ describe("IndexedDbStorage", () => {
     await storage.close();
   });
 
+  it("evicts at the cap without a read of the full store", async () => {
+    const { storage } = await make();
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      await storage.save(batch(`b${String(i)}`, now - (3 - i) * 1000));
+    }
+
+    const takeOldest = vi.spyOn(storage["db"], "takeOldest");
+    await storage.save(batch("new", now));
+
+    // A read of each stored batch at each save blocks the main thread during an outage.
+    expect(takeOldest).not.toHaveBeenCalled();
+    expect((await storage.take(10)).map((b) => b.id)).toEqual(["b1", "b2", "new"]);
+    await storage.close();
+  });
+
+  it("evicts the oldest action when each stored batch holds an action", async () => {
+    const { ids, onGap } = droppedIds();
+    const { storage } = await make({}, vi.fn(), onGap);
+    const now = Date.now();
+    for (let i = 0; i < 4; i++) {
+      await storage.save(actionBatch(`a${String(i)}`, now - (4 - i) * 1000));
+    }
+
+    expect(ids).toEqual(["a0"]);
+    expect((await storage.take(10)).map((b) => b.id)).toEqual(["a1", "a2", "a3"]);
+    await storage.close();
+  });
+
+  it("reports the expired batches and the evicted batches with their own reasons", async () => {
+    const gaps: PruneResult[] = [];
+    const { storage } = await make({}, vi.fn(), (result) => gaps.push(result));
+    const now = Date.now();
+    // save() prunes. A direct write puts both rules in one prune.
+    await storage["db"].put(batch("old", now - 120_000, 1));
+    for (let i = 0; i < 4; i++) {
+      await storage["db"].put(batch(`b${String(i)}`, now - (4 - i) * 1000, 2));
+    }
+
+    await storage.prune();
+
+    expect(gaps).toEqual([
+      { batches: 1, records: 1, reason: "expired" },
+      { batches: 1, records: 2, reason: "over_capacity" },
+    ]);
+    await storage.close();
+  });
+
   it("evicts and then retries the write when the disk is full", async () => {
     const { storage, handler } = await make();
     const now = Date.now();
@@ -556,6 +739,41 @@ describe("IndexedDbStorage", () => {
     // The eviction freed room for this batch, so the batch has to be in it.
     expect((await storage.take(10)).map((b) => b.id)).toContain("overflow");
     expect(await storage.count()).toBe(3);
+    await storage.close();
+  });
+
+  it("evicts a batch without an action first, for capacity and for quota", async () => {
+    const { ids, onGap } = droppedIds();
+    const { storage } = await make({}, vi.fn(), onGap);
+    const now = Date.now();
+    await storage.save(actionBatch("audit", now - 5000));
+    for (let i = 0; i < 3; i++) {
+      await storage.save(batch(`b${String(i)}`, now - (4 - i) * 1000));
+    }
+
+    expect((await storage.take(10)).map((b) => b.id)).toEqual(["audit", "b1", "b2"]);
+
+    vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
+      Object.assign(new Error("full"), { name: "QuotaExceededError" }),
+    );
+    await storage.save(batch("overflow", now));
+
+    expect((await storage.take(10)).map((b) => b.id)).toEqual(["audit", "b2", "overflow"]);
+    expect(ids).toEqual(["b0", "b1"]);
+    await storage.close();
+  });
+
+  it("reports no eviction when the disk is full and the store is empty", async () => {
+    const { storage, handler } = await make();
+    // Other code on the origin can fill the quota. The store then has nothing to evict.
+    vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
+      Object.assign(new Error("full"), { name: "QuotaExceededError" }),
+    );
+
+    await storage.save(batch("b1"));
+
+    expect(handler).not.toHaveBeenCalledWith(expect.objectContaining({ code: "storage.evicted" }));
+    expect(await storage.count()).toBe(1);
     await storage.close();
   });
 
@@ -580,7 +798,7 @@ describe("IndexedDbStorage", () => {
     vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
-    vi.spyOn(storage["db"], "takeOldest").mockImplementation(() => {
+    vi.spyOn(storage["db"], "walkOldest").mockImplementation(() => {
       throw new Error("database is closing");
     });
 
@@ -603,6 +821,21 @@ describe("IndexedDbStorage", () => {
     expect(handler).not.toHaveBeenCalledWith(
       expect.objectContaining({ code: "storage.quota_exceeded" }),
     );
+    await storage.close();
+  });
+
+  it("gives a batch that a write error loses to the gap handler", async () => {
+    const onGap = vi.fn<GapReporter>();
+    const { storage } = await make({}, vi.fn(), onGap);
+    // Safari rejects put() with UnknownError after it loses the IndexedDB server.
+    vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
+      Object.assign(new Error("lost"), { name: "UnknownError" }),
+    );
+    const lost = batch("b1", Date.now(), 2);
+
+    await storage.save(lost);
+
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 2, reason: "not_stored" }, [lost]);
     await storage.close();
   });
 
@@ -702,6 +935,18 @@ describe("IdbDriver", () => {
     );
 
     await expect(driver.count()).rejects.toThrow("database is closing");
+    await driver.close();
+  });
+
+  it("rejects with the request error when a walk fails", async () => {
+    const driver = new IdbDriver(name());
+    await driver.put(batch("b1"));
+
+    vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementationOnce(() =>
+      failingRequest<IDBCursorWithValue | null>(new Error("database is closing")),
+    );
+
+    await expect(driver.walkOldest(() => true)).rejects.toThrow("database is closing");
     await driver.close();
   });
 

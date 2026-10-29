@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
+import type { LossReporter } from "../src/models/drop";
 import { drainEmergencyQueue, saveToEmergencyQueue } from "../src/storage/emergency-queue";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { useFakeLocalStorage } from "./fake-storage";
@@ -80,6 +81,45 @@ describe("the emergency queue", () => {
     // are the newest rather than whichever ids happened to sort low.
     expect(keys[0]).toContain(".b5");
     expect(keys[MAX_ENTRIES - 1]).toContain(".b24");
+  });
+
+  it("gives onLoss the oldest entries that it drops, and skips a corrupt one", () => {
+    const onLoss = vi.fn<LossReporter>();
+    for (let i = 0; i < MAX_ENTRIES; i++) {
+      saveToEmergencyQueue(batch(`b${String(i)}`, 1000 + i), quiet());
+    }
+    localStorage.setItem(`${PREFIX}00000000000001.bad`, "not json");
+
+    saveToEmergencyQueue(batch("new", 2000), quiet(), onLoss);
+
+    // The corrupt entry and b0 are the two oldest. Only b0 has records to report.
+    expect(onLoss).toHaveBeenCalledOnce();
+    expect(onLoss).toHaveBeenCalledWith("exit_queue_full", [{ body: "b0" }], ["b0"]);
+  });
+
+  it("gives onLoss a batch that the store refuses", () => {
+    const blocked = useFakeLocalStorage();
+    const onLoss = vi.fn<LossReporter>();
+    blocked.add("setItem");
+
+    saveToEmergencyQueue(batch("b1"), quiet(), onLoss);
+
+    expect(onLoss).toHaveBeenCalledWith("quota", [{ body: "b1" }], ["b1"]);
+  });
+
+  it("reports a loss report that throws and does not throw itself", () => {
+    // The exit flush calls the queue. A throw there skips the shutdown of the sender.
+    const blocked = useFakeLocalStorage();
+    blocked.add("setItem");
+    const { handler, diagnostics } = listening();
+    const onLoss = vi.fn<LossReporter>(() => {
+      throw new Error("report failed");
+    });
+
+    expect(() => {
+      saveToEmergencyQueue(batch("b1"), diagnostics, onLoss);
+    }).not.toThrow();
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "pipeline.crashed" }));
   });
 
   it("drops an entry that is not JSON rather than reimporting it forever", async () => {

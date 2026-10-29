@@ -5,10 +5,11 @@
 // The runtime imports this module dynamically only when the config sets an endpoint.
 // Console-only mode does not download this module.
 
-import { STORAGE_DB_NAME, STORAGE_LIMITS } from "../constants";
+import { BATCHES_PER_DRAIN, STORAGE_DB_NAME } from "../constants";
 import type { ResolvedConfig } from "../models/config";
+import type { LossReporter } from "../models/drop";
 import type { LogRecord } from "../models/log-record";
-import type { GapReporter, StorageAdapter } from "../models/storage";
+import { type GapReporter, type StorageAdapter, storageLimits } from "../models/storage";
 import { drainEmergencyQueue } from "../storage/emergency-queue";
 import { createStorage } from "../storage/factory";
 import { ExitFlush } from "../transport/exit-flush";
@@ -29,6 +30,8 @@ export interface SenderDeps {
   diagnostics: Diagnostics;
   /** Receives a report when storage drops batches before delivery. */
   onGap: GapReporter;
+  /** Receives the records that the transport, the retry engine and the exit flush lose. */
+  onLoss: LossReporter;
   /** Slot of the runtime for the sampling rules from the ingest server. */
   remote: RemoteSlot;
 }
@@ -62,7 +65,7 @@ export class Sender {
     const storage = await createStorage(
       config.storage,
       STORAGE_DB_NAME,
-      STORAGE_LIMITS,
+      storageLimits(config.retention),
       diagnostics,
       deps.onGap,
     );
@@ -76,10 +79,28 @@ export class Sender {
 
     // The stack keeps one transport for its life. The runtime refuses a later change.
     // The exit flush reads the last headers from the HTTP transport.
-    const http = config.transport ? undefined : new HttpTransport(config, diagnostics, onSampling);
-    const transport: BatchTransport = http ?? new CustomTransport(config, diagnostics, onSampling);
-    const retry = new RetryEngine(storage, transport, diagnostics, config);
-    const pipeline = new LogPipeline(transport, storage, retry, diagnostics);
+    const { onLoss } = deps;
+    const http = config.transport
+      ? undefined
+      : new HttpTransport(config, diagnostics, onSampling, onLoss);
+    const transport: BatchTransport =
+      http ?? new CustomTransport(config, diagnostics, onSampling, onLoss);
+    const retry = new RetryEngine(
+      storage,
+      transport,
+      diagnostics,
+      config,
+      BATCHES_PER_DRAIN,
+      onLoss,
+    );
+    const { batching } = config;
+    const pipeline = new LogPipeline(transport, storage, retry, diagnostics, {
+      logs: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
+      metrics: {
+        flushIntervalMs: batching.metricFlushIntervalMs,
+        batchSize: batching.metricBatchSize,
+      },
+    });
 
     const exitFlush = new ExitFlush({
       config,
@@ -87,6 +108,7 @@ export class Sender {
       drainForExit: () => pipeline.drainForExit(),
       flushAlive: () => pipeline.flushPending(),
       exitHeaders: () => http?.lastHeaders(),
+      onLoss,
     });
 
     // If one step fails, stop both. A retry loop with no owner sends after load reports failure.

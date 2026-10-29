@@ -6,6 +6,7 @@
 import { STORAGE_NAME_MEMORY } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
+import { hasAction, pickEvictable } from "./eviction";
 
 /**
  * Returns the total record count of the batches.
@@ -84,23 +85,35 @@ export class MemoryStorage implements StorageAdapter {
 
     const expired = this.batches.filter((batch) => batch.createdAt < cutoff);
     this.batches = this.batches.filter((batch) => batch.createdAt >= cutoff);
-    result.batches += expired.length;
-    result.records += countRecords(expired);
+    this.report(result, "expired", expired);
 
     const excess = this.batches.length - this.limits.maxBatches;
     if (excess > 0) {
-      result.reason = "over_capacity";
-      const evicted = this.batches.slice(0, excess);
-      this.batches = this.batches.slice(excess);
-      result.batches += evicted.length;
-      result.records += countRecords(evicted);
-    }
-
-    if (result.batches > 0) {
-      this.onGap?.(result);
+      // An action is an audit fact. Evict each batch without an action first.
+      const evicted = pickEvictable(this.batches, excess, hasAction);
+      this.batches = this.batches.filter((batch) => !evicted.includes(batch));
+      this.report(result, "over_capacity", evicted);
     }
 
     return Promise.resolve(result);
+  }
+
+  /**
+   * Adds dropped batches to the prune result. It reports them with their own reason.
+   * @param result Prune result of all rules.
+   * @param reason Rule that dropped the batches.
+   * @param dropped The dropped batches.
+   */
+  private report(result: PruneResult, reason: PruneResult["reason"], dropped: LogBatch[]): void {
+    if (dropped.length === 0) {
+      return;
+    }
+
+    const records = countRecords(dropped);
+    result.batches += dropped.length;
+    result.records += records;
+    result.reason = reason;
+    this.onGap?.({ batches: dropped.length, records, reason }, dropped);
   }
 
   /**

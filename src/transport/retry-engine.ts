@@ -11,12 +11,12 @@ import {
   RETRY_IDLE_DELAY_MS,
   RETRY_MAX_DELAY_MS,
   STORAGE_DEADLINE_MS,
-  STORAGE_LIMITS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
-import type { StorageAdapter } from "../models/storage";
+import type { LossReporter } from "../models/drop";
+import { type StorageAdapter, storageLimits } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
 import { unrefTimer } from "../utils/unref";
@@ -40,6 +40,9 @@ export class RetryEngine {
   /** This flag is true after stop(). */
   private stopped = false;
 
+  /** Attempt limit of a stored batch. Retention cannot change after the delivery stack loads. */
+  private readonly maxAttempts: number;
+
   /** This listener runs on the online event. It resets the attempt count and starts a drain. */
   private readonly onOnline = (): void => {
     this.attempt = 0;
@@ -52,14 +55,18 @@ export class RetryEngine {
    * @param diagnostics Diagnostics reporter.
    * @param config Active configuration instance.
    * @param batchesPerDrain Maximum batches processed per drain tick.
+   * @param onLoss Receives the records of each batch that the engine drops.
    */
   constructor(
     private readonly storage: StorageAdapter,
     private readonly transport: BatchTransport,
     private readonly diagnostics: Diagnostics,
-    private readonly config: ResolvedConfig,
+    config: ResolvedConfig,
     private readonly batchesPerDrain = BATCHES_PER_DRAIN,
-  ) {}
+    private readonly onLoss: LossReporter = () => undefined,
+  ) {
+    this.maxAttempts = storageLimits(config.retention).maxAttempts;
+  }
 
   /** This method starts the engine. It listens for online events and arms the first timer. */
   start(): void {
@@ -231,12 +238,13 @@ export class RetryEngine {
    * @returns True to continue with the next batch. False to stop the current drain.
    */
   private async deliver(batch: LogBatch): Promise<boolean> {
-    if (batch.attempts >= STORAGE_LIMITS.maxAttempts) {
+    if (batch.attempts >= this.maxAttempts) {
       this.diagnostics.report(
         "storage.dead_lettered",
         `The library dropped a batch after ${batch.attempts.toString()} attempts.`,
         { batchId: batch.id, records: batch.records.length },
       );
+      this.onLoss("max_attempts", batch.records, [batch.id]);
       await this.bounded(this.storage.remove(batch.id));
       return true;
     }
@@ -300,6 +308,7 @@ export class RetryEngine {
     const failure = error instanceof TransportError ? error : undefined;
 
     if (failure?.kind === "permanent") {
+      this.onLoss("rejected", batch.records, [batch.id]);
       return [];
     }
 
@@ -318,6 +327,7 @@ export class RetryEngine {
           bodies: batch.records.map((record) => record.body),
         },
       );
+      this.onLoss("rejected", batch.records, [batch.id]);
       return [];
     }
 

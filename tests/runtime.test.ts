@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
 import {
+  BUS_MAX_BOOT_BUFFER_ACTIONS,
   BUS_MAX_BOOT_BUFFER_RECORDS,
   CONSOLE_DEFAULT_STYLES as STYLES,
   TELEMETRY_SDK_VERSION,
@@ -11,6 +12,8 @@ import { JourneyEngine } from "../src/core/journey";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
+import type { LogBatch } from "../src/models/batch";
+import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { TransportError } from "../src/transport/errors";
 import { ExitFlush } from "../src/transport/exit-flush";
@@ -152,6 +155,66 @@ describe("runtime lifecycle", () => {
     // in the old adapter.
     expect(runtime().config.storage).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
+  it("keeps batching, retention, limits and journey.maxAgeMs from startup", async () => {
+    configure({ ...base, batching: { logBatchSize: 10 } });
+    // The delivery stack reads batching and retention when it loads.
+    await ready();
+
+    configure({
+      batching: { logBatchSize: 20 },
+      retention: { maxBatches: 50 },
+      limits: { maxBodyChars: 300 },
+      journey: { maxAgeMs: 120_000, scope: "context" },
+    });
+
+    // journey.scope stays live. Only the age is fixed at startup.
+    const { config } = runtime();
+    expect(config.batching.logBatchSize).toBe(10);
+    expect(config.retention.maxBatches).toBe(500);
+    expect(config.limits.maxBodyChars).toBe(4096);
+    expect(config.journey).toEqual({ scope: "context", maxAgeMs: 1_800_000 });
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(4);
+  });
+
+  it("does not report a later configure() that repeats the startup tunables", () => {
+    // React StrictMode calls configure() two times with the same config.
+    configure({ ...base, limits: { maxBodyChars: 300 }, journey: { maxAgeMs: 60_000 } });
+    configure({ ...base, limits: { maxBodyChars: 300 }, journey: { maxAgeMs: 60_000 } });
+
+    expect(getDiagnosticCounters()["config.invalid"] ?? 0).toBe(0);
+  });
+
+  it("passes the limits and the journey age to the builder, console and journey", () => {
+    configure({ ...base, limits: { maxBodyChars: 300 }, journey: { maxAgeMs: 60_000 } });
+
+    expect(runtime().builder["deps"].limits.maxBodyChars).toBe(300);
+    expect(runtime().console["limits"]).toBe(runtime().builder["deps"].limits);
+    expect(runtime().journey["options"].maxAgeMs).toBe(60_000);
+  });
+
+  it("passes batching and retention to the pipeline and the storage", async () => {
+    configure({
+      ...base,
+      storage: "memory",
+      batching: { logBatchSize: 7, metricFlushIntervalMs: 5000 },
+      retention: { mode: "until-delivered", maxBatches: 40 },
+    });
+    await ready();
+
+    const sender = runtime()["sender"];
+    if (!sender) {
+      throw new Error("sender was not built");
+    }
+    const streams = sender["pipeline"]["streams"];
+    expect(streams.logs.options).toEqual({ flushIntervalMs: 2000, batchSize: 7 });
+    expect(streams.metrics.options).toEqual({ flushIntervalMs: 5000, batchSize: 500 });
+    expect((sender["storage"] as unknown as { limits: unknown }).limits).toEqual({
+      maxBatches: 40,
+      maxAgeMs: Infinity,
+      maxAttempts: Infinity,
+    });
   });
 
   it('writes no identity or journey key with identity: "memory"', async () => {
@@ -323,11 +386,89 @@ describe("runtime lifecycle", () => {
       log.info(`record ${String(i)}`);
     }
 
-    const bodies = runtime()["bootBuffer"].map((record: LogRecord) => record.body);
+    const bodies = runtime()["bootBuffer"].records.map((record: LogRecord) => record.body);
     expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
     // The buffer evicted the first record. The second record is now the oldest.
     expect(bodies[0]).toBe("record 1");
     expect(runtime().diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
+  });
+
+  it("keeps an action in the boot buffer when other records fill it", () => {
+    configure(base);
+    logAction("submit order");
+    const log = getLogger("test");
+
+    for (let i = 0; i <= BUS_MAX_BOOT_BUFFER_RECORDS; i++) {
+      log.info(`record ${String(i)}`);
+    }
+
+    // The 500 limit applies only to records that are not actions.
+    const bodies = runtime()["bootBuffer"].records.map((record: LogRecord) => record.body);
+    expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS + 1);
+    expect(bodies[0]).toBe("submit order");
+    expect(bodies[1]).toBe("record 1");
+  });
+
+  it("drops the oldest action at the action cap and gives it to onDrop", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, onDrop });
+
+    for (let i = 0; i <= BUS_MAX_BOOT_BUFFER_ACTIONS; i++) {
+      logAction(`action ${String(i)}`);
+    }
+
+    const buffer = runtime()["bootBuffer"].records;
+    expect(buffer).toHaveLength(BUS_MAX_BOOT_BUFFER_ACTIONS);
+    expect(buffer[0].body).toBe("action 1");
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "buffer_full", records: 1, actions: ["action 0"] }),
+      );
+    });
+  });
+
+  it("gives onDrop the batches that storage evicts", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, onDrop });
+    const evicted: LogBatch = {
+      id: "old",
+      createdAt: 0,
+      attempts: 0,
+      records: [forwardedRecord("lost") as unknown as LogRecord],
+    };
+
+    runtime()["reportGap"]({ batches: 1, records: 1, reason: "expired" }, [evicted]);
+
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith({
+        reason: "expired",
+        records: 1,
+        batchIds: ["old"],
+        journeyIds: [],
+        actions: [],
+      });
+    });
+  });
+
+  it("gives onDrop a batch that the serializer cannot encode", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    const broken = {
+      name: "broken",
+      serialize: () => {
+        throw new Error("nope");
+      },
+    };
+    configure({ ...base, storage: "memory", onDrop, serializer: broken });
+    await ready();
+
+    info("lost");
+    await flush();
+
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "unserializable", records: 1 }),
+      );
+    });
   });
 
   it("caches loggers per namespace instead of allocating per call", () => {
@@ -376,6 +517,39 @@ describe("runtime lifecycle", () => {
     info("nobody configured me");
 
     expect(ObservabilityRuntime.current()).not.toBeNull();
+  });
+
+  it("takes the startup tunables from the first configure() after an early log call", async () => {
+    // A module can log at import time. The write starts a runtime with defaults.
+    info("module loaded");
+    // That runtime reports the missing endpoint and serviceName.
+    const before = getDiagnosticCounters()["config.invalid"];
+    configure({
+      ...base,
+      batching: { logBatchSize: 20 },
+      retention: { mode: "until-delivered" },
+      limits: { maxBodyChars: 300 },
+      journey: { maxAgeMs: 120_000 },
+    });
+    await ready();
+
+    expect(runtime().config.batching.logBatchSize).toBe(20);
+    expect(runtime().config.retention.mode).toBe("until-delivered");
+    expect(runtime().builder["deps"].limits.maxBodyChars).toBe(300);
+    expect(runtime().console["limits"]).toBe(runtime().builder["deps"].limits);
+    expect(runtime().journey["options"].maxAgeMs).toBe(120_000);
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(before);
+  });
+
+  it("keeps the limits from the first configure() after an early log call", async () => {
+    info("module loaded");
+    const before = getDiagnosticCounters()["config.invalid"] ?? 0;
+    configure({ ...base, limits: { maxBodyChars: 300 } });
+    configure({ limits: { maxBodyChars: 500 } });
+    await ready();
+
+    expect(runtime().builder["deps"].limits.maxBodyChars).toBe(300);
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(before + 1);
   });
 
   it("drops a malformed forwarded record instead of losing the batch it lands in", async () => {
@@ -668,16 +842,8 @@ describe("runtime lifecycle", () => {
     await ready();
     const emit = vi.spyOn(runtime(), "emit");
 
-    runtime()["reportGap"]({
-      batches: 2,
-      records: 30,
-      reason: "over_capacity",
-    });
-    runtime()["reportGap"]({
-      batches: 1,
-      records: 10,
-      reason: "over_capacity",
-    });
+    runtime()["reportGap"]({ batches: 2, records: 30, reason: "over_capacity" }, []);
+    runtime()["reportGap"]({ batches: 1, records: 10, reason: "over_capacity" }, []);
 
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit.mock.calls[0][0]?.attributes["gap.records"]).toBe(30);
@@ -905,6 +1071,68 @@ describe("delivery stack loading", () => {
     expect(getDiagnosticCounters()["record.dropped_boot_buffer_full"]).toBe(1);
   });
 
+  it("gives onDrop the held records of a failed load", async () => {
+    vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, endpoint: null, onDrop });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    info("held, then lost");
+
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "load_failed", records: 1 }),
+      );
+    });
+  });
+
+  it("gives onDrop the startup records and each later record after a failed startup load", async () => {
+    vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, onDrop });
+    info("held at startup");
+    await ready();
+
+    info("after the failed load");
+
+    await vi.waitFor(() => {
+      const lost = onDrop.mock.calls
+        .filter(([summary]) => summary.reason === "load_failed")
+        .reduce((total, [summary]) => total + summary.records, 0);
+      expect(lost).toBe(2);
+    });
+  });
+
+  it("gives onDrop the held records when shutdown() comes before the load ends", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, endpoint: null, onDrop });
+    await ready();
+
+    configure({ endpoint: base.endpoint });
+    info("held, then lost");
+    await shutdown();
+
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "load_failed", records: 1 }),
+    );
+  });
+
+  it("accepts batching and retention before the delivery stack loads", async () => {
+    configure({ ...base, endpoint: null });
+    await ready();
+
+    configure({
+      endpoint: base.endpoint,
+      batching: { logBatchSize: 20 },
+      retention: { maxBatches: 50 },
+    });
+
+    expect(runtime().config.batching.logBatchSize).toBe(20);
+    expect(runtime().config.retention.maxBatches).toBe(50);
+    expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
+  });
+
   it("reports a failed load, drops held records and retries on the next configure", async () => {
     const create = vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
     configure({ ...base, endpoint: null });
@@ -1112,6 +1340,18 @@ describe("runtime routing as a forwarder", () => {
     await Promise.resolve();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toHaveLength(3);
+  });
+
+  it("hands the forward buffer to the bus before shutdown() stops the bus", async () => {
+    configure(base);
+    await ready();
+    vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
+
+    getLogger("test").info("bye");
+    await shutdown();
+
+    expect(send).toHaveBeenCalledWith([expect.objectContaining({ body: "bye" })]);
   });
 
   it("hands the buffer over on flush without waiting for the microtask", async () => {

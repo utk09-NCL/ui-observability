@@ -13,7 +13,14 @@ import {
 import type { Diagnostics } from "../core/diagnostics";
 import { isLogBatch, type LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
+import { hasAction, pickEvictable } from "./eviction";
 import { keysWithPrefix } from "./keys";
+
+/** A stored entry. A corrupt entry has no batch. */
+interface Entry {
+  key: string;
+  batch: LogBatch | null;
+}
 
 /**
  * Formats a storage key with a zero-padded creation time. The keys sort in FIFO
@@ -71,7 +78,7 @@ export class LocalStorageStorage implements StorageAdapter {
     // The eviction makes room for this batch. Without a second write, save() resolves.
     // The library then loses the batch. No counter shows the loss.
     if (!this.write(batch, "localStorage refused a batch even after evicting")) {
-      this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" });
+      this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" }, [batch]);
     }
   }
 
@@ -145,37 +152,27 @@ export class LocalStorageStorage implements StorageAdapter {
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
-
-    // Parse only the deleted batches. The record count is the one field that the key does
-    // not contain.
-    const drop = (key: string): void => {
-      const batch = this.read(key);
-      this.removeKey(key);
-      result.batches++;
-      result.records += batch?.records.length ?? 0;
-    };
-
+    const expired: string[] = [];
     const alive: string[] = [];
 
     for (const key of this.keys()) {
       const createdAt = createdAtOf(key);
       // A key with no readable time also has no position in the sort order.
       if (createdAt === null || createdAt < cutoff) {
-        drop(key);
+        expired.push(key);
         continue;
       }
       alive.push(key);
     }
 
+    // The record count is the one field that the key does not contain. Parse only the
+    // deleted batches.
+    this.drop(result, "expired", [...this.entries(expired)]);
+
     const excess = alive.length - this.limits.maxBatches;
     if (excess > 0) {
-      result.reason = "over_capacity";
-      for (const key of alive.slice(0, excess)) {
-        drop(key);
-      }
+      this.drop(result, "over_capacity", this.evictable(alive, excess));
     }
-
-    this.reportGap(result);
 
     return Promise.resolve(result);
   }
@@ -214,36 +211,82 @@ export class LocalStorageStorage implements StorageAdapter {
     return written === true;
   }
 
-  /** This method removes the oldest quarter of the store to free quota. It counts the loss. */
+  /** This method removes a quarter of the store to free quota. It counts the loss. */
   private evictForQuota(): void {
     const keys = this.keys();
     const result: PruneResult = { batches: 0, records: 0, reason: "quota" };
+    const howMany = Math.ceil(keys.length / QUOTA_EVICTION_DIVISOR);
 
-    for (const key of keys.slice(0, Math.ceil(keys.length / QUOTA_EVICTION_DIVISOR))) {
-      const stored = this.read(key);
-      this.removeKey(key);
-      result.batches++;
-      result.records += stored?.records.length ?? 0;
+    this.drop(result, "quota", this.evictable(keys, howMany));
+  }
+
+  /**
+   * Picks the entries to evict. Entries without an action go first. An action is an audit fact.
+   * A corrupt entry has no action. It goes first.
+   * @param keys Batch keys, oldest first.
+   * @param howMany Number of entries to evict.
+   * @returns The picked entries.
+   */
+  private evictable(keys: string[], howMany: number): Entry[] {
+    return pickEvictable(
+      this.entries(keys),
+      howMany,
+      (entry) => entry.batch !== null && hasAction(entry.batch),
+    );
+  }
+
+  /**
+   * Reads the entries one at a time. The eviction walk stops early. The later entries then stay
+   * unparsed.
+   * @param keys Batch keys.
+   * @yields Each key with its batch.
+   */
+  private *entries(keys: string[]): Generator<Entry> {
+    for (const key of keys) {
+      yield { key, batch: this.read(key) };
+    }
+  }
+
+  /**
+   * Removes entries. It reports them with their own reason.
+   * @param result Prune result of all rules.
+   * @param reason Rule that removes the entries.
+   * @param entries Entries to remove.
+   */
+  private drop(result: PruneResult, reason: PruneResult["reason"], entries: Entry[]): void {
+    if (entries.length === 0) {
+      return;
     }
 
-    this.reportGap(result);
+    const dropped: LogBatch[] = [];
+    let records = 0;
+
+    for (const { key, batch } of entries) {
+      this.removeKey(key);
+      records += batch?.records.length ?? 0;
+      if (batch) {
+        dropped.push(batch);
+      }
+    }
+
+    result.batches += entries.length;
+    result.records += records;
+    result.reason = reason;
+    this.reportGap({ batches: entries.length, records, reason }, dropped);
   }
 
   /**
    * Reports dropped records to diagnostics and to the gap handler.
    * @param result Eviction metrics.
+   * @param dropped The dropped batches that the adapter could read.
    */
-  private reportGap(result: PruneResult): void {
-    if (result.batches === 0) {
-      return;
-    }
-
+  private reportGap(result: PruneResult, dropped: readonly LogBatch[]): void {
     this.diagnostics.report(
       "storage.evicted",
       `The library dropped ${String(result.batches)} stored batches (${String(result.records)} records).`,
       { ...result },
     );
-    this.onGap?.(result);
+    this.onGap?.(result, dropped);
   }
 
   /**

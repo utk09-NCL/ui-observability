@@ -8,6 +8,7 @@
 // No function in this file throws to the caller.
 
 import {
+  BEACON_LIMIT_BYTES,
   CONFIG_SECTIONS,
   CONSOLE_DEFAULT_LEVEL,
   CONSOLE_DEFAULT_STYLES,
@@ -23,15 +24,18 @@ import {
   UNKNOWN_SERVICE_NAME,
 } from "../constants";
 import type {
+  BatchingOptions,
   BusOptions,
   CaptureOptions,
   CapturedConsoleMethod,
   ConsoleOption,
   ConsoleStyles,
   JourneyOptions,
+  LimitOptions,
   ObservabilityConfig,
   ResolvedConfig,
   ResolvedConsole,
+  RetentionOptions,
   SamplingOptions,
   SerializerChoice,
 } from "../models/config";
@@ -51,6 +55,44 @@ const BUS_MODE_VALUES = ["auto", "sender", "forwarder", "off"] as const;
 const OPENFIN_ROLE_VALUES = ["auto", "provider", "client"] as const;
 const JOURNEY_SCOPE_VALUES = ["auto", "context", "tab", "origin"] as const;
 const CONSOLE_METHOD_VALUES = ["error", "warn", "info", "log"] as const;
+const RETENTION_MODE_VALUES = ["limited", "until-delivered"] as const;
+
+/** Lowest and highest accepted value of an integer option. */
+type Range = readonly [min: number, max: number];
+
+/** Accepted range of each batching key. */
+const BATCHING_RANGES: Record<keyof BatchingOptions, Range> = {
+  logFlushIntervalMs: [100, 60_000],
+  logBatchSize: [1, 1000],
+  metricFlushIntervalMs: [100, 60_000],
+  metricBatchSize: [1, 1000],
+};
+
+/** Accepted range of each numeric retention key. */
+const RETENTION_RANGES: Record<Exclude<keyof RetentionOptions, "mode">, Range> = {
+  maxBatches: [1, 5000],
+  maxAgeMs: [60_000, 7 * 24 * 60 * 60 * 1000],
+  maxAttempts: [1, 20],
+};
+
+/**
+ * Accepted range of each record limit. The maximum of maxRecordBytes is one beacon. The body and
+ * the error fields are outside maxRecordBytes. An exit batch larger than one beacon goes to the
+ * emergency queue.
+ */
+const LIMIT_RANGES: Record<keyof LimitOptions, Range> = {
+  maxBodyChars: [256, 65_536],
+  maxAttributeChars: [256, 65_536],
+  maxAttributeCount: [1, 1024],
+  maxStackChars: [256, 65_536],
+  maxDepth: [1, 16],
+  maxArrayLength: [1, 10_000],
+  maxNodes: [100, 100_000],
+  maxRecordBytes: [1024, BEACON_LIMIT_BYTES],
+};
+
+/** Accepted range of journey.maxAgeMs. */
+const JOURNEY_AGE_RANGE: Range = [60_000, 24 * 60 * 60 * 1000];
 
 /** Boolean keys of the capture section. */
 const CAPTURE_FLAG_KEYS = [
@@ -216,6 +258,63 @@ function resolveNonNegative(
 
   reportInvalid(diagnostics, key, "a finite number of 0 or more", value, String(fallback));
   return fallback;
+}
+
+/**
+ * Reads an option that accepts an integer in a range.
+ * @param key Config key.
+ * @param value Value that the consumer passed.
+ * @param range Lowest and highest accepted value.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value, or the fallback when the value is not accepted.
+ */
+function resolveInteger(
+  key: string,
+  value: unknown,
+  range: Range,
+  fallback: number,
+  diagnostics: Diagnostics,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const [min, max] = range;
+  if (typeof value === "number" && Number.isInteger(value) && value >= min && value <= max) {
+    return value;
+  }
+
+  const expected = `an integer from ${String(min)} to ${String(max)}`;
+  reportInvalid(diagnostics, key, expected, value, String(fallback));
+  return fallback;
+}
+
+/**
+ * Merges and checks a section of integer options. The keys come from `ranges` only.
+ * @param section Section name, for example `batching`.
+ * @param input Values that the consumer passed.
+ * @param base Values in force.
+ * @param ranges Accepted range of each key.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value of each key in `ranges`.
+ */
+function resolveRanges<K extends string>(
+  section: string,
+  input: Partial<Record<NoInfer<K>, unknown>> | undefined,
+  base: Record<NoInfer<K>, number>,
+  ranges: Record<K, Range>,
+  diagnostics: Diagnostics,
+): Record<K, number> {
+  const given: Partial<Record<K, unknown>> = input ?? {};
+  const keys = Object.keys(ranges) as K[];
+
+  return Object.fromEntries(
+    keys.map((key): [K, number] => [
+      key,
+      resolveInteger(`${section}.${key}`, given[key], ranges[key], base[key], diagnostics),
+    ]),
+  ) as Record<K, number>;
 }
 
 /**
@@ -657,6 +756,39 @@ function resolveJourney(
       base.scope,
       diagnostics,
     ),
+    maxAgeMs: resolveInteger(
+      "journey.maxAgeMs",
+      given.maxAgeMs,
+      JOURNEY_AGE_RANGE,
+      base.maxAgeMs,
+      diagnostics,
+    ),
+  };
+}
+
+/**
+ * Merges and checks the retention section.
+ * @param input Retention options that the consumer passed.
+ * @param base Retention options in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The retention options.
+ */
+function resolveRetention(
+  input: Partial<RetentionOptions> | undefined,
+  base: RetentionOptions,
+  diagnostics: Diagnostics,
+): RetentionOptions {
+  const given = input ?? {};
+
+  return {
+    mode: resolveChoice(
+      "retention.mode",
+      given.mode,
+      RETENTION_MODE_VALUES,
+      base.mode,
+      diagnostics,
+    ),
+    ...resolveRanges("retention", given, base, RETENTION_RANGES, diagnostics),
   };
 }
 
@@ -802,6 +934,15 @@ export function resolveConfig(
     console: resolveConsole(input.console, base.console, diagnostics),
     sampling: resolveSampling(input.sampling, base.sampling, diagnostics),
     bus: resolveBus(input.bus, base.bus, diagnostics),
+    batching: resolveRanges(
+      "batching",
+      input.batching,
+      base.batching,
+      BATCHING_RANGES,
+      diagnostics,
+    ),
+    retention: resolveRetention(input.retention, base.retention, diagnostics),
+    limits: resolveRanges("limits", input.limits, base.limits, LIMIT_RANGES, diagnostics),
     journey: resolveJourney(input.journey, base.journey, diagnostics),
     capture: resolveCapture(input.capture, base.capture, diagnostics),
   };
@@ -814,6 +955,14 @@ export function resolveConfig(
       "transport must be a function. The library ignores the value.",
     );
     merged.transport = base.transport;
+  }
+
+  if (merged.onDrop !== undefined && typeof merged.onDrop !== "function") {
+    diagnostics.report(
+      "config.invalid",
+      "onDrop must be a function. The library ignores the value.",
+    );
+    merged.onDrop = base.onDrop;
   }
 
   if (merged.transportOnExit !== undefined && typeof merged.transportOnExit !== "function") {

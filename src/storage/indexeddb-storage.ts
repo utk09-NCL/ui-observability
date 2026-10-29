@@ -6,6 +6,7 @@ import { QUOTA_EVICTION_DIVISOR, QUOTA_EXCEEDED_ERROR, STORAGE_NAME_INDEXEDDB } 
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
+import { EvictionPick, hasAction } from "./eviction";
 import { IdbDriver } from "./idb-driver";
 
 /**
@@ -68,7 +69,8 @@ export class IndexedDbStorage implements StorageAdapter {
           () => this.evictOldest(Math.ceil(this.limits.maxBatches / QUOTA_EVICTION_DIVISOR)),
         );
         if (evicted) {
-          this.reportGap({ ...evicted, reason: "quota" });
+          const counts = { batches: evicted.length, records: countRecords(evicted) };
+          this.reportGap({ ...counts, reason: "quota" }, evicted);
         }
 
         // The eviction makes room for this batch. Without a second write, save() resolves.
@@ -82,7 +84,7 @@ export class IndexedDbStorage implements StorageAdapter {
           },
         );
         if (stored !== true) {
-          this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" });
+          this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" }, [batch]);
         }
         return;
       }
@@ -93,6 +95,8 @@ export class IndexedDbStorage implements StorageAdapter {
         { batchId: batch.id },
         error,
       );
+      // The diagnostic above names the failure. A storage.evicted report counts it two times.
+      this.onGap?.({ batches: 1, records: batch.records.length, reason: "not_stored" }, [batch]);
     }
   }
 
@@ -151,21 +155,17 @@ export class IndexedDbStorage implements StorageAdapter {
         const expired = await this.db.takeBefore(cutoff);
         if (expired.length > 0) {
           await this.db.deleteMany(expired.map((batch) => batch.id));
-          result.batches += expired.length;
-          result.records += countRecords(expired);
+          this.addGap(result, "expired", expired);
         }
 
         const total = await this.db.count();
         if (total > this.limits.maxBatches) {
-          result.reason = "over_capacity";
           const evicted = await this.evictOldest(total - this.limits.maxBatches);
-          result.batches += evicted.batches;
-          result.records += evicted.records;
+          this.addGap(result, "over_capacity", evicted);
         }
       },
     );
 
-    this.reportGap(result);
     return result;
   }
 
@@ -201,10 +201,25 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
+   * Adds dropped batches to the prune result. It reports them with their own reason.
+   * @param result Prune result of all rules.
+   * @param reason Rule that dropped the batches.
+   * @param dropped The dropped batches.
+   */
+  private addGap(result: PruneResult, reason: PruneResult["reason"], dropped: LogBatch[]): void {
+    const records = countRecords(dropped);
+    result.batches += dropped.length;
+    result.records += records;
+    result.reason = reason;
+    this.reportGap({ batches: dropped.length, records, reason }, dropped);
+  }
+
+  /**
    * Reports dropped records to diagnostics and to the gap handler.
    * @param result Prune result metrics.
+   * @param dropped The dropped batches.
    */
-  private reportGap(result: PruneResult): void {
+  private reportGap(result: PruneResult, dropped: readonly LogBatch[]): void {
     if (result.batches === 0) {
       return;
     }
@@ -214,20 +229,24 @@ export class IndexedDbStorage implements StorageAdapter {
       `The library dropped ${String(result.batches)} stored batches (${String(result.records)} records).`,
       { ...result },
     );
-    this.onGap?.(result);
+    this.onGap?.(result, dropped);
   }
 
   /**
-   * Deletes the given number of oldest stored batches. It has no guard. Both
-   * callers guard it. A guard here hides the failure and reports an eviction that did not
-   * occur.
-   * @param howMany Number of oldest batches to evict.
-   * @returns Metrics of evicted batches and records.
+   * Deletes the given number of stored batches. Batches without an action go first, oldest
+   * first. An action is an audit fact. It has no guard. Both callers guard it. A guard here
+   * hides the failure and reports an eviction that did not occur.
+   * @param howMany Number of batches to evict.
+   * @returns The evicted batches.
    */
-  private async evictOldest(howMany: number): Promise<Omit<PruneResult, "reason">> {
-    const doomed = await this.db.takeOldest(howMany);
+  private async evictOldest(howMany: number): Promise<LogBatch[]> {
+    // Only the records tell if a batch holds an action. The walk stops at enough plain batches.
+    const pick = new EvictionPick(howMany, hasAction);
+    await this.db.walkOldest((batch) => pick.add(batch));
+
+    const doomed = pick.picked();
     await this.db.deleteMany(doomed.map((batch) => batch.id));
 
-    return { batches: doomed.length, records: countRecords(doomed) };
+    return doomed;
   }
 }

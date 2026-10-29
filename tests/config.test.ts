@@ -155,6 +155,18 @@ describe("resolveConfig", () => {
     ]);
   });
 
+  it("reports an onDrop that is not a function, and keeps the hook in force", () => {
+    const { events, diagnostics } = collect();
+    const onDrop = (): void => undefined;
+    const first = resolveConfig({ ...valid(), onDrop }, diagnostics);
+    const notAHook = "log it" as unknown as ObservabilityConfig["onDrop"];
+
+    const next = resolveConfig({ onDrop: notAHook }, diagnostics, first);
+
+    expect(next.onDrop).toBe(onDrop);
+    expect(messages(events)).toEqual(["onDrop must be a function. The library ignores the value."]);
+  });
+
   it("keeps the transport and the exit hook in force when a new value is not a function", () => {
     const { events, diagnostics } = collect();
     const transport = () => Promise.resolve({ status: 200 });
@@ -745,7 +757,7 @@ describe("resolveConfig", () => {
     });
 
     it("defaults journey.scope to auto, accepts each scope and reports another value", () => {
-      expect(resolveLoose({}).config.journey).toEqual({ scope: "auto" });
+      expect(resolveLoose({}).config.journey).toEqual({ scope: "auto", maxAgeMs: 1_800_000 });
       expect(resolveLoose({ journey: { scope: "tab" } }).config.journey.scope).toBe("tab");
 
       const { config, texts } = resolveLoose({ journey: { scope: "window", maxAge: 1 } });
@@ -817,6 +829,116 @@ describe("resolveConfig", () => {
         'compression must be "gzip" or "none". The value is null. The library keeps "gzip".',
       ]);
     });
+  });
+});
+
+describe("tunable sections", () => {
+  /**
+   * Resolves a config with tunable values that the type does not accept.
+   * @param input Values to put over the valid config.
+   * @returns The resolved config and the diagnostic messages.
+   */
+  function resolveTunables(input: Record<string, unknown>) {
+    const { events, diagnostics } = collect();
+    const config = resolveConfig({ ...valid(), ...input }, diagnostics);
+    return { config, texts: messages(events) };
+  }
+
+  it("gives the default batching, retention, limits and journey age", () => {
+    const { config, texts } = resolveTunables({});
+
+    expect(config.batching).toEqual({
+      logFlushIntervalMs: 2000,
+      logBatchSize: 100,
+      metricFlushIntervalMs: 10_000,
+      metricBatchSize: 500,
+    });
+    expect(config.retention).toEqual({
+      mode: "limited",
+      maxBatches: 500,
+      maxAgeMs: 86_400_000,
+      maxAttempts: 5,
+    });
+    expect(config.limits).toEqual({
+      maxBodyChars: 4096,
+      maxAttributeChars: 8192,
+      maxAttributeCount: 128,
+      maxStackChars: 8192,
+      maxDepth: 6,
+      maxArrayLength: 100,
+      maxNodes: 10_000,
+      maxRecordBytes: 32_768,
+    });
+    expect(config.journey).toEqual({ scope: "auto", maxAgeMs: 1_800_000 });
+    expect(texts).toEqual([]);
+  });
+
+  it("accepts each bound of a range and merges a partial section", () => {
+    const { config, texts } = resolveTunables({
+      batching: { logBatchSize: 1, metricBatchSize: 1000 },
+      retention: { mode: "until-delivered", maxAttempts: 20 },
+      limits: { maxRecordBytes: 60_000, maxDepth: 1 },
+      journey: { maxAgeMs: 60_000 },
+    });
+
+    expect(config.batching).toEqual({
+      logFlushIntervalMs: 2000,
+      logBatchSize: 1,
+      metricFlushIntervalMs: 10_000,
+      metricBatchSize: 1000,
+    });
+    expect(config.retention).toEqual({
+      mode: "until-delivered",
+      maxBatches: 500,
+      maxAgeMs: 86_400_000,
+      maxAttempts: 20,
+    });
+    expect(config.limits.maxRecordBytes).toBe(60_000);
+    expect(config.limits.maxDepth).toBe(1);
+    expect(config.journey).toEqual({ scope: "auto", maxAgeMs: 60_000 });
+    expect(texts).toEqual([]);
+  });
+
+  it("reports a value outside its range and keeps the value in force", () => {
+    const { config, texts } = resolveTunables({
+      batching: { logBatchSize: 0, logFlushIntervalMs: 1.5 },
+      retention: { maxAttempts: 21, mode: "forever" },
+      limits: { maxRecordBytes: 60_001 },
+      journey: { maxAgeMs: "60000" },
+    });
+
+    expect(config.batching.logBatchSize).toBe(100);
+    expect(config.batching.logFlushIntervalMs).toBe(2000);
+    expect(config.retention).toEqual({
+      mode: "limited",
+      maxBatches: 500,
+      maxAgeMs: 86_400_000,
+      maxAttempts: 5,
+    });
+    expect(config.limits.maxRecordBytes).toBe(32_768);
+    expect(config.journey.maxAgeMs).toBe(1_800_000);
+    expect(texts).toEqual([
+      "batching.logFlushIntervalMs must be an integer from 100 to 60000. The value is 1.5. The library keeps 2000.",
+      "batching.logBatchSize must be an integer from 1 to 1000. The value is 0. The library keeps 100.",
+      'retention.mode must be "limited" or "until-delivered". The value is "forever". The library keeps "limited".',
+      "retention.maxAttempts must be an integer from 1 to 20. The value is 21. The library keeps 5.",
+      "limits.maxRecordBytes must be an integer from 1024 to 60000. The value is 60001. The library keeps 32768.",
+      'journey.maxAgeMs must be an integer from 60000 to 86400000. The value is "60000". The library keeps 1800000.',
+    ]);
+  });
+
+  it("reports an unknown key in each new section", () => {
+    const { texts } = resolveTunables({
+      batching: { logBatchSzie: 10 },
+      retention: { maxAge: 1 },
+      limits: { maxBody: 1 },
+    });
+
+    expect(texts).toEqual([
+      'The library ignores the unknown config key "batching.logBatchSzie". Check the spelling.',
+      'The library ignores the unknown config key "retention.maxAge". Check the spelling.',
+      'The library ignores the unknown config key "limits.maxBody". Check the spelling.',
+    ]);
   });
 });
 

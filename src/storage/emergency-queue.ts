@@ -13,6 +13,7 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { isLogBatch, type LogBatch } from "../models/batch";
+import type { LossReporter } from "../models/drop";
 import type { StorageAdapter } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
@@ -111,21 +112,50 @@ async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Pro
  * Writes an unsent batch to the emergency queue synchronously during unload.
  * @param batch Oversized log batch.
  * @param diagnostics Diagnostics reporter.
+ * @param onLoss Receives the records of the old entries that the queue drops, and of a
+ * batch that the store refuses.
  */
-export function saveToEmergencyQueue(batch: LogBatch, diagnostics: Diagnostics): void {
+export function saveToEmergencyQueue(
+  batch: LogBatch,
+  diagnostics: Diagnostics,
+  onLoss?: LossReporter,
+): void {
   // Name the record count. A full localStorage drops this batch permanently. Removal of
   // emergency keys cannot free quota that the keys of other applications use.
   const context = `writing the emergency queue, ${String(batch.records.length)} records`;
+  const evicted: LogBatch[] = [];
 
-  diagnostics.guard("storage.quota_exceeded", context, () => {
+  const saved = diagnostics.guard("storage.quota_exceeded", context, () => {
     const keys = keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics);
 
     // Remove the oldest entries to keep the queue within its capacity.
     for (const old of keys.slice(0, Math.max(0, keys.length - EMERGENCY_MAX_ENTRIES + 1))) {
+      // A key that another window removed gives null. readBatch then rejects it.
+      const dropped = readBatch(String(localStorage.getItem(old)), diagnostics);
+      if (dropped !== null) {
+        evicted.push(dropped);
+      }
       localStorage.removeItem(old);
     }
 
     localStorage.setItem(keyFor(batch), JSON.stringify(batch));
+    return true;
+  });
+
+  // The exit flush calls this function. A throw here skips the shutdown of the sender.
+  diagnostics.guard("pipeline.crashed", "The loss report of the emergency queue failed.", () => {
+    if (evicted.length > 0) {
+      const records = evicted.flatMap((one) => one.records);
+      onLoss?.(
+        "exit_queue_full",
+        records,
+        evicted.map((one) => one.id),
+      );
+    }
+
+    if (saved !== true) {
+      onLoss?.("quota", batch.records, [batch.id]);
+    }
   });
 }
 

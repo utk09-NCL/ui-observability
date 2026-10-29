@@ -8,6 +8,8 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
+import type { RetentionOptions } from "../src/models/config";
+import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { TransportError } from "../src/transport/errors";
@@ -60,16 +62,30 @@ type Send = (batch: LogBatch) => Promise<void>;
 type LockCallback = (lock: { name: string } | null) => Promise<unknown>;
 
 /** A real MemoryStorage, a stubbed transport, and an engine wired to both. */
-const makeEngine = (options: { send?: Send; batchesPerDrain?: number } = {}) => {
+const makeEngine = (
+  options: {
+    send?: Send;
+    batchesPerDrain?: number;
+    retention?: Partial<RetentionOptions>;
+    onLoss?: LossReporter;
+  } = {},
+) => {
   const storage = new MemoryStorage(limits);
+  const engineConfig = options.retention
+    ? resolveConfig(
+        { endpoint: "https://x/v1/logs", serviceName: "svc", retention: options.retention },
+        new Diagnostics(vi.fn(), 0),
+      )
+    : config;
   const send = vi.fn<Send>(options.send ?? (() => Promise.resolve()));
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const engine = new RetryEngine(
     storage,
     { send } as unknown as HttpTransport,
     new Diagnostics(handler, 0),
-    config,
+    engineConfig,
     options.batchesPerDrain ?? 10,
+    options.onLoss,
   );
 
   return { engine, storage, send, handler };
@@ -144,6 +160,34 @@ describe("RetryEngine delivery", () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "storage.dead_lettered" }),
     );
+    engine.stop();
+  });
+
+  it("dead-letters a batch at the maxAttempts of the retention config", async () => {
+    const { engine, storage, send, handler } = makeEngine({ retention: { maxAttempts: 2 } });
+    await storage.save(batch("stuck", { attempts: 2 }));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "storage.dead_lettered" }),
+    );
+    engine.stop();
+  });
+
+  it("keeps sending a batch past maxAttempts in until-delivered mode", async () => {
+    const { engine, storage, send } = makeEngine({ retention: { mode: "until-delivered" } });
+    await storage.save(batch("old", { attempts: 50 }));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(await storage.count()).toBe(0);
     engine.stop();
   });
 
@@ -378,6 +422,31 @@ describe("RetryEngine splitting", () => {
         detail: { batchId: "one", bodies: ["one-0"] },
       }),
     );
+    engine.stop();
+  });
+
+  it("gives onLoss each batch that it dead-letters or that the server rejects", async () => {
+    const onLoss = vi.fn<LossReporter>();
+    const { engine, storage } = makeEngine({
+      onLoss,
+      send: (sent) =>
+        sent.id === "poison"
+          ? Promise.reject(new TransportError("permanent", "400", 400))
+          : Promise.reject(new TransportError("too_large", "413", 413)),
+    });
+    await storage.save(batch("stuck", { attempts: MAX_ATTEMPTS }));
+    await storage.save(batch("poison"));
+    await storage.save(batch("one", { records: 1 }));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(onLoss.mock.calls).toEqual([
+      ["max_attempts", [expect.objectContaining({ body: "stuck-0" })], ["stuck"]],
+      ["rejected", [expect.objectContaining({ body: "poison-0" })], ["poison"]],
+      ["rejected", [expect.objectContaining({ body: "one-0" })], ["one"]],
+    ]);
     engine.stop();
   });
 

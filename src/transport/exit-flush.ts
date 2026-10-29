@@ -15,6 +15,7 @@ import {
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { ExitTransport, ResolvedConfig } from "../models/config";
+import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { saveToEmergencyQueue } from "../storage/emergency-queue";
 import { runAsLibraryRequest } from "../utils/library-request";
@@ -63,6 +64,8 @@ export interface ExitFlushDeps {
    * sendBeacon cannot set a header. With headers, the exit flush uses a keepalive fetch.
    */
   exitHeaders: () => Record<string, string> | undefined;
+  /** This callback receives the records that the exit flush loses. */
+  onLoss?: LossReporter;
 }
 
 /**
@@ -189,7 +192,7 @@ export class ExitFlush {
     // Save an oversized payload to the synchronous localStorage queue. localStorage is the
     // only storage that accepts a write without await.
     if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
-      saveToEmergencyQueue(batch, diagnostics);
+      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
       return;
     }
 
@@ -203,7 +206,7 @@ export class ExitFlush {
     // drops a beacon. Send the last headers with a keepalive fetch.
     const custom = this.deps.exitHeaders();
     if (custom) {
-      this.keepaliveFetch(target, serialized.body, reason, () => {
+      this.keepaliveFetch(target, batch, serialized.body, reason, () => {
         const headers = new Headers(custom);
         headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
         headers.set(HEADER_BATCH_ID, batch.id);
@@ -215,7 +218,7 @@ export class ExitFlush {
     // A headers function has no cached result until a call gives one. The server refuses a
     // beacon without the headers. The next page load sends the batch with them.
     if (config.headers) {
-      saveToEmergencyQueue(batch, diagnostics);
+      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
       return;
     }
 
@@ -227,12 +230,12 @@ export class ExitFlush {
     // A refusal means the in-flight budget is full. A keepalive fetch uses the
     // same budget and fails the same way. The document closes. No code retries the send.
     if (outcome === "refused") {
-      saveToEmergencyQueue(batch, diagnostics);
+      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
       return;
     }
 
     const plain = (): Headers => new Headers({ [HEADER_CONTENT_TYPE]: CONTENT_TYPE_TEXT_PLAIN });
-    this.keepaliveFetch(target, serialized.body, reason, plain);
+    this.keepaliveFetch(target, batch, serialized.body, reason, plain);
   }
 
   /** Runs the normal flush of a hidden document. It reports a flush that throws or rejects. */
@@ -274,7 +277,7 @@ export class ExitFlush {
       ) === true;
 
     if (!accepted) {
-      saveToEmergencyQueue(batch, diagnostics);
+      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
     }
   }
 
@@ -285,12 +288,18 @@ export class ExitFlush {
    * @returns The serialized batch, or undefined if the serializer threw.
    */
   private serialize(batch: LogBatch, reason: ExitReason): SerializedBatch | undefined {
-    return serializeBatch(
+    const serialized = serializeBatch(
       this.deps.config.serializer,
       batch,
       this.deps.diagnostics,
       `The ${reason} exit flush could not serialize its batch.`,
     );
+
+    if (!serialized) {
+      this.deps.onLoss?.("unserializable", batch.records, [batch.id]);
+    }
+
+    return serialized;
   }
 
   /**
@@ -345,7 +354,10 @@ export class ExitFlush {
   /**
    * Sends a fallback POST with fetch and `keepalive: true`. A keepalive request
    * continues after the document closes. The browser cancels a plain fetch at page close.
+   * A failed fetch parks the batch in the emergency queue. The server drops a second copy by
+   * its batch id.
    * @param url Target endpoint URL.
+   * @param batch Batch in the payload.
    * @param body Serialized payload string.
    * @param reason Reason code of the flush.
    * @param headers Builds the request headers. Without custom headers, only a text/plain
@@ -353,13 +365,18 @@ export class ExitFlush {
    */
   private keepaliveFetch(
     url: string,
+    batch: LogBatch,
     body: string,
     reason: ExitReason,
     headers: () => Headers,
   ): void {
     const { config, diagnostics } = this.deps;
+    // A rejection arrives only while the document is alive. The next page load sends the batch.
+    const park = (): void => {
+      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+    };
 
-    diagnostics.guard("transport.http_error", "The keepalive fetch failed.", () => {
+    const started = diagnostics.guard("transport.http_error", "The keepalive fetch failed.", () => {
       void fetch(url, {
         method: "POST",
         body,
@@ -368,7 +385,13 @@ export class ExitFlush {
         keepalive: true,
       }).catch((error: unknown) => {
         diagnostics.report("transport.http_error", "The exit flush failed.", { reason }, error);
+        park();
       });
+      return true;
     });
+
+    if (started !== true) {
+      park();
+    }
   }
 }

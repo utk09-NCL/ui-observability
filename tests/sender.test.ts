@@ -48,6 +48,7 @@ async function setup(over: Partial<ObservabilityConfig> = {}) {
     config,
     diagnostics,
     onGap: vi.fn(),
+    onLoss: vi.fn(),
     remote: { sampling: null },
   });
   created.push(sender);

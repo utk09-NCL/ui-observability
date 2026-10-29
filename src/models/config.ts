@@ -7,6 +7,7 @@
 // only at the top level. A nested field such as `sampling.defaultRate` can then hold undefined.
 
 import type { DiagnosticHandler } from "../core/diagnostics";
+import type { DropSummary } from "./drop";
 import type { LogLevel, LogRecord } from "./log-record";
 import type { LogSerializer } from "./serializer";
 
@@ -199,6 +200,114 @@ export interface JourneyOptions {
    * @default "auto"
    */
   scope: JourneyScope;
+  /**
+   * Maximum open time of a journey, in milliseconds. Then the library ends it. The range is
+   * 1 minute to 24 hours. You cannot change this value after startup.
+   * @default 1800000
+   */
+  maxAgeMs: number;
+}
+
+/** Batch size and flush interval of each record stream. You cannot change them after startup. */
+export interface BatchingOptions {
+  /**
+   * Maximum wait of a partial log batch, in milliseconds. The range is 100 to 60000.
+   * @default 2000
+   */
+  logFlushIntervalMs: number;
+  /**
+   * Maximum records in one log batch. The range is 1 to 1000.
+   * @default 100
+   */
+  logBatchSize: number;
+  /**
+   * Maximum wait of a partial metric batch, in milliseconds. The range is 100 to 60000.
+   * @default 10000
+   */
+  metricFlushIntervalMs: number;
+  /**
+   * Maximum records in one metric batch. The range is 1 to 1000.
+   * @default 500
+   */
+  metricBatchSize: number;
+}
+
+/**
+ * How long the library keeps an undelivered batch.
+ * - "limited": the batch stays until `maxAgeMs` or `maxAttempts`.
+ * - "until-delivered": the batch has no age limit and no attempt limit. `maxBatches` still
+ *   applies. A permanent error still drops the batch.
+ */
+export type RetentionMode = "limited" | "until-delivered";
+
+/** Retention of undelivered batches. You cannot change it after startup. */
+export interface RetentionOptions {
+  /**
+   * Retention rule.
+   * @default "limited"
+   */
+  mode: RetentionMode;
+  /**
+   * Maximum stored batches. A new batch evicts the oldest batch without an action first. The
+   * range is 1 to 5000.
+   * @default 500
+   */
+  maxBatches: number;
+  /**
+   * Maximum age of a stored batch, in milliseconds. The range is 1 minute to 7 days.
+   * @default 86400000
+   */
+  maxAgeMs: number;
+  /**
+   * Maximum send attempts of a stored batch. The range is 1 to 20.
+   * @default 5
+   */
+  maxAttempts: number;
+}
+
+/** Size limits for each record. You cannot change them after startup. */
+export interface LimitOptions {
+  /**
+   * Maximum body length, in characters. The range is 256 to 65536.
+   * @default 4096
+   */
+  maxBodyChars: number;
+  /**
+   * Maximum length of a string attribute, in characters. The range is 256 to 65536.
+   * @default 8192
+   */
+  maxAttributeChars: number;
+  /**
+   * Maximum keys in one object. The range is 1 to 1024.
+   * @default 128
+   */
+  maxAttributeCount: number;
+  /**
+   * Maximum length of an error stack, in characters. The range is 256 to 65536.
+   * @default 8192
+   */
+  maxStackChars: number;
+  /**
+   * Maximum depth of a nested value. The range is 1 to 16.
+   * @default 6
+   */
+  maxDepth: number;
+  /**
+   * Maximum items in one array, set or map. The range is 1 to 10000.
+   * @default 100
+   */
+  maxArrayLength: number;
+  /**
+   * Maximum values in one sanitize pass. The range is 100 to 100000.
+   * @default 10000
+   */
+  maxNodes: number;
+  /**
+   * Maximum attribute bytes of one record. Above it, the library drops the caller attributes.
+   * The range is 1024 to 60000.
+   * @default 32768
+   */
+  maxRecordBytes: number;
 }
 
 /** Console method that the console capture can wrap. */
@@ -463,6 +572,21 @@ export interface ObservabilityConfig {
    */
   journey?: Partial<JourneyOptions>;
   /**
+   * Batch size and flush interval of each record stream.
+   * @see {@link BatchingOptions}
+   */
+  batching?: Partial<BatchingOptions>;
+  /**
+   * Retention of undelivered batches.
+   * @see {@link RetentionOptions}
+   */
+  retention?: Partial<RetentionOptions>;
+  /**
+   * Size limits for each record.
+   * @see {@link LimitOptions}
+   */
+  limits?: Partial<LimitOptions>;
+  /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}
    */
@@ -506,6 +630,16 @@ export interface ObservabilityConfig {
    * @see {@link DiagnosticHandler}
    */
   onDiagnostic?: DiagnosticHandler;
+
+  /**
+   * Receives a summary when the library loses records that it built. Sampling, `minLevel` and
+   * `redact` do not cause a loss. The library joins the losses of one reason in one task.
+   * Do not log through the library in the hook. A record from the hook can evict a stored batch.
+   * A batch that storage evicts during its send can still reach the server.
+   * @param summary Reason, record count, batch ids, journey ids and action names of the loss.
+   * @see {@link DropSummary}
+   */
+  onDrop?: (summary: DropSummary) => void;
 }
 
 /** Fully resolved configuration that the runtime holds. */
@@ -546,6 +680,21 @@ export interface ResolvedConfig {
    */
   journey: JourneyOptions;
   /**
+   * Batch size and flush interval of each record stream.
+   * @see {@link BatchingOptions}
+   */
+  batching: BatchingOptions;
+  /**
+   * Retention of undelivered batches.
+   * @see {@link RetentionOptions}
+   */
+  retention: RetentionOptions;
+  /**
+   * Size limits for each record.
+   * @see {@link LimitOptions}
+   */
+  limits: LimitOptions;
+  /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}
    */
@@ -573,4 +722,6 @@ export interface ResolvedConfig {
    * @see {@link DiagnosticHandler}
    */
   onDiagnostic?: DiagnosticHandler;
+  /** Receives a summary when the library loses records that it built. */
+  onDrop?: ObservabilityConfig["onDrop"];
 }

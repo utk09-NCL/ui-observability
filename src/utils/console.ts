@@ -7,7 +7,7 @@ import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConsole } from "../models/config";
 import type { LogLevel } from "../models/log-record";
 import { isLibraryConsole, runAsLibraryConsole } from "./library-console";
-import { sanitize } from "./sanitize";
+import { type SanitizeLimits, sanitize } from "./sanitize";
 
 /** Maps log levels to corresponding console method names. */
 const METHOD: Record<LogLevel, "debug" | "info" | "warn" | "error"> = {
@@ -24,10 +24,12 @@ export class ConsoleSink {
   /**
    * @param settings Console level and styles. A null level prints nothing.
    * @param diagnostics Diagnostics reporter.
+   * @param limits Size limits of the printed payload. They are the record limits.
    */
   constructor(
     private settings: ResolvedConsole,
     private diagnostics: Diagnostics,
+    private readonly limits: SanitizeLimits = RECORD_LIMITS,
   ) {}
 
   /**
@@ -105,7 +107,7 @@ export class ConsoleSink {
 
         // Devtools keeps a reference to each logged object. A copy releases the caller's object.
         if (payload !== undefined) {
-          details.push(sanitize(payload, RECORD_LIMITS, this.diagnostics));
+          details.push(sanitize(payload, this.limits, this.diagnostics));
         }
 
         // The console capture skips a call in this scope. It must not record a mirrored line.

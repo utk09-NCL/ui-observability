@@ -17,12 +17,17 @@ import { LocalStorageStorage } from "./local-storage";
 import { MemoryStorage } from "./memory-storage";
 
 /**
- * This adapter does nothing. The factory returns it for the "none" strategy. Each method
- * resolves. A sender that calls close() on shutdown must not crash.
+ * Builds the adapter that keeps nothing. The factory returns it for the "none" strategy. Each
+ * method resolves. A sender that calls close() on shutdown must not crash.
+ * @param onGap Receives each batch that the adapter does not keep. That batch is a loss.
+ * @returns The adapter.
  */
-const noop: StorageAdapter = {
+const noop = (onGap?: GapReporter): StorageAdapter => ({
   name: STORAGE_NAME_NONE,
-  save: () => Promise.resolve(),
+  save: (batch) => {
+    onGap?.({ batches: 1, records: batch.records.length, reason: "not_stored" }, [batch]);
+    return Promise.resolve();
+  },
   take: () => Promise.resolve([]),
   remove: () => Promise.resolve(),
   bumpAttempts: () => Promise.resolve(),
@@ -30,7 +35,7 @@ const noop: StorageAdapter = {
   count: () => Promise.resolve(0),
   clear: () => Promise.resolve(),
   close: () => Promise.resolve(),
-};
+});
 
 /**
  * Checks if IndexedDB is available in the current context.
@@ -87,7 +92,7 @@ export async function createStorage(
   onGap?: GapReporter,
 ): Promise<StorageAdapter> {
   if (strategy === STORAGE_NAME_NONE) {
-    return noop;
+    return noop(onGap);
   }
   if (strategy === STORAGE_NAME_MEMORY) {
     return new MemoryStorage(limits, onGap);

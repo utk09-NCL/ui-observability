@@ -2,6 +2,7 @@
 //
 // A batch of log records for delivery to the ingest endpoint.
 
+import { ATTR_LOG_TYPE, LOG_TYPE_ACTION } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { newId } from "../utils/identity";
 import type { LogRecord } from "./log-record";
@@ -69,4 +70,34 @@ export function splitBatch(batch: LogBatch, diagnostics: Diagnostics): [LogBatch
   });
 
   return [halve(batch.records.slice(0, middle)), halve(batch.records.slice(middle))];
+}
+
+/**
+ * Reads one attribute of a record. A record from storage can be corrupt. It can be null or have
+ * no attributes.
+ * @param record Record to read.
+ * @param key Attribute key.
+ * @returns The attribute value, or undefined for a corrupt record.
+ */
+export function attributeOf(record: LogRecord, key: string): unknown {
+  const value: unknown = record;
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  const attributes: unknown = Reflect.get(value, "attributes");
+  if (typeof attributes !== "object" || attributes === null) {
+    return undefined;
+  }
+
+  return Reflect.get(attributes, key);
+}
+
+/**
+ * Tests if a record is an action. A corrupt record from storage is not an action.
+ * @param record Record to test.
+ * @returns True for an action record.
+ */
+export function isActionRecord(record: LogRecord): boolean {
+  return attributeOf(record, ATTR_LOG_TYPE) === LOG_TYPE_ACTION;
 }

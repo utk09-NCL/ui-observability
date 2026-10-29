@@ -71,6 +71,30 @@ export class IdbDriver {
   }
 
   /**
+   * Walks the batches by createdAt, oldest first. It does not remove them. A cursor reads one
+   * batch at a time. The walk can then stop before it reads the full store.
+   * @param visit Receives each batch. It returns false to stop the walk.
+   */
+  async walkOldest(visit: (batch: LogBatch) => boolean): Promise<void> {
+    const store = await this.store("readonly");
+    const request = store.index(INDEXEDDB_CREATED_AT_INDEX).openCursor();
+
+    await new Promise<void>((resolve, reject) => {
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor === null || !visit(cursor.value as LogBatch)) {
+          resolve();
+          return;
+        }
+        cursor.continue();
+      };
+      request.onerror = () => {
+        reject(failureOf(request));
+      };
+    });
+  }
+
+  /**
    * Reads each batch with a createdAt value before the cutoff.
    * @param cutoff Exclusive upper bound in epoch milliseconds.
    * @returns Batches older than the cutoff.

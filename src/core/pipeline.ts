@@ -7,12 +7,8 @@
 
 import {
   ATTR_LOG_TYPE,
-  LOG_BATCH_SIZE,
-  LOG_FLUSH_INTERVAL_MS,
   LOG_TYPE_METRIC,
   MAX_CONCURRENT_REQUESTS,
-  METRIC_BATCH_SIZE,
-  METRIC_FLUSH_INTERVAL_MS,
   STORAGE_DEADLINE_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
@@ -45,15 +41,6 @@ export interface StreamOptions {
   /** Maximum records in a batch. At this count, the pipeline sends the batch early. */
   batchSize: number;
 }
-
-/**
- * Batching policy per stream. Metrics use larger batches and a longer interval.
- * Metrics have a higher volume, and no process waits for them.
- */
-export const STREAM_OPTIONS: Record<StreamName, StreamOptions> = {
-  logs: { flushIntervalMs: LOG_FLUSH_INTERVAL_MS, batchSize: LOG_BATCH_SIZE },
-  metrics: { flushIntervalMs: METRIC_FLUSH_INTERVAL_MS, batchSize: METRIC_BATCH_SIZE },
-};
 
 /** A closed batch in the queue or in flight. */
 interface Pending {
@@ -172,14 +159,14 @@ export class LogPipeline {
    * @param storage Storage adapter for offline batch persistence.
    * @param retry Retry engine for redelivering persisted batches.
    * @param diagnostics Diagnostics reporter.
-   * @param streamOptions Batching policy per stream.
+   * @param streamOptions Batching policy per stream, from the batching config.
    */
   constructor(
     private readonly transport: BatchTransport,
     private readonly storage: StorageAdapter,
     private readonly retry: RetryEngine,
     private readonly diagnostics: Diagnostics,
-    streamOptions: Record<StreamName, StreamOptions> = STREAM_OPTIONS,
+    streamOptions: Record<StreamName, StreamOptions>,
   ) {
     const flush = (stream: RecordStream): void => {
       this.claim(stream);

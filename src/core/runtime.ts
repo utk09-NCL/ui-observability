@@ -7,16 +7,15 @@ import type { Bus } from "../bus/bus";
 import type { Receive, WorkerLike } from "../bus/links";
 import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
-  BUS_MAX_BOOT_BUFFER_RECORDS,
   CAPTURE_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
   MAX_BREADCRUMBS,
-  RECORD_LIMITS,
   RUNTIME_GLOBAL_KEY,
   RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
   TELEMETRY_SDK_VERSION,
 } from "../constants";
+import type { LogBatch } from "../models/batch";
 import type { BusMessage, BusRole } from "../models/bus";
 import type {
   CaptureOptions,
@@ -25,6 +24,7 @@ import type {
   ResolvedConfig,
   StorageStrategy,
 } from "../models/config";
+import type { LossReporter } from "../models/drop";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { PruneResult } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
@@ -45,7 +45,9 @@ import { BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
 import { Diagnostics } from "./diagnostics";
-import { JourneyEngine, JOURNEY_OPTIONS } from "./journey";
+import { DropReporter } from "./drops";
+import { HoldBuffer } from "./hold-buffer";
+import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
 import { OneLogger } from "./logger";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
@@ -76,6 +78,12 @@ const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
 /** Global symbol key of the runtime that shutdown() stopped. */
 const STOPPED_KEY = Symbol.for(RUNTIME_STOPPED_KEY);
+
+/** Config sections that the delivery stack reads one time, when it loads. */
+const SENDER_SECTIONS = ["batching", "retention"] as const;
+
+/** Config sections that a later configure() cannot change. */
+type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 
 /**
  * Makes a text key of the capture section. A later configure() reinstalls the capture
@@ -176,6 +184,9 @@ export class ObservabilityRuntime {
   /** Console sink for local developer output. */
   readonly console: ConsoleSink;
 
+  /** Collects lost records into onDrop summaries. */
+  private readonly drops: DropReporter;
+
   /**
    * Cross-realm communication bus. It is null until its chunk loads.
    * In bus.mode "off", it loads only when a child frame or a worker needs it.
@@ -198,7 +209,9 @@ export class ObservabilityRuntime {
   private senderLoad?: Promise<void>;
 
   /** Records that arrive while the delivery stack loads. */
-  private pendingRecords: LogRecord[] = [];
+  private readonly pendingRecords = new HoldBuffer((record) => {
+    this.dropHeld(record);
+  });
 
   /** Active auto-capture instrumentation modules. */
   private readonly captures: Capture[] = [];
@@ -214,7 +227,9 @@ export class ObservabilityRuntime {
   };
 
   /** Queue buffering records created before bus role resolution. */
-  private bootBuffer: LogRecord[] = [];
+  private readonly bootBuffer = new HoldBuffer((record) => {
+    this.dropHeld(record);
+  });
 
   /** Batch buffer staging records for microtask forwarding. */
   private forwardBuffer: LogRecord[] = [];
@@ -237,6 +252,15 @@ export class ObservabilityRuntime {
   /** Timestamp of the last reported storage gap warning in epoch milliseconds. */
   private lastGapAt = 0;
 
+  /** Record limits of the builder and the console. The first configure() of the app sets them. */
+  private readonly limits: ResolvedConfig["limits"];
+
+  /** Lifetime rules of the journey engine. The first configure() of the app sets the age. */
+  private readonly journeyOptions: JourneyOptions;
+
+  /** False in a runtime that an early log call started. The first configure() then sets limits. */
+  private tunablesLocked = true;
+
   /**
    * @param input Initial consumer configuration options.
    * @param degraded True for a console-only runtime next to another version. It installs
@@ -258,10 +282,14 @@ export class ObservabilityRuntime {
     this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
     // Do not await. Without OTel, records use the ambient trace. The library loses no record.
     void this.tracing.loadOtel();
-    this.console = new ConsoleSink(this.config.console, this.diagnostics);
+    // The startup values stay. A later configure() cannot change the limits or the journey age.
+    this.limits = { ...this.config.limits };
+    this.console = new ConsoleSink(this.config.console, this.diagnostics, this.limits);
+    this.drops = new DropReporter(this.config, this.diagnostics);
+    this.journeyOptions = { ...JOURNEY_OPTIONS, maxAgeMs: this.config.journey.maxAgeMs };
 
     this.journey = new JourneyEngine(
-      JOURNEY_OPTIONS,
+      this.journeyOptions,
       this.diagnostics,
       this.identity.contextId,
       (journey) => {
@@ -273,7 +301,7 @@ export class ObservabilityRuntime {
     this.builder = new RecordBuilder({
       remote: this.remote,
       config: this.config,
-      limits: RECORD_LIMITS,
+      limits: this.limits,
       diagnostics: this.diagnostics,
       context: this.context,
       journey: this.journey,
@@ -363,9 +391,10 @@ export class ObservabilityRuntime {
   /**
    * Initializes a new runtime instance or updates the existing singleton.
    * @param input Consumer configuration options.
+   * @param implicit True for the default runtime that an early log call starts.
    * @returns Active runtime instance.
    */
-  static configure(input: Partial<ObservabilityConfig>): ObservabilityRuntime {
+  static configure(input: Partial<ObservabilityConfig>, implicit = false): ObservabilityRuntime {
     const local = ObservabilityRuntime.local;
     if (local && !local.destroyed) {
       // The local runtime stays console-only. React StrictMode calls configure() two times.
@@ -388,6 +417,8 @@ export class ObservabilityRuntime {
     }
 
     const runtime = new ObservabilityRuntime(input);
+    // The first configure() of the app sets the limits of a default runtime.
+    runtime.tunablesLocked = !implicit;
     (globalThis as Record<symbol, unknown>)[RUNTIME_KEY] = runtime;
     Reflect.deleteProperty(globalThis, STOPPED_KEY);
     void runtime.init();
@@ -426,7 +457,9 @@ export class ObservabilityRuntime {
   private reconfigure(input: Partial<ObservabilityConfig>): void {
     const accepted = this.keepDestination(input);
     const capturesBefore = captureKey(this.config.capture);
-    applyResolvedConfig(this.config, resolveConfig(accepted, this.diagnostics, this.config));
+    const next = resolveConfig(accepted, this.diagnostics, this.config);
+    this.keepStartupTunables(next);
+    applyResolvedConfig(this.config, next);
     this.diagnostics.setHandler(this.config.onDiagnostic);
 
     this.builder.invalidateResource();
@@ -445,6 +478,58 @@ export class ObservabilityRuntime {
     }
 
     this.diagnostics.report("config.reconfigured", "A later configure() call updated the runtime.");
+  }
+
+  /**
+   * Restores the startup tunables in the next config. A part of the runtime reads each tunable
+   * one time. A later change has no effect. The runtime then refuses it.
+   * @param next Resolved config of a later configure() call.
+   */
+  private keepStartupTunables(next: ResolvedConfig): void {
+    if (this.senderLoad !== undefined) {
+      this.keepSections(next, SENDER_SECTIONS);
+    }
+
+    // An early log call starts a runtime with defaults. The first configure() of the app sets
+    // the limits and the journey age of that runtime.
+    if (!this.tunablesLocked) {
+      this.tunablesLocked = true;
+      Object.assign(this.limits, next.limits);
+      this.journeyOptions.maxAgeMs = next.journey.maxAgeMs;
+      return;
+    }
+
+    this.keepSections(next, ["limits"]);
+
+    const { maxAgeMs } = this.config.journey;
+    if (next.journey.maxAgeMs !== maxAgeMs) {
+      this.diagnostics.report(
+        "config.invalid",
+        `journey.maxAgeMs cannot change after startup. It stays ${String(maxAgeMs)}.`,
+        { requested: next.journey.maxAgeMs },
+      );
+      next.journey.maxAgeMs = maxAgeMs;
+    }
+  }
+
+  /**
+   * Refuses a change of config sections. It restores the values in force in the next config.
+   * @param next Resolved config of a later configure() call.
+   * @param sections Sections that cannot change.
+   */
+  private keepSections(next: ResolvedConfig, sections: readonly StartupSection[]): void {
+    for (const section of sections) {
+      if (JSON.stringify(next[section]) === JSON.stringify(this.config[section])) {
+        continue;
+      }
+
+      this.diagnostics.report(
+        "config.invalid",
+        `${section} cannot change after startup. The values in force stay.`,
+        { requested: next[section] },
+      );
+      Object.assign(next, { [section]: this.config[section] });
+    }
   }
 
   /**
@@ -666,13 +751,19 @@ export class ObservabilityRuntime {
    * @returns Promise that resolves when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
-    const hasDestination = Boolean(this.config.endpoint) || this.config.transport !== undefined;
-
-    if (!hasDestination || this.role() !== "sender") {
+    if (!this.hasDestination() || this.role() !== "sender") {
       return Promise.resolve();
     }
 
     return this.loadSender();
+  }
+
+  /**
+   * Tests if the config names a destination for the records.
+   * @returns True with an endpoint or a custom transport.
+   */
+  private hasDestination(): boolean {
+    return Boolean(this.config.endpoint) || this.config.transport !== undefined;
   }
 
   /**
@@ -696,6 +787,7 @@ export class ObservabilityRuntime {
             config: this.config,
             diagnostics: this.diagnostics,
             onGap: this.reportGap,
+            onLoss: this.reportLoss,
             remote: this.remote,
           });
 
@@ -715,12 +807,10 @@ export class ObservabilityRuntime {
         { held: this.pendingRecords.length },
         error,
       );
+      this.drops.add("load_failed", this.pendingRecords.records);
     }
 
-    const held = this.pendingRecords;
-    this.pendingRecords = [];
-
-    for (const record of held) {
+    for (const record of this.pendingRecords.take()) {
       this.sender?.push(record);
     }
   }
@@ -864,9 +954,11 @@ export class ObservabilityRuntime {
     // their journey already. The journey and the bus can stop first.
     const closing = this.sender?.destroy();
     this.journey.destroy();
+    // A record in the forward buffer waits for its microtask. The bus takes it before it stops.
+    this.sendForwarded();
     this.bus?.destroy();
-    this.forwardBuffer = [];
-    this.pendingRecords = [];
+    // The delivery stack did not load before shutdown(). The held records are lost.
+    this.drops.add("load_failed", this.pendingRecords.take());
     await closing;
     // A load in progress destroys its own stack. shutdown() resolves only after that.
     await this.senderLoad;
@@ -892,7 +984,7 @@ export class ObservabilityRuntime {
     this.sessionTouch.touch(this.identity.sessionId);
 
     if (!this.ready) {
-      this.pushCapped(this.bootBuffer, record);
+      this.bootBuffer.push(record);
       return;
     }
 
@@ -927,24 +1019,23 @@ export class ObservabilityRuntime {
     // Console-only mode has no destination. Count the drop. If not, no counter shows the loss.
     if (!this.senderLoad) {
       this.diagnostics.count("record.dropped_no_destination");
+      // After a failed load, the config has a destination but no delivery stack.
+      if (this.hasDestination()) {
+        this.drops.add("load_failed", [record]);
+      }
       return;
     }
 
-    this.pushCapped(this.pendingRecords, record);
+    this.pendingRecords.push(record);
   }
 
   /**
-   * Adds a record to a hold buffer. It drops the oldest record when the buffer is full.
-   * @param buffer Hold buffer.
-   * @param record Record to hold.
+   * Counts a record that a full hold buffer drops. It gives the record to the onDrop report.
+   * @param record Dropped record.
    */
-  private pushCapped(buffer: LogRecord[], record: LogRecord): void {
-    if (buffer.length >= BUS_MAX_BOOT_BUFFER_RECORDS) {
-      buffer.shift();
-      this.diagnostics.count("record.dropped_boot_buffer_full");
-    }
-
-    buffer.push(record);
+  private dropHeld(record: LogRecord): void {
+    this.diagnostics.count("record.dropped_boot_buffer_full");
+    this.drops.add("buffer_full", [record]);
   }
 
   /**
@@ -960,12 +1051,17 @@ export class ObservabilityRuntime {
 
     queueMicrotask(() => {
       this.forwardScheduled = false;
-      const records = this.forwardBuffer;
-      this.forwardBuffer = [];
-      if (records.length > 0) {
-        this.bus?.sendRecords(records);
-      }
+      this.sendForwarded();
     });
+  }
+
+  /** Gives the records of the forward buffer to the bus. */
+  private sendForwarded(): void {
+    const records = this.forwardBuffer;
+    this.forwardBuffer = [];
+    if (records.length > 0) {
+      this.bus?.sendRecords(records);
+    }
   }
 
   /**
@@ -995,8 +1091,7 @@ export class ObservabilityRuntime {
 
   /** Flushes the startup records. It adds the active journey to records without a journey. */
   private releaseBootBuffer(): void {
-    const buffered = this.bootBuffer;
-    this.bootBuffer = [];
+    const buffered = this.bootBuffer.take();
     const journey = this.journey.current();
 
     for (const record of buffered) {
@@ -1009,10 +1104,28 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Emits a warning record when storage evicts batches.
-   * @param result Storage prune summary metrics.
+   * Gives lost records to the onDrop report.
+   * @param reason Cause of the loss.
+   * @param records Lost records.
+   * @param batchIds Ids of the lost batches.
    */
-  private readonly reportGap = (result: PruneResult): void => {
+  private readonly reportLoss: LossReporter = (reason, records, batchIds) => {
+    this.drops.add(reason, records, batchIds);
+  };
+
+  /**
+   * Gives the evicted batches to the onDrop report. It also emits a warning record. A throttle
+   * limits the warning records.
+   * @param result Storage prune summary metrics.
+   * @param dropped The evicted batches.
+   */
+  private readonly reportGap = (result: PruneResult, dropped: readonly LogBatch[]): void => {
+    this.drops.add(
+      result.reason,
+      dropped.flatMap((batch) => batch.records),
+      dropped.map((batch) => batch.id),
+    );
+
     const now = Date.now();
     if (now - this.lastGapAt < GAP_REPORT_THROTTLE_MS) {
       return;
@@ -1065,11 +1178,7 @@ export class ObservabilityRuntime {
     }
 
     if (this.role() === "forwarder") {
-      const records = this.forwardBuffer;
-      this.forwardBuffer = [];
-      if (records.length > 0) {
-        this.bus?.sendRecords(records);
-      }
+      this.sendForwarded();
       return;
     }
 

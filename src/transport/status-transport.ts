@@ -18,6 +18,7 @@ import {
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
+import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { TransportError } from "./errors";
 import { serializeBatch } from "./serializers/select";
@@ -57,11 +58,13 @@ export abstract class StatusTransport implements BatchTransport {
    * @param config Active configuration instance.
    * @param diagnostics Diagnostics reporter.
    * @param onSampling Receives the sampling rules of an accepted batch, before validation.
+   * @param onLoss Receives the records of a batch that the serializer cannot encode.
    */
   constructor(
     protected readonly config: ResolvedConfig,
     protected readonly diagnostics: Diagnostics,
     private readonly onSampling: (raw: unknown) => void = () => undefined,
+    private readonly onLoss: LossReporter = () => undefined,
   ) {}
 
   /**
@@ -86,12 +89,18 @@ export abstract class StatusTransport implements BatchTransport {
    * @returns The serialized batch, or undefined if the serializer threw.
    */
   protected serialize(batch: LogBatch): SerializedBatch | undefined {
-    return serializeBatch(
+    const serialized = serializeBatch(
       this.config.serializer,
       batch,
       this.diagnostics,
       "The serializer threw an error. The library dropped the batch.",
     );
+
+    if (!serialized) {
+      this.onLoss("unserializable", batch.records, [batch.id]);
+    }
+
+    return serialized;
   }
 
   /**

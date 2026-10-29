@@ -8,6 +8,7 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
+import type { LossReporter } from "../src/models/drop";
 import type { ObservabilityConfig } from "../src/models/config";
 import { gzip } from "../src/transport/compression";
 import { parseRetryAfter, TransportError } from "../src/transport/errors";
@@ -430,6 +431,26 @@ describe("HttpTransport", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "transport.serialize_failed" }),
+    );
+  });
+
+  it("gives onLoss a batch that its serializer cannot encode", async () => {
+    answer(204);
+    const onLoss = vi.fn<LossReporter>();
+    const broken = {
+      name: "broken",
+      serialize: () => {
+        throw new Error("nope");
+      },
+    };
+    const t = new HttpTransport(config({ serializer: broken }), diagnostics(), undefined, onLoss);
+
+    await t.send(batch(1));
+
+    expect(onLoss).toHaveBeenCalledWith(
+      "unserializable",
+      [expect.objectContaining({ body: "r0" })],
+      ["batch-1"],
     );
   });
 

@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-10-29
+
+### Added - v0.9.1
+
+- `batching` sets the batch size and the flush interval of the log stream and of the metric stream. The keys are `logFlushIntervalMs`, `logBatchSize`, `metricFlushIntervalMs` and `metricBatchSize`.
+- `retention` sets `maxBatches`, `maxAgeMs` and `maxAttempts` for undelivered batches.
+- With `retention.mode: "until-delivered"`, a stored batch has no age limit and no attempt limit. `maxBatches` still applies. A permanent error still drops the batch.
+- With `retention.mode: "until-delivered"`, a batch that always gets a temporary error stays first in the queue. The batches behind it wait.
+- `limits` sets the 8 size limits of each record: `maxBodyChars`, `maxAttributeChars`, `maxAttributeCount`, `maxStackChars`, `maxDepth`, `maxArrayLength`, `maxNodes` and `maxRecordBytes`. The console uses the same limits.
+- `journey.maxAgeMs` sets the maximum open time of a journey.
+- Each new key has a range. A value outside its range reports `config.invalid`. The value in force stays.
+- `onDrop(summary)` receives a summary when the library loses records that it built. The summary has `reason`, `records`, `batchIds`, `journeyIds` and `actions`. Sampling, `minLevel` and `redact` do not cause a loss.
+- The library joins the losses of one reason in one task into one summary. Each list holds at most 20 different values.
+- The `onDrop` reasons are `buffer_full`, `expired`, `over_capacity`, `quota`, `max_attempts`, `rejected`, `unserializable`, `exit_queue_full`, `load_failed` and `not_stored`.
+- `load_failed` covers the records that wait for the delivery stack when its load fails. It also covers these records when `shutdown()` comes before the load ends. After a failed load, each new record also reports `load_failed`.
+- `not_stored` covers a failed send that storage did not keep. The cause is an IndexedDB write error or `storage: "none"`.
+- The `onDrop` hook runs inside the library request scope and the library console scope. Network capture and console capture skip its requests and its console lines.
+- Do not log through the library in the `onDrop` hook. A record from the hook can evict a stored batch.
+- `onDrop` can report a batch that storage evicts during its send. The server can still receive that batch.
+- The package exports the types `DropSummary` and `LossReason`.
+
+### Changed - v0.9.1
+
+- A later `configure()` cannot change `batching` or `retention` after the delivery stack loads. It cannot change `limits` or `journey.maxAgeMs` after the first `configure()`. It reports `config.invalid`. The values in force stay.
+- A log call before `configure()` starts a runtime with defaults. The first `configure()` then sets `batching`, `retention`, `limits` and `journey.maxAgeMs` of that runtime.
+- An action is an audit fact. When storage is over `retention.maxBatches` or over the quota of the browser, it removes the batches without an action first. `retention.maxAgeMs` still removes each old batch.
+- The hold buffers keep up to 2000 actions before startup and while the delivery stack loads. The 500-record limit applies only to the other records.
+- A prune that removes expired batches and batches over `retention.maxBatches` reports each group with its own reason. `storage.evicted` and the gap warning record come one time for each group.
+- With `storage: "none"`, a failed send gives the gap warning record. A throttle limits that record.
+- The gzip size budget of the main graph is 24,400 B. It was 23,700 B.
+
+### Fixed - v0.9.1
+
+- When a keepalive exit fetch fails or throws, the library puts the batch in the emergency queue. The next page load sends it. Before, the library lost the batch.
+- `shutdown()` gives the forward buffer to the bus before the bus stops. Before, a forwarder lost the records that it logged in the same task as `shutdown()`.
+
 ## [0.9.0] - 2026-10-28
 
 ### Breaking changes - v0.9.0

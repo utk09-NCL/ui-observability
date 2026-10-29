@@ -4,6 +4,7 @@ import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { ExitTransport, ObservabilityConfig } from "../src/models/config";
+import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { ExitFlush } from "../src/transport/exit-flush";
 
@@ -43,6 +44,8 @@ interface Options {
   headers?: Record<string, string>;
   /** Replaces the normal flush of the pipeline. */
   alive?: () => void | Promise<void>;
+  /** Receives the records that the exit flush loses. */
+  onLoss?: LossReporter;
 }
 
 /**
@@ -50,7 +53,7 @@ interface Options {
  * second call also passes the "sends once" test. That drain does not test the code that stops the
  * double send.
  */
-function setup({ records = [], config = {}, drain, headers, alive }: Options = {}) {
+function setup({ records = [], config = {}, drain, headers, alive, onLoss }: Options = {}) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -82,6 +85,7 @@ function setup({ records = [], config = {}, drain, headers, alive }: Options = {
     drainForExit,
     flushAlive,
     exitHeaders: () => headers,
+    onLoss,
   });
 
   built.push(flush);
@@ -401,6 +405,31 @@ describe("ExitFlush flush", () => {
     expect(codes()).toContain("transport.serialize_failed");
   });
 
+  it("gives onLoss the batch that its serializer cannot encode", () => {
+    stubBeacon();
+    const onLoss = vi.fn<LossReporter>();
+    const { flush } = setup({
+      records: [record("bye")],
+      onLoss,
+      config: {
+        serializer: {
+          name: "broken",
+          serialize: () => {
+            throw new Error("cannot encode");
+          },
+        },
+      },
+    });
+
+    flush.flush("pagehide");
+
+    expect(onLoss).toHaveBeenCalledWith(
+      "unserializable",
+      [expect.objectContaining({ body: "bye" })],
+      ["b1"],
+    );
+  });
+
   it("diverts an oversized batch to the synchronous emergency queue", () => {
     const beacon = stubBeacon();
     const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
@@ -466,7 +495,7 @@ describe("ExitFlush keepalive fallback", () => {
     expect(emergencyKeys()).toHaveLength(1);
   });
 
-  it("reports headers that the browser cannot build, and does not throw", () => {
+  it("reports headers that the browser cannot build, parks the batch and does not throw", () => {
     // A header value outside ISO-8859-1, for example "张三", makes the Headers constructor throw.
     vi.stubGlobal("Headers", function BrokenHeaders() {
       throw new TypeError("Invalid header value");
@@ -480,6 +509,7 @@ describe("ExitFlush keepalive fallback", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(codes()).toContain("transport.http_error");
+    expect(emergencyKeys()).toHaveLength(1);
   });
 
   it("parks the batch when the browser refuses the beacon", () => {
@@ -507,19 +537,21 @@ describe("ExitFlush keepalive fallback", () => {
     expect(codes()).toContain("transport.http_error");
   });
 
-  it("reports a keepalive fetch that never arrives", async () => {
+  it("reports a keepalive fetch that never arrives, and parks the batch", async () => {
     vi.stubGlobal("navigator", undefined);
     stubFetch(() => Promise.reject(new Error("network is down")));
 
     const { flush, events } = setup({ records: [record("bye")] });
-    flush.flush("pagehide");
+    flush.flush("shutdown");
 
     await vi.waitFor(() => {
       expect(events.some((event) => event.message.includes("exit flush failed"))).toBe(true);
     });
+    // After shutdown(), the document is still alive. The next page load sends the batch.
+    expect(emergencyKeys()).toHaveLength(1);
   });
 
-  it("reports a fetch that throws before it returns a promise", () => {
+  it("reports a fetch that throws before it returns a promise, and parks the batch", () => {
     vi.stubGlobal("navigator", undefined);
     vi.stubGlobal("fetch", () => {
       throw new Error("fetch is not usable here");
@@ -529,6 +561,7 @@ describe("ExitFlush keepalive fallback", () => {
     flush.flush("pagehide");
 
     expect(codes()).toContain("transport.http_error");
+    expect(emergencyKeys()).toHaveLength(1);
   });
 });
 

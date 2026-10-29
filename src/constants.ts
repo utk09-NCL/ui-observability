@@ -246,7 +246,7 @@ export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
  * Change it by hand when you change the version in package.json.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.9.0";
+export const TELEMETRY_SDK_VERSION = "0.9.1";
 
 /**
  * Value of `telemetry.sdk.language`.
@@ -551,6 +551,9 @@ export const LEVEL_BYPASS_TYPES: readonly LogType[] = ["action", "metric"];
 /** Record kind routed to the metric stream. */
 export const LOG_TYPE_METRIC: LogType = "metric";
 
+/** Record kind of an audit fact. Storage and the hold buffers drop it last. */
+export const LOG_TYPE_ACTION: LogType = "action";
+
 // ----------------------------------
 // Bus
 // ----------------------------------
@@ -679,6 +682,7 @@ export const REMOTE_SAMPLING_POLL_MS = 30_000;
 export const UNDEFAULTED_CONFIG_KEYS = [
   "redact",
   "onDiagnostic",
+  "onDrop",
   "headers",
   "serializer",
   "otelLoader",
@@ -690,7 +694,15 @@ export const UNDEFAULTED_CONFIG_KEYS = [
  * Nested config section keys.
  * @see {@link ResolvedConfig}
  */
-export const CONFIG_SECTIONS = ["sampling", "bus", "journey", "capture"] as const;
+export const CONFIG_SECTIONS = [
+  "sampling",
+  "bus",
+  "journey",
+  "batching",
+  "retention",
+  "limits",
+  "capture",
+] as const;
 
 /**
  * Section keys with no default, excluded from their section of `DEFAULT_CONFIG`.
@@ -700,52 +712,10 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
   sampling: [],
   bus: [],
   journey: [],
+  batching: [],
+  retention: [],
+  limits: [],
   capture: ["webVitalsLoader"],
-};
-
-/**
- * Default runtime config before the consumer calls `configure()`. It excludes `serializer`.
- * `resolveConfig` supplies that default to prevent a circular import.
- * @see {@link ResolvedConfig}
- * @see {@link UNDEFAULTED_CONFIG_KEYS}
- */
-export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
-  endpoint: "",
-  serviceName: "",
-  serviceVersion: "",
-  environment: "",
-  enabled: true,
-  minLevel: "INFO",
-  compression: "gzip",
-  credentials: "omit",
-  storage: "auto",
-  identity: "storage",
-  sampling: {
-    defaultRate: 1,
-    rates: {},
-    alwaysSampleTypes: ["action"],
-    remote: false,
-    remoteMaxRate: 1,
-  },
-  bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
-  journey: { scope: "auto" },
-  capture: {
-    errors: true,
-    rejections: true,
-    resourceErrors: false,
-    fetch: false,
-    xhr: false,
-    interactions: false,
-    navigation: false,
-    webVitals: false,
-    longFrames: false,
-    longFrameThresholdMs: LONG_FRAME_THRESHOLD_MS,
-    console: false,
-    fullUrls: false,
-    ignoreUrls: [],
-    propagateTraceHeaderTo: [],
-  },
-  console: { level: null, styles: CONSOLE_DEFAULT_STYLES },
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */
@@ -843,8 +813,14 @@ export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
 /** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
 export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
-/** Max records a context buffers before it knows its bus role. */
+/** Max records that are not actions in one hold buffer. A full buffer drops the oldest. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
+
+/** Max action records in one hold buffer. Actions have their own cap. A log storm cannot push one out. */
+export const BUS_MAX_BOOT_BUFFER_ACTIONS = 2000;
+
+/** Max different values in each list of an onDrop summary. */
+export const DROP_SUMMARY_MAX_ITEMS = 20;
 
 /** Max characters of an untrusted message type in a diagnostic detail. The sender sets the text. */
 export const BUS_TYPE_DETAIL_MAX_CHARS = 32;
@@ -876,4 +852,62 @@ export const RECORD_LIMITS = {
   maxArrayLength: 100,
   maxNodes: 10_000,
   maxRecordBytes: 32_768,
+};
+
+// ----------------------------------
+// Config defaults
+// ----------------------------------
+
+/**
+ * Default runtime config before the consumer calls `configure()`. It excludes `serializer`.
+ * `resolveConfig` supplies that default to prevent a circular import.
+ * It comes after the constants that it reads. A const cannot be read before its line.
+ * @see {@link ResolvedConfig}
+ * @see {@link UNDEFAULTED_CONFIG_KEYS}
+ */
+export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
+  endpoint: "",
+  serviceName: "",
+  serviceVersion: "",
+  environment: "",
+  enabled: true,
+  minLevel: "INFO",
+  compression: "gzip",
+  credentials: "omit",
+  storage: "auto",
+  identity: "storage",
+  sampling: {
+    defaultRate: 1,
+    rates: {},
+    alwaysSampleTypes: ["action"],
+    remote: false,
+    remoteMaxRate: 1,
+  },
+  bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
+  journey: { scope: "auto", maxAgeMs: JOURNEY_MAX_AGE_MS },
+  batching: {
+    logFlushIntervalMs: LOG_FLUSH_INTERVAL_MS,
+    logBatchSize: LOG_BATCH_SIZE,
+    metricFlushIntervalMs: METRIC_FLUSH_INTERVAL_MS,
+    metricBatchSize: METRIC_BATCH_SIZE,
+  },
+  retention: { mode: "limited", ...STORAGE_LIMITS },
+  limits: { ...RECORD_LIMITS },
+  capture: {
+    errors: true,
+    rejections: true,
+    resourceErrors: false,
+    fetch: false,
+    xhr: false,
+    interactions: false,
+    navigation: false,
+    webVitals: false,
+    longFrames: false,
+    longFrameThresholdMs: LONG_FRAME_THRESHOLD_MS,
+    console: false,
+    fullUrls: false,
+    ignoreUrls: [],
+    propagateTraceHeaderTo: [],
+  },
+  console: { level: null, styles: CONSOLE_DEFAULT_STYLES },
 };
