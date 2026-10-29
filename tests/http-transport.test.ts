@@ -282,6 +282,40 @@ describe("HttpTransport", () => {
     expect(dynamic.lastHeaders()).toEqual({ authorization: "Bearer t1" });
   });
 
+  it("sends a batch of metric records to metricsEndpoint in the OTLP metrics format", async () => {
+    const fetchMock = answer(204);
+    const live = config({ metricsEndpoint: "https://x/v1/metrics" });
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await new HttpTransport(live, diagnostics()).send(sent);
+    await new HttpTransport(live, diagnostics()).send(batch(1));
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://x/v1/metrics",
+      "https://x/v1/logs",
+    ]);
+    // compression: "none" keeps the body as text.
+    const body = initOf(fetchMock).body as string;
+    expect(Object.keys(JSON.parse(body))).toEqual(["resourceMetrics"]);
+  });
+
+  it("keeps the cached headers after a send to metricsEndpoint", async () => {
+    // The headers apply to both endpoints. The exit flush must not lose them.
+    answer(204);
+    const live = config({
+      metricsEndpoint: "https://x/v1/metrics",
+      headers: () => ({ authorization: "Bearer t1" }),
+    });
+    const t = new HttpTransport(live, diagnostics());
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await t.send(sent);
+
+    expect(t.lastHeaders()).toEqual({ authorization: "Bearer t1" });
+  });
+
   it("gives no cached headers after configure() replaces the headers function", async () => {
     // At a tenant switch, the old Authorization value must not go to the new endpoint.
     answer(204);

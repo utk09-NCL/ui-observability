@@ -84,13 +84,14 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
-   * Serializes a batch with the configured serializer. It reports a serializer that throws.
+   * Serializes a batch with the configured serializer. A metrics batch gets the OTLP metrics
+   * format. It reports a serializer that throws.
    * @param batch Batch to serialize.
    * @returns The serialized batch, or undefined if the serializer threw.
    */
   protected serialize(batch: LogBatch): SerializedBatch | undefined {
     const serialized = serializeBatch(
-      this.config.serializer,
+      this.config,
       batch,
       this.diagnostics,
       "The serializer threw an error. The library dropped the batch.",

@@ -8,6 +8,8 @@ import { App } from "./app";
 // every render and, under StrictMode, immediately doubled.
 configure({
   endpoint: "http://localhost:8787/v1/logs",
+  // Counter, histogram and HTTP duration points go here in the OTLP metrics format.
+  metricsEndpoint: "http://localhost:8787/v1/metrics",
   serviceName: "example-react",
   serviceVersion: "0.0.0",
   environment: "local",

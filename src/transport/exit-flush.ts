@@ -21,7 +21,7 @@ import { saveToEmergencyQueue } from "../storage/emergency-queue";
 import { runAsLibraryRequest } from "../utils/library-request";
 import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
-import { serializeBatch } from "./serializers/select";
+import { batchKind, serializeBatch } from "./serializers/select";
 
 /** This type names the lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
@@ -52,8 +52,8 @@ export interface ExitFlushDeps {
   config: ResolvedConfig;
   /** This field holds the diagnostics reporter. */
   diagnostics: Diagnostics;
-  /** This callback drains all buffered and unconfirmed batches into one LogBatch. */
-  drainForExit: () => LogBatch | null;
+  /** This callback drains all buffered and unconfirmed records into one batch for each kind. */
+  drainForExit: () => LogBatch[];
   /**
    * This callback runs a normal flush with headers, gzip and retry. A hidden document uses it.
    * It does not touch an in-flight batch.
@@ -66,6 +66,8 @@ export interface ExitFlushDeps {
   exitHeaders: () => Record<string, string> | undefined;
   /** This callback receives the records that the exit flush loses. */
   onLoss?: LossReporter;
+  /** This callback sends the points of the open metric interval into the buffers. */
+  beforeExit?: () => void;
 }
 
 /**
@@ -161,6 +163,11 @@ export class ExitFlush {
   flush(reason: ExitReason): void {
     const { config, diagnostics } = this.deps;
 
+    // The drain below then takes the points of the open metric interval.
+    diagnostics.guard("pipeline.crashed", "The metric points before the exit flush failed.", () => {
+      this.deps.beforeExit?.();
+    });
+
     // hidden fires at each tab switch. The document keeps running. A normal flush keeps the
     // headers, gzip and the retry. A beacon has none of them. The in-flight batches complete
     // by themselves. A take of them here sends the records again under a new id.
@@ -179,8 +186,23 @@ export class ExitFlush {
       return;
     }
 
-    const batch = this.deps.drainForExit();
-    if (!batch || batch.records.length === 0) {
+    for (const batch of this.deps.drainForExit()) {
+      // resolveConfig keeps only a valid absolute metricsEndpoint.
+      const target = batchKind(batch, config) === "metrics" ? config.metricsEndpoint : url.href;
+      this.flushBatch(batch, reason, new URL(target));
+    }
+  }
+
+  /**
+   * Sends one exit batch with a beacon, a keepalive fetch or emergency storage.
+   * @param batch Batch to send.
+   * @param reason Reason code of the flush.
+   * @param url Endpoint of the batch.
+   */
+  private flushBatch(batch: LogBatch, reason: ExitReason, url: URL): void {
+    const { config, diagnostics } = this.deps;
+
+    if (batch.records.length === 0) {
       return;
     }
 
@@ -258,26 +280,24 @@ export class ExitFlush {
    * @param onExit Synchronous exit hook of the custom transport.
    */
   private flushCustom(reason: ExitReason, onExit: ExitTransport | undefined): void {
-    const { diagnostics } = this.deps;
+    const { config, diagnostics } = this.deps;
 
-    const batch = this.deps.drainForExit();
-    if (!batch || batch.records.length === 0) {
-      return;
-    }
+    for (const batch of this.deps.drainForExit()) {
+      const serialized = this.serialize(batch, reason);
+      if (!serialized) {
+        continue;
+      }
 
-    const serialized = this.serialize(batch, reason);
-    if (!serialized) {
-      return;
-    }
+      const request = toTransportRequest(batch, serialized, batchKind(batch, config));
+      const accepted =
+        onExit !== undefined &&
+        diagnostics.guard("transport.http_error", "The transportOnExit hook threw an error.", () =>
+          runAsLibraryRequest(() => onExit(request)),
+        ) === true;
 
-    const accepted =
-      onExit !== undefined &&
-      diagnostics.guard("transport.http_error", "The transportOnExit hook threw an error.", () =>
-        runAsLibraryRequest(() => onExit(toTransportRequest(batch, serialized))),
-      ) === true;
-
-    if (!accepted) {
-      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      if (!accepted) {
+        saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      }
     }
   }
 
@@ -289,7 +309,7 @@ export class ExitFlush {
    */
   private serialize(batch: LogBatch, reason: ExitReason): SerializedBatch | undefined {
     const serialized = serializeBatch(
-      this.deps.config.serializer,
+      this.deps.config,
       batch,
       this.deps.diagnostics,
       `The ${reason} exit flush could not serialize its batch.`,

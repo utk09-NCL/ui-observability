@@ -27,6 +27,7 @@ import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
+import { batchKind } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
 /** Advice for a 401 or a 403 answer on the HTTP path. */
@@ -66,13 +67,15 @@ export class HttpTransport extends StatusTransport {
   private cachedHeaders: CachedHeaders | undefined;
 
   /**
-   * Sends one log batch over HTTP.
+   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint.
    * @param batch Batch to send.
    * @param onKeepalive Runs when a request of the batch starts with keepalive.
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
-    const { endpoint } = this.config;
+    const { config } = this;
+    const endpoint =
+      batchKind(batch, config) === "metrics" ? config.metricsEndpoint : config.endpoint;
 
     if (!endpoint || batch.records.length === 0) {
       return;
@@ -95,8 +98,10 @@ export class HttpTransport extends StatusTransport {
       return headers;
     }
 
+    // The headers apply to both endpoints. The last send can be a metrics batch.
     const cached = this.cachedHeaders;
-    const current = cached?.source === headers && cached.endpoint === this.config.endpoint;
+    const endpoints = [this.config.endpoint, this.config.metricsEndpoint];
+    const current = cached?.source === headers && endpoints.includes(cached.endpoint);
 
     return current ? cached.headers : undefined;
   }

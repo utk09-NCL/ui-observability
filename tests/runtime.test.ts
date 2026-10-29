@@ -5,10 +5,12 @@ import {
   BUS_MAX_BOOT_BUFFER_ACTIONS,
   BUS_MAX_BOOT_BUFFER_RECORDS,
   CONSOLE_DEFAULT_STYLES as STYLES,
+  METRIC_DEFAULT_BOUNDARIES,
   TELEMETRY_SDK_VERSION,
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { JourneyEngine } from "../src/core/journey";
+import { Meter } from "../src/core/meter";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
@@ -21,6 +23,7 @@ import { RetryEngine } from "../src/transport/retry-engine";
 import {
   adoptJourney,
   configure,
+  counter,
   currentJourney,
   debug,
   endJourney,
@@ -31,6 +34,7 @@ import {
   getLogger,
   getQueueDepth,
   getTraceHeaders,
+  histogram,
   info,
   logAction,
   logEvent,
@@ -83,6 +87,18 @@ const settle = (): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+
+/**
+ * Takes the records that wait in the pipeline of the sender.
+ * @returns The records of each kind, metrics first.
+ */
+function buffered(): LogRecord[] {
+  return (
+    runtime()
+      ["sender"]?.["pipeline"].drainForExit()
+      .flatMap((batch) => batch.records) ?? []
+  );
+}
 
 /** Waits for startup to finish. */
 async function ready(): Promise<void> {
@@ -372,10 +388,10 @@ describe("runtime lifecycle", () => {
     const journey = startJourney("order-lifecycle");
 
     await ready();
-    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
+    const [first] = buffered();
 
-    expect(batch?.records[0].body).toBe("during boot");
-    expect(batch?.records[0].attributes["journey.id"]).toBe(journey.id);
+    expect(first.body).toBe("during boot");
+    expect(first.attributes["journey.id"]).toBe(journey.id);
   });
 
   it("drops the oldest buffered record once the boot buffer is full", () => {
@@ -559,8 +575,7 @@ describe("runtime lifecycle", () => {
     getLogger("test").info("a good local one");
     runtime()["ingestForwarded"]([{}, null, "nope", forwardedRecord("a good forwarded one")]);
 
-    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
-    expect(batch?.records.map((record) => record.body)).toEqual([
+    expect(buffered().map((record) => record.body)).toEqual([
       "a good local one",
       "a good forwarded one",
     ]);
@@ -573,7 +588,7 @@ describe("runtime lifecycle", () => {
 
     runtime()["ingestForwarded"]([forwardedRecord("from a frame")]);
 
-    expect(runtime()["sender"]?.["pipeline"]?.drainPending()).toBeNull();
+    expect(buffered()).toEqual([]);
     expect(runtime().diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
   });
 
@@ -595,7 +610,7 @@ describe("runtime lifecycle", () => {
     record.timeUnixNano = `${String(Date.now() - 1000)}000000`;
     runtime()["ingestForwarded"]([record]);
 
-    const [stored] = runtime()["sender"]?.["pipeline"]?.drainPending()?.records ?? [];
+    const [stored] = buffered();
     expect(Number(stored.observedTimeUnixNano)).toBeGreaterThan(Number(stored.timeUnixNano));
   });
 
@@ -676,8 +691,7 @@ describe("runtime lifecycle", () => {
     );
     await settle();
 
-    const batch = runtime()["sender"]?.["pipeline"]?.drainPending();
-    expect(batch?.records.map((record) => record.body)).toEqual(["routed through bus"]);
+    expect(buffered().map((record) => record.body)).toEqual(["routed through bus"]);
   });
 
   it("regenerates the tab id when a broadcast tab conflict arrives", async () => {
@@ -876,7 +890,7 @@ describe("runtime lifecycle", () => {
     if (!pipeline) {
       throw new Error("the sender built no pipeline");
     }
-    const pending = vi.spyOn(pipeline, "drainPending");
+    const pending = vi.spyOn(pipeline, "flushPending");
     const forExit = vi.spyOn(pipeline, "drainForExit");
 
     // A tab switch. The document continues to run. A batch in flight is still on its way. A take of
@@ -936,8 +950,7 @@ describe("delivery stack loading", () => {
     });
 
     // The runtime holds the record during the load. Then it gives the record to the stack.
-    const batch = runtime()["sender"]?.["pipeline"].drainPending();
-    expect(batch?.records.map((record) => record.body)).toEqual(["during load"]);
+    expect(buffered().map((record) => record.body)).toEqual(["during load"]);
   });
 
   it("stops the retry loop when the exit flush fails to install", async () => {
@@ -1243,8 +1256,7 @@ describe("delivery stack loading", () => {
 
     await ready();
 
-    const batch = runtime()["sender"]?.["pipeline"].drainPending();
-    expect(batch?.records.map((record) => record.body)).toEqual(["during boot"]);
+    expect(buffered().map((record) => record.body)).toEqual(["during boot"]);
   });
 });
 
@@ -1275,8 +1287,7 @@ describe("bus loading", () => {
     await settle();
 
     expect(runtime()["bus"]).not.toBeNull();
-    const batch = runtime()["sender"]?.["pipeline"].drainPending();
-    expect(batch?.records.map((record) => record.body)).toEqual(["from a child"]);
+    expect(buffered().map((record) => record.body)).toEqual(["from a child"]);
   });
 
   it("attaches a worker before the bus completes its start", async () => {
@@ -2208,5 +2219,138 @@ describe("runtime reconfigure", () => {
     info("console only");
 
     expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
+  });
+});
+
+describe("counter and histogram", () => {
+  /**
+   * Collects the metric points that the runtime emits.
+   * @returns The spy on emit and a reader of the points.
+   */
+  const points = () => {
+    const emit = vi.spyOn(runtime(), "emit");
+    const read = () =>
+      emit.mock.calls
+        .map(([record]) => record)
+        .filter((record): record is LogRecord => record?.attributes["log.type"] === "metric");
+    return { emit, read };
+  };
+
+  it("sends one point for many adds, also at a sampling rate of zero", async () => {
+    configure({ ...base, sampling: { defaultRate: 0 } });
+    await ready();
+    const { read } = points();
+    const orders = counter("orders.submitted");
+
+    for (let i = 0; i < 1000; i++) {
+      orders.add(1, { venue: "LSE" });
+    }
+    runtime()["meter"].collect();
+
+    expect(read()).toHaveLength(1);
+    expect(read()[0].attributes).toMatchObject({
+      "metric.name": "orders.submitted",
+      "metric.value": 1000,
+      venue: "LSE",
+      "app.namespace": "uiobs.metrics",
+    });
+  });
+
+  it("gives a histogram its unit and boundaries", async () => {
+    configure(base);
+    await ready();
+    const { read } = points();
+
+    histogram("pricing.latency", { unit: "ms", boundaries: [10, 100] }).record(42);
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes).toMatchObject({
+      "metric.unit": "ms",
+      "metric.bounds": [10, 100],
+      "metric.bucket_counts": [0, 1, 0],
+    });
+  });
+
+  it("gives a counter its unit, and a histogram the default unit and boundaries", async () => {
+    configure(base);
+    await ready();
+    const { read } = points();
+
+    counter("payload.size", { unit: "By" }).add(512);
+    histogram("render").record(3);
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes["metric.unit"]).toBe("By");
+    expect(read()[1].attributes).toMatchObject({
+      "metric.unit": "count",
+      "metric.bounds": METRIC_DEFAULT_BOUNDARIES,
+    });
+  });
+
+  it("records the HTTP client histogram of a captured fetch", async () => {
+    configure({ ...base, capture: { fetch: true } });
+    await ready();
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].some((capture) => capture.name === "network")).toBe(true);
+    });
+    const { read } = points();
+
+    await fetch("https://api.example/orders");
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes).toMatchObject({
+      "metric.name": "http.client.request.duration",
+      "metric.unit": "s",
+      "server.address": "api.example",
+    });
+  });
+
+  it("does not print a point on the console", async () => {
+    configure({ ...base, console: true });
+    await ready();
+    const write = vi.spyOn(runtime().console, "write");
+
+    counter("orders").add(1);
+    runtime()["meter"].collect();
+
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("sends the open interval on flush() and on shutdown()", async () => {
+    configure(base);
+    await ready();
+    const { read } = points();
+
+    counter("orders").add(1);
+    await flush();
+    counter("orders").add(2);
+    await shutdown();
+
+    expect(read().map((record) => record.attributes["metric.value"])).toEqual([1, 2]);
+  });
+
+  it("gives the exit flush a hook that sends the open interval", async () => {
+    const create = vi.spyOn(Sender, "create");
+    configure(base);
+    await ready();
+    const collect = vi.spyOn(runtime()["meter"], "collect");
+
+    create.mock.calls[0][0].beforeExit?.();
+
+    expect(collect).toHaveBeenCalledOnce();
+  });
+
+  it("starts no runtime when it makes a handle, and records nothing after shutdown()", async () => {
+    const orders = counter("orders");
+    expect(ObservabilityRuntime.current()).toBeNull();
+
+    configure(base);
+    await ready();
+    await shutdown();
+    const record = vi.spyOn(Meter.prototype, "record");
+    orders.add(1);
+
+    // A value after shutdown would arm a timer that outlives the runtime.
+    expect(record).not.toHaveBeenCalled();
   });
 });

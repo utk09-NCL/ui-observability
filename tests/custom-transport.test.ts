@@ -77,11 +77,29 @@ describe("CustomTransport", () => {
     await sut.send(sent);
 
     const [request] = transport.mock.calls[0];
+    expect(request.kind).toBe("logs");
     expect(request.batchId).toBe("batch-1");
     expect(request.attempt).toBe(3);
     expect(request.contentType).toBe("application/json");
     expect(JSON.parse(request.body)).toHaveProperty("resourceLogs");
     expect(request.records).toBe(sent.records);
+  });
+
+  it("gives a batch of metric records with metricsEndpoint set the metrics kind and body", async () => {
+    const transport = vi.fn<Transport>(() => Promise.resolve({ status: 202 }));
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const config = resolveConfig(
+      { endpoint: null, serviceName: "svc", transport, metricsEndpoint: "https://x/v1/metrics" },
+      diagnostics,
+    );
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await new CustomTransport(config, diagnostics).send(sent);
+
+    const [request] = transport.mock.calls[0];
+    expect(request.kind).toBe("metrics");
+    expect(JSON.parse(request.body)).toHaveProperty("resourceMetrics");
   });
 
   it("does not call the transport for an empty batch or with no transport", async () => {

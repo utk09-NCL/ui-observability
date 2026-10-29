@@ -1,6 +1,7 @@
 // src/transport/serializers/otlp.ts
 //
 // This module serializes log batches as OTLP/JSON log records. It groups the records by resource.
+// The OTLP metrics serializer uses its value encoding and its resource grouping.
 
 import {
   CONTENT_TYPE_JSON,
@@ -15,7 +16,7 @@ import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 type AnyValue = Record<string, unknown>;
 
 /** This interface holds an OTLP KeyValue pair. */
-interface KeyValue {
+export interface KeyValue {
   /** This field holds the attribute key. */
   key: string;
   /** This field holds the typed AnyValue. */
@@ -23,7 +24,7 @@ interface KeyValue {
 }
 
 /** This interface holds the records that share resource attributes. */
-interface ResourceGroup {
+export interface ResourceGroup {
   /** This field holds the resource attribute map. */
   resource: Record<string, unknown>;
   /** This field holds the log records of the resource. */
@@ -81,7 +82,7 @@ function toAnyValue(value: unknown): AnyValue | null {
  * @param source Key-value attribute object.
  * @returns Array of valid KeyValue pairs.
  */
-function toKeyValues(source: Record<string, unknown>): KeyValue[] {
+export function toKeyValues(source: Record<string, unknown>): KeyValue[] {
   const out: KeyValue[] = [];
 
   for (const [key, raw] of Object.entries(source)) {
@@ -114,6 +115,29 @@ function resourceKey(resource: Record<string, unknown>): string {
   return key;
 }
 
+/**
+ * Groups records by their resource attributes. It keeps the record order in each group.
+ * @param records Records to group.
+ * @returns One group for each resource.
+ */
+export function groupByResource(records: LogRecord[]): ResourceGroup[] {
+  const groups = new Map<string, ResourceGroup>();
+
+  for (const record of records) {
+    const key = resourceKey(record.resource);
+    const group = groups.get(key);
+
+    if (group) {
+      group.records.push(record);
+      continue;
+    }
+
+    groups.set(key, { resource: record.resource, records: [record] });
+  }
+
+  return [...groups.values()];
+}
+
 /** This serializer writes log records as OTLP/JSON payloads. */
 export const otlpSerializer: LogSerializer = {
   /** This field holds the format name. */
@@ -126,21 +150,7 @@ export const otlpSerializer: LogSerializer = {
    * @returns Serialized JSON batch payload.
    */
   serialize(records: LogRecord[]): SerializedBatch {
-    const groups = new Map<string, ResourceGroup>();
-
-    for (const record of records) {
-      const key = resourceKey(record.resource);
-      const group = groups.get(key);
-
-      if (group) {
-        group.records.push(record);
-        continue;
-      }
-
-      groups.set(key, { resource: record.resource, records: [record] });
-    }
-
-    const resourceLogs = [...groups.values()].map((group) => ({
+    const resourceLogs = groupByResource(records).map((group) => ({
       resource: { attributes: toKeyValues(group.resource) },
       scopeLogs: [
         {

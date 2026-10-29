@@ -2,6 +2,8 @@
 //
 // Instruments fetch and XMLHttpRequest to record network request outcomes and timing.
 
+import type { InstrumentDef, MetricAttributes } from "../models/metric";
+import { isErrorLike } from "../utils/error-like";
 import { isLibraryRequest } from "../utils/library-request";
 import { patch } from "../utils/patch";
 import { stripUrlQuery } from "../utils/platform";
@@ -9,6 +11,57 @@ import { type Capture, type CaptureContext, matchesAny } from "./types";
 
 /** Signature of the global fetch function. */
 type FetchFn = typeof fetch;
+
+/** Milliseconds in one second. The histogram is in seconds, as the OpenTelemetry name gives. */
+const MS_PER_SECOND = 1000;
+
+/**
+ * The HTTP client duration histogram of the OpenTelemetry semantic conventions. Its boundaries
+ * are the ones that the conventions advise.
+ */
+const HTTP_DURATION: InstrumentDef = {
+  name: "http.client.request.duration",
+  kind: "histogram",
+  unit: "s",
+  boundaries: [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10],
+};
+
+/**
+ * Gives the low-cardinality attributes of one request. The path and the query stay out. Each
+ * value of an attribute makes a new series in the backend.
+ * @param method Uppercase HTTP method.
+ * @param url Request URL.
+ * @param status HTTP status code, or 0 when no response came.
+ * @param error Failure of a request without a response.
+ * @returns The attribute set.
+ */
+function durationAttributes(
+  method: string,
+  url: string,
+  status: number,
+  error: unknown,
+): MetricAttributes {
+  // A relative URL needs the page URL as its base. A worker has a location too.
+  const base = typeof location !== "undefined" ? location.href : undefined;
+  const attributes: MetricAttributes = {
+    "http.request.method": method,
+    "server.address": new URL(url, base).hostname,
+  };
+
+  if (status === 0) {
+    // A request without a response has the type of its error, for example TypeError.
+    const name = isErrorLike(error) ? error.name : "";
+    attributes["error.type"] = name === "" ? "_OTHER" : name;
+    return attributes;
+  }
+
+  attributes["http.response.status_code"] = status;
+  if (status >= 400) {
+    attributes["error.type"] = String(status);
+  }
+
+  return attributes;
+}
 
 /** Request data that the XHR wrapper keeps from open to send. */
 interface XhrMeta {
@@ -403,6 +456,18 @@ export class NetworkCapture implements Capture {
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
     const url = this.ctx.config.capture.fullUrls ? target : stripUrlQuery(target);
+
+    // The histogram has its own guard. A URL that does not parse must not stop the record.
+    if (this.ctx.config.capture.httpMetrics) {
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        `The library could not record the duration of ${method} ${url}.`,
+        () => {
+          const attributes = durationAttributes(method, target, status, error);
+          this.ctx.recordMetric(HTTP_DURATION, durationMs / MS_PER_SECOND, attributes);
+        },
+      );
+    }
 
     // This code runs inside the fetch call of the caller. An error here must not cause
     // the request of the caller to fail.

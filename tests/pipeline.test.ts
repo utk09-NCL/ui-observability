@@ -124,15 +124,36 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
-  it("hands both streams to the exit flush as one batch and clears them", () => {
+  it("hands each stream to the exit flush as its own batch and clears them", () => {
     const { pipeline } = setup();
     pipeline.push(record({ body: "log" }));
     pipeline.push(metric({ body: "metric" }));
 
-    const batch = pipeline.drainForExit();
+    const batches = pipeline.drainForExit();
 
-    expect(batch?.records.map((one) => one.body).sort()).toEqual(["log", "metric"]);
-    expect(pipeline.drainForExit()).toBeNull();
+    // A mixed batch sends a metric to the endpoint of the logs.
+    expect(batches.map((batch) => batch.records.map((one) => one.body))).toEqual([
+      ["metric"],
+      ["log"],
+    ]);
+    expect(pipeline.drainForExit()).toEqual([]);
+    pipeline.destroy();
+  });
+
+  it("sorts the records of the batches in flight by kind for the exit flush", () => {
+    const { pipeline, send } = setup();
+    send.mockImplementation(() => new Promise<void>(() => undefined));
+    pipeline.push(metric({ body: "metric in flight" }));
+    // The flush queues the batch. A queued batch counts as in flight.
+    void pipeline.flushPending();
+    pipeline.push(record({ body: "log" }));
+
+    const batches = pipeline.drainForExit();
+
+    expect(batches.map((batch) => batch.records.map((one) => one.body))).toEqual([
+      ["metric in flight"],
+      ["log"],
+    ]);
     pipeline.destroy();
   });
 
@@ -259,7 +280,7 @@ describe("LogPipeline", () => {
     }
 
     expect(diagnostics.snapshot()["record.dropped_by_ceiling"]).toBe(over);
-    expect(pipeline.drainPending()?.records).toHaveLength(ERROR_CEILING_MAX_PER_WINDOW);
+    expect(pipeline.drainForExit()[0].records).toHaveLength(ERROR_CEILING_MAX_PER_WINDOW);
     pipeline.destroy();
   });
 
@@ -268,10 +289,10 @@ describe("LogPipeline", () => {
     pipeline.push(record());
     pipeline.push(record());
 
-    const flushed = pipeline.drainForExit();
+    const [flushed] = pipeline.drainForExit();
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
 
-    expect(flushed?.records).toHaveLength(2);
+    expect(flushed.records).toHaveLength(2);
     expect(send).not.toHaveBeenCalled();
     pipeline.destroy();
   });
@@ -304,7 +325,12 @@ describe("LogPipeline", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(send).toHaveBeenCalledOnce();
-    expect(pipeline.drainPending()).toBeNull();
+    void pipeline.flushPending();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The flush sends no second copy. The batch stays in flight for the exit flush.
+    expect(send).toHaveBeenCalledOnce();
+    expect(pipeline.drainForExit()[0].records).toHaveLength(2);
     pipeline.destroy();
   });
 
@@ -323,10 +349,10 @@ describe("LogPipeline", () => {
     }
     await vi.advanceTimersByTimeAsync(0);
 
-    const batch = pipeline.drainForExit();
+    const [batch] = pipeline.drainForExit();
 
     expect(send).toHaveBeenCalledTimes(2);
-    expect(batch?.records).toHaveLength(6);
+    expect(batch.records).toHaveLength(6);
     pipeline.destroy();
   });
 
@@ -342,10 +368,10 @@ describe("LogPipeline", () => {
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
     pipeline.push(record({ body: "buffered" }));
 
-    const batch = pipeline.drainForExit();
+    const [batch] = pipeline.drainForExit();
 
     expect(send).toHaveBeenCalledOnce();
-    expect(batch?.records.map((one) => one.body)).toEqual(["buffered"]);
+    expect(batch.records.map((one) => one.body)).toEqual(["buffered"]);
     pipeline.destroy();
   });
 
@@ -357,7 +383,7 @@ describe("LogPipeline", () => {
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
 
     expect(send).not.toHaveBeenCalled();
-    expect(pipeline.drainPending()).toBeNull();
+    expect(pipeline.drainForExit()).toEqual([]);
     pipeline.destroy();
   });
 });
@@ -390,6 +416,21 @@ describe("LogPipeline flushPending", () => {
     });
     return () => settled;
   }
+
+  it("sends the metric records and the other records in separate batches", async () => {
+    const { pipeline, send } = setup();
+    pipeline.push(record({ body: "log" }));
+    pipeline.push(metric({ body: "metric" }));
+
+    await pipeline.flushPending();
+
+    // A mixed batch sends a metric to the endpoint of the logs.
+    expect(send.mock.calls.map(([batch]) => batch.records.map((one) => one.body))).toEqual([
+      ["metric"],
+      ["log"],
+    ]);
+    pipeline.destroy();
+  });
 
   it("sends the buffered records and waits for the batch in flight", async () => {
     const { pipeline, send } = setup();

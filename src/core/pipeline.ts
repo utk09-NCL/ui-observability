@@ -192,28 +192,21 @@ export class LogPipeline {
   }
 
   /**
-   * Drains the stream buffers into one batch. It does not take in-flight batches.
-   * An in-flight batch has its own ID and its send is not complete. If this method
-   * takes it, the pipeline sends each record again under a new ID. The server cannot
-   * deduplicate that ID.
-   * @returns Combined LogBatch, or null if the buffers hold no records.
-   */
-  drainPending(): LogBatch | null {
-    return this.toBatch([...this.streams.metrics.take(), ...this.streams.logs.take()]);
-  }
-
-  /**
-   * Drains all buffered and unconfirmed in-flight records into one exit batch in one step.
+   * Drains all buffered and unconfirmed in-flight records into exit batches in one step.
    * Records already given to fetch go again under a new batch ID. The server cannot
    * deduplicate them. Thus the exit flush can deliver duplicates. This is intentional.
    * A closing document cannot confirm delivery.
-   * @returns Combined LogBatch or null if no records are pending.
+   * @returns One batch of metric records and one batch of other records. A kind with no
+   * records has no batch. A mixed batch sends a metric to the endpoint of the logs.
    */
-  drainForExit(): LogBatch | null {
+  drainForExit(): LogBatch[] {
     const inFlight = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
     this.unconfirmed.clear();
 
-    return this.toBatch([...inFlight, ...this.streams.metrics.take(), ...this.streams.logs.take()]);
+    const metrics = [...inFlight.filter(isMetric), ...this.streams.metrics.take()];
+    const logs = [...inFlight.filter((record) => !isMetric(record)), ...this.streams.logs.take()];
+
+    return [this.toBatch(metrics), this.toBatch(logs)].filter((batch) => batch !== null);
   }
 
   /**
@@ -223,7 +216,13 @@ export class LogPipeline {
    * @returns Promise that resolves when the pipeline sends or stores each batch, or on destroy.
    */
   async flushPending(): Promise<void> {
-    this.enqueue(this.stopped ? null : this.drainPending());
+    // One batch for each stream. A mixed batch sends a metric to the endpoint of the logs.
+    // The claim does not take an in-flight batch. A second copy under a new ID is a duplicate
+    // that the server cannot remove.
+    if (!this.stopped) {
+      this.claim(this.streams.metrics);
+      this.claim(this.streams.logs);
+    }
 
     // A batch in the queue counts too. If not, the exit flush sends it again under a new id.
     await Promise.all([...this.open].map((pending) => pending.done));
@@ -287,7 +286,7 @@ export class LogPipeline {
 
   /**
    * Drains a stream buffer into a new batch and queues the batch for dispatch.
-   * The buffer always has one or more records here. Only a push starts a timer.
+   * A timer or a flush calls it. An empty buffer gives no batch.
    * Each `take` stops the timer that calls this method.
    * @param stream Stream buffer to drain.
    */

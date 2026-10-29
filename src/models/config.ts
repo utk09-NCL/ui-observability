@@ -344,6 +344,12 @@ export interface CaptureOptions {
    */
   xhr: boolean;
   /**
+   * Record the `http.client.request.duration` histogram of each request that `fetch` or `xhr`
+   * capture sees. The histogram is in seconds.
+   * @default true
+   */
+  httpMetrics: boolean;
+  /**
    * Log clicks and other interactions as breadcrumbs.
    * @default false
    */
@@ -438,8 +444,16 @@ export interface ResolvedConsole {
   styles: Required<ConsoleStyles>;
 }
 
+/**
+ * Kind of a batch. A batch of metric records is "metrics" when `metricsEndpoint` is set. Its body
+ * is then an OTLP `ExportMetricsServiceRequest`.
+ */
+export type BatchKind = "logs" | "metrics";
+
 /** One batch that the library gives to a custom transport. */
 export interface TransportRequest {
+  /** Kind of the batch. Send a "metrics" body to your metrics endpoint. */
+  kind: BatchKind;
   /** Serialized batch from the configured serializer. The library does not compress it. */
   body: string;
   /** Content type of `body`, from the serializer. */
@@ -494,6 +508,15 @@ export interface ObservabilityConfig {
    * If the key is missing or `""`, the library reports `config.invalid`.
    */
   endpoint?: string | null;
+
+  /**
+   * OTLP metrics endpoint URL, for example `"https://ingest.example/v1/metrics"`. With this key,
+   * the library sends each batch of metric records there as an OTLP `ExportMetricsServiceRequest`.
+   * Without it, metric records are log records on `endpoint`. The key needs `serializer: "otlp"`.
+   * Set `""` to turn it off.
+   * @default ""
+   */
+  metricsEndpoint?: string;
 
   /**
    * The library reports this value as `service.name`.
@@ -646,6 +669,8 @@ export interface ObservabilityConfig {
 export interface ResolvedConfig {
   /** Ingest endpoint URL, or null in console-only mode. */
   endpoint: string | null;
+  /** OTLP metrics endpoint URL. An empty string sends metric records as log records. */
+  metricsEndpoint: string;
   /** The library reports this value as `service.name`. */
   serviceName: string;
   /** The library reports this value as `service.version`. */

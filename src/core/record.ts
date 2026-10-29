@@ -123,6 +123,8 @@ export interface BuildInput {
   scoped?: Record<string, unknown>;
   /** Call-site payload attributes. */
   payload?: Record<string, unknown>;
+  /** True for a point of a counter or histogram. Sampling keeps it. */
+  aggregated?: boolean;
 }
 
 /**
@@ -197,6 +199,7 @@ export class RecordBuilder {
         namespace: input.namespace,
         journeyId: activeJourney?.id ?? "",
         traceId: traceCtx.traceId,
+        aggregated: input.aggregated,
       },
       config,
       remote.sampling?.current() ?? null,

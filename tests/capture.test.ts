@@ -32,7 +32,9 @@ const INGEST = "https://ingest.example/v1/logs";
 function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
   ctx: CaptureContext;
   logger: SpyLogger;
+  recordMetric: ReturnType<typeof vi.fn<CaptureContext["recordMetric"]>>;
 } {
+  const recordMetric = vi.fn<CaptureContext["recordMetric"]>();
   const diagnostics = new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 0);
   const logger: SpyLogger = {
     error: vi.fn<CaptureLogger["error"]>(),
@@ -44,6 +46,7 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
 
   return {
     logger,
+    recordMetric,
     ctx: {
       config: resolveConfig(
         {
@@ -59,6 +62,7 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
       tracing: new TraceEngine(diagnostics),
       // Fresh per context, as a new runtime gets a fresh set.
       once: { webVitals: false, navigationTiming: false, longFrames: false },
+      recordMetric,
     },
   };
 }
@@ -428,6 +432,122 @@ describe("NetworkCapture: fetch", () => {
     await runAsLibraryRequest(() => fetch("https://telemetry.app.internal/logs"));
 
     expect(logger.warn).not.toHaveBeenCalled();
+    capture.uninstall();
+  });
+
+  it("records the duration histogram in seconds with the attributes of the semantic conventions", async () => {
+    const { ctx: c, recordMetric } = ctx({ fetch: true });
+    globalThis.fetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal:8443/orders/42?token=secret", { method: "post" });
+    await fetch("https://api.internal/orders");
+
+    // The path, the query and the port stay out. Each value makes a new series in the backend.
+    expect(
+      recordMetric.mock.calls.map(([def, , attributes]) => [def.name, def.unit, attributes]),
+    ).toEqual([
+      [
+        "http.client.request.duration",
+        "s",
+        {
+          "http.request.method": "POST",
+          "server.address": "api.internal",
+          "http.response.status_code": 503,
+          "error.type": "503",
+        },
+      ],
+      [
+        "http.client.request.duration",
+        "s",
+        {
+          "http.request.method": "GET",
+          "server.address": "api.internal",
+          "http.response.status_code": 200,
+        },
+      ],
+    ]);
+    expect(recordMetric.mock.calls[0][1]).toBeLessThan(1);
+    capture.uninstall();
+  });
+
+  it("gives a request without a response the type of its error", async () => {
+    const { ctx: c, recordMetric } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError("network down"));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal/a").catch(() => undefined);
+
+    expect(recordMetric.mock.calls[0][2]).toEqual({
+      "http.request.method": "GET",
+      "server.address": "api.internal",
+      "error.type": "TypeError",
+    });
+    capture.uninstall();
+  });
+
+  it("gives a rejection that is not an error the type _OTHER", async () => {
+    const { ctx: c, recordMetric } = ctx({ fetch: true });
+    // A script can reject with any value. This value is not an error.
+    globalThis.fetch = vi.fn<typeof fetch>().mockRejectedValueOnce("nope");
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal/a").catch(() => undefined);
+
+    expect(recordMetric.mock.calls[0][2]).toMatchObject({ "error.type": "_OTHER" });
+    capture.uninstall();
+  });
+
+  it("reads the server of a relative URL from the page", async () => {
+    vi.stubGlobal("location", { href: "https://app.example/blotter" });
+    const { ctx: c, recordMetric } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 204 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("/api/orders");
+
+    expect(recordMetric.mock.calls[0][2]).toMatchObject({ "server.address": "app.example" });
+    capture.uninstall();
+  });
+
+  it("reports a URL that does not parse, and still logs the request", async () => {
+    // A worker or a host without location has no base for a relative URL.
+    vi.stubGlobal("location", undefined);
+    const { ctx: c, logger, recordMetric } = ctx({ fetch: true });
+    const report = vi.spyOn(c.diagnostics, "report");
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 500 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("/api/orders");
+
+    expect(recordMetric).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledWith(
+      "capture.record_failed",
+      expect.stringContaining("duration"),
+      undefined,
+      expect.any(TypeError),
+    );
+    expect(logger.warn).toHaveBeenCalledOnce();
+    capture.uninstall();
+  });
+
+  it("records no histogram with httpMetrics off", async () => {
+    const { ctx: c, recordMetric } = ctx({ fetch: true, httpMetrics: false });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 204 })));
+
+    const capture = new NetworkCapture(c);
+    capture.install();
+    await fetch("https://api.internal/orders");
+
+    expect(recordMetric).not.toHaveBeenCalled();
     capture.uninstall();
   });
 

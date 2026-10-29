@@ -159,6 +159,7 @@ configure({
 - A rejected promise counts as a network error. The library sends the batch again later. A call that does not settle in 15 seconds counts as a timeout.
 - The library does not compress `request.body`. Compress it in your transport if necessary.
 - `request.records` holds the built records after `redact`. Do not change them, because the retry engine can send them again.
+- `request.kind` is `"metrics"` for a batch of metric records when `metricsEndpoint` is set. `request.body` is then an OTLP `ExportMetricsServiceRequest`. Send it to your metrics endpoint. Each other batch has the kind `"logs"`.
 - Without `transportOnExit`, the last batch goes to the emergency queue when the page closes. The next page load sends it.
 - With `storage: "none"`, the next page load cannot keep that batch. Set `transportOnExit`, or the library loses the last batch.
 - The library ignores a `retryAfterMs` or a `maxBytes` that is not a finite number. It uses 0 for a negative value.
@@ -241,22 +242,26 @@ X-UiObs-Sampling: {"v":1,"ttlMs":600000,"defaultRate":0.1,"rates":{"blotter.grid
 
 ### Logging Methods
 
-| Function                                       | Description                                                                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `getLogger(namespace, options?)`               | Returns the cached logger for a namespace. With `options`, it returns a new logger that is not cached. |
-| `trace(msg, payload?)`                         | Logs a TRACE record.                                                                                   |
-| `debug(msg, payload?)`                         | Logs a DEBUG record.                                                                                   |
-| `info(msg, payload?)`                          | Logs an INFO record.                                                                                   |
-| `warn(msg, payload?)`                          | Logs a WARN record.                                                                                    |
-| `error(msg, err?, payload?)`                   | Logs an ERROR record with the error and the breadcrumb trail.                                          |
-| `fatal(msg, err?, payload?)`                   | Logs a FATAL record with the error and the breadcrumb trail.                                           |
-| `logAction(name, payload?)`                    | Logs one user action.                                                                                  |
-| `logEvent(name, payload?)`                     | Logs one domain or lifecycle event.                                                                    |
-| `logMetric(name, value, unit?, type?, attrs?)` | Logs a measurement (`gauge`, `counter`, `histogram`).                                                  |
-| `timeSync(label, fn, attrs?)`                  | Times a function and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                  |
-| `timeAsync(label, fn, attrs?)`                 | Times a promise and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                   |
+| Function                                       | Description                                                                                                                                          |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getLogger(namespace, options?)`               | Returns the cached logger for a namespace. With `options`, it returns a new logger that is not cached.                                               |
+| `trace(msg, payload?)`                         | Logs a TRACE record.                                                                                                                                 |
+| `debug(msg, payload?)`                         | Logs a DEBUG record.                                                                                                                                 |
+| `info(msg, payload?)`                          | Logs an INFO record.                                                                                                                                 |
+| `warn(msg, payload?)`                          | Logs a WARN record.                                                                                                                                  |
+| `error(msg, err?, payload?)`                   | Logs an ERROR record with the error and the breadcrumb trail.                                                                                        |
+| `fatal(msg, err?, payload?)`                   | Logs a FATAL record with the error and the breadcrumb trail.                                                                                         |
+| `logAction(name, payload?)`                    | Logs one user action.                                                                                                                                |
+| `logEvent(name, payload?)`                     | Logs one domain or lifecycle event.                                                                                                                  |
+| `logMetric(name, value, unit?, type?, attrs?)` | Logs a measurement (`gauge`, `counter`, `histogram`).                                                                                                |
+| `counter(name, { unit? })`                     | Gives a counter. `add(value, attrs?)` sums a value of 0 or larger in memory. The library sends one point for each attribute set at each interval.    |
+| `histogram(name, { unit?, boundaries? })`      | Gives a histogram. `record(value, attrs?)` counts a value in buckets in memory. The library sends one point for each attribute set at each interval. |
+| `timeSync(label, fn, attrs?)`                  | Times a function and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                                                                |
+| `timeAsync(label, fn, attrs?)`                 | Times a promise and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                                                                 |
 
 The level methods give records with `log.type: "log"`. Records of the library itself have `log.type: "system"`. `logMetric` drops a value that is not finite and counts `record.dropped_malformed`.
+
+`counter` and `histogram` sum their values for `batching.metricFlushIntervalMs`. Then they send one point for each attribute set. 1000 calls of `add(1)` give one point with the value 1000. Sampling and `minLevel` do not drop a point. The console does not print it. Each instrument keeps at most 100 attribute sets in each interval. The values of more sets go to one set with `otel.metric.overflow: true`. Attribute values must be strings, finite numbers or booleans. Do not use a user id or a URL as an attribute. Each value makes a new series in the backend. The default histogram boundaries are `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]`. The points of the open interval go out at `flush()`, at `shutdown()` and before the exit flush. A frame that forwards its records sends its points at the interval, at `flush()` and at `shutdown()` only.
 
 ### Context & Correlation
 
@@ -291,6 +296,7 @@ No key is required. Set `endpoint` to send records. A value of the wrong type or
 | Key                              | Default      | Description                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`                       | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                                                                                                                                                                                                                                 |
+| `metricsEndpoint`                | `""`         | OTLP metrics endpoint, for example `https://ingest.example/v1/metrics`. With it, each batch of metric records goes there as an OTLP `ExportMetricsServiceRequest`. Without it, metric records are log records on `endpoint`. It needs `serializer: "otlp"`.                                                                                                               |
 | `serviceName`                    | `""`         | `service.name` on every record.                                                                                                                                                                                                                                                                                                                                           |
 | `serviceVersion`                 | `""`         | `service.version` on every record.                                                                                                                                                                                                                                                                                                                                        |
 | `environment`                    | `""`         | `deployment.environment` on every record.                                                                                                                                                                                                                                                                                                                                 |
@@ -346,6 +352,8 @@ capture: {
   resourceErrors: false, // <img>, <script>, <link> load failures
   fetch: false,          // window.fetch duration and status codes
   xhr: false,            // XMLHttpRequest duration and status codes
+  httpMetrics: true,     // http.client.request.duration histogram of fetch and xhr requests, in seconds.
+                         // Attributes: http.request.method, http.response.status_code, server.address, error.type
   interactions: false,   // Element click breadcrumbs
   navigation: false,     // Single-page navigation URL changes
   webVitals: false,      // Core Web Vitals (LCP, CLS, INP, FCP, TTFB)
@@ -435,7 +443,8 @@ The ingest server must meet these requirements:
 3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours.
 4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`. The library waits 60 s at most.
 5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the library split the batch. With a `headers` function, a `401` or `403` gets one more send with new headers. The library drops a batch that gets any other `4xx`.
-6. **Remote sampling (optional):** To send sampling rules, add `X-UiObs-Sampling` to a `2xx` answer. Expose the header with `Access-Control-Expose-Headers: x-uiobs-sampling`.
+6. **Metrics endpoint (optional):** With `metricsEndpoint`, the library sends each batch of metric records there as an OTLP/JSON `ExportMetricsServiceRequest`. The rules 1 to 5 also apply to that endpoint. `headers` applies to both endpoints. Each point is a delta from the previous point of its attribute set.
+7. **Remote sampling (optional):** To send sampling rules, add `X-UiObs-Sampling` to a `2xx` answer. Expose the header with `Access-Control-Expose-Headers: x-uiobs-sampling`.
 
 ---
 
@@ -448,7 +457,8 @@ npm run verify   # Format check, version sync, typecheck, lint, build and tests
 ```
 
 - Vanilla playground: `http://localhost:5173/playground/vanilla/index.html`
-- Mock ingest server: `http://localhost:8787`
+- Mock ingest server: `http://localhost:8787`. It accepts `/v1/logs` and `/v1/metrics`. It prints one line for each record and for each metric point.
+- The React example sends its counter, histogram and HTTP duration points to `/v1/metrics`.
 
 ### Example Applications
 

@@ -10,6 +10,7 @@ import {
   CAPTURE_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
   MAX_BREADCRUMBS,
+  METRIC_NAMESPACE,
   RUNTIME_GLOBAL_KEY,
   RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
@@ -25,6 +26,7 @@ import type {
   StorageStrategy,
 } from "../models/config";
 import type { LossReporter } from "../models/drop";
+import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { PruneResult } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
@@ -49,6 +51,7 @@ import { DropReporter } from "./drops";
 import { HoldBuffer } from "./hold-buffer";
 import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
 import { OneLogger } from "./logger";
+import { Meter } from "./meter";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
 import { shouldSample } from "./sampling";
@@ -187,6 +190,9 @@ export class ObservabilityRuntime {
   /** Collects lost records into onDrop summaries. */
   private readonly drops: DropReporter;
 
+  /** Sums the values of the counter and histogram instruments. */
+  private readonly meter: Meter;
+
   /**
    * Cross-realm communication bus. It is null until its chunk loads.
    * In bus.mode "off", it loads only when a child frame or a worker needs it.
@@ -310,6 +316,44 @@ export class ObservabilityRuntime {
       identity: this.identity,
       platform: this.platform,
     });
+
+    this.meter = new Meter(
+      () => this.config.batching.metricFlushIntervalMs,
+      (name, point) => {
+        this.emitPoint(name, point);
+      },
+      this.diagnostics,
+    );
+  }
+
+  /**
+   * Adds a value to a counter or a histogram. The meter sends one point at each interval.
+   * @param def Definition of the instrument.
+   * @param value Value to add.
+   * @param attributes Attribute set of the value.
+   */
+  recordMetric(def: InstrumentDef, value: number, attributes?: MetricAttributes): void {
+    // Guard against a value after shutdown. Its interval timer would outlive the runtime.
+    if (!this.destroyed) {
+      this.meter.record(def, value, attributes);
+    }
+  }
+
+  /**
+   * Builds and emits the record of one aggregated point. The console does not print it.
+   * @param name Metric name.
+   * @param point Point attributes.
+   */
+  private emitPoint(name: string, point: Record<string, unknown>): void {
+    const { record } = this.builder.build({
+      level: "INFO",
+      type: "metric",
+      body: name,
+      namespace: METRIC_NAMESPACE,
+      payload: point,
+      aggregated: true,
+    });
+    this.emit(record);
   }
 
   /**
@@ -789,6 +833,9 @@ export class ObservabilityRuntime {
             onGap: this.reportGap,
             onLoss: this.reportLoss,
             remote: this.remote,
+            beforeExit: () => {
+              this.meter.collect();
+            },
           });
 
       // Guard against a shutdown during the load. The stack must not outlive the runtime.
@@ -867,6 +914,9 @@ export class ObservabilityRuntime {
       tracing: this.tracing,
       logger: new OneLogger(() => this, CAPTURE_NAMESPACE),
       once: this.captureOnce,
+      recordMetric: (def, value, attributes) => {
+        this.recordMetric(def, value, attributes);
+      },
     };
 
     for (const CaptureModule of classes) {
@@ -946,6 +996,9 @@ export class ObservabilityRuntime {
     if (this.destroyed) {
       return;
     }
+
+    // The points of the open interval go out with the final flush.
+    this.meter.collect();
     this.destroyed = true;
 
     this.uninstallCaptures();
@@ -1171,6 +1224,8 @@ export class ObservabilityRuntime {
    * @returns Promise that resolves when the library sends or hands off the queued records.
    */
   async flush(): Promise<void> {
+    this.meter.collect();
+
     // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.
     // After startup, do not wait. The handover of the forward buffer then stays synchronous.
     if (!this.ready) {
