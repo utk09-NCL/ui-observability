@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-10-30
+
+### Added - v0.9.2
+
+- `metricsEndpoint` sets an OTLP metrics endpoint, for example `https://ingest.example/v1/metrics`. With it, each batch of metric records goes there as an OTLP `ExportMetricsServiceRequest`. Without it, metric records are log records on `endpoint`, as before. It needs `serializer: "otlp"`, and `endpoint` or `transport`. Without `endpoint` and `transport`, the library reports `config.invalid`. Network capture does not log a request to it.
+- With `metricsEndpoint`, each endpoint has its own throttle. A `429` from one endpoint does not stop the batches of the other endpoint. In the retry queue, a failed batch holds back only the batches of its own endpoint.
+- `counter(name, { unit? })` gives a counter. `add(value, attrs?)` sums a value of 0 or larger in memory. At each `batching.metricFlushIntervalMs`, the library sends one point for each attribute set.
+- `histogram(name, { unit?, boundaries? })` gives a histogram. `record(value, attrs?)` counts a value in buckets in memory. Each point has `count`, `sum`, `min`, `max` and the bucket counts. The default boundaries are the OpenTelemetry default boundaries.
+- Sampling and `minLevel` do not drop a point. The console does not print it.
+- Each instrument keeps at most 100 attribute sets in each interval. The values of more sets go to one set with `otel.metric.overflow: true`.
+- The library drops a point attribute key that starts with `metric.`. It also drops the keys that it sets on each record, for example `page.url` and `log.type`.
+- The record limits do not cut the metric fields of a point, for example the bucket counts. `redact` cannot change these fields.
+- The points of the open interval go out at `flush()`, at `shutdown()` and before the exit flush.
+- The package exports the types `Counter`, `Histogram`, `HistogramOptions`, `InstrumentOptions` and `MetricAttributes`.
+- With `metricsEndpoint`, a counter point is an OTLP delta sum. A histogram point is an OTLP delta histogram. A `logMetric()` gauge is an OTLP gauge. A `logMetric()` histogram is a histogram with one value. The point attributes are only the attributes of the call. The context attributes stay off the point. The resource of each request still has `session.id`, `tab.id`, `context.id` and the user agent. A histogram point with a negative value has no `sum`.
+- `request.kind` of a custom transport is `"metrics"` for a batch of metric records when `metricsEndpoint` is set. Each other batch has the kind `"logs"`.
+- A `logMetric()` record has the new attribute `metric.attribute_keys`. It names the attributes of the call.
+- `capture.httpMetrics` records the `http.client.request.duration` histogram of each request that `fetch` or `xhr` capture sees. It is on by default. The unit is seconds. The attributes are `http.request.method`, `http.response.status_code`, `server.address` and `error.type`. The path, the query and the port stay out. The boundaries are the ones that the OpenTelemetry semantic conventions advise.
+- The diagnostic code `capture.transport_request`. Network capture reports it one time when it sees a request during a custom transport call. Put the URL of your transport in `capture.ignoreUrls`. Without it, each send records a duration value, and that value causes the next send.
+- A child frame on an origin in `bus.trustedOrigins` is also trusted for metric points. Its points bypass the sampling and the limit of 100 attribute sets of the parent.
+
+### Changed - v0.9.2
+
+- `flush()` and the exit flush send the metric records and the other records in separate batches. A batch never holds both kinds.
+- The keepalive fetches of one exit flush share one budget of 60,000 bytes. A batch that does not fit goes to the emergency queue.
+- With `capture.fetch` or `capture.xhr` on, each interval now gives one histogram point for each method, status and server. Without `metricsEndpoint`, these points are metric log records on `endpoint`. Set `capture.httpMetrics: false` to turn them off.
+
 ## [0.9.1] - 2026-10-29
 
 ### Added - v0.9.1
