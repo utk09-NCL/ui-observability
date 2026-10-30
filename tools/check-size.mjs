@@ -14,9 +14,10 @@ import { gzipSync } from "node:zlib";
  * hardening of capture, record building and delivery. In 0.9.1 it is the 0.9.1 size (24,041 B)
  * plus 10 percent, for the config tunables, the onDrop report and the action caps. In 0.9.2 it is
  * the 0.9.2 size (26,055 B) plus 10 percent, for the counter, the histogram and the OTLP metrics
- * export. Raise it only in a reviewed commit.
+ * export. In 0.9.3 it is the 0.9.3 size (26,513 B) plus 10 percent, after the shared helpers of
+ * the cleanup. Raise it only in a reviewed commit.
  */
-const SIZE_BUDGET_GZIP_BYTES = 28_700;
+const SIZE_BUDGET_GZIP_BYTES = 29_200;
 
 const DIST = new URL("../dist/", import.meta.url);
 const ENTRY = "index.js";

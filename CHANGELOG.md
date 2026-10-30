@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-10-31
+
+### Fixed - v0.9.3
+
+- The limit on ERROR and FATAL records starts a new window when the clock moves back. Before, the library dropped each ERROR and FATAL record above the limit until the clock passed the old window start.
+
 ## [0.9.2] - 2026-10-30
 
 ### Added - v0.9.2
