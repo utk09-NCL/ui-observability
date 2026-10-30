@@ -15,6 +15,7 @@ import type { RemoteSlot } from "../core/remote-sampling";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
 import type { JourneyScope, ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
+import { getFin } from "../utils/openfin";
 import type { PlatformMetadata } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
 import {
@@ -64,12 +65,6 @@ const OWNED: readonly LinkKind[] = ["children", "direct", "worker"];
 /** Journey scope after the bus resolves "auto". */
 type ResolvedScope = Exclude<JourneyScope, "auto">;
 
-/** Structural shape of fin.me identity metadata. */
-interface OpenFinMe {
-  isView?: boolean;
-  identity?: { uuid?: string; name?: string };
-}
-
 /** Coordinates cross-realm communication, role resolution, and message dispatch. */
 export class Bus {
   /** Current bus role. The default is "sender". */
@@ -82,8 +77,6 @@ export class Bus {
   private openFinLink: Link | null = null;
   /** True if this context is the OpenFin platform provider. */
   private isOpenFinProvider = false;
-  /** True if role resolution is complete. */
-  private resolved = false;
   /** Timer that asks the upstream owner for the remote sampling rules. */
   private rulesPoll: ReturnType<typeof setInterval> | undefined;
   /** True after destroy(). A handshake that ends later must not start a timer. */
@@ -119,11 +112,6 @@ export class Bus {
     return this.role;
   }
 
-  /** Returns true if role resolution is complete. */
-  isResolved(): boolean {
-    return this.resolved;
-  }
-
   /**
    * Resolves bus role and establishes control links.
    * @returns Resolved role.
@@ -133,7 +121,6 @@ export class Bus {
 
     if (bus.mode === "off") {
       this.role = "sender";
-      this.resolved = true;
       return this.role;
     }
 
@@ -151,7 +138,6 @@ export class Bus {
           );
         }
       }
-      this.resolved = true;
       this.announce();
       return this.role;
     }
@@ -163,7 +149,6 @@ export class Bus {
     if (direct) {
       this.role = "forwarder";
       this.upstream = direct;
-      this.resolved = true;
       this.diagnostics.report(
         "bus.role_resolved",
         "This context attached directly to the runtime of its same-origin parent.",
@@ -180,7 +165,6 @@ export class Bus {
 
     if (!candidate) {
       this.role = "sender";
-      this.resolved = true;
       this.diagnostics.report(
         "bus.role_resolved",
         "No owner exists. This context sends its own records.",
@@ -217,7 +201,6 @@ export class Bus {
       via: welcomed ? candidate.kind : "none",
     });
 
-    this.resolved = true;
     this.announce();
     return this.role;
   }
@@ -448,7 +431,7 @@ export class Bus {
       return false;
     }
 
-    const me = (globalThis as { fin?: { me?: OpenFinMe } }).fin?.me;
+    const me = getFin()?.me;
     if (!me?.identity || me.isView) {
       return false;
     }

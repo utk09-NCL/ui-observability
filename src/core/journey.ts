@@ -22,6 +22,7 @@ import {
 } from "../constants";
 import { withDeadline } from "../utils/deadline";
 import { BROWSER_STORES, type IdentityStores, newId } from "../utils/identity";
+import { getFin } from "../utils/openfin";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
@@ -55,18 +56,6 @@ export interface Journey {
   /** Context identifier of the document that started the journey. */
   ownerContextId: string;
 }
-
-/** Structural interface for OpenFin window metadata. */
-interface FinLike {
-  /** Target OpenFin window or view. */
-  me?: {
-    /** Resolves initial window creation options including customData. */
-    getOptions?: () => Promise<{ customData?: Record<string, unknown> }>;
-  };
-}
-
-/** Global environment extended with optional OpenFin APIs. */
-type OpenFinGlobal = typeof globalThis & { fin?: FinLike };
 
 /**
  * Reads a non-empty string property from an unverified object.
@@ -498,7 +487,7 @@ export class JourneyEngine {
    * @returns Promise that resolves to token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
-    const me = (globalThis as OpenFinGlobal).fin?.me;
+    const me = getFin()?.me;
     const getOptions = me?.getOptions;
     if (getOptions === undefined) {
       return null;

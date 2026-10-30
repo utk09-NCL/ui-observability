@@ -14,6 +14,7 @@ import {
   WEBKIT_UA_TOKEN,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import { getFin } from "./openfin";
 
 /** Host runtime environment classification attached to resource attributes. */
 export type PlatformType =
@@ -66,11 +67,6 @@ function isGlobalScope(g: Global, name: string): boolean {
   return g instanceof (scope as ScopeConstructor);
 }
 
-/** Structural interface for OpenFin identity inspection. */
-interface FinLike {
-  me?: { identity?: { uuid?: string; name?: string } };
-}
-
 /**
  * Detects and caches host platform metadata for the active realm.
  * @param diagnostics Diagnostics reporter.
@@ -88,7 +84,7 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
   let openfinName: string | undefined;
   let isWorker = false;
 
-  const finMe = (g.fin as FinLike | undefined)?.me;
+  const finMe = getFin()?.me;
 
   if (isGlobalScope(g, "ServiceWorkerGlobalScope")) {
     platform = "service_worker";
@@ -182,6 +178,14 @@ export function stripUrlQuery(url: string): string {
   const cut = url.search(/[?#]/);
 
   return cut === -1 ? url : url.slice(0, cut);
+}
+
+/**
+ * Tests if the browser can reach the network. A host without navigator.onLine counts as online.
+ * @returns False only when navigator.onLine is false.
+ */
+export function isOnline(): boolean {
+  return (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine !== false;
 }
 
 /** Resets the cached platform metadata for testing. */

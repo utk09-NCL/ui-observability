@@ -25,7 +25,7 @@ export interface Breadcrumb {
 /** Ring buffer of fixed size. It keeps recent breadcrumbs in time order. */
 export class BreadcrumbBuffer {
   /** Storage array of the ring buffer. */
-  private buffer: (Breadcrumb | undefined)[];
+  private readonly buffer: (Breadcrumb | undefined)[];
 
   /** Next write index in the circular buffer. */
   private pointer = 0;
@@ -68,12 +68,5 @@ export class BreadcrumbBuffer {
       ? [...this.buffer.slice(this.pointer), ...this.buffer.slice(0, this.pointer)]
       : this.buffer.slice(0, this.pointer);
     return ordered.filter((crumb): crumb is Breadcrumb => crumb !== undefined);
-  }
-
-  /** Removes all breadcrumbs and resets the buffer. */
-  clear(): void {
-    this.buffer = new Array<Breadcrumb | undefined>(this.capacity);
-    this.pointer = 0;
-    this.filled = false;
   }
 }

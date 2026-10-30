@@ -221,21 +221,4 @@ describe("Diagnostics", () => {
 
     expect(d.snapshot()).toEqual({});
   });
-
-  it("reset clears the counters and the throttle window, so the next report emits immediately with a count of 1", () => {
-    const handler = vi.fn<(event: DiagnosticEvent) => void>();
-    const d = new Diagnostics(handler, 1000);
-
-    d.report("journey.expired", "before reset");
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(d.snapshot()["journey.expired"]).toBe(1);
-
-    d.reset();
-    expect(d.snapshot()).toEqual({});
-
-    d.report("journey.expired", "right after reset, well inside what was the throttle window");
-
-    expect(handler).toHaveBeenCalledTimes(2);
-    expect(handler.mock.calls[1][0].count).toBe(1);
-  });
 });

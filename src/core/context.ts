@@ -28,25 +28,11 @@ export class ContextStore {
   }
 
   /**
-   * Retrieves an attribute value by key.
-   * @param key Attribute key.
-   * @returns Stored attribute value or undefined if not set.
-   */
-  get(key: string): unknown {
-    return this.map.get(key);
-  }
-
-  /**
    * Deletes an attribute from the ambient context store.
    * @param key Attribute key to remove.
    */
   remove(key: string): void {
     this.map.delete(key);
-  }
-
-  /** Clears all attributes from the ambient context store. */
-  clear(): void {
-    this.map.clear();
   }
 
   /**

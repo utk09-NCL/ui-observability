@@ -1013,7 +1013,6 @@ describe("Bus role resolution: off, sender, forwarder", () => {
     const role = await bus.start();
 
     expect(role).toBe("sender");
-    expect(bus.isResolved()).toBe(true);
     expect((bus as unknown as { links: Link[] }).links).toHaveLength(0);
   });
 

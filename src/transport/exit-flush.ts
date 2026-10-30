@@ -19,6 +19,7 @@ import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { saveToEmergencyQueue } from "../storage/emergency-queue";
 import { runAsLibraryRequest } from "../utils/library-request";
+import { getFin } from "../utils/openfin";
 import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
 import { batchKind, serializeBatch } from "./serializers/select";
@@ -31,15 +32,6 @@ export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "s
  * budget is full. `unavailable` means that the host has no usable sendBeacon.
  */
 type BeaconOutcome = "sent" | "refused" | "unavailable";
-
-/** This interface describes the OpenFin window event API that the flush uses. */
-interface FinMeLike {
-  on?: (event: string, listener: () => void) => void;
-  removeListener?: (event: string, listener: () => void) => void;
-}
-
-/** This type adds the optional OpenFin runtime API to globalThis. */
-type OpenFinGlobal = typeof globalThis & { fin?: { me?: FinMeLike } };
 
 /** This type reads navigator.sendBeacon without global DOM type assertions. */
 interface BeaconGlobal {
@@ -123,7 +115,7 @@ export class ExitFlush {
 
     addEventListener("pagehide", this.onPageHide);
 
-    const me = (globalThis as OpenFinGlobal).fin?.me;
+    const me = getFin()?.me;
     this.deps.diagnostics.guard(
       "openfin.unavailable",
       "The library could not subscribe to close-requested.",
@@ -147,7 +139,7 @@ export class ExitFlush {
 
     removeEventListener("pagehide", this.onPageHide);
 
-    const me = (globalThis as OpenFinGlobal).fin?.me;
+    const me = getFin()?.me;
     this.deps.diagnostics.guard(
       "openfin.unavailable",
       "The library could not unsubscribe from close-requested.",

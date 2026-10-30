@@ -13,6 +13,7 @@ import {
 } from "../constants";
 import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
 import { ERROR_OWN_KEYS, isDataField, isErrorLike } from "../utils/error-like";
+import { isObject } from "../utils/guards";
 import { timeAsync, timeSync } from "../utils/timer";
 import type { Diagnostics } from "./diagnostics";
 import type { DropReason } from "./record";
@@ -138,7 +139,7 @@ function errorData(value: unknown, diagnostics: Diagnostics): unknown {
  * @returns True if the value is a plain object.
  */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isObject(value)) {
     return false;
   }
   if (value instanceof Error) {

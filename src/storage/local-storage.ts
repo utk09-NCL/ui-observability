@@ -11,27 +11,16 @@ import {
   STORAGE_NAME_LOCAL,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
-import { isLogBatch, type LogBatch } from "../models/batch";
+import { countRecords, isLogBatch, type LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 import { hasAction, pickEvictable } from "./eviction";
-import { keysWithPrefix } from "./keys";
+import { addDrop, reportEviction } from "./gap";
+import { batchKey, keysWithPrefix } from "./keys";
 
 /** A stored entry. A corrupt entry has no batch. */
 interface Entry {
   key: string;
   batch: LogBatch | null;
-}
-
-/**
- * Formats a storage key with a zero-padded creation time. The keys sort in FIFO
- * order. Always use batch.createdAt, never Date.now(). A key from Date.now() does not match
- * the written key.
- * @param batch Target log batch.
- * @returns Prefixed, timestamp-ordered storage key.
- */
-function keyFor(batch: LogBatch): string {
-  const at = String(batch.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
-  return `${BATCH_STORAGE_KEY_PREFIX}${at}.${batch.id}`;
 }
 
 /**
@@ -78,7 +67,8 @@ export class LocalStorageStorage implements StorageAdapter {
     // The eviction makes room for this batch. Without a second write, save() resolves.
     // The library then loses the batch. No counter shows the loss.
     if (!this.write(batch, "localStorage refused a batch even after evicting")) {
-      this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" }, [batch]);
+      const gap: PruneResult = { batches: 1, records: batch.records.length, reason: "quota" };
+      reportEviction(this.diagnostics, this.onGap, gap, [batch]);
     }
   }
 
@@ -204,7 +194,7 @@ export class LocalStorageStorage implements StorageAdapter {
    */
   private write(batch: LogBatch, context: string): boolean {
     const written = this.diagnostics.guard("storage.quota_exceeded", context, () => {
-      localStorage.setItem(keyFor(batch), JSON.stringify(batch));
+      localStorage.setItem(batchKey(BATCH_STORAGE_KEY_PREFIX, batch), JSON.stringify(batch));
       return true;
     });
 
@@ -259,34 +249,17 @@ export class LocalStorageStorage implements StorageAdapter {
     }
 
     const dropped: LogBatch[] = [];
-    let records = 0;
 
     for (const { key, batch } of entries) {
       this.removeKey(key);
-      records += batch?.records.length ?? 0;
       if (batch) {
         dropped.push(batch);
       }
     }
 
-    result.batches += entries.length;
-    result.records += records;
-    result.reason = reason;
-    this.reportGap({ batches: entries.length, records, reason }, dropped);
-  }
-
-  /**
-   * Reports dropped records to diagnostics and to the gap handler.
-   * @param result Eviction metrics.
-   * @param dropped The dropped batches that the adapter could read.
-   */
-  private reportGap(result: PruneResult, dropped: readonly LogBatch[]): void {
-    this.diagnostics.report(
-      "storage.evicted",
-      `The library dropped ${String(result.batches)} stored batches (${String(result.records)} records).`,
-      { ...result },
-    );
-    this.onGap?.(result, dropped);
+    // A corrupt entry counts as a batch with no records.
+    const gap = addDrop(result, reason, entries.length, countRecords(dropped));
+    reportEviction(this.diagnostics, this.onGap, gap, dropped);
   }
 
   /**

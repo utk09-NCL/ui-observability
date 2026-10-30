@@ -291,6 +291,23 @@ describe("ErrorCeiling", () => {
     expect(ceiling.allow(err())).toBe(true);
   });
 
+  it("starts a new window when the clock moves back", () => {
+    // Without the reset, the window ends only when the clock is past the old start again. Each
+    // ERROR record before that time is lost.
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const ceiling = new ErrorCeiling();
+
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW; i++) {
+      ceiling.allow(err());
+    }
+    expect(ceiling.allow(err())).toBe(false);
+
+    vi.setSystemTime(500_000);
+
+    expect(ceiling.allow(err())).toBe(true);
+  });
+
   it("does not let a quiet spell bank allowance for a later storm", () => {
     vi.useFakeTimers();
     const ceiling = new ErrorCeiling();

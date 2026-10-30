@@ -21,6 +21,7 @@ import {
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LogLevel, LogRecord, LogType } from "../models/log-record";
+import { countInWindow, type StormWindow } from "../utils/fixed-window";
 import type { RemoteRules } from "./remote-sampling";
 
 /**
@@ -204,11 +205,8 @@ export function shouldSample(
  * An example is application code that calls logger.error in a render loop.
  */
 export class ErrorCeiling {
-  /** Start of the current window, in epoch milliseconds. */
-  private windowStart = 0;
-
   /** ERROR and FATAL records admitted in the current window. */
-  private count = 0;
+  private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
    * Checks a record against the limit. It counts only ERROR and FATAL records.
@@ -220,15 +218,7 @@ export class ErrorCeiling {
       return true;
     }
 
-    const now = Date.now();
     // Use a fixed window, not a sliding window. A quiet period adds no allowance.
-    if (now - this.windowStart > ERROR_STORM_WINDOW_MS) {
-      this.windowStart = now;
-      this.count = 0;
-    }
-
-    this.count++;
-
-    return this.count <= ERROR_CEILING_MAX_PER_WINDOW;
+    return countInWindow(this.window, ERROR_CEILING_MAX_PER_WINDOW, ERROR_STORM_WINDOW_MS);
   }
 }

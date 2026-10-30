@@ -1,9 +1,23 @@
 // src/storage/keys.ts
 //
-// This module returns the sorted localStorage keys that start with a prefix. A sandboxed
-// frame and private mode throw on first access. They do not return null.
+// This module builds the localStorage key of a batch. It also returns the sorted keys that start
+// with a prefix. A sandboxed frame and private mode throw on first access. They do not return null.
 
+import { BATCH_KEY_TIME_WIDTH } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import type { LogBatch } from "../models/batch";
+
+/**
+ * Formats a storage key with a zero-padded creation time. The keys sort in FIFO order. Always use
+ * batch.createdAt, never Date.now(). A key from Date.now() does not match the written key.
+ * @param prefix Storage key prefix.
+ * @param batch Target log batch.
+ * @returns Prefixed, timestamp-ordered storage key.
+ */
+export function batchKey(prefix: string, batch: LogBatch): string {
+  const at = String(batch.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
+  return `${prefix}${at}.${batch.id}`;
+}
 
 /**
  * Returns all localStorage keys that start with the prefix, in sorted order.

@@ -242,11 +242,10 @@ export const RESOURCE_OPENFIN_NAME = "openfin.name";
 export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
 
 /**
- * Value of `telemetry.sdk.version`. The code does not read it from package.json.
- * Change it by hand when you change the version in package.json.
+ * Value of `telemetry.sdk.version`. The build writes the version of package.json here.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
-export const TELEMETRY_SDK_VERSION = "0.9.2";
+export const TELEMETRY_SDK_VERSION = __UIOBS_VERSION__;
 
 /**
  * Value of `telemetry.sdk.language`.

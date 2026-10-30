@@ -208,10 +208,4 @@ export class Diagnostics {
   snapshot(): Record<string, number> {
     return Object.fromEntries(this.counters);
   }
-
-  /** Clears all counters and throttling history. */
-  reset(): void {
-    this.counters.clear();
-    this.lastEmitted.clear();
-  }
 }

@@ -5,7 +5,6 @@
 // destroys the document. No promise settles at that time.
 
 import {
-  BATCH_KEY_TIME_WIDTH,
   EMERGENCY_LOCK_NAME,
   EMERGENCY_MAX_ENTRIES,
   EMERGENCY_STORAGE_KEY_PREFIX,
@@ -17,18 +16,7 @@ import type { LossReporter } from "../models/drop";
 import type { StorageAdapter } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
-import { keysWithPrefix } from "./keys";
-
-/**
- * Formats a storage key with a zero-padded creation time. The keys sort in FIFO
- * order.
- * @param batch Target log batch.
- * @returns Prefixed, timestamp-ordered storage key.
- */
-function keyFor(batch: LogBatch): string {
-  const at = String(batch.createdAt).padStart(BATCH_KEY_TIME_WIDTH, "0");
-  return `${EMERGENCY_STORAGE_KEY_PREFIX}${at}.${batch.id}`;
-}
+import { batchKey, keysWithPrefix } from "./keys";
 
 /**
  * Parses a raw storage string and validates it as a LogBatch.
@@ -138,7 +126,7 @@ export function saveToEmergencyQueue(
       localStorage.removeItem(old);
     }
 
-    localStorage.setItem(keyFor(batch), JSON.stringify(batch));
+    localStorage.setItem(batchKey(EMERGENCY_STORAGE_KEY_PREFIX, batch), JSON.stringify(batch));
     return true;
   });
 

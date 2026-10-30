@@ -1,8 +1,15 @@
 // vite.config.ts
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
+const pkg = JSON.parse(readFileSync(new URL("package.json", import.meta.url), "utf8")) as {
+  version: string;
+};
+
 export default defineConfig({
+  // The build writes the package version into the code. vitest.config.ts sets the same value.
+  define: { __UIOBS_VERSION__: JSON.stringify(pkg.version) },
   build: {
     lib: {
       // Use fileURLToPath. On Windows, URL.pathname gives "/C:/..." and the build fails.

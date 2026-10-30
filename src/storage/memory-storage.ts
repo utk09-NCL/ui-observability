@@ -4,18 +4,10 @@
 // them. This adapter is the last fallback.
 
 import { STORAGE_NAME_MEMORY } from "../constants";
-import type { LogBatch } from "../models/batch";
+import { countRecords, type LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 import { hasAction, pickEvictable } from "./eviction";
-
-/**
- * Returns the total record count of the batches.
- * @param batches Batches to measure.
- * @returns Total record count.
- */
-function countRecords(batches: LogBatch[]): number {
-  return batches.reduce((total, batch) => total + batch.records.length, 0);
-}
+import { addDrop } from "./gap";
 
 /** This StorageAdapter keeps batches in volatile memory. */
 export class MemoryStorage implements StorageAdapter {
@@ -109,11 +101,8 @@ export class MemoryStorage implements StorageAdapter {
       return;
     }
 
-    const records = countRecords(dropped);
-    result.batches += dropped.length;
-    result.records += records;
-    result.reason = reason;
-    this.onGap?.({ batches: dropped.length, records, reason }, dropped);
+    const gap = addDrop(result, reason, dropped.length, countRecords(dropped));
+    this.onGap?.(gap, dropped);
   }
 
   /**

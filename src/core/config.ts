@@ -41,6 +41,7 @@ import type {
 } from "../models/config";
 import type { LogLevel } from "../models/log-record";
 import type { LogSerializer } from "../models/serializer";
+import { isObject } from "../utils/guards";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -465,7 +466,7 @@ function toTarget(entry: unknown): string | RegExp | undefined {
  * @returns True for an object whose values are all strings.
  */
 function isStringRecord(value: unknown): value is Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isObject(value)) {
     return false;
   }
 

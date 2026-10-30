@@ -64,21 +64,6 @@ describe("BreadcrumbBuffer", () => {
     expect(messages(buffer)).toEqual(["B"]);
   });
 
-  it("empties the ring and leaves it usable", () => {
-    const buffer = new BreadcrumbBuffer(3);
-    buffer.push(crumb("A"));
-    buffer.push(crumb("B"));
-    buffer.push(crumb("C"));
-
-    buffer.clear();
-
-    expect(messages(buffer)).toEqual([]);
-    // A push after clear() must not continue the old trail. The write pointer and the filled flag
-    // must both reset.
-    buffer.push(crumb("D"));
-    expect(messages(buffer)).toEqual(["D"]);
-  });
-
   it("hands back a fresh array on every call, so a caller cannot mutate the stored trail", () => {
     const buffer = new BreadcrumbBuffer(3);
     buffer.push(crumb("A"));

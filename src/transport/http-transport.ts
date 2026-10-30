@@ -24,6 +24,7 @@ import type { BatchKind } from "../models/config";
 import type { SerializedBatch } from "../models/serializer";
 import { withDeadline } from "../utils/deadline";
 import { runAsLibraryRequest } from "../utils/library-request";
+import { isOnline } from "../utils/platform";
 import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
@@ -301,11 +302,7 @@ export class HttpTransport extends StatusTransport {
       if (controller.signal.aborted) {
         throw this.timeout(endpoint);
       }
-      const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
-      throw new TransportError(
-        online === false ? "offline" : "transient",
-        "A network error occurred.",
-      );
+      throw new TransportError(isOnline() ? "transient" : "offline", "A network error occurred.");
     } finally {
       clearTimeout(timer);
     }

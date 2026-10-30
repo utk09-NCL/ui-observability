@@ -19,6 +19,7 @@ import type { LossReporter } from "../models/drop";
 import { type StorageAdapter, storageLimits } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
+import { isOnline } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
 import { batchKind } from "./serializers/select";
@@ -196,8 +197,7 @@ export class RetryEngine {
    */
   private async drainLocked(): Promise<true> {
     try {
-      const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
-      if (online === false) {
+      if (!isOnline()) {
         this.schedule(RETRY_IDLE_DELAY_MS);
         return true;
       }

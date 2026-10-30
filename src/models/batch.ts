@@ -101,3 +101,12 @@ export function attributeOf(record: LogRecord, key: string): unknown {
 export function isActionRecord(record: LogRecord): boolean {
   return attributeOf(record, ATTR_LOG_TYPE) === LOG_TYPE_ACTION;
 }
+
+/**
+ * Returns the total record count of the batches.
+ * @param batches Batches to measure.
+ * @returns Total record count.
+ */
+export function countRecords(batches: readonly LogBatch[]): number {
+  return batches.reduce((total, batch) => total + batch.records.length, 0);
+}

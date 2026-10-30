@@ -73,11 +73,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "check:version": "node tools/check-version-sync.mjs",
     "check:peers": "node tools/check-peer-imports.mjs",
     "check:size": "node tools/check-size.mjs",
     "check:dev": "node tools/check-dev-server.mjs",
-    "verify": "npm run format:check && npm run check:version && npm run typecheck && npm run build && npm run lint && npm run check:peers && npm run check:size && npm run check:dev && npm run test:coverage",
+    "verify": "npm run format:check && npm run typecheck && npm run build && npm run lint && npm run check:peers && npm run check:size && npm run check:dev && npm run test:coverage",
     "prepublishOnly": "npm run verify"
   },
   "peerDependencies": {

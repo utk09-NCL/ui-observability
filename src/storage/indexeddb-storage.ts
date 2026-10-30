@@ -4,19 +4,11 @@
 
 import { QUOTA_EVICTION_DIVISOR, QUOTA_EXCEEDED_ERROR, STORAGE_NAME_INDEXEDDB } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
-import type { LogBatch } from "../models/batch";
+import { countRecords, type LogBatch } from "../models/batch";
 import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "../models/storage";
 import { EvictionPick, hasAction } from "./eviction";
+import { addDrop, reportEviction } from "./gap";
 import { IdbDriver } from "./idb-driver";
-
-/**
- * Returns the total record count of the batches.
- * @param batches Batches to measure.
- * @returns Total record count.
- */
-function countRecords(batches: LogBatch[]): number {
-  return batches.reduce((total, batch) => total + batch.records.length, 0);
-}
 
 /** This StorageAdapter keeps batches in IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
@@ -69,8 +61,9 @@ export class IndexedDbStorage implements StorageAdapter {
           () => this.evictOldest(Math.ceil(this.limits.maxBatches / QUOTA_EVICTION_DIVISOR)),
         );
         if (evicted) {
-          const counts = { batches: evicted.length, records: countRecords(evicted) };
-          this.reportGap({ ...counts, reason: "quota" }, evicted);
+          const records = countRecords(evicted);
+          const gap: PruneResult = { batches: evicted.length, records, reason: "quota" };
+          reportEviction(this.diagnostics, this.onGap, gap, evicted);
         }
 
         // The eviction makes room for this batch. Without a second write, save() resolves.
@@ -84,7 +77,8 @@ export class IndexedDbStorage implements StorageAdapter {
           },
         );
         if (stored !== true) {
-          this.reportGap({ batches: 1, records: batch.records.length, reason: "quota" }, [batch]);
+          const gap: PruneResult = { batches: 1, records: batch.records.length, reason: "quota" };
+          reportEviction(this.diagnostics, this.onGap, gap, [batch]);
         }
         return;
       }
@@ -207,29 +201,8 @@ export class IndexedDbStorage implements StorageAdapter {
    * @param dropped The dropped batches.
    */
   private addGap(result: PruneResult, reason: PruneResult["reason"], dropped: LogBatch[]): void {
-    const records = countRecords(dropped);
-    result.batches += dropped.length;
-    result.records += records;
-    result.reason = reason;
-    this.reportGap({ batches: dropped.length, records, reason }, dropped);
-  }
-
-  /**
-   * Reports dropped records to diagnostics and to the gap handler.
-   * @param result Prune result metrics.
-   * @param dropped The dropped batches.
-   */
-  private reportGap(result: PruneResult, dropped: readonly LogBatch[]): void {
-    if (result.batches === 0) {
-      return;
-    }
-
-    this.diagnostics.report(
-      "storage.evicted",
-      `The library dropped ${String(result.batches)} stored batches (${String(result.records)} records).`,
-      { ...result },
-    );
-    this.onGap?.(result, dropped);
+    const gap = addDrop(result, reason, dropped.length, countRecords(dropped));
+    reportEviction(this.diagnostics, this.onGap, gap, dropped);
   }
 
   /**

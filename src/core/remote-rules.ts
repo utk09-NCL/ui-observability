@@ -15,6 +15,7 @@ import {
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LogLevel } from "../models/log-record";
+import { isObject } from "../utils/guards";
 import type { Diagnostics } from "./diagnostics";
 import {
   type RemoteRules,
@@ -33,15 +34,6 @@ class RuleError extends Error {}
  */
 function isRate(value: unknown): value is number {
   return typeof value === "number" && value >= SAMPLING_RATE_MIN && value <= SAMPLING_RATE_MAX;
-}
-
-/**
- * Tests if a value is a plain object.
- * @param value Value to test.
- * @returns True for an object that is not null and not an array.
- */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

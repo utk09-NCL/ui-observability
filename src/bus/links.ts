@@ -11,6 +11,7 @@ import {
   type MessageSource,
   unwrap,
 } from "../models/bus";
+import { getFin } from "../utils/openfin";
 
 /** Bidirectional communication channel for bus message transport. */
 export interface Link {
@@ -375,28 +376,6 @@ export function createBroadcastLink(
   };
 }
 
-/** Structural interface for OpenFin InterApplicationBus operations. */
-interface FinIab {
-  /**
-   * Publishes a message to all topic subscribers.
-   * @param topic Topic name.
-   * @param message Message payload.
-   */
-  publish(topic: string, message: unknown): Promise<void>;
-
-  /**
-   * Subscribes a listener to a topic for matching application identities.
-   * @param identity Target application identity.
-   * @param topic Topic name.
-   * @param listener Message callback.
-   */
-  subscribe(
-    identity: { uuid: string },
-    topic: string,
-    listener: (message: unknown) => void,
-  ): Promise<void>;
-}
-
 /**
  * Creates an OpenFin InterApplicationBus link scoped to one application.
  * @param topic InterApplicationBus topic prefix.
@@ -411,8 +390,7 @@ export function createOpenFinLink(
   receive: Receive,
   diagnostics: Diagnostics,
 ): Link | null {
-  const fin = (globalThis as { fin?: { InterApplicationBus?: FinIab } }).fin;
-  const iab = fin?.InterApplicationBus;
+  const iab = getFin()?.InterApplicationBus;
   if (!iab) {
     return null;
   }

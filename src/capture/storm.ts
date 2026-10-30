@@ -5,14 +5,9 @@
 
 import { ERROR_STORM_WINDOW_MS } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import { countInWindow, type StormWindow } from "../utils/fixed-window";
 
-/** State of one fixed window. Captures that share a limit share one object. */
-export interface StormWindow {
-  /** Start of the current window, in epoch milliseconds. */
-  start: number;
-  /** Events counted in the current window. */
-  count: number;
-}
+export type { StormWindow } from "../utils/fixed-window";
 
 /**
  * Counts one event in a fixed window. It reports each event over the limit.
@@ -28,17 +23,7 @@ export function allowInWindow(
   diagnostics: Diagnostics,
   what: string,
 ): boolean {
-  const now = Date.now();
-
-  // Guard against a clock that moves back. The window then never ends.
-  if (now < window.start || now - window.start > ERROR_STORM_WINDOW_MS) {
-    window.start = now;
-    window.count = 0;
-  }
-
-  window.count++;
-
-  if (window.count <= limit) {
+  if (countInWindow(window, limit, ERROR_STORM_WINDOW_MS)) {
     return true;
   }
 
