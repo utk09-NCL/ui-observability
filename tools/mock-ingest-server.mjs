@@ -48,6 +48,46 @@ function cors(req, res) {
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
+const unwrap = (v) => (v ? Object.values(v)[0] : undefined);
+const kv = (list) => Object.fromEntries((list ?? []).map((a) => [a.key, unwrap(a.value)]));
+const iso = (nanos) => new Date(Number(BigInt(nanos) / 1000000n)).toISOString();
+
+// One line for each data point of an ExportMetricsServiceRequest. A sum and a gauge show the
+// value. A histogram shows its count and its sum.
+function printMetrics(payload, batchId) {
+  const points = [];
+  for (const rm of payload.resourceMetrics ?? []) {
+    const resAttrs = kv(rm.resource?.attributes);
+    for (const sm of rm.scopeMetrics ?? []) {
+      for (const metric of sm.metrics ?? []) {
+        const type = ["sum", "histogram", "gauge"].find((key) => metric[key]) ?? "unknown";
+        for (const dp of metric[type]?.dataPoints ?? []) {
+          const value =
+            type === "histogram"
+              ? `count=${dp.count} sum=${dp.sum}`
+              : String(dp.asDouble ?? dp.asInt);
+          const attrs = Object.entries(kv(dp.attributes)).map(([key, v]) => `${key}=${v}`);
+          points.push(
+            [
+              iso(dp.timeUnixNano),
+              `[${resAttrs["service.name"]}]`,
+              `[${type}]`,
+              metric.name,
+              value,
+              metric.unit,
+              attrs.join(" "),
+            ].join("  "),
+          );
+        }
+      }
+    }
+  }
+  console.log(`[metrics] batch=${batchId} points=${points.length}`);
+  for (const line of points) {
+    console.log(line);
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -82,7 +122,9 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname !== "/v1/logs" || req.method !== "POST") {
+  // The library sends a batch of metric records to /v1/metrics when metricsEndpoint is set.
+  const isMetrics = url.pathname === "/v1/metrics";
+  if ((url.pathname !== "/v1/logs" && !isMetrics) || req.method !== "POST") {
     res.writeHead(404).end();
     return;
   }
@@ -141,7 +183,11 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  const unwrap = (v) => (v ? Object.values(v)[0] : undefined);
+  if (isMetrics) {
+    printMetrics(payload, batchId);
+    res.writeHead(204).end();
+    return;
+  }
 
   // Per-request record count: the per-record lines below cannot show where one
   // batch ends and the next begins.
@@ -153,17 +199,13 @@ const server = createServer(async (req, res) => {
   console.log(`[batch] batch=${batchId} records=${batchSize}`);
 
   for (const rl of payload.resourceLogs ?? []) {
-    const resAttrs = Object.fromEntries(
-      (rl.resource?.attributes ?? []).map((a) => [a.key, unwrap(a.value)]),
-    );
+    const resAttrs = kv(rl.resource?.attributes);
     for (const sl of rl.scopeLogs ?? []) {
       for (const rec of sl.logRecords ?? []) {
-        const attrs = Object.fromEntries(
-          (rec.attributes ?? []).map((a) => [a.key, unwrap(a.value)]),
-        );
+        const attrs = kv(rec.attributes);
         console.log(
           [
-            new Date(Number(BigInt(rec.timeUnixNano) / 1000000n)).toISOString(),
+            iso(rec.timeUnixNano),
             String(rec.severityText).padEnd(5),
             `[${resAttrs["service.name"]}]`,
             `[${attrs["log.type"]}]`,
@@ -181,5 +223,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`mock ingest listening on http://localhost:${PORT}/v1/logs`);
+  console.log(`mock ingest listening on http://localhost:${PORT}/v1/logs and /v1/metrics`);
 });

@@ -16,6 +16,7 @@ import type { TransportRequest } from "../src/models/config";
  * @returns The request.
  */
 const request = (body: string): TransportRequest => ({
+  kind: "logs",
   body: "{}",
   contentType: "application/json",
   batchId: `batch-${body}`,

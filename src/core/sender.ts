@@ -34,6 +34,8 @@ export interface SenderDeps {
   onLoss: LossReporter;
   /** Slot of the runtime for the sampling rules from the ingest server. */
   remote: RemoteSlot;
+  /** Sends the points of the open metric interval before the exit flush drains the buffers. */
+  beforeExit?: () => void;
 }
 
 /** Delivery stack for one sender runtime. */
@@ -109,6 +111,7 @@ export class Sender {
       flushAlive: () => pipeline.flushPending(),
       exitHeaders: () => http?.lastHeaders(),
       onLoss,
+      beforeExit: deps.beforeExit,
     });
 
     // If one step fails, stop both. A retry loop with no owner sends after load reports failure.

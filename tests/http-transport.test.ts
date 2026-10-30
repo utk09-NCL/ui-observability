@@ -110,7 +110,7 @@ describe("HttpTransport", () => {
     const t = new HttpTransport(config(), diagnostics());
 
     await expect(t.send(batch())).rejects.toMatchObject({ kind: "throttled", retryAfterMs: 7000 });
-    expect(t.throttledForMs()).toBeGreaterThan(6000);
+    expect(t.throttledForMs(batch())).toBeGreaterThan(6000);
   });
 
   it("caps Retry-After at RETRY_MAX_DELAY_MS", async () => {
@@ -121,7 +121,23 @@ describe("HttpTransport", () => {
       kind: "throttled",
       retryAfterMs: RETRY_MAX_DELAY_MS,
     });
-    expect(t.throttledForMs()).toBeLessThanOrEqual(RETRY_MAX_DELAY_MS);
+    expect(t.throttledForMs(batch())).toBeLessThanOrEqual(RETRY_MAX_DELAY_MS);
+  });
+
+  it("throttles only the endpoint that answered 429", async () => {
+    // A 429 from metricsEndpoint must not hold back the log batches.
+    const t = new HttpTransport(config({ metricsEndpoint: "https://x/v1/metrics" }), diagnostics());
+    const metrics = batch(1);
+    metrics.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    answer(429, null, { "Retry-After": "7" });
+    await expect(t.send(metrics)).rejects.toMatchObject({ kind: "throttled" });
+    expect(t.throttledForMs(batch())).toBe(0);
+
+    // An accepted log batch must not end the throttle of metricsEndpoint.
+    answer(204);
+    await t.send(batch());
+    expect(t.throttledForMs(metrics)).toBeGreaterThan(6000);
   });
 
   it("classifies a 413 as too_large and surfaces the limit the server reported", async () => {
@@ -282,6 +298,86 @@ describe("HttpTransport", () => {
     expect(dynamic.lastHeaders()).toEqual({ authorization: "Bearer t1" });
   });
 
+  it("sends a batch of metric records to metricsEndpoint in the OTLP metrics format", async () => {
+    const fetchMock = answer(204);
+    const live = config({ metricsEndpoint: "https://x/v1/metrics" });
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await new HttpTransport(live, diagnostics()).send(sent);
+    await new HttpTransport(live, diagnostics()).send(batch(1));
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://x/v1/metrics",
+      "https://x/v1/logs",
+    ]);
+    // compression: "none" keeps the body as text.
+    const body = initOf(fetchMock).body as string;
+    expect(Object.keys(JSON.parse(body))).toEqual(["resourceMetrics"]);
+  });
+
+  it("keeps the cached headers after a send to metricsEndpoint", async () => {
+    // The headers apply to both endpoints. The exit flush must not lose them.
+    answer(204);
+    const live = config({
+      metricsEndpoint: "https://x/v1/metrics",
+      headers: () => ({ authorization: "Bearer t1" }),
+    });
+    const t = new HttpTransport(live, diagnostics());
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await t.send(sent);
+
+    expect(t.lastHeaders()).toEqual({ authorization: "Bearer t1" });
+  });
+
+  it("gives no cached headers after a send to metricsEndpoint and a new endpoint", async () => {
+    // The exit flush must not send the token of tenant A to the endpoint of tenant B.
+    answer(204);
+    const live = config({
+      metricsEndpoint: "https://x/v1/metrics",
+      headers: () => ({ authorization: "Bearer tenant-a" }),
+    });
+    const t = new HttpTransport(live, diagnostics());
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await t.send(sent);
+    live.endpoint = "https://tenant-b/v1/logs";
+
+    expect(t.lastHeaders()).toBeUndefined();
+  });
+
+  it("gives no cached headers after a log send and a new metricsEndpoint", async () => {
+    answer(204);
+    const live = config({
+      metricsEndpoint: "https://x/v1/metrics",
+      headers: () => ({ authorization: "Bearer tenant-a" }),
+    });
+    const t = new HttpTransport(live, diagnostics());
+
+    await t.send(batch());
+    live.metricsEndpoint = "https://tenant-b/v1/metrics";
+
+    expect(t.lastHeaders()).toBeUndefined();
+  });
+
+  it("gives no cached headers when configure() changes the endpoint during headers()", async () => {
+    // headers() can give the token of the old tenant after the switch.
+    answer(204);
+    const live = config({});
+    live.headers = () => {
+      live.endpoint = "https://tenant-b/v1/logs";
+      return { authorization: "Bearer tenant-a" };
+    };
+    const t = new HttpTransport(live, diagnostics());
+
+    await t.send(batch());
+
+    expect(t.lastHeaders()).toBeUndefined();
+  });
+
   it("gives no cached headers after configure() replaces the headers function", async () => {
     // At a tenant switch, the old Authorization value must not go to the new endpoint.
     answer(204);
@@ -368,6 +464,46 @@ describe("HttpTransport", () => {
     );
   });
 
+  it("names metricsEndpoint in the report of a refused metrics batch", async () => {
+    const handler = vi.fn();
+    answer(401);
+    const live = config({ metricsEndpoint: "https://x/v1/metrics" });
+    const t = new HttpTransport(live, new Diagnostics(handler, 0));
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await expect(t.send(sent)).rejects.toMatchObject({ kind: "permanent" });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "transport.rejected_credentials",
+        detail: expect.objectContaining({ endpoint: "https://x/v1/metrics" }),
+      }),
+    );
+  });
+
+  it("names metricsEndpoint in the timeout report of a metrics batch", async () => {
+    vi.useFakeTimers();
+    answer(204);
+    const handler = vi.fn();
+    const stalled = () => new Promise<Record<string, string>>(() => undefined);
+    const live = config({ metricsEndpoint: "https://x/v1/metrics", headers: stalled });
+    const t = new HttpTransport(live, new Diagnostics(handler, 0));
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    const pending = t.send(sent).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(await pending).toMatchObject({ kind: "timeout" });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "transport.timeout",
+        detail: { endpoint: "https://x/v1/metrics" },
+      }),
+    );
+    vi.useRealTimers();
+  });
+
   it("treats a 403 the same way, since it fails for the same reasons", async () => {
     const handler = vi.fn();
     answer(403);
@@ -384,7 +520,7 @@ describe("HttpTransport", () => {
     const throttled = new HttpTransport(config(), diagnostics());
     await expect(throttled.send(batch())).rejects.toMatchObject({ kind: "throttled" });
     // No Retry-After, so the backoff base is what holds the live path off.
-    expect(throttled.throttledForMs()).toBeGreaterThan(0);
+    expect(throttled.throttledForMs(batch())).toBeGreaterThan(0);
 
     answer(500);
     await expect(new HttpTransport(config(), diagnostics()).send(batch())).rejects.toMatchObject({

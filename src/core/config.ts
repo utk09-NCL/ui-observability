@@ -101,6 +101,7 @@ const CAPTURE_FLAG_KEYS = [
   "resourceErrors",
   "fetch",
   "xhr",
+  "httpMetrics",
   "interactions",
   "navigation",
   "webVitals",
@@ -883,6 +884,52 @@ function resolveCapture(
 }
 
 /**
+ * Validates the metrics endpoint. Only the OTLP serializer has a metrics format.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param serializer Resolved serializer option.
+ * @param diagnostics Diagnostics reporter.
+ * @returns A valid absolute URL, or "" to send metric records as log records.
+ */
+function resolveMetricsEndpoint(
+  value: unknown,
+  fallback: string,
+  serializer: SerializerChoice,
+  diagnostics: Diagnostics,
+): string {
+  let url = fallback;
+
+  if (typeof value === "string" && value !== "") {
+    try {
+      new URL(value);
+      url = value;
+    } catch (error) {
+      diagnostics.report(
+        "config.invalid",
+        `metricsEndpoint is not a valid absolute URL: ${value}. The library keeps the value in force.`,
+        undefined,
+        error,
+      );
+    }
+  } else if (value === "") {
+    url = "";
+  } else if (value !== undefined) {
+    reportInvalid(diagnostics, "metricsEndpoint", "a URL string", value, "the value in force");
+  }
+
+  // A custom or ECS serializer cannot encode a metrics request.
+  if (url !== "" && serializer !== SERIALIZER_NAME_OTLP) {
+    diagnostics.report(
+      "config.invalid",
+      `metricsEndpoint needs serializer "${SERIALIZER_NAME_OTLP}". The library sends metric records as log records.`,
+    );
+    return "";
+  }
+
+  return url;
+}
+
+/**
  * Resolves partial configuration inputs into a validated ResolvedConfig object.
  * @param input Partial consumer configuration options.
  * @param diagnostics Diagnostics reporter.
@@ -947,6 +994,13 @@ export function resolveConfig(
     capture: resolveCapture(input.capture, base.capture, diagnostics),
   };
 
+  merged.metricsEndpoint = resolveMetricsEndpoint(
+    input.metricsEndpoint,
+    base.metricsEndpoint,
+    merged.serializer,
+    diagnostics,
+  );
+
   // Guard against a value that cannot send. Keep the function in force.
   // Without a transport, the pipeline drops each batch.
   if (merged.transport !== undefined && typeof merged.transport !== "function") {
@@ -995,6 +1049,14 @@ export function resolveConfig(
     }
   }
 
+  // Only the delivery stack sends. It loads only with an endpoint or a custom transport.
+  if (merged.metricsEndpoint !== "" && merged.endpoint === null && !merged.transport) {
+    diagnostics.report(
+      "config.invalid",
+      "metricsEndpoint needs endpoint or transport. The library sends nothing to metricsEndpoint.",
+    );
+  }
+
   if (!merged.serviceName) {
     diagnostics.report(
       "config.invalid",
@@ -1036,11 +1098,15 @@ export function resolveConfig(
     }
   }
 
-  // Replace the previous endpoint in the ignore list. This prevents a self-logging loop.
+  // Replace the previous endpoints in the ignore list. This prevents a self-logging loop.
   // Without it, one failed POST logs another failed POST with no end.
-  merged.capture.ignoreUrls = merged.capture.ignoreUrls.filter((url) => url !== previous?.endpoint);
-  if (merged.endpoint && !merged.capture.ignoreUrls.includes(merged.endpoint)) {
-    merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, merged.endpoint];
+  merged.capture.ignoreUrls = merged.capture.ignoreUrls.filter(
+    (url) => url !== previous?.endpoint && url !== previous?.metricsEndpoint,
+  );
+  for (const url of [merged.endpoint, merged.metricsEndpoint]) {
+    if (url && !merged.capture.ignoreUrls.includes(url)) {
+      merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, url];
+    }
   }
 
   reportUnknownKeys(input, diagnostics);

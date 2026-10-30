@@ -77,11 +77,29 @@ describe("CustomTransport", () => {
     await sut.send(sent);
 
     const [request] = transport.mock.calls[0];
+    expect(request.kind).toBe("logs");
     expect(request.batchId).toBe("batch-1");
     expect(request.attempt).toBe(3);
     expect(request.contentType).toBe("application/json");
     expect(JSON.parse(request.body)).toHaveProperty("resourceLogs");
     expect(request.records).toBe(sent.records);
+  });
+
+  it("gives a batch of metric records with metricsEndpoint set the metrics kind and body", async () => {
+    const transport = vi.fn<Transport>(() => Promise.resolve({ status: 202 }));
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const config = resolveConfig(
+      { endpoint: null, serviceName: "svc", transport, metricsEndpoint: "https://x/v1/metrics" },
+      diagnostics,
+    );
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "metric", "metric.value": 1 };
+
+    await new CustomTransport(config, diagnostics).send(sent);
+
+    const [request] = transport.mock.calls[0];
+    expect(request.kind).toBe("metrics");
+    expect(JSON.parse(request.body)).toHaveProperty("resourceMetrics");
   });
 
   it("does not call the transport for an empty batch or with no transport", async () => {
@@ -147,7 +165,7 @@ describe("CustomTransport", () => {
 
     expect(error.kind).toBe("throttled");
     expect(error.retryAfterMs).toBe(5000);
-    expect(sut.throttledForMs()).toBeGreaterThan(4000);
+    expect(sut.throttledForMs(batch())).toBeGreaterThan(4000);
     expect(events.map((event) => event.code)).toContain("transport.throttled");
   });
 
@@ -158,7 +176,7 @@ describe("CustomTransport", () => {
     const error = await failure(sut);
 
     expect(error.retryAfterMs).toBeUndefined();
-    expect(sut.throttledForMs()).toBeLessThanOrEqual(RETRY_BASE_DELAY_MS);
+    expect(sut.throttledForMs(batch())).toBeLessThanOrEqual(RETRY_BASE_DELAY_MS);
 
     const endless = await failure(setup(answer({ status: 503, retryAfterMs: Infinity })).sut);
     const tooLarge = await failure(setup(answer({ status: 413, maxBytes: NaN })).sut);
@@ -180,7 +198,7 @@ describe("CustomTransport", () => {
     await failure(sut);
     await sut.send(batch());
 
-    expect(sut.throttledForMs()).toBe(0);
+    expect(sut.throttledForMs(batch())).toBe(0);
   });
 
   it("retries a 5xx and drops another 4xx", async () => {

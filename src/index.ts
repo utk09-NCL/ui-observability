@@ -4,11 +4,19 @@
 // logging primitives, and types.
 
 import type { WorkerLike } from "./bus/links";
+import { DEFAULT_METRIC_UNIT, METRIC_DEFAULT_BOUNDARIES } from "./constants";
 import type { Journey } from "./core/journey";
 import { OneLogger, type OneLoggerOptions } from "./core/logger";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
 import type { MetricType } from "./models/log-record";
+import type {
+  Counter,
+  Histogram,
+  HistogramOptions,
+  InstrumentDef,
+  InstrumentOptions,
+} from "./models/metric";
 
 export { OneLogger };
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
@@ -25,6 +33,13 @@ export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { DropSummary, LossReason } from "./models/drop";
 export type { LogLevel, LogRecord, LogType, MetricType } from "./models/log-record";
+export type {
+  Counter,
+  Histogram,
+  HistogramOptions,
+  InstrumentOptions,
+  MetricAttributes,
+} from "./models/metric";
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
 export type { StorageAdapter } from "./models/storage";
 
@@ -179,6 +194,50 @@ export function logMetric(
   attributes?: Record<string, unknown>,
 ): void {
   root().logMetric(name, value, unit, type, attributes);
+}
+
+/**
+ * Gives a counter. The library sums its values in memory. It sends one point for each attribute
+ * set at each interval. A handle stays valid across configure() and shutdown().
+ * @param name Metric name.
+ * @param options Unit of the values.
+ * @returns The counter.
+ */
+export function counter(name: string, options: InstrumentOptions = {}): Counter {
+  const def: InstrumentDef = {
+    name,
+    kind: "counter",
+    unit: options.unit ?? DEFAULT_METRIC_UNIT,
+    boundaries: [],
+  };
+
+  return {
+    add: (value, attributes) => {
+      requireRuntime().recordMetric(def, value, attributes);
+    },
+  };
+}
+
+/**
+ * Gives a histogram. The library counts its values in buckets in memory. It sends one point for
+ * each attribute set at each interval. A handle stays valid across configure() and shutdown().
+ * @param name Metric name.
+ * @param options Unit of the values and the bucket boundaries.
+ * @returns The histogram.
+ */
+export function histogram(name: string, options: HistogramOptions = {}): Histogram {
+  const def: InstrumentDef = {
+    name,
+    kind: "histogram",
+    unit: options.unit ?? DEFAULT_METRIC_UNIT,
+    boundaries: options.boundaries ?? METRIC_DEFAULT_BOUNDARIES,
+  };
+
+  return {
+    record: (value, attributes) => {
+      requireRuntime().recordMetric(def, value, attributes);
+    },
+  };
 }
 
 /**

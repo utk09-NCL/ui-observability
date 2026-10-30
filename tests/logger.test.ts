@@ -141,6 +141,16 @@ describe("logMetric", () => {
     expect(records[0].attributes).toMatchObject({ "metric.name": "latency", route: "/orders" });
   });
 
+  it("names the attributes of the call, so the metrics format keeps the context off the point", () => {
+    const records = capture();
+
+    getLogger("trading").logMetric("latency", 12, "ms", "gauge", { route: "/orders" });
+    getLogger("trading").logMetric("rows", 3);
+
+    expect(records[0].attributes["metric.attribute_keys"]).toEqual(["route"]);
+    expect(records[1].attributes["metric.attribute_keys"]).toEqual([]);
+  });
+
   it("marks the record when the attributes cannot be read", () => {
     const records = capture();
 

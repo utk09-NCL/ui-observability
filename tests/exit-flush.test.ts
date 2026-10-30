@@ -9,6 +9,7 @@ import type { LogRecord } from "../src/models/log-record";
 import { ExitFlush } from "../src/transport/exit-flush";
 
 const ENDPOINT = "https://x/v1/logs";
+const METRICS_ENDPOINT = "https://x/v1/metrics";
 
 const record = (body: string): LogRecord => ({
   timeUnixNano: "1755543600123000000",
@@ -20,6 +21,12 @@ const record = (body: string): LogRecord => ({
   body,
   attributes: {},
   resource: { "service.name": "svc" },
+});
+
+/** A record of an aggregated counter point. */
+const pointRecord = (): LogRecord => ({
+  ...record("orders"),
+  attributes: { "log.type": "metric", "metric.type": "counter", "metric.value": 1 },
 });
 
 /**
@@ -40,12 +47,16 @@ interface Options {
   config?: Partial<ObservabilityConfig>;
   /** Replaces the default drain, for the shapes a real pipeline cannot produce. */
   drain?: () => LogBatch | null;
+  /** Replaces the drain with one that gives several batches, one for each kind. */
+  batches?: () => LogBatch[];
   /** Headers that the HTTP transport resolved last. */
   headers?: Record<string, string>;
   /** Replaces the normal flush of the pipeline. */
   alive?: () => void | Promise<void>;
   /** Receives the records that the exit flush loses. */
   onLoss?: LossReporter;
+  /** Sends the points of the open metric interval. */
+  beforeExit?: () => void;
 }
 
 /**
@@ -53,7 +64,16 @@ interface Options {
  * second call also passes the "sends once" test. That drain does not test the code that stops the
  * double send.
  */
-function setup({ records = [], config = {}, drain, headers, alive, onLoss }: Options = {}) {
+function setup({
+  records = [],
+  config = {},
+  drain,
+  batches,
+  headers,
+  alive,
+  onLoss,
+  beforeExit,
+}: Options = {}) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -76,7 +96,14 @@ function setup({ records = [], config = {}, drain, headers, alive, onLoss }: Opt
           records: pending.splice(0),
         };
 
-  const drainForExit = vi.fn<() => LogBatch | null>(drain ?? take);
+  // The exit flush takes one batch for each kind. These tests give one batch or none.
+  const drainForExit = vi.fn<() => LogBatch[]>(
+    batches ??
+      (() => {
+        const batch = (drain ?? take)();
+        return batch ? [batch] : [];
+      }),
+  );
   const flushAlive = vi.fn<() => void | Promise<void>>(alive ?? (() => undefined));
 
   const flush = new ExitFlush({
@@ -86,6 +113,7 @@ function setup({ records = [], config = {}, drain, headers, alive, onLoss }: Opt
     flushAlive,
     exitHeaders: () => headers,
     onLoss,
+    beforeExit,
   });
 
   built.push(flush);
@@ -430,6 +458,51 @@ describe("ExitFlush flush", () => {
     );
   });
 
+  it("beacons a batch of metric records to metricsEndpoint and the other batch to endpoint", () => {
+    const beacon = stubBeacon();
+    const { flush } = setup({
+      config: { metricsEndpoint: METRICS_ENDPOINT },
+      batches: () => [
+        { id: "m1", createdAt: Date.now(), attempts: 0, records: [pointRecord()] },
+        { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
+      ],
+    });
+
+    flush.flush("pagehide");
+
+    const urls = beacon.mock.calls.map(([url]) => new URL(url));
+    expect(urls.map((url) => url.pathname)).toEqual(["/v1/metrics", "/v1/logs"]);
+    expect(urls.map((url) => url.searchParams.get("uiobs_batch_id"))).toEqual(["m1", "l1"]);
+  });
+
+  it("sends the points of the open metric interval before the drain", () => {
+    stubBeacon();
+    const beforeExit = vi.fn();
+    const { flush, drainForExit } = setup({ records: [record("bye")], beforeExit });
+
+    flush.flush("pagehide");
+
+    expect(beforeExit).toHaveBeenCalledOnce();
+    expect(beforeExit.mock.invocationCallOrder[0]).toBeLessThan(
+      drainForExit.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("reports a metric collection that throws, and still sends the batch", () => {
+    const beacon = stubBeacon();
+    const { flush, codes } = setup({
+      records: [record("bye")],
+      beforeExit: () => {
+        throw new Error("collect failed");
+      },
+    });
+
+    flush.flush("pagehide");
+
+    expect(codes()).toContain("pipeline.crashed");
+    expect(beacon).toHaveBeenCalledOnce();
+  });
+
   it("diverts an oversized batch to the synchronous emergency queue", () => {
     const beacon = stubBeacon();
     const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
@@ -477,6 +550,45 @@ describe("ExitFlush keepalive fallback", () => {
     expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("x-uiobs-batch-id")).toBe("b1");
     expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
+  });
+
+  it("parks a batch that does not fit in the keepalive budget that the batches before it used", () => {
+    // Each batch is below the budget, but the two together are above it. The browser rejects
+    // the second fetch after the document closes, and park() does not run.
+    const fetchMock = stubFetch();
+    const large = (id: string): LogBatch => ({
+      id,
+      createdAt: Date.now(),
+      attempts: 0,
+      records: Array.from({ length: 40 }, (_unused, i) => record("x".repeat(900) + String(i))),
+    });
+
+    setup({
+      batches: () => [large("b1"), large("b2")],
+      headers: { authorization: "Bearer t1" },
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("gives the full keepalive budget to each exit flush", () => {
+    // The requests of an earlier flush are complete. A page from the back-forward cache can
+    // flush again.
+    const fetchMock = stubFetch();
+    const large = (): LogBatch => ({
+      id: "b1",
+      createdAt: Date.now(),
+      attempts: 0,
+      records: Array.from({ length: 40 }, (_unused, i) => record("x".repeat(900) + String(i))),
+    });
+    const { flush } = setup({ batches: () => [large()], headers: { authorization: "Bearer t1" } });
+
+    flush.flush("pagehide");
+    flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(emergencyKeys()).toHaveLength(0);
   });
 
   it("parks the batch, and sends no beacon, while a headers function has no result", () => {
@@ -583,6 +695,26 @@ describe("ExitFlush with a custom transport", () => {
     expect(onExit.mock.calls[0][0]).toMatchObject({ batchId: "b1", attempt: 0 });
     expect(beacon).not.toHaveBeenCalled();
     expect(emergencyKeys()).toHaveLength(0);
+  });
+
+  it("gives transportOnExit the kind of each batch", () => {
+    const onExit = vi.fn<ExitTransport>(() => true);
+    const { flush } = setup({
+      config: {
+        endpoint: null,
+        transport,
+        transportOnExit: onExit,
+        metricsEndpoint: METRICS_ENDPOINT,
+      },
+      batches: () => [
+        { id: "m1", createdAt: Date.now(), attempts: 0, records: [pointRecord()] },
+        { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
+      ],
+    });
+
+    flush.flush("pagehide");
+
+    expect(onExit.mock.calls.map(([request]) => request.kind)).toEqual(["metrics", "logs"]);
   });
 
   it("parks the batch in the emergency queue when transportOnExit refuses it", () => {

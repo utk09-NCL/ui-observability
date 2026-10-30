@@ -8,6 +8,7 @@ import {
   ATTR_SANITIZE_FAILED,
   CAPTURE_NAMESPACE,
   DEFAULT_METRIC_UNIT,
+  METRIC_KEYS,
   STORAGE_NAMESPACE,
 } from "../constants";
 import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
@@ -320,12 +321,15 @@ export class OneLogger {
     }
 
     // Spread the caller attributes first. The metric fields then win over a key of the same name.
+    // The OTLP metrics serializer reads the caller keys. The context keys stay off the point.
+    const copied = copyPayload(attributes, this.bind().diagnostics);
     const payload = {
-      ...copyPayload(attributes, this.bind().diagnostics),
+      ...copied,
       "metric.name": name,
       "metric.value": value,
       "metric.unit": unit,
       "metric.type": type,
+      [METRIC_KEYS.attributeKeys]: Object.keys(copied),
     };
     this.write("INFO", "metric", name, payload, true);
   };

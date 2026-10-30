@@ -50,6 +50,7 @@ function setup(value: unknown = true) {
     breadcrumbs,
     tracing: new TraceEngine(diagnostics),
     once: { webVitals: false, navigationTiming: false, longFrames: false },
+    recordMetric: vi.fn(),
   };
   ctx.config.capture.console = value as CaptureOptions["console"];
 

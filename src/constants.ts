@@ -573,6 +573,9 @@ export const LIBRARY_REQUEST_KEY = "ui-observability.request-scope";
 /** Global symbol key of the library console scope count. All library copies on a page share it. */
 export const LIBRARY_CONSOLE_KEY = "ui-observability.console-scope";
 
+/** Global symbol key of the count of custom transport calls that wait for an answer. */
+export const TRANSPORT_CALL_KEY = "ui-observability.transport-calls";
+
 // ----------------------------------
 // Capture
 // ----------------------------------
@@ -640,6 +643,38 @@ export const STORAGE_NAMESPACE = "uiobs.storage";
 
 /** Measurement unit that the library uses when the call gives no unit. */
 export const DEFAULT_METRIC_UNIT = "count";
+
+/** Namespace of the points that the counter and histogram instruments give. */
+export const METRIC_NAMESPACE = "uiobs.metrics";
+
+/** Maximum attribute sets of one instrument in one interval. More sets go to one overflow set. */
+export const METRIC_MAX_SERIES = 100;
+
+/** Maximum bucket boundaries of one histogram. More boundaries make a large point. */
+export const METRIC_MAX_BOUNDARIES = 50;
+
+/** Attribute of the overflow set. OpenTelemetry uses the same key. */
+export const ATTR_METRIC_OVERFLOW = "otel.metric.overflow";
+
+/** Default histogram boundaries. They are the OpenTelemetry default boundaries. */
+export const METRIC_DEFAULT_BOUNDARIES: readonly number[] = [
+  0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000,
+];
+
+/**
+ * Attribute keys of an aggregated metric point. The OTLP metrics serializer reads them.
+ * Sampling keeps each record with a start time. A sample of a sum gives a false sum.
+ */
+export const METRIC_KEYS = {
+  start: "metric.start_time_unix_nano",
+  attributeKeys: "metric.attribute_keys",
+  count: "metric.count",
+  sum: "metric.sum",
+  min: "metric.min",
+  max: "metric.max",
+  bounds: "metric.bounds",
+  buckets: "metric.bucket_counts",
+} as const;
 
 // ----------------------------------
 // Configuration
@@ -867,6 +902,7 @@ export const RECORD_LIMITS = {
  */
 export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   endpoint: "",
+  metricsEndpoint: "",
   serviceName: "",
   serviceVersion: "",
   environment: "",
@@ -899,6 +935,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     resourceErrors: false,
     fetch: false,
     xhr: false,
+    httpMetrics: true,
     interactions: false,
     navigation: false,
     webVitals: false,

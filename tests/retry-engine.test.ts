@@ -8,7 +8,7 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
-import type { RetentionOptions } from "../src/models/config";
+import type { ResolvedConfig, RetentionOptions } from "../src/models/config";
 import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { MemoryStorage } from "../src/storage/memory-storage";
@@ -53,6 +53,17 @@ const batch = (id: string, { attempts = 0, records = 1 } = {}): LogBatch => ({
   records: Array.from({ length: records }, (_unused, index) => record(`${id}-${String(index)}`)),
 });
 
+/** With metricsEndpoint, a batch of metric records has its own endpoint. */
+const metricsConfig = resolveConfig(
+  { endpoint: "https://x/v1/logs", metricsEndpoint: "https://x/v1/metrics", serviceName: "svc" },
+  new Diagnostics(vi.fn(), 0),
+);
+
+const metricBatch = (id: string): LogBatch => ({
+  ...batch(id),
+  records: [{ ...record(id), attributes: { "log.type": "metric" } }],
+});
+
 type Send = (batch: LogBatch) => Promise<void>;
 
 /**
@@ -68,15 +79,17 @@ const makeEngine = (
     batchesPerDrain?: number;
     retention?: Partial<RetentionOptions>;
     onLoss?: LossReporter;
+    config?: ResolvedConfig;
   } = {},
 ) => {
   const storage = new MemoryStorage(limits);
-  const engineConfig = options.retention
+  const retentionConfig = options.retention
     ? resolveConfig(
         { endpoint: "https://x/v1/logs", serviceName: "svc", retention: options.retention },
         new Diagnostics(vi.fn(), 0),
       )
     : config;
+  const engineConfig = options.config ?? retentionConfig;
   const send = vi.fn<Send>(options.send ?? (() => Promise.resolve()));
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const engine = new RetryEngine(
@@ -377,6 +390,91 @@ describe("RetryEngine failure handling", () => {
     await tick(BASE_DELAY_MS);
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
+    engine.stop();
+  });
+});
+
+describe("RetryEngine with metricsEndpoint", () => {
+  const throttleOnly = (blocked: string, retryAfterMs?: number) => (sent: LogBatch) =>
+    sent.id.startsWith(blocked)
+      ? Promise.reject(new TransportError("throttled", "429", 429, retryAfterMs))
+      : Promise.resolve();
+
+  it("sends the log batches behind a throttled metrics batch", async () => {
+    const { engine, storage, send } = makeEngine({
+      config: metricsConfig,
+      send: throttleOnly("m"),
+    });
+    await storage.save(metricBatch("m"));
+    await storage.save(batch("l"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send.mock.calls.map(([sent]) => sent.id)).toEqual(["m", "l"]);
+    expect((await storage.take(10)).map((kept) => kept.id)).toEqual(["m"]);
+    engine.stop();
+  });
+
+  it("sends no more batches of a failed kind in the same drain", async () => {
+    // The batches of one kind keep their order.
+    const { engine, storage, send } = makeEngine({
+      config: metricsConfig,
+      send: (sent) =>
+        sent.id === "m1"
+          ? Promise.reject(new TransportError("transient", "500", 500))
+          : Promise.resolve(),
+    });
+    await storage.save(metricBatch("m1"));
+    await storage.save(batch("l1"));
+    await storage.save(metricBatch("m2"));
+    await storage.save(batch("l2"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send.mock.calls.map(([sent]) => sent.id)).toEqual(["m1", "l1", "l2"]);
+    expect((await storage.take(10)).map((kept) => kept.id)).toEqual(["m1", "m2"]);
+    engine.stop();
+  });
+
+  it("keeps the Retry-After delay of the throttled kind after it sends the other kind", async () => {
+    const retryAfterMs = 700;
+    const { engine, storage, send } = makeEngine({
+      config: metricsConfig,
+      send: throttleOnly("m", retryAfterMs),
+    });
+    await storage.save(metricBatch("m"));
+    await storage.save(batch("l"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    await tick(retryAfterMs - 1);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    await tick(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    engine.stop();
+  });
+
+  it("stops the drain for both kinds while the browser is offline", async () => {
+    const { engine, storage, send } = makeEngine({
+      config: metricsConfig,
+      send: () => Promise.reject(new TransportError("offline", "no connection")),
+    });
+    await storage.save(metricBatch("m"));
+    await storage.save(batch("l"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send).toHaveBeenCalledOnce();
     engine.stop();
   });
 });

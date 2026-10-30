@@ -422,6 +422,103 @@ describe("resolveConfig", () => {
     });
   });
 
+  describe("metricsEndpoint", () => {
+    const METRICS = "https://ingest.example/v1/metrics";
+
+    it("is off by default", () => {
+      expect(resolveConfig(valid(), collect().diagnostics).metricsEndpoint).toBe("");
+    });
+
+    it("keeps an absolute URL and reports nothing", () => {
+      const { events, diagnostics } = collect();
+
+      const resolved = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
+
+      expect(resolved.metricsEndpoint).toBe(METRICS);
+      expect(events).toEqual([]);
+    });
+
+    it("reports a value that is not an absolute URL and keeps the value in force", () => {
+      const { events, diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
+
+      const second = resolveConfig({ metricsEndpoint: "/v1/metrics" }, diagnostics, first);
+
+      expect(second.metricsEndpoint).toBe(METRICS);
+      expect(messages(events)[0]).toContain("metricsEndpoint is not a valid absolute URL");
+      expect(events[0].cause).toBeInstanceOf(Error);
+    });
+
+    it("reports a value that is not a string and keeps the value in force", () => {
+      const { events, diagnostics } = collect();
+
+      const resolved = resolveConfig(
+        { ...valid(), metricsEndpoint: 42 as unknown as string },
+        diagnostics,
+      );
+
+      expect(resolved.metricsEndpoint).toBe("");
+      expect(messages(events)[0]).toContain("metricsEndpoint must be a URL string");
+    });
+
+    it("turns off with an empty string", () => {
+      const { diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
+
+      expect(resolveConfig({ metricsEndpoint: "" }, diagnostics, first).metricsEndpoint).toBe("");
+    });
+
+    it("turns off with a serializer that has no metrics format, and says so", () => {
+      const { events, diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
+
+      const second = resolveConfig({ serializer: "ecs" }, diagnostics, first);
+
+      expect(second.metricsEndpoint).toBe("");
+      expect(messages(events)[0]).toContain('metricsEndpoint needs serializer "otlp"');
+    });
+
+    it("joins ignoreUrls and leaves it on a change", () => {
+      const { diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
+      expect(first.capture.ignoreUrls).toEqual([ENDPOINT, METRICS]);
+
+      const second = resolveConfig({ metricsEndpoint: "" }, diagnostics, first);
+
+      // A request of the library must not give a record. That record gives a new request.
+      expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
+    });
+
+    it("reports a metricsEndpoint with no endpoint and no transport", () => {
+      // Only the delivery stack sends. It does not load without endpoint or transport.
+      const { events, diagnostics } = collect();
+
+      resolveConfig({ ...valid(), endpoint: null, metricsEndpoint: METRICS }, diagnostics);
+
+      expect(messages(events)).toEqual([
+        "metricsEndpoint needs endpoint or transport. The library sends nothing to metricsEndpoint.",
+      ]);
+    });
+
+    it("accepts a metricsEndpoint with a custom transport and no endpoint", () => {
+      const { events, diagnostics } = collect();
+      const transport = () => Promise.resolve({ status: 204 });
+
+      resolveConfig(
+        { ...valid(), endpoint: null, transport, metricsEndpoint: METRICS },
+        diagnostics,
+      );
+
+      expect(events).toEqual([]);
+    });
+  });
+
+  it("records the HTTP client histogram by default", () => {
+    const resolved = resolveConfig(valid(), collect().diagnostics);
+
+    expect(resolved.capture.httpMetrics).toBe(true);
+  });
+
   describe("the endpoint is kept out of network capture", () => {
     it("adds the endpoint to ignoreUrls so one failed POST cannot log forever", () => {
       const { diagnostics } = collect();

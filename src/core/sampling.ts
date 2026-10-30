@@ -14,6 +14,7 @@ import {
   FNV_PRIME,
   LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
+  METRIC_KEYS,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
   UINT32_MAX,
@@ -119,6 +120,8 @@ export interface SampleInput {
   journeyId: string;
   /** Trace ID. It is the sampling key when no journey runs. */
   traceId: string;
+  /** True for a point of a counter or histogram. A sample of a sum gives a false sum. */
+  aggregated?: boolean;
 }
 
 /**
@@ -134,8 +137,8 @@ export function shouldSampleInput(
   config: ResolvedConfig,
   remote: RemoteRules | null,
 ): boolean {
-  // Errors and fatal records bypass sampling filters.
-  if (input.level === "ERROR" || input.level === "FATAL") {
+  // Errors, fatal records and aggregated points bypass sampling filters.
+  if (input.aggregated === true || input.level === "ERROR" || input.level === "FATAL") {
     return true;
   }
 
@@ -186,6 +189,8 @@ export function shouldSample(
       namespace: readAttr(record, ATTR_APP_NAMESPACE),
       journeyId: readAttr(record, ATTR_JOURNEY_ID),
       traceId: record.traceId,
+      aggregated:
+        readAttr(record, ATTR_LOG_TYPE) === "metric" && readAttr(record, METRIC_KEYS.start) !== "",
     },
     config,
     remote,

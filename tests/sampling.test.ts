@@ -5,6 +5,7 @@ import {
   ATTR_LOG_TYPE,
   ERROR_CEILING_MAX_PER_WINDOW,
   ERROR_STORM_WINDOW_MS,
+  METRIC_KEYS,
 } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
@@ -53,6 +54,20 @@ describe("shouldSample bypasses", () => {
   it("keeps a type on alwaysSampleTypes at rate zero", () => {
     const kept = record({ [ATTR_LOG_TYPE]: "action" });
     expect(shouldSample(kept, config({ defaultRate: 0 }))).toBe(true);
+  });
+
+  it("keeps an aggregated metric point at rate zero", () => {
+    // A child frame forwards its points. A sample of a sum gives a false sum.
+    const point = record({ [ATTR_LOG_TYPE]: "metric", [METRIC_KEYS.start]: "1000000000000" });
+    expect(shouldSample(point, config({ defaultRate: 0 }))).toBe(true);
+  });
+
+  it("samples a metric record without a start time, and a start time on another type", () => {
+    const single = record({ [ATTR_LOG_TYPE]: "metric" });
+    const other = record({ [METRIC_KEYS.start]: "1000000000000" });
+
+    expect(shouldSample(single, config({ defaultRate: 0 }))).toBe(false);
+    expect(shouldSample(other, config({ defaultRate: 0 }))).toBe(false);
   });
 
   it("drops an ordinary record at rate zero", () => {

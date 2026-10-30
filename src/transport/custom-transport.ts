@@ -11,22 +11,29 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
-import type { TransportRequest, TransportResponse } from "../models/config";
+import type { BatchKind, TransportRequest, TransportResponse } from "../models/config";
 import type { SerializedBatch } from "../models/serializer";
 import { DeadlineError, withDeadline } from "../utils/deadline";
 import { runAsLibraryConsole } from "../utils/library-console";
-import { runAsLibraryRequest } from "../utils/library-request";
+import { runAsLibraryRequest, trackTransportCall } from "../utils/library-request";
 import { TransportError } from "./errors";
+import { batchKind } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
 /**
  * Builds the request that a custom transport and its exit hook receive.
  * @param batch Batch to send.
  * @param serialized Serialized form of the batch.
+ * @param kind Kind of the batch.
  * @returns The transport request.
  */
-export function toTransportRequest(batch: LogBatch, serialized: SerializedBatch): TransportRequest {
+export function toTransportRequest(
+  batch: LogBatch,
+  serialized: SerializedBatch,
+  kind: BatchKind,
+): TransportRequest {
   return {
+    kind,
     body: serialized.body,
     contentType: serialized.contentType,
     batchId: batch.id,
@@ -83,15 +90,19 @@ export class CustomTransport extends StatusTransport {
       return;
     }
 
-    const request = toTransportRequest(batch, serialized);
+    const kind = batchKind(batch, this.config);
+    const request = toTransportRequest(batch, serialized, kind);
 
     let response: unknown;
 
     try {
       // A transport that never settles holds a dispatch slot. The deadline frees the slot.
       response = await withDeadline(
-        // The capture modules skip a request or a console line inside these scopes.
-        runAsLibraryRequest(() => runAsLibraryConsole(() => transport(request))),
+        // The capture modules skip a request or a console line inside these scopes. Network
+        // capture warns about a request after an await, which is outside the scopes.
+        trackTransportCall(() =>
+          runAsLibraryRequest(() => runAsLibraryConsole(() => transport(request))),
+        ),
         REQUEST_TIMEOUT_MS,
       );
     } catch (error) {
@@ -115,11 +126,11 @@ export class CustomTransport extends StatusTransport {
     const { status } = response;
 
     if (status >= HTTP_SUCCESS_MIN && status < HTTP_SUCCESS_END) {
-      this.accept(response.sampling);
+      this.accept(kind, response.sampling);
       return;
     }
 
-    throw this.reject(status, batch.id, {
+    throw this.reject(status, batch.id, kind, {
       retryAfterMs: finiteHint(response.retryAfterMs),
       maxBytes: finiteHint(response.maxBytes),
     });

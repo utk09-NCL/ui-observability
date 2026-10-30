@@ -20,6 +20,7 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
+import type { BatchKind } from "../models/config";
 import type { SerializedBatch } from "../models/serializer";
 import { withDeadline } from "../utils/deadline";
 import { runAsLibraryRequest } from "../utils/library-request";
@@ -27,6 +28,7 @@ import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { parseRetryAfter, TransportError } from "./errors";
+import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
 /** Advice for a 401 or a 403 answer on the HTTP path. */
@@ -42,8 +44,10 @@ type RequestBody = string | Uint8Array<ArrayBuffer>;
 interface CachedHeaders {
   /** The headers() function that gave the headers. */
   source: unknown;
-  /** The endpoint of the send that used the headers. */
-  endpoint: string;
+  /** The endpoint in force when headers() ran. */
+  endpoint: string | null;
+  /** The metricsEndpoint in force when headers() ran. */
+  metricsEndpoint: string;
   /** The headers. */
   headers: Record<string, string>;
 }
@@ -60,25 +64,27 @@ interface DocumentGlobal {
 export class HttpTransport extends StatusTransport {
   /**
    * Headers that the headers() function gave last. The exit flush sends them only while that
-   * function and the endpoint are in force. A tenant switch must not send the old token to the
-   * new endpoint.
+   * function and the two endpoints are in force. A tenant switch must not send the old token to
+   * the new endpoint.
    */
   private cachedHeaders: CachedHeaders | undefined;
 
   /**
-   * Sends one log batch over HTTP.
+   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint.
    * @param batch Batch to send.
    * @param onKeepalive Runs when a request of the batch starts with keepalive.
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
-    const { endpoint } = this.config;
+    const { config } = this;
+    const kind = batchKind(batch, config);
+    const endpoint = endpointFor(kind, config);
 
     if (!endpoint || batch.records.length === 0) {
       return;
     }
 
-    await this.post(batch, endpoint, onKeepalive);
+    await this.post(batch, kind, endpoint, onKeepalive);
   }
 
   /**
@@ -95,8 +101,12 @@ export class HttpTransport extends StatusTransport {
       return headers;
     }
 
+    // The headers apply to both endpoints. A change of either endpoint can be a tenant switch.
     const cached = this.cachedHeaders;
-    const current = cached?.source === headers && cached.endpoint === this.config.endpoint;
+    const current =
+      cached?.source === headers &&
+      cached.endpoint === this.config.endpoint &&
+      cached.metricsEndpoint === this.config.metricsEndpoint;
 
     return current ? cached.headers : undefined;
   }
@@ -105,12 +115,14 @@ export class HttpTransport extends StatusTransport {
    * Serializes, encodes and sends a batch. It throws a classified TransportError
    * on failure.
    * @param batch Batch to deliver.
+   * @param kind Kind of the batch. The caller reads it with the endpoint.
    * @param endpoint Ingest URL. The caller reads it one time. A reconfigure during the send
    * cannot change it.
    * @param onKeepalive Runs when a request of the batch starts with keepalive.
    */
   private async post(
     batch: LogBatch,
+    kind: BatchKind,
     endpoint: string,
     onKeepalive: (() => void) | undefined,
   ): Promise<void> {
@@ -131,7 +143,7 @@ export class HttpTransport extends StatusTransport {
 
     if (response.ok) {
       // The server must list the header in Access-Control-Expose-Headers. If not, it is null.
-      this.accept(response.headers.get(HEADER_SAMPLING));
+      this.accept(kind, response.headers.get(HEADER_SAMPLING));
       return;
     }
 
@@ -140,7 +152,11 @@ export class HttpTransport extends StatusTransport {
     const maxBytes =
       status === HTTP_PAYLOAD_TOO_LARGE ? await this.readMaxBytes(response) : undefined;
 
-    throw this.reject(status, batch.id, { retryAfterMs, maxBytes, advice: CREDENTIAL_ADVICE });
+    throw this.reject(status, batch.id, kind, {
+      retryAfterMs,
+      maxBytes,
+      advice: CREDENTIAL_ADVICE,
+    });
   }
 
   /**
@@ -171,12 +187,12 @@ export class HttpTransport extends StatusTransport {
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
 
     // Headers ignores the case of header names. A config header cannot duplicate a header below.
-    const headers = new Headers(await this.before(this.resolveHeaders(endpoint), deadline));
+    const headers = new Headers(await this.before(this.resolveHeaders(), deadline, endpoint));
     headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
     headers.set(HEADER_BATCH_ID, batch.id);
     headers.set(HEADER_ATTEMPT, String(batch.attempts));
 
-    const body = await this.before(this.encodeBody(serialized.body), deadline);
+    const body = await this.before(this.encodeBody(serialized.body), deadline, endpoint);
     if (typeof body !== "string") {
       headers.set(HEADER_CONTENT_ENCODING, ENCODING_GZIP);
     }
@@ -194,26 +210,28 @@ export class HttpTransport extends StatusTransport {
    * Waits for a step until the deadline.
    * @param work Step to wait for. It does not reject. Only the deadline rejects here.
    * @param deadline Epoch time in milliseconds at which the request times out.
+   * @param endpoint Ingest URL of the request, for the timeout report.
    * @returns Promise that resolves to the value of the step.
    * @throws TransportError of kind "timeout" at the deadline.
    */
-  private async before<T>(work: Promise<T>, deadline: number): Promise<T> {
+  private async before<T>(work: Promise<T>, deadline: number, endpoint: string): Promise<T> {
     try {
       return await withDeadline(work, Math.max(0, deadline - Date.now()));
     } catch {
-      throw this.timeout();
+      throw this.timeout(endpoint);
     }
   }
 
   /**
    * Reports a timeout and builds its error.
+   * @param endpoint Ingest URL of the request.
    * @returns TransportError of kind "timeout".
    */
-  private timeout(): TransportError {
+  private timeout(endpoint: string): TransportError {
     const waited = String(REQUEST_TIMEOUT_MS);
     const message = `The request took longer than ${waited} ms.`;
 
-    this.diagnostics.report("transport.timeout", message, { endpoint: this.config.endpoint });
+    this.diagnostics.report("transport.timeout", message, { endpoint });
     return new TransportError("timeout", message);
   }
 
@@ -281,7 +299,7 @@ export class HttpTransport extends StatusTransport {
       );
     } catch {
       if (controller.signal.aborted) {
-        throw this.timeout();
+        throw this.timeout(endpoint);
       }
       const online = (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine;
       throw new TransportError(
@@ -327,10 +345,9 @@ export class HttpTransport extends StatusTransport {
   /**
    * Resolves the configured static or dynamic request headers. It keeps the headers that
    * headers() gave, for the exit flush.
-   * @param endpoint Ingest URL of the send.
    * @returns Promise that resolves to resolved header map.
    */
-  private async resolveHeaders(endpoint: string): Promise<Record<string, string>> {
+  private async resolveHeaders(): Promise<Record<string, string>> {
     const { headers } = this.config;
     if (!headers) {
       return {};
@@ -339,6 +356,8 @@ export class HttpTransport extends StatusTransport {
       return headers;
     }
 
+    // Read the endpoints before the call. A configure() during the call then ends the cache.
+    const { endpoint, metricsEndpoint } = this.config;
     const resolved = await this.diagnostics.guardAsync(
       "transport.http_error",
       "The headers() function threw an error.",
@@ -346,7 +365,7 @@ export class HttpTransport extends StatusTransport {
     );
 
     if (resolved) {
-      this.cachedHeaders = { source: headers, endpoint, headers: resolved };
+      this.cachedHeaders = { source: headers, endpoint, metricsEndpoint, headers: resolved };
     }
 
     return resolved ?? {};

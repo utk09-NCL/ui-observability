@@ -1,5 +1,11 @@
+import { counter, histogram } from "@utk09/ui-observability";
 import { type ReactElement, useState } from "react";
 import { LoggerProvider, ObservabilityErrorBoundary, useJourney, useLogger } from "./observability";
+
+// Module scope. A handle stays valid across configure() and shutdown(). The library sums the
+// values and sends one point for each attribute set at each interval.
+const ordersSubmitted = counter("orders.submitted");
+const pricingLatency = histogram("pricing.latency", { unit: "ms" });
 
 /**
  * A component whose lifetime is shorter than the workflow it belongs to.
@@ -14,6 +20,7 @@ function OrderTicket(): ReactElement {
     <button
       onClick={() => {
         log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
+        ordersSubmitted.add(1, { venue: "LSE" });
         setSubmitted(true);
       }}
     >
@@ -55,6 +62,24 @@ export function App(): ReactElement {
         }}
       >
         break a render
+      </button>
+      <button
+        onClick={() => {
+          // 20 values give one histogram point at the next interval, not 20 records.
+          for (let i = 0; i < 20; i++) {
+            pricingLatency.record(Math.round(Math.random() * 400), { venue: "LSE" });
+          }
+        }}
+      >
+        price 20 quotes
+      </button>
+      <button
+        onClick={() => {
+          // Fetch capture records http.client.request.duration with status 404.
+          void fetch("http://localhost:8787/missing");
+        }}
+      >
+        fetch a missing URL
       </button>
       <ObservabilityErrorBoundary fallback={<p>something broke, and it was logged</p>}>
         {explode ? <Boom /> : null}

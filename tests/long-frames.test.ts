@@ -81,6 +81,7 @@ function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
     breadcrumbs,
     tracing: new TraceEngine(diagnostics),
     once,
+    recordMetric: vi.fn(),
   };
   events.length = 0;
 
