@@ -46,6 +46,7 @@ export type DiagnosticCode =
   | "capture.rate_limited"
   | "capture.header_failed"
   | "capture.record_failed"
+  | "capture.transport_request"
   | "openfin.unavailable"
   | "platform.api_blocked"
   | "handler.threw";

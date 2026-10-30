@@ -17,11 +17,11 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
-import type { ResolvedConfig } from "../models/config";
+import type { BatchKind, ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { TransportError } from "./errors";
-import { serializeBatch } from "./serializers/select";
+import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
 /** The two operations that the pipeline and the retry engine use. */
 export interface BatchTransport {
@@ -33,10 +33,11 @@ export interface BatchTransport {
    */
   send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
   /**
-   * Returns the remaining throttle delay.
+   * Returns the remaining throttle delay of the endpoint of a batch.
+   * @param batch Batch to send.
    * @returns Milliseconds until the throttle ends, or 0.
    */
-  throttledForMs(): number;
+  throttledForMs(batch: LogBatch): number;
 }
 
 /** Hints that come with a rejected batch. */
@@ -51,8 +52,11 @@ export interface RejectHints {
 
 /** Base class of the HTTP transport and the custom transport. */
 export abstract class StatusTransport implements BatchTransport {
-  /** Epoch time in milliseconds when the server throttle ends. */
-  private throttledUntil = 0;
+  /**
+   * Epoch time in milliseconds when the server throttle ends, for each endpoint. A 429 from
+   * metricsEndpoint must not stop the log batches.
+   */
+  private readonly throttledUntil: Record<BatchKind, number> = { logs: 0, metrics: 0 };
 
   /**
    * @param config Active configuration instance.
@@ -76,11 +80,12 @@ export abstract class StatusTransport implements BatchTransport {
   abstract send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
 
   /**
-   * Returns the remaining throttle delay in milliseconds.
+   * Returns the remaining throttle delay of the endpoint of a batch, in milliseconds.
+   * @param batch Batch to send.
    * @returns Milliseconds remaining in throttle window, or 0 if unthrottled.
    */
-  throttledForMs(): number {
-    return Math.max(0, this.throttledUntil - Date.now());
+  throttledForMs(batch: LogBatch): number {
+    return Math.max(0, this.throttledUntil[batchKind(batch, this.config)] - Date.now());
   }
 
   /**
@@ -105,11 +110,12 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
-   * Records an accepted batch. It ends a server throttle.
+   * Records an accepted batch. It ends the server throttle of the endpoint of the batch.
+   * @param kind Kind of the accepted batch.
    * @param sampling Sampling rules of the answer, as text or as an object.
    */
-  protected accept(sampling: unknown): void {
-    this.throttledUntil = 0;
+  protected accept(kind: BatchKind, sampling: unknown): void {
+    this.throttledUntil[kind] = 0;
 
     // Trust only the answer to a batch that the library sent. A null header means no rules.
     if (this.config.sampling.remote && sampling !== undefined && sampling !== null) {
@@ -121,10 +127,16 @@ export abstract class StatusTransport implements BatchTransport {
    * Converts a status code that is not 2xx into a classified TransportError.
    * @param status Status code of the answer.
    * @param batchId Identifier of the rejected batch.
+   * @param kind Kind of the rejected batch. A throttle applies only to its endpoint.
    * @param hints Delay, size limit and advice that come with the answer.
    * @returns Classified TransportError instance.
    */
-  protected reject(status: number, batchId: string, hints: RejectHints): TransportError {
+  protected reject(
+    status: number,
+    batchId: string,
+    kind: BatchKind,
+    hints: RejectHints,
+  ): TransportError {
     const code = String(status);
 
     if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) {
@@ -133,7 +145,7 @@ export abstract class StatusTransport implements BatchTransport {
       this.diagnostics.report(
         "transport.rejected_credentials",
         `The server returned ${code}.${advice}`,
-        { status, endpoint: this.config.endpoint },
+        { status, endpoint: endpointFor(kind, this.config) },
       );
       // Classify as permanent. A retry loop on a rejected credential blocks each batch after it.
       return new TransportError("permanent", `The server rejected the batch with ${code}.`, status);
@@ -156,7 +168,7 @@ export abstract class StatusTransport implements BatchTransport {
         hints.retryAfterMs === undefined
           ? undefined
           : Math.min(hints.retryAfterMs, RETRY_MAX_DELAY_MS);
-      this.throttledUntil = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
+      this.throttledUntil[kind] = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
 
       if (throttled) {
         this.diagnostics.report("transport.throttled", "The server throttles the requests.", {

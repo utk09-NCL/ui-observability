@@ -552,6 +552,45 @@ describe("ExitFlush keepalive fallback", () => {
     expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
   });
 
+  it("parks a batch that does not fit in the keepalive budget that the batches before it used", () => {
+    // Each batch is below the budget, but the two together are above it. The browser rejects
+    // the second fetch after the document closes, and park() does not run.
+    const fetchMock = stubFetch();
+    const large = (id: string): LogBatch => ({
+      id,
+      createdAt: Date.now(),
+      attempts: 0,
+      records: Array.from({ length: 40 }, (_unused, i) => record("x".repeat(900) + String(i))),
+    });
+
+    setup({
+      batches: () => [large("b1"), large("b2")],
+      headers: { authorization: "Bearer t1" },
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("gives the full keepalive budget to each exit flush", () => {
+    // The requests of an earlier flush are complete. A page from the back-forward cache can
+    // flush again.
+    const fetchMock = stubFetch();
+    const large = (): LogBatch => ({
+      id: "b1",
+      createdAt: Date.now(),
+      attempts: 0,
+      records: Array.from({ length: 40 }, (_unused, i) => record("x".repeat(900) + String(i))),
+    });
+    const { flush } = setup({ batches: () => [large()], headers: { authorization: "Bearer t1" } });
+
+    flush.flush("pagehide");
+    flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(emergencyKeys()).toHaveLength(0);
+  });
+
   it("parks the batch, and sends no beacon, while a headers function has no result", () => {
     // Before the first send and after a 401, the library has no headers.
     // The server refuses a beacon without them.

@@ -319,8 +319,8 @@ export class ObservabilityRuntime {
 
     this.meter = new Meter(
       () => this.config.batching.metricFlushIntervalMs,
-      (name, point) => {
-        this.emitPoint(name, point);
+      (name, attributes, fields) => {
+        this.emitPoint(name, attributes, fields);
       },
       this.diagnostics,
     );
@@ -342,15 +342,21 @@ export class ObservabilityRuntime {
   /**
    * Builds and emits the record of one aggregated point. The console does not print it.
    * @param name Metric name.
-   * @param point Point attributes.
+   * @param attributes Attributes of the call. The record limits apply to them.
+   * @param fields Metric fields of the point. The record limits do not cut them.
    */
-  private emitPoint(name: string, point: Record<string, unknown>): void {
+  private emitPoint(
+    name: string,
+    attributes: MetricAttributes,
+    fields: Record<string, unknown>,
+  ): void {
     const { record } = this.builder.build({
       level: "INFO",
       type: "metric",
       body: name,
       namespace: METRIC_NAMESPACE,
-      payload: point,
+      payload: attributes,
+      fixed: fields,
       aggregated: true,
     });
     this.emit(record);

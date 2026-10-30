@@ -165,7 +165,7 @@ describe("CustomTransport", () => {
 
     expect(error.kind).toBe("throttled");
     expect(error.retryAfterMs).toBe(5000);
-    expect(sut.throttledForMs()).toBeGreaterThan(4000);
+    expect(sut.throttledForMs(batch())).toBeGreaterThan(4000);
     expect(events.map((event) => event.code)).toContain("transport.throttled");
   });
 
@@ -176,7 +176,7 @@ describe("CustomTransport", () => {
     const error = await failure(sut);
 
     expect(error.retryAfterMs).toBeUndefined();
-    expect(sut.throttledForMs()).toBeLessThanOrEqual(RETRY_BASE_DELAY_MS);
+    expect(sut.throttledForMs(batch())).toBeLessThanOrEqual(RETRY_BASE_DELAY_MS);
 
     const endless = await failure(setup(answer({ status: 503, retryAfterMs: Infinity })).sut);
     const tooLarge = await failure(setup(answer({ status: 413, maxBytes: NaN })).sut);
@@ -198,7 +198,7 @@ describe("CustomTransport", () => {
     await failure(sut);
     await sut.send(batch());
 
-    expect(sut.throttledForMs()).toBe(0);
+    expect(sut.throttledForMs(batch())).toBe(0);
   });
 
   it("retries a 5xx and drops another 4xx", async () => {

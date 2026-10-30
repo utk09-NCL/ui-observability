@@ -488,6 +488,29 @@ describe("resolveConfig", () => {
       // A request of the library must not give a record. That record gives a new request.
       expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
     });
+
+    it("reports a metricsEndpoint with no endpoint and no transport", () => {
+      // Only the delivery stack sends. It does not load without endpoint or transport.
+      const { events, diagnostics } = collect();
+
+      resolveConfig({ ...valid(), endpoint: null, metricsEndpoint: METRICS }, diagnostics);
+
+      expect(messages(events)).toEqual([
+        "metricsEndpoint needs endpoint or transport. The library sends nothing to metricsEndpoint.",
+      ]);
+    });
+
+    it("accepts a metricsEndpoint with a custom transport and no endpoint", () => {
+      const { events, diagnostics } = collect();
+      const transport = () => Promise.resolve({ status: 204 });
+
+      resolveConfig(
+        { ...valid(), endpoint: null, transport, metricsEndpoint: METRICS },
+        diagnostics,
+      );
+
+      expect(events).toEqual([]);
+    });
   });
 
   it("records the HTTP client histogram by default", () => {

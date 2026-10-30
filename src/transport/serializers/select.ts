@@ -46,6 +46,16 @@ export function batchKind(batch: LogBatch, config: ResolvedConfig): BatchKind {
 }
 
 /**
+ * Gives the endpoint of a batch kind.
+ * @param kind Kind of the batch.
+ * @param config Active configuration.
+ * @returns metricsEndpoint for a metrics batch, else endpoint.
+ */
+export function endpointFor(kind: BatchKind, config: ResolvedConfig): string | null {
+  return kind === "metrics" ? config.metricsEndpoint : config.endpoint;
+}
+
+/**
  * Serializes a batch. It reports a serializer that throws, and the caller drops the batch.
  * A metrics batch gets the OTLP metrics format.
  * @param config Active configuration.

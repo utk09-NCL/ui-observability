@@ -130,6 +130,19 @@ describe("otlpMetricsSerializer", () => {
     });
   });
 
+  it("sets no sum on a histogram point with a negative value", () => {
+    // OTLP: a histogram with a negative value must not set sum.
+    const [aggregated] = metrics([histogramPoint({ "metric.min": -5, "metric.sum": 50 })]);
+    const [single] = metrics([
+      record({ "metric.type": "histogram", "metric.value": -3, "metric.attribute_keys": [] }),
+    ]);
+
+    expect(aggregated.histogram.dataPoints[0]).not.toHaveProperty("sum");
+    expect(aggregated.histogram.dataPoints[0]).toMatchObject({ count: "3", min: -5 });
+    expect(single.histogram.dataPoints[0]).not.toHaveProperty("sum");
+    expect(single.histogram.dataPoints[0]).toMatchObject({ count: "1", min: -3 });
+  });
+
   it("writes a logMetric histogram as one value in one bucket, from the time of the record", () => {
     const single = record({
       "metric.name": "load.duration",

@@ -2287,6 +2287,69 @@ describe("counter and histogram", () => {
     });
   });
 
+  it("keeps all buckets of a point at a small maxArrayLength", async () => {
+    // A cut bucket list makes the serializer drop the point.
+    configure({ ...base, limits: { maxArrayLength: 2 } });
+    await ready();
+    const { read } = points();
+
+    histogram("render").record(3);
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes["metric.bounds"]).toEqual(METRIC_DEFAULT_BOUNDARIES);
+    expect(read()[0].attributes["metric.bucket_counts"]).toHaveLength(
+      METRIC_DEFAULT_BOUNDARIES.length + 1,
+    );
+  });
+
+  it("keeps the metric fields at maxDepth 1 and a small maxAttributeCount", async () => {
+    // The limits cut only the attributes of the call.
+    configure({ ...base, limits: { maxDepth: 1, maxAttributeCount: 2 } });
+    await ready();
+    const { read } = points();
+
+    counter("orders").add(1, { book: "a", desk: "fx", venue: "LSE" });
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes).toMatchObject({
+      "metric.name": "orders",
+      "metric.type": "counter",
+      "metric.value": 1,
+      "metric.attribute_keys": ["book", "desk", "venue"],
+    });
+  });
+
+  it("keeps the metric fields when the attributes exceed maxRecordBytes", async () => {
+    // The builder drops the attributes of the call. The point must stay.
+    configure({ ...base, limits: { maxRecordBytes: 1024 } });
+    await ready();
+    const { read } = points();
+
+    counter("orders").add(1, { note: "x".repeat(2000) });
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes).toMatchObject({ "metric.name": "orders", "metric.value": 1 });
+    expect(read()[0].attributes.note).toBeUndefined();
+  });
+
+  it("keeps all buckets of a point after a redact hook that returns a new record", async () => {
+    // The builder sanitizes the record from the hook again.
+    configure({
+      ...base,
+      limits: { maxArrayLength: 2 },
+      redact: (record) => ({ ...record, attributes: { ...record.attributes } }),
+    });
+    await ready();
+    const { read } = points();
+
+    histogram("render").record(3);
+    runtime()["meter"].collect();
+
+    expect(read()[0].attributes["metric.bucket_counts"]).toHaveLength(
+      METRIC_DEFAULT_BOUNDARIES.length + 1,
+    );
+  });
+
   it("records the HTTP client histogram of a captured fetch", async () => {
     configure({ ...base, capture: { fetch: true } });
     await ready();

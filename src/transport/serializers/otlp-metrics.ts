@@ -98,7 +98,14 @@ function histogramOf(record: LogRecord): DataPoint | null {
     const value = numberOf(record, "metric.value");
     return value === undefined
       ? null
-      : { count: "1", sum: value, min: value, max: value, bucketCounts: ["1"], explicitBounds: [] };
+      : {
+          count: "1",
+          sum: value < 0 ? undefined : value,
+          min: value,
+          max: value,
+          bucketCounts: ["1"],
+          explicitBounds: [],
+        };
   }
 
   const bounds: unknown = record.attributes[METRIC_KEYS.bounds];
@@ -109,10 +116,13 @@ function histogramOf(record: LogRecord): DataPoint | null {
     return null;
   }
 
+  // OTLP: a histogram with a negative value sets no sum. A backend reads the sum as a total.
+  const min = numberOf(record, METRIC_KEYS.min);
+
   return {
     count: String(count),
-    sum: numberOf(record, METRIC_KEYS.sum),
-    min: numberOf(record, METRIC_KEYS.min),
+    sum: min !== undefined && min < 0 ? undefined : numberOf(record, METRIC_KEYS.sum),
+    min,
     max: numberOf(record, METRIC_KEYS.max),
     // OTLP JSON encodes an int64 as a decimal string.
     bucketCounts: buckets.map(String),

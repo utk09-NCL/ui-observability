@@ -1049,6 +1049,14 @@ export function resolveConfig(
     }
   }
 
+  // Only the delivery stack sends. It loads only with an endpoint or a custom transport.
+  if (merged.metricsEndpoint !== "" && merged.endpoint === null && !merged.transport) {
+    diagnostics.report(
+      "config.invalid",
+      "metricsEndpoint needs endpoint or transport. The library sends nothing to metricsEndpoint.",
+    );
+  }
+
   if (!merged.serviceName) {
     diagnostics.report(
       "config.invalid",

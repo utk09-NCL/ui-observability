@@ -372,7 +372,7 @@ export class LogPipeline {
       // Store the batch while the transport throttles. A send here posts a batch each
       // flush interval through the throttle. Do not change the attempt count.
       // The pipeline sent nothing.
-      const throttledMs = this.transport.throttledForMs();
+      const throttledMs = this.transport.throttledForMs(batch);
       if (throttledMs > 0) {
         await this.store(batch);
         this.diagnostics.report(

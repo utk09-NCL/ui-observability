@@ -14,14 +14,18 @@ import {
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
-import type { ResolvedConfig } from "../models/config";
+import type { BatchKind, ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import { type StorageAdapter, storageLimits } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
 import { withDrainLock } from "../utils/lock";
 import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
+import { batchKind } from "./serializers/select";
 import type { BatchTransport } from "./status-transport";
+
+/** Result of one delivery. A number is the delay before the next try of a failed batch. */
+type Outcome = "next" | "stop" | number;
 
 /**
  * This class sends persisted offline batches again on a timer. It uses backoff, a cross-tab
@@ -61,7 +65,7 @@ export class RetryEngine {
     private readonly storage: StorageAdapter,
     private readonly transport: BatchTransport,
     private readonly diagnostics: Diagnostics,
-    config: ResolvedConfig,
+    private readonly config: ResolvedConfig,
     private readonly batchesPerDrain = BATCHES_PER_DRAIN,
     private readonly onLoss: LossReporter = () => undefined,
   ) {
@@ -205,18 +209,37 @@ export class RetryEngine {
         return true;
       }
 
+      // A failure blocks only the kind of its batch. The other endpoint can accept its batches.
+      const blocked = new Set<BatchKind>();
+      let delayMs = 0;
+
       for (const batch of batches) {
         if (this.stopped) {
           return true;
         }
 
-        const done = await this.deliver(batch);
-        if (!done) {
+        const kind = batchKind(batch, this.config);
+        if (blocked.has(kind)) {
+          continue;
+        }
+
+        const outcome = await this.deliver(batch);
+        if (outcome === "stop") {
           return true;
+        }
+
+        if (outcome !== "next") {
+          blocked.add(kind);
+          // Keep the longest delay. A shorter one sends before the Retry-After of the other server.
+          delayMs = Math.max(delayMs, outcome);
         }
       }
 
-      this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
+      if (blocked.size > 0) {
+        this.schedule(delayMs);
+      } else {
+        this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
+      }
       return true;
     } catch (error) {
       this.diagnostics.report(
@@ -235,9 +258,10 @@ export class RetryEngine {
    * Tries to deliver one batch. It removes the batch on success. On failure, it applies the
    * rule for the failure kind.
    * @param batch Log batch to deliver.
-   * @returns True to continue with the next batch. False to stop the current drain.
+   * @returns "next" to continue with the next batch. "stop" to stop the current drain. A delay
+   * in milliseconds blocks the kind of the batch until the next drain.
    */
-  private async deliver(batch: LogBatch): Promise<boolean> {
+  private async deliver(batch: LogBatch): Promise<Outcome> {
     if (batch.attempts >= this.maxAttempts) {
       this.diagnostics.report(
         "storage.dead_lettered",
@@ -246,39 +270,38 @@ export class RetryEngine {
       );
       this.onLoss("max_attempts", batch.records, [batch.id]);
       await this.bounded(this.storage.remove(batch.id));
-      return true;
+      return "next";
     }
 
     try {
       await this.transport.send(batch);
       await this.bounded(this.storage.remove(batch.id));
       this.attempt = 0;
-      return true;
+      return "next";
     } catch (error) {
       const failure = error instanceof TransportError ? error : undefined;
 
       if (failure?.kind === "permanent" || failure?.kind === "too_large") {
         await this.replaceStored(batch, error);
-        return true;
+        return "next";
       }
 
+      // Offline stops both kinds. The other endpoint is not reachable either.
       if (failure?.kind === "offline") {
         this.schedule(RETRY_IDLE_DELAY_MS);
-        return false;
+        return "stop";
       }
 
       // A throttle rejects no records. The server asks for the batch later. Do not bump the
       // stored attempts here. A bump dead-letters the batch after five throttled responses.
       if (failure?.kind === "throttled") {
         this.attempt++;
-        this.schedule(failure.retryAfterMs ?? this.backoffMs());
-        return false;
+        return failure.retryAfterMs ?? this.backoffMs();
       }
 
       await this.bounded(this.storage.bumpAttempts(batch.id, batch.attempts + 1));
       this.attempt++;
-      this.schedule(failure?.retryAfterMs ?? this.backoffMs());
-      return false;
+      return failure?.retryAfterMs ?? this.backoffMs();
     }
   }
 

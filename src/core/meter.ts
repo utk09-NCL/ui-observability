@@ -4,7 +4,14 @@
 // for each instrument and attribute set. A thousand adds then give one record, not a thousand.
 
 import {
+  ATTR_APP_NAMESPACE,
+  ATTR_JOURNEY_ID,
+  ATTR_JOURNEY_NAME,
+  ATTR_JOURNEY_PARENT_ID,
+  ATTR_LOG_SEQ,
+  ATTR_LOG_TYPE,
   ATTR_METRIC_OVERFLOW,
+  ATTR_PAGE_URL,
   METRIC_DEFAULT_BOUNDARIES,
   METRIC_KEYS,
   METRIC_MAX_BOUNDARIES,
@@ -41,6 +48,17 @@ interface Instrument {
 /** Key of the overflow series. The key of an attribute set is JSON text. It starts with "{". */
 const OVERFLOW_KEY = "overflow";
 
+/** Keys that the record builder sets. It replaces a call attribute of the same name. */
+const RECORD_KEYS = new Set<string>([
+  ATTR_LOG_TYPE,
+  ATTR_LOG_SEQ,
+  ATTR_APP_NAMESPACE,
+  ATTR_PAGE_URL,
+  ATTR_JOURNEY_ID,
+  ATTR_JOURNEY_NAME,
+  ATTR_JOURNEY_PARENT_ID,
+]);
+
 /**
  * Keeps the string, finite number and boolean attributes in key order. Two calls with one set in
  * another key order then share one series.
@@ -51,6 +69,12 @@ function cleanAttributes(attributes: MetricAttributes = {}): MetricAttributes {
   const clean: MetricAttributes = {};
 
   for (const key of Object.keys(attributes).sort()) {
+    // The builder and the serializer replace or remove these keys. Each value then makes a
+    // series with the same output.
+    if (key.startsWith("metric.") || RECORD_KEYS.has(key)) {
+      continue;
+    }
+
     const value: unknown = attributes[key];
     const finite = typeof value === "number" && Number.isFinite(value);
     if (typeof value === "string" || typeof value === "boolean" || finite) {
@@ -62,11 +86,27 @@ function cleanAttributes(attributes: MetricAttributes = {}): MetricAttributes {
 }
 
 /**
+ * Copies a list of boundaries by index. A custom iterator of the array of the app has no effect.
+ * @param bounds Value of the boundaries option.
+ * @returns A plain array with at most one value more than the limit, or null for a value that is
+ * not an array.
+ */
+function copyBounds(bounds: unknown): unknown[] | null {
+  if (!Array.isArray(bounds)) {
+    return null;
+  }
+
+  // One value more than the limit. isAscending then refuses a list that is too long.
+  const count = Math.min(bounds.length, METRIC_MAX_BOUNDARIES + 1);
+  return Array.from({ length: count }, (_unused, i): unknown => bounds[i]);
+}
+
+/**
  * Tests a list of histogram boundaries.
  * @param bounds Value of the boundaries option.
  * @returns True for at most 50 finite numbers in ascending order.
  */
-function isAscending(bounds: unknown): boolean {
+function isAscending(bounds: unknown): bounds is number[] {
   return (
     Array.isArray(bounds) &&
     bounds.length <= METRIC_MAX_BOUNDARIES &&
@@ -80,15 +120,14 @@ function isAscending(bounds: unknown): boolean {
 }
 
 /**
- * Builds the attributes of one point.
+ * Builds the metric fields of one point. The attributes of the call stay out.
  * @param def Definition of the instrument.
  * @param series Sums of the attribute set.
  * @param start Start of the interval, in Unix nanoseconds.
- * @returns The point attributes. The metric fields win over a key of the same name.
+ * @returns The metric fields of the point.
  */
-function pointOf(def: InstrumentDef, series: Series, start: string): Record<string, unknown> {
+function fieldsOf(def: InstrumentDef, series: Series, start: string): Record<string, unknown> {
   const point: Record<string, unknown> = {
-    ...series.attributes,
     "metric.name": def.name,
     "metric.unit": def.unit,
     "metric.type": def.kind,
@@ -125,12 +164,17 @@ export class Meter {
 
   /**
    * @param intervalMs Gives the interval length, in milliseconds.
-   * @param emit Builds and sends the record of one point.
+   * @param emit Builds and sends the record of one point from the call attributes and the
+   * metric fields.
    * @param diagnostics Diagnostics reporter.
    */
   constructor(
     private readonly intervalMs: () => number,
-    private readonly emit: (name: string, point: Record<string, unknown>) => void,
+    private readonly emit: (
+      name: string,
+      attributes: MetricAttributes,
+      fields: Record<string, unknown>,
+    ) => void,
     private readonly diagnostics: Diagnostics,
   ) {}
 
@@ -178,7 +222,7 @@ export class Meter {
 
     for (const { def, series } of instruments) {
       for (const one of series.values()) {
-        this.emit(def.name, pointOf(def, one, start));
+        this.emit(def.name, one.attributes, fieldsOf(def, one, start));
       }
     }
   }
@@ -204,18 +248,18 @@ export class Meter {
       return null;
     }
 
-    let boundaries = def.boundaries;
-    if (def.kind === "histogram" && !isAscending(boundaries)) {
+    // Copy before the check. A later change of the array of the app must not change the buckets.
+    const copy = copyBounds(def.boundaries);
+    const valid = isAscending(copy);
+    if (def.kind === "histogram" && !valid) {
       this.diagnostics.report(
         "config.invalid",
         `The boundaries of the metric ${def.name} must be at most 50 finite numbers in ascending order. The library uses the default boundaries.`,
       );
-      boundaries = METRIC_DEFAULT_BOUNDARIES;
     }
 
-    // Copy the boundaries. A later change of the array of the app must not change the buckets.
     const instrument: Instrument = {
-      def: { ...def, boundaries: [...boundaries] },
+      def: { ...def, boundaries: valid ? copy : [...METRIC_DEFAULT_BOUNDARIES] },
       series: new Map(),
     };
     this.instruments.set(def.name, instrument);

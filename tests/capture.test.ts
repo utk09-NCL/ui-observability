@@ -9,7 +9,9 @@ import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
 import { ERROR_DEDUPE_MS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
+import type { LogBatch } from "../src/models/batch";
 import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
+import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { TraceEngine } from "../src/utils/tracing";
 
@@ -432,6 +434,51 @@ describe("NetworkCapture: fetch", () => {
     await runAsLibraryRequest(() => fetch("https://telemetry.app.internal/logs"));
 
     expect(logger.warn).not.toHaveBeenCalled();
+    capture.uninstall();
+  });
+
+  it("reports one time a fetch that starts during a custom transport call", async () => {
+    // A fetch after an await is outside the library request scope. Each send then records a value,
+    // and that value causes the next send.
+    const { ctx: c } = ctx({ fetch: true });
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    const own = new Diagnostics(vi.fn(), 0);
+    const send = async () => {
+      await Promise.resolve();
+      await fetch("https://telemetry.app.internal/metrics");
+      return { status: 204 };
+    };
+    const transport = new CustomTransport(
+      resolveConfig({ endpoint: null, serviceName: "svc", transport: send }, own),
+      own,
+    );
+    const batch: LogBatch = {
+      id: "b1",
+      createdAt: 0,
+      attempts: 0,
+      records: [
+        {
+          timeUnixNano: "1755543600123000000",
+          traceId: "a".repeat(32),
+          spanId: "b".repeat(16),
+          traceFlags: 1,
+          severityNumber: 9,
+          severityText: "INFO",
+          body: "x",
+          attributes: {},
+          resource: {},
+        },
+      ],
+    };
+
+    await transport.send(batch);
+    await transport.send(batch);
+    await fetch("https://api.internal/orders");
+
+    expect(c.diagnostics.snapshot()["capture.transport_request"]).toBe(1);
     capture.uninstall();
   });
 

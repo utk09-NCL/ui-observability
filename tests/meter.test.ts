@@ -27,8 +27,8 @@ function setup() {
   const points: { name: string; point: Record<string, unknown> }[] = [];
   const meter = new Meter(
     () => 1000,
-    (name, point) => {
-      points.push({ name, point });
+    (name, attributes, fields) => {
+      points.push({ name, point: { ...attributes, ...fields } });
     },
     new Diagnostics((event) => {
       events.push(event);
@@ -120,6 +120,35 @@ describe("Meter", () => {
     expect(points[0].point["metric.bounds"]).toEqual([10, 100]);
   });
 
+  it("reads the boundaries by index, not with a custom iterator of the array", () => {
+    // The iterator can give more values than the length check sees.
+    const { meter, points } = setup();
+    const boundaries = [10, 100];
+    Object.defineProperty(boundaries, Symbol.iterator, {
+      *value() {
+        for (let i = 0; i < 1000; i++) {
+          yield i;
+        }
+      },
+    });
+
+    meter.record(histogramDef(boundaries), 1);
+    meter.collect();
+
+    expect(points[0].point["metric.bounds"]).toEqual([10, 100]);
+    expect(points[0].point["metric.bucket_counts"]).toHaveLength(3);
+  });
+
+  it("uses the default boundaries for a value that is not an array", () => {
+    const { meter, points, events } = setup();
+
+    meter.record(histogramDef("10,100" as never), 1);
+    meter.collect();
+
+    expect(points[0].point["metric.bounds"]).toEqual(METRIC_DEFAULT_BOUNDARIES);
+    expect(events.map((event) => event.code)).toEqual(["config.invalid"]);
+  });
+
   it("drops a value that is not finite, and a negative counter value", () => {
     const { meter, points, events } = setup();
 
@@ -155,6 +184,19 @@ describe("Meter", () => {
     meter.collect();
 
     expect(points[0].point["metric.attribute_keys"]).toEqual(["a", "b", "c"]);
+  });
+
+  it("drops the attribute keys that the library sets on the record", () => {
+    // The serializer removes or replaces these keys. Two sets that differ only in them give two
+    // points with the same attributes.
+    const { meter, points } = setup();
+
+    meter.record(counterDef(), 1, { "metric.x": "a", "page.url": "/a", venue: "LSE" });
+    meter.record(counterDef(), 1, { "metric.x": "b", "log.type": "log", venue: "LSE" });
+    meter.collect();
+
+    expect(points).toHaveLength(1);
+    expect(points[0].point["metric.attribute_keys"]).toEqual(["venue"]);
   });
 
   it("joins the attribute sets above the limit into one overflow set", () => {

@@ -573,6 +573,9 @@ export const LIBRARY_REQUEST_KEY = "ui-observability.request-scope";
 /** Global symbol key of the library console scope count. All library copies on a page share it. */
 export const LIBRARY_CONSOLE_KEY = "ui-observability.console-scope";
 
+/** Global symbol key of the count of custom transport calls that wait for an answer. */
+export const TRANSPORT_CALL_KEY = "ui-observability.transport-calls";
+
 // ----------------------------------
 // Capture
 // ----------------------------------

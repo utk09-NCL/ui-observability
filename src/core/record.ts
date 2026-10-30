@@ -123,6 +123,11 @@ export interface BuildInput {
   scoped?: Record<string, unknown>;
   /** Call-site payload attributes. */
   payload?: Record<string, unknown>;
+  /**
+   * Fields that the library builds with a fixed size bound, for example the buckets of a point.
+   * The record limits do not cut them. They override a payload key of the same name.
+   */
+  fixed?: Record<string, unknown>;
   /** True for a point of a counter or histogram. Sampling keeps it. */
   aggregated?: boolean;
 }
@@ -238,6 +243,9 @@ export class RecordBuilder {
       attributes = { [ATTR_SANITIZE_FAILED]: true };
     }
 
+    // A cut bucket list makes the serializer drop the point.
+    Object.assign(attributes, input.fixed);
+
     // Set reserved attributes after the payload merge. If they merge first, a payload key
     // named journey.id replaces the ID that correlates the records.
     attributes[ATTR_LOG_TYPE] = input.type;
@@ -324,6 +332,8 @@ export class RecordBuilder {
           const remeasured = sanitizeWithSize(candidate.attributes, limits, diagnostics);
           record = { ...candidate, attributes: asAttributes(remeasured.value) };
           bytes = remeasured.bytes;
+          // The limits must not cut the fields that the library builds. The hook cannot change them.
+          Object.assign(record.attributes, input.fixed);
         }
 
         // The hook can change severityText. Keep the number in step with the text.
@@ -377,6 +387,8 @@ export class RecordBuilder {
         }
       }
 
+      // A point without its metric fields is lost.
+      Object.assign(kept, input.fixed);
       record.attributes = kept;
     }
 

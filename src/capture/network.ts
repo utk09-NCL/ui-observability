@@ -4,7 +4,7 @@
 
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isErrorLike } from "../utils/error-like";
-import { isLibraryRequest } from "../utils/library-request";
+import { isLibraryRequest, isTransportPending } from "../utils/library-request";
 import { patch } from "../utils/patch";
 import { stripUrlQuery } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
@@ -173,6 +173,9 @@ export class NetworkCapture implements Capture {
 
   /** Restore functions of the installed wrappers. */
   private readonly restores: (() => void)[] = [];
+
+  /** True after the report of a request during a custom transport call. It reports one time. */
+  private warnedTransport = false;
 
   /**
    * @param ctx Capture context containing configuration, diagnostics, logger, breadcrumbs, and tracing.
@@ -456,6 +459,15 @@ export class NetworkCapture implements Capture {
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
     const url = this.ctx.config.capture.fullUrls ? target : stripUrlQuery(target);
+
+    // A request of the transport after an await records a value. That value causes the next send.
+    if (!this.warnedTransport && isTransportPending()) {
+      this.warnedTransport = true;
+      this.ctx.diagnostics.report(
+        "capture.transport_request",
+        `Network capture saw ${method} ${url} during a custom transport call. If the transport sends this request, add its URL to capture.ignoreUrls.`,
+      );
+    }
 
     // The histogram has its own guard. A URL that does not parse must not stop the record.
     if (this.ctx.config.capture.httpMetrics) {

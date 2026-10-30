@@ -78,6 +78,9 @@ export class ExitFlush {
   /** This flag is true while the library listens for the unload events. */
   private installed = false;
 
+  /** Bytes of the keepalive fetches of the current exit flush. All batches share one budget. */
+  private keepaliveBytes = 0;
+
   /** This listener flushes on visibilitychange when the document becomes hidden. */
   private readonly onVisibility = (): void => {
     if (document.visibilityState === "hidden") {
@@ -185,6 +188,9 @@ export class ExitFlush {
     if (url === null) {
       return;
     }
+
+    // The fetches of an earlier flush are complete or lost. They do not use this budget.
+    this.keepaliveBytes = 0;
 
     for (const batch of this.deps.drainForExit()) {
       // resolveConfig keeps only a valid absolute metricsEndpoint.
@@ -395,6 +401,15 @@ export class ExitFlush {
     const park = (): void => {
       saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
     };
+
+    // The browser rejects a fetch over the budget after the document closes. park() then does
+    // not run, and the batch is lost.
+    const bytes = estimateBytes(body);
+    if (this.keepaliveBytes + bytes > BEACON_LIMIT_BYTES) {
+      park();
+      return;
+    }
+    this.keepaliveBytes += bytes;
 
     const started = diagnostics.guard("transport.http_error", "The keepalive fetch failed.", () => {
       void fetch(url, {

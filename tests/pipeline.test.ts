@@ -51,7 +51,7 @@ const setup = (
   const diagnostics = new Diagnostics(handler, 0);
 
   const send = vi.fn<Send>(() => Promise.resolve());
-  const throttledForMs = vi.fn<() => number>(() => 0);
+  const throttledForMs = vi.fn<(batch: LogBatch) => number>(() => 0);
   const storage = override ?? new MemoryStorage(limits);
   const nudge = vi.fn<() => void>();
 
@@ -213,6 +213,23 @@ describe("LogPipeline", () => {
     expect(stored[0].attempts).toBe(0);
     expect(nudge).toHaveBeenCalled();
     expect(diagnostics.snapshot()["transport.throttled"]).toBe(1);
+    pipeline.destroy();
+  });
+
+  it("stores only the batches of the kind whose endpoint throttles", async () => {
+    // A throttled metricsEndpoint must not hold back the log batches.
+    const { pipeline, send, throttledForMs, storage } = setup();
+    throttledForMs.mockImplementation((sent?: LogBatch) =>
+      sent?.records[0].attributes["log.type"] === "metric" ? 5000 : 0,
+    );
+
+    pipeline.push(record({ body: "log" }));
+    pipeline.push(metric({ body: "point" }));
+    await vi.advanceTimersByTimeAsync(METRIC_FLUSH_MS + 100);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(bodiesOf(send.mock.calls[0][0])).toEqual(["log"]);
+    expect(bodiesOf((await storage.take(1))[0])).toEqual(["point"]);
     pipeline.destroy();
   });
 
