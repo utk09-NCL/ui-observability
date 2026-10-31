@@ -6,7 +6,7 @@ import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isErrorLike } from "../utils/error-like";
 import { isLibraryRequest, isTransportPending } from "../utils/library-request";
 import { patch } from "../utils/patch";
-import { stripUrlQuery } from "../utils/platform";
+import { recordedUrl } from "../utils/platform";
 import type { ClientSpan } from "../utils/tracing";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
@@ -422,9 +422,14 @@ export class NetworkCapture implements Capture {
                 }
 
                 meta.startedAt = performance.now();
-                this.addEventListener("loadend", () => {
-                  record(meta, this.status, performance.now() - meta.startedAt);
-                });
+                // A reused XHR gets a new listener at each send. The old one must not fire again.
+                this.addEventListener(
+                  "loadend",
+                  () => {
+                    record(meta, this.status, performance.now() - meta.startedAt);
+                  },
+                  { once: true },
+                );
 
                 // setRequestHeader works only between open and send.
                 if (propagates(meta.url)) {
@@ -463,7 +468,7 @@ export class NetworkCapture implements Capture {
   ): void {
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
-    const url = this.ctx.config.capture.fullUrls ? target : stripUrlQuery(target);
+    const url = recordedUrl(target, this.ctx.config.capture.fullUrls);
 
     // A request of the transport after an await records a value. That value causes the next send.
     if (!this.warnedTransport && isTransportPending()) {

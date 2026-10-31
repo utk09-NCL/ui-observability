@@ -282,9 +282,13 @@ export class TraceEngine {
    * @returns Newly created TraceContext.
    */
   rotate(reason: RotateReason): TraceContext {
-    this.end();
+    // Set the new trace first. A record that a hook makes inside onEnd then joins the new trace.
+    // If not, that record rotates again, and its trace gets no root span.
+    const old = this.ambient;
     this.ambient = mintAmbient(reason);
-    return toTraceContext(this.ambient);
+    const next = toTraceContext(this.ambient);
+    this.finish(old);
+    return next;
   }
 
   /**
@@ -292,7 +296,14 @@ export class TraceEngine {
    * The exit flush calls it. A closing document has no later rotation.
    */
   end(): void {
-    const ambient = this.ambient;
+    this.finish(this.ambient);
+  }
+
+  /**
+   * Ends the root span of a trace one time.
+   * @param ambient Trace to end.
+   */
+  private finish(ambient: AmbientTrace): void {
     if (ambient.ended) {
       return;
     }

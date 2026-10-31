@@ -314,6 +314,23 @@ describe("TraceEngine spans", () => {
     ]);
   });
 
+  it("sets the new trace before it ends the old one, so code in onEnd joins the new trace", () => {
+    const seen: string[] = [];
+    const holder: { engine?: TraceEngine } = {};
+    const engine = new TraceEngine(diagnostics(), undefined, undefined, {
+      enabled: () => true,
+      keeps: () => true,
+      onEnd: () => {
+        seen.push(holder.engine?.resolve().traceId ?? "");
+      },
+    });
+    holder.engine = engine;
+
+    const next = engine.rotate("explicit");
+
+    expect(seen).toEqual([next.traceId]);
+  });
+
   it("names a new client span in the traceparent of a request, with the root span as parent", () => {
     const engine = new TraceEngine(diagnostics(), undefined, undefined, hooks());
     const root = engine.resolve();

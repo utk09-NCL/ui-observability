@@ -127,6 +127,7 @@ function setup({
     flush,
     pending,
     events,
+    diagnostics,
     drainForExit,
     flushAlive,
     codes: () => events.map((event) => event.code),
@@ -495,6 +496,7 @@ describe("ExitFlush flush", () => {
 
     const paths = beacon.mock.calls.map(([url]) => new URL(url).pathname);
     expect(paths).toEqual(["/v1/traces", "/v1/logs", "/v1/logs"]);
+    expect(without.diagnostics.snapshot()["record.dropped_no_destination"]).toBe(1);
   });
 
   it("sends the points of the open metric interval before the drain", () => {
@@ -523,6 +525,18 @@ describe("ExitFlush flush", () => {
 
     expect(codes()).toContain("pipeline.crashed");
     expect(beacon).toHaveBeenCalledOnce();
+  });
+
+  it("writes nothing to the device with storage memory, and reports the loss", () => {
+    const beacon = stubBeacon();
+    const onLoss = vi.fn<LossReporter>();
+    const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
+
+    setup({ records: huge, config: { storage: "memory" }, onLoss }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(0);
+    expect(onLoss).toHaveBeenCalledWith("not_stored", expect.any(Array), ["b1"]);
   });
 
   it("diverts an oversized batch to the synchronous emergency queue", () => {

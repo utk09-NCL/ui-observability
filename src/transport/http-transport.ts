@@ -84,7 +84,13 @@ export class HttpTransport extends StatusTransport {
     const kind = batchKind(batch, config);
     const endpoint = endpointFor(kind, config);
 
-    if (!endpoint || batch.records.length === 0) {
+    // A traces batch without tracesEndpoint has no destination. Count the drop.
+    if (!endpoint) {
+      this.diagnostics.count("record.dropped_no_destination");
+      return;
+    }
+
+    if (batch.records.length === 0) {
       return;
     }
 

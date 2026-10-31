@@ -270,6 +270,9 @@ export const SERIALIZER_NAME_ECS = "ecs";
  */
 export const ECS_LEVEL_NAMES: Partial<Record<LogLevel, string>> = { WARN: "warning" };
 
+/** ECS version of the documents. The Elastic ECS logging libraries write this version. */
+export const ECS_VERSION = "8.10.0";
+
 /** Content type for an OTLP/JSON body. */
 export const CONTENT_TYPE_JSON = "application/json";
 
@@ -457,6 +460,18 @@ export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
  * @see {@link JOURNEY_TOKEN_MAX_CHARS}
  */
 export const JOURNEY_ID_MAX_CHARS = 64;
+
+/**
+ * Accepted journey id from startJourney(): letters, digits, "_", ".", ":" and "-". Each character
+ * is one byte in UTF-8. A multibyte id makes the token larger than its limit.
+ */
+export const JOURNEY_ID_PATTERN = new RegExp(`^[\\w.:-]{1,${String(JOURNEY_ID_MAX_CHARS)}}$`);
+
+/**
+ * Time that the start of a journey token can be ahead of this clock, in milliseconds. Two machines
+ * can disagree on the time. A token further ahead never expires.
+ */
+export const JOURNEY_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * Max whole-token length, in characters. It rejects an oversized token. It does not

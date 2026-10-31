@@ -283,7 +283,7 @@ export function removeContext(key: string): void {
  * Starts a new journey correlation context.
  * @param name Journey workflow identifier.
  * @param options `parent` links the active journey as the parent. `id` sets the journey id, a
- * string of 1 to 64 characters. Without it, the library makes an id.
+ * string of 1 to 64 letters, digits, "_", ".", ":" or "-". Without it, the library makes an id.
  * @returns Started Journey instance.
  */
 export function startJourney(name: string, options?: { parent?: boolean; id?: string }): Journey {

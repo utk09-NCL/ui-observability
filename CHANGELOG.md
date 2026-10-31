@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-10-31
+
+### Added - v0.9.4
+
+- `startJourney(name, { id })` sets the journey id. An id of 1 to 64 letters, digits, `_`, `.`, `:` or `-` stays. Another value gives a new id and a `config.invalid` report.
+- `addBreadcrumb(message, data?)` adds a breadcrumb with the category `custom`. The library copies `data` at the call.
+- `minLevels` sets a minimum level for each namespace prefix, for example `{ "trading.ticks": "DEBUG" }`. The longest prefix that matches at a dot wins. A namespace with no match uses `minLevel`. A new map replaces the map in force.
+- Remote sampling rules can have `minLevels`, with at most 100 prefixes. A remote prefix wins over the remote `minLevel`. A remote level only lowers the level of a namespace.
+- `contextProvider()` gives attributes for each record that sampling keeps. Its values override `setContext()` values. The logger scope and the call payload override its values. A provider that throws reports `handler.threw`. A value that is not an object reports `config.invalid`. The record is still built.
+- `getStats()` gives `{ pending, inFlight, stored, lastSendAt }`. `pending` counts the records in the buffers. `inFlight` counts the records in requests. `stored` counts the batches in storage. `lastSendAt` is the time of the last batch that the server accepted. A forwarder reports only its own buffers. The package exports the type `DeliveryStats`.
+- `newSession()` starts a new session in this tab, for example after a logout. It sends the open metric points, ends the active trace and journey, clears the breadcrumbs and writes the new id to `localStorage`. Other tabs read the new id at their next startup. A tab does not write its old id over the new id.
+- `processors` is a list of functions that change or drop a record. They run in list order, before `redact`. A processor has the contract of `redact`. A processor that throws or returns a value that is not a record drops the record. The diagnostic code `record.dropped_by_processor` counts the drops.
+- `capture.plugins` adds capture modules of the app. A plugin has `name`, `install(ctx)` and `uninstall()`. `ctx` gives `logger`, `counter()`, `histogram()`, `addBreadcrumb()` and `ownRequest(fn)`. The logger namespace is `uiobs.capture.<name>`. A plugin that throws in `install()` or `uninstall()` reports `capture.install_failed`. The package exports the types `CapturePlugin` and `PluginContext`.
+- `capture.webSocket` records `websocket.open`, `websocket.close` and `websocket.error` for each WebSocket, with `url.full` and `server.address`. The URL has no user info, no query and no fragment. The counter `ui.websocket.messages` counts the messages by `network.io.direction` and `server.address`. The library never reads the content of a message. It records at most 20 lifecycle records in each 10-second window. It skips a socket in `capture.ignoreUrls`, and does not count a send of the library. `instanceof WebSocket` stays true for a socket that the app opened before the capture loaded. The capture loads as a separate chunk.
+- `tracesEndpoint` sets an OTLP traces endpoint, for example `https://ingest.example/v1/traces`. With it, the library sends spans as an OTLP `ExportTraceServiceRequest`. Without it, the library sends no span. It needs `serializer: "otlp"`, and `endpoint` or `transport`. A batch of spans without `tracesEndpoint` counts `record.dropped_no_destination`.
+- Each trace of the library has one root span. It ends when the trace rotates, at the exit flush, at `shutdown()` and, in a frame or a view that forwards its records, on `pagehide`. Its name is `ui.start`, `ui.interaction`, `ui.navigation` or `ui.trace`.
+- Each `fetch` or XHR request that gets `traceparent` has one CLIENT span. The `traceparent` names the client span. The root span is its parent.
+- `sampling.defaultRate` samples each trace by its trace id. The whole trace stays or goes. For a trace that sampling drops, `traceparent` has the sampled flag off. `minLevel` does not apply to a span. The library sends no span for a trace from the OpenTelemetry API.
+- Spans go through `processors` and `redact`. The console does not print them. At exit, the logs get the beacon budget before the spans.
+- `request.kind` of a custom transport is `"traces"` for a batch of span records.
+- The ECS serializer writes `ecs.version` (`8.10.0`), `log.logger`, `event.kind` and `error.type`, `error.message` and `error.stack_trace`.
+- On Node, the library runs console-only. It installs no capture, keeps the ids in memory, uses no storage and has no exit flush. If you set `endpoint`, `metricsEndpoint`, `tracesEndpoint` or `transport`, it reports `config.invalid` one time.
+- `tools/reference-collector.mjs` is a reference ingest server with no dependencies. It implements each rule of the ingest contract, deduplicates for 24 hours and can forward to an OTLP collector. It listens on `127.0.0.1` by default, limits the rate of each client address and limits the body size after gzip decoding. It is not part of the package.
+- The mock ingest server accepts `/v1/traces` and prints each span.
+- The documents `docs/attributes.md`, `docs/browser-support.md` and `docs/threat-model.md`.
+- The README tells that each top-level tab sends its own records.
+
+### Changed - v0.9.4
+
+- The type `LogType` has the new value `"span"`. The type `BatchKind` has the new value `"traces"`.
+- The sender runs its `redact` on each record from a frame or a worker. A context that never calls `configure()` then cannot send a raw record. Write `redact` so that a second run gives the same result.
+- A `redact` hook that changes a record in place now gets the sanitizer and the size limit. Before, only a new record from the hook got them.
+- With `processors` or `redact`, a record from before startup no longer gets `journey.id` and `journey.name` after the hooks ran.
+- The library removes the user info, for example `user:pass@`, from each URL that it records, also with `capture.fullUrls`. `error.source` follows `capture.fullUrls`.
+- With `storage: "memory"` or `"none"`, the exit flush does not use the emergency queue in `localStorage`. A batch that it cannot send is lost, and `onDrop` reports `not_stored`.
+- `adoptJourney()` refuses a token without a start time, or with a start time more than 5 minutes ahead.
+- A tab no longer writes its session id over a newer session id of another tab that has not expired.
+- The ECS serializer moves `app.namespace` and the string `error.type`, `error.message` and `error.stack_trace` attributes out of `labels`. The other attributes stay in `labels`.
+- A console-only runtime next to another version of the library also ignores `metricsEndpoint` and `tracesEndpoint`.
+- The size budget of the main graph is 32,200 B.
+
+### Fixed - v0.9.4
+
+- A reused XHR sent a second record for its earlier request at each later send.
+
 ## [0.9.3] - 2026-10-31
 
 ### Fixed - v0.9.3

@@ -26,8 +26,8 @@ import { ErrorCeiling } from "./sampling";
 /** Name of a pipeline stream. */
 export type StreamName = "logs" | "metrics" | "traces";
 
-/** Streams in the order of the exit batches. */
-const STREAM_ORDER: readonly StreamName[] = ["metrics", "traces", "logs"];
+/** Streams in the order of the exit batches. The logs get the beacon budget before the spans. */
+const STREAM_ORDER: readonly StreamName[] = ["metrics", "logs", "traces"];
 
 /**
  * Gives the stream of a record. Each stream makes batches of one kind.

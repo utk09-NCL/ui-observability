@@ -8,7 +8,7 @@ import {
   MAX_TRACKED_ERROR_SIGNATURES,
 } from "../constants";
 import { isErrorLike } from "../utils/error-like";
-import { stripUrlQuery } from "../utils/platform";
+import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
 
@@ -105,7 +105,7 @@ export class ErrorCapture implements Capture {
 
       // A cache buster is noise. A signed URL is a credential.
       // The record keeps neither unless you set fullUrls.
-      const url = this.ctx.config.capture.fullUrls ? resourceUrl : stripUrlQuery(resourceUrl);
+      const url = recordedUrl(resourceUrl, this.ctx.config.capture.fullUrls);
 
       this.ctx.breadcrumbs.push({
         t: Date.now(),
@@ -130,7 +130,8 @@ export class ErrorCapture implements Capture {
     const error = thrown ?? new Error(fallback);
 
     this.report("window.onerror", error, {
-      "error.source": errorEvent.filename,
+      // A signed script URL is a credential.
+      "error.source": recordedUrl(errorEvent.filename, this.ctx.config.capture.fullUrls),
       "error.line": errorEvent.lineno,
       "error.column": errorEvent.colno,
     });

@@ -169,6 +169,41 @@ describe("ecsSerializer", () => {
     expect(doc.labels["log.type"]).toBe("event");
   });
 
+  it("writes ecs.version, log.logger and event.kind, and moves the error fields out of labels", () => {
+    const attributes = {
+      "log.type": "log",
+      "app.namespace": "trading.grid",
+      "error.type": "TypeError",
+      "error.message": "x is undefined",
+      "error.stack_trace": "TypeError: x is undefined\n    at grid.js:1",
+      "error.captured_by": "window.onerror",
+    };
+
+    const doc = ecs(record({ severityText: "ERROR", attributes }));
+
+    expect(doc.ecs).toEqual({ version: "8.10.0" });
+    expect(doc.log).toEqual({ level: "error", logger: "trading.grid" });
+    expect(doc.event).toEqual({ kind: "event" });
+    expect(doc.error).toEqual({
+      type: "TypeError",
+      message: "x is undefined",
+      stack_trace: "TypeError: x is undefined\n    at grid.js:1",
+    });
+    expect(Object.keys(doc.labels)).toEqual(["service.name", "log.type", "error.captured_by"]);
+  });
+
+  it("gives a metric the event kind metric, and has no error and no logger without them", () => {
+    const doc = ecs(
+      record({ attributes: { "log.type": "metric", "app.namespace": 7, "error.type": 3 } }),
+    );
+
+    expect(doc.event).toEqual({ kind: "metric" });
+    expect(doc).not.toHaveProperty("error");
+    expect(doc.log).toEqual({ level: "info" });
+    expect(doc.labels["app.namespace"]).toBe(7);
+    expect(doc.labels["error.type"]).toBe(3);
+  });
+
   it("prefers the request URL over the page URL", () => {
     const both = { "url.full": "https://api/orders", "page.url": "https://app/" };
     const pageOnly = { "page.url": "https://app/" };

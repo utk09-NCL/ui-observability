@@ -191,6 +191,8 @@ export class ExitFlush {
       const target = kind === "logs" ? url.href : endpointFor(kind, config);
       if (target) {
         this.flushBatch(batch, reason, new URL(target));
+      } else {
+        diagnostics.count("record.dropped_no_destination");
       }
     }
   }
@@ -202,7 +204,7 @@ export class ExitFlush {
    * @param url Endpoint of the batch.
    */
   private flushBatch(batch: LogBatch, reason: ExitReason, url: URL): void {
-    const { config, diagnostics } = this.deps;
+    const { config } = this.deps;
 
     if (batch.records.length === 0) {
       return;
@@ -216,7 +218,7 @@ export class ExitFlush {
     // Save an oversized payload to the synchronous localStorage queue. localStorage is the
     // only storage that accepts a write without await.
     if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
-      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      this.park(batch);
       return;
     }
 
@@ -242,7 +244,7 @@ export class ExitFlush {
     // A headers function has no cached result until a call gives one. The server refuses a
     // beacon without the headers. The next page load sends the batch with them.
     if (config.headers) {
-      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      this.park(batch);
       return;
     }
 
@@ -254,7 +256,7 @@ export class ExitFlush {
     // A refusal means the in-flight budget is full. A keepalive fetch uses the
     // same budget and fails the same way. The document closes. No code retries the send.
     if (outcome === "refused") {
-      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      this.park(batch);
       return;
     }
 
@@ -298,9 +300,25 @@ export class ExitFlush {
         ) === true;
 
       if (!accepted) {
-        saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+        this.park(batch);
       }
     }
+  }
+
+  /**
+   * Keeps a batch for the next page load in the emergency queue in localStorage. With storage
+   * "memory" or "none", the app wants nothing on the device. The batch is then lost.
+   * @param batch Batch that the exit flush cannot send.
+   */
+  private park(batch: LogBatch): void {
+    const { config, diagnostics, onLoss } = this.deps;
+
+    if (config.storage === "memory" || config.storage === "none") {
+      onLoss?.("not_stored", batch.records, [batch.id]);
+      return;
+    }
+
+    saveToEmergencyQueue(batch, diagnostics, onLoss);
   }
 
   /**
@@ -395,7 +413,7 @@ export class ExitFlush {
     const { config, diagnostics } = this.deps;
     // A rejection arrives only while the document is alive. The next page load sends the batch.
     const park = (): void => {
-      saveToEmergencyQueue(batch, diagnostics, this.deps.onLoss);
+      this.park(batch);
     };
 
     // The browser rejects a fetch over the budget after the document closes. park() then does

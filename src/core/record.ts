@@ -19,6 +19,7 @@ import {
   ATTR_SANITIZE_FAILED,
   LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
+  METRIC_KEYS,
   RESOURCE_BROWSER_USER_AGENT,
   RESOURCE_CONTEXT_ID,
   RESOURCE_DEPLOYMENT_ENVIRONMENT,
@@ -33,6 +34,7 @@ import {
   RESOURCE_TELEMETRY_SDK_NAME,
   RESOURCE_TELEMETRY_SDK_VERSION,
   SEVERITY_NUMBER,
+  SPAN_KEYS,
   TELEMETRY_SDK_LANGUAGE,
   TELEMETRY_SDK_NAME,
   TELEMETRY_SDK_VERSION,
@@ -48,7 +50,7 @@ import {
 } from "../models/log-record";
 import { isObject } from "../utils/guards";
 import type { Identity } from "../utils/identity";
-import { currentUrl, type PlatformMetadata, stripUrlQuery } from "../utils/platform";
+import { currentUrl, type PlatformMetadata, recordedUrl } from "../utils/platform";
 import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
 import type { Sequence } from "../utils/sequence";
 import type { TraceContext, TraceEngine } from "../utils/tracing";
@@ -147,6 +149,28 @@ export interface BuildInput {
   trace?: TraceContext;
 }
 
+/** Keys of the fields that the library builds for a metric point or a span. */
+const FIXED_KEYS: readonly string[] = [
+  "metric.name",
+  "metric.unit",
+  "metric.type",
+  "metric.value",
+  ...Object.values(METRIC_KEYS),
+  ...Object.values(SPAN_KEYS),
+];
+
+/**
+ * Reads the fields that the library built in another context. A hook of the sender cannot change
+ * them, and the limits cannot cut them.
+ * @param attributes Attributes of a forwarded record.
+ * @returns The fields that the record has.
+ */
+function fixedOf(attributes: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    FIXED_KEYS.filter((key) => key in attributes).map((key) => [key, attributes[key]]),
+  );
+}
+
 /**
  * Casts a sanitized plain object value to an attribute record.
  * @param value Sanitized object value.
@@ -234,7 +258,7 @@ export class RecordBuilder {
     const seq = sequence.next();
     // The query and fragment can contain tokens and user input. The path groups records.
     const url = currentUrl(diagnostics);
-    const pageUrl = config.capture.fullUrls ? url : stripUrlQuery(url);
+    const pageUrl = recordedUrl(url, config.capture.fullUrls);
 
     let attributes: Record<string, unknown>;
     let bytes = 0;
@@ -303,14 +327,13 @@ export class RecordBuilder {
       stages.push([config.redact, "redact"]);
     }
 
-    for (const [hook, stage] of stages) {
-      const outcome = this.runHook(hook, stage, record, input.fixed);
+    if (stages.length > 0) {
+      const outcome = this.applyHooks(record, stages, input.fixed);
       if (typeof outcome === "string") {
         return { record: null, dropped: outcome };
       }
 
-      record = outcome.record;
-      bytes = outcome.bytes ?? bytes;
+      ({ record, bytes } = outcome);
     }
 
     // Drop the caller attributes when their size exceeds maxRecordBytes. Keep the index keys.
@@ -368,20 +391,64 @@ export class RecordBuilder {
   }
 
   /**
+   * Runs the redact hook on a record from another context. A child context without redact
+   * forwards raw records. The sender is the last privacy gate.
+   * @param record Forwarded record.
+   * @returns The record to deliver, or null when the hook drops it.
+   */
+  redactForwarded(record: LogRecord): LogRecord | null {
+    const { redact } = this.deps.config;
+    if (!redact) {
+      return record;
+    }
+
+    const stages: [RecordHook, HookStage][] = [[redact, "redact"]];
+    const outcome = this.applyHooks(record, stages, fixedOf(record.attributes));
+    return typeof outcome === "string" ? null : outcome.record;
+  }
+
+  /**
+   * Runs the hooks in order. Then it sanitizes and measures the attributes again.
+   * @param record Built record.
+   * @param stages Hooks and their stages.
+   * @param fixed Fields that the library builds. The hooks cannot change them.
+   * @returns The record and the size of its attributes, or the reason of the drop.
+   */
+  private applyHooks(
+    record: LogRecord,
+    stages: readonly [RecordHook, HookStage][],
+    fixed: Record<string, unknown> | undefined,
+  ): { record: LogRecord; bytes: number } | DropReason {
+    let current = record;
+
+    for (const [hook, stage] of stages) {
+      const outcome = this.runHook(hook, stage, current);
+      if (typeof outcome === "string") {
+        return outcome;
+      }
+      current = outcome;
+    }
+
+    // A hook can change the attributes in place or replace them. A cycle, a hostile getter or a
+    // BigInt from a hook throws at serialization. The transport then loses the batch.
+    const { diagnostics, limits } = this.deps;
+    const remeasured = sanitizeWithSize(current.attributes, limits, diagnostics);
+    const attributes = asAttributes(remeasured.value);
+    // The limits must not cut the fields that the library builds.
+    Object.assign(attributes, fixed);
+
+    return { record: { ...current, attributes }, bytes: remeasured.bytes };
+  }
+
+  /**
    * Runs one consumer hook on a record. A processor and the redact hook have the same contract.
    * @param hook Processor or redact hook.
    * @param stage Stage of the hook.
    * @param record Record before the hook.
-   * @param fixed Fields that the library builds. The hook cannot change them.
-   * @returns The record and the size of its new attributes, or the reason of the drop.
+   * @returns The record after the hook, or the reason of the drop.
    */
-  private runHook(
-    hook: RecordHook,
-    stage: HookStage,
-    record: LogRecord,
-    fixed: Record<string, unknown> | undefined,
-  ): { record: LogRecord; bytes?: number } | DropReason {
-    const { diagnostics, limits } = this.deps;
+  private runHook(hook: RecordHook, stage: HookStage, record: LogRecord): LogRecord | DropReason {
+    const { diagnostics } = this.deps;
     const { label, code } = HOOK_STAGES[stage];
 
     // A plain JavaScript hook can edit the record in place without a return value.
@@ -433,23 +500,8 @@ export class RecordBuilder {
       return "malformed";
     }
 
-    let next = candidate;
-    let bytes: number | undefined;
-
-    if (candidate !== record) {
-      // Sanitize a record from the hook again. The hook is consumer code. A cycle, a hostile
-      // getter or a BigInt throws at serialization. The transport then loses the batch.
-      const remeasured = sanitizeWithSize(candidate.attributes, limits, diagnostics);
-      next = { ...candidate, attributes: asAttributes(remeasured.value) };
-      bytes = remeasured.bytes;
-      // The limits must not cut the fields that the library builds. The hook cannot change them.
-      Object.assign(next.attributes, fixed);
-    }
-
     // The hook can change severityText. Keep the number in step with the text.
-    next.severityNumber = SEVERITY_NUMBER[next.severityText];
-
-    return { record: next, bytes };
+    return { ...candidate, severityNumber: SEVERITY_NUMBER[candidate.severityText] };
   }
 
   /**

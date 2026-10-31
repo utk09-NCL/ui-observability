@@ -369,7 +369,8 @@ describe("HttpTransport", () => {
       tracesEndpoint: "https://x/v1/traces",
       headers: () => ({ authorization: "Bearer tenant-a" }),
     });
-    const t = new HttpTransport(live, diagnostics());
+    const reporter = diagnostics();
+    const t = new HttpTransport(live, reporter);
     const sent = batch(1);
     sent.records[0].attributes = { "log.type": "span" };
 
@@ -384,6 +385,7 @@ describe("HttpTransport", () => {
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://x/v1/traces"]);
     expect(Object.keys(JSON.parse(initOf(fetchMock).body as string))).toEqual(["resourceSpans"]);
+    expect(reporter.snapshot()["record.dropped_no_destination"]).toBe(1);
   });
 
   it("gives no cached headers when configure() changes the endpoint during headers()", async () => {

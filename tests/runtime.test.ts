@@ -25,6 +25,7 @@ import { ExitFlush } from "../src/transport/exit-flush";
 import { RetryEngine } from "../src/transport/retry-engine";
 import { isLibraryRequest } from "../src/utils/library-request";
 import {
+  addBreadcrumb,
   adoptJourney,
   configure,
   counter,
@@ -400,6 +401,19 @@ describe("runtime lifecycle", () => {
     expect(first.attributes["journey.id"]).toBe(journey.id);
   });
 
+  it("does not stamp the journey on a boot record that redact already saw", async () => {
+    // The journey name can hold a customer name. redact is the last gate.
+    configure({ ...base, redact: (record) => record });
+    getLogger("test").info("during boot");
+    startJourney("customer-name");
+
+    await ready();
+    const [first] = buffered();
+
+    expect(first.attributes).not.toHaveProperty("journey.id");
+    expect(first.attributes).not.toHaveProperty("journey.name");
+  });
+
   it("drops the oldest buffered record once the boot buffer is full", () => {
     configure(base);
     const log = getLogger("test");
@@ -596,6 +610,47 @@ describe("runtime lifecycle", () => {
 
     expect(buffered()).toEqual([]);
     expect(runtime().diagnostics.snapshot()["record.dropped_by_sampling"]).toBe(1);
+  });
+
+  it("runs the redact hook of the sender on a forwarded record", async () => {
+    // A worker that never calls configure() has no redact. The sender is the last gate.
+    configure({
+      ...base,
+      redact: (record) => ({ ...record, body: record.body.replace(/\S+@\S+/, "[email]") }),
+    });
+    await ready();
+
+    runtime()["ingestForwarded"]([forwardedRecord("login a@b.example")]);
+
+    expect(buffered().map((record) => record.body)).toEqual(["login [email]"]);
+  });
+
+  it("keeps the metric fields of a forwarded point that the redact hook of the sender changes", async () => {
+    configure({
+      ...base,
+      redact: (record) => {
+        record.attributes["metric.value"] = 99;
+        record.attributes.region = "masked";
+        return record;
+      },
+    });
+    await ready();
+    const point = forwardedRecord("orders");
+    point.attributes = { "log.type": "metric", "metric.value": 3, region: "eu-west" };
+
+    runtime()["ingestForwarded"]([point]);
+
+    expect(buffered()[0].attributes).toMatchObject({ "metric.value": 3, region: "masked" });
+  });
+
+  it("drops a forwarded record that the redact hook of the sender drops", async () => {
+    configure({ ...base, redact: () => null });
+    await ready();
+
+    runtime()["ingestForwarded"]([forwardedRecord("secret")]);
+
+    expect(buffered()).toEqual([]);
+    expect(runtime().diagnostics.snapshot()["record.dropped_by_redact"]).toBe(1);
   });
 
   it("drops a forwarded payload that is not an array at all", async () => {
@@ -1545,6 +1600,29 @@ describe("delivery stats", () => {
 });
 
 describe("newSession", () => {
+  it("ends the old trace, the open metric points and the breadcrumbs with the old session", async () => {
+    configure({ ...base, tracesEndpoint: "https://x/v1/traces" });
+    await ready();
+    const before = runtime().identity.sessionId;
+    const emit = vi.spyOn(runtime(), "emit");
+    addBreadcrumb("user A opened the account page");
+    counter("clicks").add(1);
+
+    newSession();
+    error("after", new Error("x"));
+
+    const records = emit.mock.calls
+      .map(([record]) => record)
+      .filter((record): record is LogRecord => record !== null);
+    const root = records.find((record) => record.attributes["log.type"] === "span");
+    const point = records.find((record) => record.body === "clicks");
+    const failed = records.find((record) => record.body === "after");
+    expect(root?.resource["session.id"]).toBe(before);
+    expect(point?.resource["session.id"]).toBe(before);
+    // A shared machine: the next user must not see the trail of the previous user.
+    expect(failed?.attributes.breadcrumbs).toEqual([]);
+  });
+
   it("gives later records a new session id, ends the journey and starts a new trace", async () => {
     configure(base);
     await ready();
@@ -2467,6 +2545,17 @@ describe("spans", () => {
     expect(spansOf(emit)).toEqual([]);
   });
 
+  it("ends the root span of a forwarder on pagehide, and gives it to the bus", async () => {
+    configure({ ...base, tracesEndpoint: TRACES, bus: { mode: "forwarder" } });
+    await ready();
+    const send = vi.spyOn(bus(), "sendRecords");
+
+    dispatchEvent(new Event("pagehide"));
+
+    const sent = send.mock.calls.flatMap(([records]) => records);
+    expect(sent.map((record) => record.body)).toContain("ui.start");
+  });
+
   it("ends the root span at shutdown", async () => {
     configure({ ...base, tracesEndpoint: TRACES });
     await ready();
@@ -2475,6 +2564,24 @@ describe("spans", () => {
     await shutdown();
 
     expect(spansOf(emit).map((record) => record.body)).toEqual(["ui.start"]);
+  });
+});
+
+describe("runtime on Node", () => {
+  it("runs console-only, keeps the ids in memory and reports a destination one time", async () => {
+    vi.stubGlobal("document", undefined);
+
+    configure({ serviceName: "svc", capture: { fetch: true } });
+    configure({ endpoint: base.endpoint, tracesEndpoint: "https://x/v1/traces" });
+    configure({ endpoint: base.endpoint });
+    await ready();
+
+    expect(runtime().platform.platform).toBe("node");
+    expect(runtime().config).toMatchObject({ endpoint: null, tracesEndpoint: "" });
+    expect(runtime()["captures"]).toEqual([]);
+    expect(runtime()["sender"]).toBeUndefined();
+    expect(localStorage.getItem(SESSION_ID_KEY)).toBeNull();
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 });
 

@@ -401,18 +401,19 @@ describe("LogPipeline", () => {
     pipeline.push(record());
     pipeline.push(metric());
 
+    // The error logs get the beacon budget before the spans.
     expect(pipeline.drainForExit().map((batch) => batch.records)).toEqual([
       [
         expect.objectContaining({
           attributes: { "log.type": "metric", "app.namespace": "trading" },
         }),
       ],
-      [span],
       [
         expect.objectContaining({
           attributes: { "log.type": "system", "app.namespace": "trading" },
         }),
       ],
+      [span],
     ]);
 
     pipeline.push(span);
@@ -420,7 +421,7 @@ describe("LogPipeline", () => {
     await pipeline.flushPending();
 
     expect(send.mock.calls.map(([batch]) => batch.records.length)).toEqual([1, 1]);
-    expect(send.mock.calls[0][0].records).toEqual([span]);
+    expect(send.mock.calls[1][0].records).toEqual([span]);
     pipeline.destroy();
   });
 

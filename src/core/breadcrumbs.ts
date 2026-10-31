@@ -59,6 +59,13 @@ export class BreadcrumbBuffer {
     }
   }
 
+  /** Removes all breadcrumbs. A new session must not carry the trail of the previous user. */
+  clear(): void {
+    this.buffer.fill(undefined);
+    this.pointer = 0;
+    this.filled = false;
+  }
+
   /**
    * Returns all stored breadcrumbs ordered from oldest to newest.
    * @returns List of breadcrumbs in time order.

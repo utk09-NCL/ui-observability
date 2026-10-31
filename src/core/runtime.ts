@@ -85,7 +85,7 @@ const CAPTURE_LOADERS = {
 type CaptureName = keyof typeof CAPTURE_LOADERS;
 
 /** Constructor of the WebSocket capture plugin. */
-type WebSocketClass = new (diagnostics: Diagnostics) => CapturePlugin;
+type WebSocketClass = new (diagnostics: Diagnostics, config: ResolvedConfig) => CapturePlugin;
 
 /** Id of each plugin object. A new plugin object then changes the capture key. */
 const pluginIds = new WeakMap<CapturePlugin, number>();
@@ -148,10 +148,26 @@ function consoleOnly(input: Partial<ObservabilityConfig>): Partial<Observability
   return {
     ...input,
     endpoint: null,
+    metricsEndpoint: "",
+    tracesEndpoint: "",
     transport: undefined,
     transportOnExit: undefined,
     bus: { ...input.bus, mode: "off" },
   };
+}
+
+/**
+ * Tests if a configuration names a destination.
+ * @param input Consumer configuration options.
+ * @returns True with an endpoint, a signal endpoint or a transport.
+ */
+function sends(input: Partial<ObservabilityConfig>): boolean {
+  return (
+    Boolean(input.endpoint) ||
+    Boolean(input.metricsEndpoint) ||
+    Boolean(input.tracesEndpoint) ||
+    input.transport !== undefined
+  );
 }
 
 /**
@@ -303,20 +319,41 @@ export class ObservabilityRuntime {
   private tunablesLocked = true;
 
   /**
-   * @param input Initial consumer configuration options.
-   * @param degraded True for a console-only runtime next to another version. It installs
-   * no capture.
+   * True for a console-only runtime. It sends nothing, joins no bus and installs no capture.
+   * Another version of the library on the page, or a server, makes it console-only.
    */
-  private constructor(
-    input: Partial<ObservabilityConfig>,
-    private readonly degraded = false,
-  ) {
+  private readonly degraded: boolean;
+
+  /** True after the report of a destination on a server. The runtime reports it one time. */
+  private serverReported = false;
+
+  /**
+   * Ends the root span of a forwarder when its document unloads. The exit flush ends it only in
+   * the sender. Without this, the client spans of a frame or a view have no parent.
+   */
+  private readonly onPageHide = (): void => {
+    if (this.role() !== "forwarder") {
+      return;
+    }
+
+    this.tracing.end();
+    this.sendForwarded();
+  };
+
+  /**
+   * @param input Initial consumer configuration options.
+   * @param mismatch True for a console-only runtime next to another version.
+   */
+  private constructor(input: Partial<ObservabilityConfig>, mismatch = false) {
     this.diagnostics = new Diagnostics(input.onDiagnostic);
 
     this.platform = detectPlatform(this.diagnostics);
-    this.config = resolveConfig(input, this.diagnostics);
+    // A server has no page to capture and no storage. It writes to the console only.
+    this.degraded = mismatch || this.onServer();
+    this.config = resolveConfig(this.allowed(input), this.diagnostics);
     this.identityBuiltAs = this.config.identity;
-    this.stores = this.identityBuiltAs === "memory" ? memoryStores() : BROWSER_STORES;
+    this.stores =
+      this.identityBuiltAs === "memory" || this.onServer() ? memoryStores() : BROWSER_STORES;
     this.identity = resolveIdentity(this.diagnostics, this.stores);
     this.sessionTouch = new SessionTouch(this.diagnostics, this.stores);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
@@ -546,7 +583,7 @@ export class ObservabilityRuntime {
     const local = ObservabilityRuntime.local;
     if (local && !local.destroyed) {
       // The local runtime stays console-only. React StrictMode calls configure() two times.
-      local.reconfigure(consoleOnly(input));
+      local.reconfigure(input);
       return local;
     }
     ObservabilityRuntime.local = null;
@@ -584,7 +621,7 @@ export class ObservabilityRuntime {
     input: Partial<ObservabilityConfig>,
     found: unknown,
   ): ObservabilityRuntime {
-    const runtime = new ObservabilityRuntime(consoleOnly(input), true);
+    const runtime = new ObservabilityRuntime(input, true);
     ObservabilityRuntime.local = runtime;
 
     const foundText = typeof found === "string" ? found : "before 0.9.0";
@@ -603,7 +640,7 @@ export class ObservabilityRuntime {
    * @param input Partial configuration to merge.
    */
   private reconfigure(input: Partial<ObservabilityConfig>): void {
-    const accepted = this.keepDestination(input);
+    const accepted = this.keepDestination(this.allowed(input));
     const capturesBefore = captureKey(this.config.capture);
     const next = resolveConfig(accepted, this.diagnostics, this.config);
     this.keepStartupTunables(next);
@@ -626,6 +663,36 @@ export class ObservabilityRuntime {
     }
 
     this.diagnostics.report("config.reconfigured", "A later configure() call updated the runtime.");
+  }
+
+  /**
+   * Tests if the runtime runs on a server, for example Node during server-side rendering.
+   * @returns True on Node.
+   */
+  private onServer(): boolean {
+    return this.platform.platform === "node";
+  }
+
+  /**
+   * Removes the delivery settings from the input of a console-only runtime. On a server, it
+   * reports a destination one time.
+   * @param input Consumer configuration options.
+   * @returns The options that the runtime accepts.
+   */
+  private allowed(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
+    if (!this.degraded) {
+      return input;
+    }
+
+    if (this.onServer() && !this.serverReported && sends(input)) {
+      this.serverReported = true;
+      this.diagnostics.report(
+        "config.invalid",
+        "The library runs console-only on Node. It sends no record and installs no capture. It ignores endpoint, metricsEndpoint, tracesEndpoint and transport.",
+      );
+    }
+
+    return consoleOnly(input);
   }
 
   /**
@@ -761,6 +828,11 @@ export class ObservabilityRuntime {
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
   private async init(): Promise<void> {
+    // A console-only runtime never forwards. Node has no addEventListener.
+    if (!this.degraded) {
+      addEventListener("pagehide", this.onPageHide);
+    }
+
     // Start the capture imports now. They download in parallel with the bus and the sender.
     const captures = this.installCaptures();
 
@@ -1037,7 +1109,7 @@ export class ObservabilityRuntime {
     }
 
     const plugins = WebSocketCapture
-      ? [...settings.plugins, new WebSocketCapture(this.diagnostics)]
+      ? [...settings.plugins, new WebSocketCapture(this.diagnostics, this.config)]
       : settings.plugins;
 
     for (const plugin of plugins) {
@@ -1163,6 +1235,10 @@ export class ObservabilityRuntime {
     this.meter.collect();
     this.tracing.end();
     this.destroyed = true;
+
+    if (!this.degraded) {
+      removeEventListener("pagehide", this.onPageHide);
+    }
 
     this.uninstallCaptures();
 
@@ -1301,14 +1377,21 @@ export class ObservabilityRuntime {
         this.diagnostics.count("record.dropped_by_sampling");
         continue;
       }
-      this.deliver(record);
+
+      // A child context without redact forwards raw records. The sender is the last gate.
+      const redacted = this.builder.redactForwarded(record);
+      if (redacted) {
+        this.deliver(redacted);
+      }
     }
   }
 
   /** Flushes the startup records. It adds the active journey to records without a journey. */
   private releaseBootBuffer(): void {
     const buffered = this.bootBuffer.take();
-    const journey = this.journey.current();
+    // A hook already saw each record. A key added now does not pass redact.
+    const { processors, redact } = this.config;
+    const journey = processors.length === 0 && redact === undefined ? this.journey.current() : null;
 
     for (const record of buffered) {
       if (journey && !record.attributes["journey.id"]) {
@@ -1373,21 +1456,26 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Starts a new session in this context. Other tabs and frames read the new id at their next
-   * startup. It ends the active journey and starts a new trace.
+   * Starts a new session in this context. It sends the open metric points, starts a new trace,
+   * ends the active journey and clears the breadcrumbs. Other tabs read the new id at their next
+   * startup.
    */
   newSession(): void {
     if (this.destroyed) {
       return;
     }
 
+    // Close the work of the old session first. Its points and its root span keep the old id.
+    this.meter.collect();
+    this.tracing.rotate("explicit");
+    this.journey.end();
+    // A shared machine: the next user must not see the trail of the previous user.
+    this.breadcrumbs.clear();
+
     const fresh = newId(this.diagnostics);
     (this.identity as { sessionId: string }).sessionId = fresh;
     this.sessionTouch.restart(fresh);
     this.builder.invalidateResource();
-
-    this.journey.end();
-    this.tracing.rotate("explicit");
   }
 
   /**

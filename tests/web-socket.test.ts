@@ -2,10 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketCapture } from "../src/capture/web-socket";
 import { WEBSOCKET_MAX_PER_WINDOW } from "../src/constants";
+import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { OneLogger } from "../src/core/logger";
 import type { MetricAttributes } from "../src/models/metric";
 import type { PluginContext } from "../src/models/plugin";
+import { runAsLibraryRequest } from "../src/utils/library-request";
 
 const URL_WITH_SECRETS = "wss://user:pw@feed.example/prices?token=abc#x";
 
@@ -55,9 +57,10 @@ function close(socket: FakeSocket, code: number, wasClean: boolean): void {
 
 /**
  * Builds a capture with spy tools, and installs it.
+ * @param ignoreUrls URL patterns that the capture does not record.
  * @returns The capture, its spies and its diagnostic events.
  */
-function setup() {
+function setup(ignoreUrls: string[] = []) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -72,7 +75,11 @@ function setup() {
     addBreadcrumb: vi.fn(),
     ownRequest: vi.fn(),
   } as unknown as PluginContext;
-  const capture = new WebSocketCapture(diagnostics);
+  const config = resolveConfig(
+    { endpoint: null, serviceName: "svc", capture: { ignoreUrls } },
+    new Diagnostics(),
+  );
+  const capture = new WebSocketCapture(diagnostics, config);
 
   capture.install(ctx);
 
@@ -150,7 +157,7 @@ describe("WebSocketCapture", () => {
   });
 
   it("keeps a later wrapper of another script, and its own wrapper then records nothing", () => {
-    const { capture, logEvent, add, diagnostics } = setup();
+    const { capture, logEvent, add, events } = setup();
     const Tracked = globalThis.WebSocket;
     const Other = class extends Tracked {};
     globalThis.WebSocket = Other;
@@ -163,7 +170,41 @@ describe("WebSocketCapture", () => {
     expect(globalThis.WebSocket).toBe(Other);
     expect(logEvent).not.toHaveBeenCalled();
     expect(add).not.toHaveBeenCalled();
-    expect(diagnostics.snapshot()["capture.install_failed"]).toBe(1);
+    expect(events.map((event) => event.code)).toEqual(["capture.install_failed"]);
+  });
+
+  it("records nothing for a socket in ignoreUrls, for example the socket of a custom transport", () => {
+    const { capture, logEvent, add } = setup(["feed.example/prices"]);
+    const socket = open();
+
+    socket.dispatchEvent(new Event("open"));
+    socket.send("batch");
+    socket.dispatchEvent(new Event("message"));
+
+    expect(logEvent).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    capture.uninstall();
+  });
+
+  it("does not count a send that the library makes, so a metric cannot cause the next send", () => {
+    const { capture, add } = setup();
+    const socket = open();
+
+    runAsLibraryRequest(() => {
+      socket.send("batch");
+    });
+
+    expect(add).not.toHaveBeenCalled();
+    capture.uninstall();
+  });
+
+  it("keeps instanceof true for a socket that the app opened before the install", () => {
+    const early = new FakeSocket(URL_WITH_SECRETS);
+    const { capture } = setup();
+
+    expect(early instanceof globalThis.WebSocket).toBe(true);
+    expect(open() instanceof globalThis.WebSocket).toBe(true);
+    capture.uninstall();
   });
 
   it("installs one time, and does nothing without WebSocket", () => {

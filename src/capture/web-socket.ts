@@ -6,10 +6,13 @@
 
 import { WEBSOCKET_MAX_PER_WINDOW } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
+import type { ResolvedConfig } from "../models/config";
 import type { Counter, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
+import { isLibraryRequest } from "../utils/library-request";
 import { patch } from "../utils/patch";
 import { allowInWindow, type StormWindow } from "./storm";
+import { matchesAny } from "./types";
 
 /** Name of the message counter. */
 const MESSAGES_METRIC = "ui.websocket.messages";
@@ -52,7 +55,9 @@ function socketTarget(url: string): { target: string; server: string } {
 function count(state: InstallState, socket: WebSocket, direction: "transmit" | "receive"): void {
   const server = state.servers.get(socket);
 
-  if (!state.active || server === undefined) {
+  // A send of the library, for example a custom transport, must not make the next send.
+  const own = direction === "transmit" && isLibraryRequest();
+  if (!state.active || server === undefined || own) {
     return;
   }
 
@@ -79,8 +84,12 @@ export class WebSocketCapture implements CapturePlugin {
 
   /**
    * @param diagnostics Diagnostics reporter.
+   * @param config Active configuration. The capture reads `capture.ignoreUrls`.
    */
-  constructor(private readonly diagnostics: Diagnostics) {}
+  constructor(
+    private readonly diagnostics: Diagnostics,
+    private readonly config: ResolvedConfig,
+  ) {}
 
   /**
    * Replaces the WebSocket constructor with a subclass that tracks each socket.
@@ -108,6 +117,15 @@ export class WebSocketCapture implements CapturePlugin {
       "WebSocket",
       (Original) =>
         class TrackedWebSocket extends Original {
+          /**
+           * Keeps instanceof true for a socket that the app opened before the install.
+           * @param value Value to test.
+           * @returns True for each native socket.
+           */
+          static override [Symbol.hasInstance](value: unknown): boolean {
+            return value instanceof Original;
+          }
+
           /**
            * @param url URL of the server.
            * @param protocols Sub-protocols of the app.
@@ -137,7 +155,10 @@ export class WebSocketCapture implements CapturePlugin {
 
     // Another script can wrap the constructor after the library. Keep its wrapper.
     if (this.restore && !this.restore()) {
-      this.diagnostics.count("capture.install_failed");
+      this.diagnostics.report(
+        "capture.install_failed",
+        "Another script wrapped WebSocket after the library. The library keeps that wrapper.",
+      );
     }
 
     this.restore = undefined;
@@ -159,6 +180,11 @@ export class WebSocketCapture implements CapturePlugin {
       "capture.record_failed",
       "The library could not track a WebSocket. The socket works without capture.",
       () => {
+        // ignoreUrls matches the full URL. A custom transport can send over its own socket.
+        if (matchesAny(socket.url, this.config.capture.ignoreUrls)) {
+          return;
+        }
+
         const { target, server } = socketTarget(socket.url);
         const attributes = { "url.full": target, "server.address": server };
         const { logger } = state.ctx;

@@ -548,6 +548,24 @@ describe("processors", () => {
     expect(record.attributes.huge).toBeUndefined();
   });
 
+  it("sanitize a cycle that a processor adds in place, so one record cannot poison a batch", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const { builder } = makeBuilder({
+      processors: [
+        (record) => {
+          record.attributes.user = circular;
+          return record;
+        },
+      ],
+    });
+
+    const record = built(builder);
+
+    expect(() => JSON.stringify(record)).not.toThrow();
+    expect((record.attributes.user as Record<string, unknown>).self).toBe("[Circular]");
+  });
+
   it("let a processor drop a record, and do not call redact", () => {
     const redact = vi.fn((record: LogRecord) => record);
     const { builder, diagnostics } = makeBuilder({ processors: [() => null], redact });

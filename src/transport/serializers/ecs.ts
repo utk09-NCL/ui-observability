@@ -3,10 +3,14 @@
 // This module serializes log batches as Elastic Common Schema (ECS) newline-delimited JSON.
 
 import {
+  ATTR_APP_NAMESPACE,
+  ATTR_LOG_TYPE,
   ATTR_PAGE_URL,
   ATTR_URL_FULL,
   CONTENT_TYPE_NDJSON,
   ECS_LEVEL_NAMES,
+  ECS_VERSION,
+  LOG_TYPE_METRIC,
   NANOS_PATTERN,
   NANOS_PER_MILLI,
   RESOURCE_BROWSER_USER_AGENT,
@@ -17,6 +21,16 @@ import {
 } from "../../constants";
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
+
+/** ECS field of each error attribute. */
+const ERROR_FIELDS = {
+  "error.type": "type",
+  "error.message": "message",
+  "error.stack_trace": "stack_trace",
+} as const;
+
+/** Attribute keys that a string value moves to an ECS field. They then leave labels. */
+const MAPPED_KEYS = new Set<string>([ATTR_APP_NAMESPACE, ...Object.keys(ERROR_FIELDS)]);
 
 /**
  * Converts a nanosecond epoch string to epoch milliseconds. A record from the
@@ -136,6 +150,37 @@ function toLabels(source: Record<string, unknown>): Record<string, unknown> {
   return labels;
 }
 
+/**
+ * Builds the ECS error field from the error attributes.
+ * @param attributes Record attributes.
+ * @returns The field, or undefined for a record without a string error attribute.
+ */
+function errorOf(attributes: Record<string, unknown>): Record<string, string> | undefined {
+  const fields: [string, string][] = [];
+
+  for (const [key, field] of Object.entries(ERROR_FIELDS)) {
+    const value = attributes[key];
+    if (typeof value === "string") {
+      fields.push([field, value]);
+    }
+  }
+
+  return fields.length > 0 ? Object.fromEntries(fields) : undefined;
+}
+
+/**
+ * Removes the attributes that have an ECS field. A label copy of a stack trace doubles the size.
+ * @param attributes Record attributes.
+ * @returns The attributes for labels.
+ */
+function unmapped(attributes: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(attributes).filter(
+      ([key, value]) => !(MAPPED_KEYS.has(key) && typeof value === "string"),
+    ),
+  );
+}
+
 /** This serializer writes log records as Elastic Common Schema (ECS) NDJSON documents. */
 export const ecsSerializer: LogSerializer = {
   /** This field holds the format name. */
@@ -150,10 +195,20 @@ export const ecsSerializer: LogSerializer = {
     const lines = records.map((record) => {
       const millis = toMillis(record.timeUnixNano);
 
+      const { attributes } = record;
+      const logger = attributes[ATTR_APP_NAMESPACE];
+
+      // JSON.stringify leaves out an undefined field.
       return JSON.stringify({
         "@timestamp": new Date(millis).toISOString(),
         message: record.body,
-        log: { level: ECS_LEVEL_NAMES[record.severityText] ?? record.severityText.toLowerCase() },
+        ecs: { version: ECS_VERSION },
+        log: {
+          level: ECS_LEVEL_NAMES[record.severityText] ?? record.severityText.toLowerCase(),
+          logger: typeof logger === "string" ? logger : undefined,
+        },
+        event: { kind: attributes[ATTR_LOG_TYPE] === LOG_TYPE_METRIC ? "metric" : "event" },
+        error: errorOf(attributes),
         trace: { id: record.traceId },
         span: { id: record.spanId },
         service: {
@@ -164,11 +219,11 @@ export const ecsSerializer: LogSerializer = {
         user_agent: { original: record.resource[RESOURCE_BROWSER_USER_AGENT] },
         // Use the request URL of a captured network event before the page URL.
         url: {
-          full: record.attributes[ATTR_URL_FULL] ?? record.attributes[ATTR_PAGE_URL],
+          full: attributes[ATTR_URL_FULL] ?? attributes[ATTR_PAGE_URL],
         },
         // Spread the attributes last. A record attribute overrides a resource key with the same
         // name.
-        labels: { ...toLabels(record.resource), ...toLabels(record.attributes) },
+        labels: { ...toLabels(record.resource), ...toLabels(unmapped(attributes)) },
       });
     });
 

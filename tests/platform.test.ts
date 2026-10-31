@@ -6,6 +6,7 @@ import {
   detectPlatform,
   isTopLevel,
   resetPlatformCache,
+  recordedUrl,
   stripUrlQuery,
 } from "../src/utils/platform";
 
@@ -207,6 +208,17 @@ describe("currentUrl", () => {
 
     expect(currentUrl(diagnostics)).toBe("");
     expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
+  });
+});
+
+describe("recordedUrl", () => {
+  it("removes the user info, and the query and fragment without fullUrls", () => {
+    const url = "https://user:pass@app.test/a?token=1#b";
+
+    expect(recordedUrl(url, false)).toBe("https://app.test/a");
+    expect(recordedUrl(url, true)).toBe("https://app.test/a?token=1#b");
+    expect(recordedUrl("/api/orders?x=1", false)).toBe("/api/orders");
+    expect(recordedUrl("https://app.test/a@b", true)).toBe("https://app.test/a@b");
   });
 });
 

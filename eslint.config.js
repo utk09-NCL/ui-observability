@@ -81,6 +81,8 @@ export default defineConfig(
         setInterval: "readonly",
         clearTimeout: "readonly",
         clearInterval: "readonly",
+        fetch: "readonly",
+        AbortSignal: "readonly",
       },
     },
   },

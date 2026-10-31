@@ -222,10 +222,28 @@ describe("SessionTouch", () => {
     const setItem = vi.spyOn(localStorage, "setItem");
 
     new SessionTouch(diagnostics).touch("s-1");
-    new SessionTouch(diagnostics).touch("s-2");
+    new SessionTouch(diagnostics).touch("s-1");
 
     expect(setItem).toHaveBeenCalledTimes(2);
-    expect(localStorage.getItem(SESSION_KEY)).toContain("s-2");
+    expect(localStorage.getItem(SESSION_KEY)).toContain("s-1");
+  });
+
+  it("does not write an old id over a newer session of another tab", () => {
+    // Tab A called newSession(). Tab B still runs with the old id.
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ id: "s-new", lastSeenAt: Date.now() }));
+
+    new SessionTouch(collect().diagnostics).touch("s-old");
+
+    expect(localStorage.getItem(SESSION_KEY)).toContain("s-new");
+  });
+
+  it("writes over a session of another tab that expired", () => {
+    const expired = Date.now() - 31 * 60 * 1000;
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ id: "s-gone", lastSeenAt: expired }));
+
+    new SessionTouch(collect().diagnostics).touch("s-1");
+
+    expect(localStorage.getItem(SESSION_KEY)).toContain("s-1");
   });
 });
 

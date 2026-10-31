@@ -162,6 +162,35 @@ function safeWrite(
 }
 
 /**
+ * Reads the session id in the local store. It reports a record that is not valid JSON.
+ * @param stores Identity stores.
+ * @param diagnostics Diagnostics reporter.
+ * @param now Epoch time in milliseconds.
+ * @returns The stored id, or undefined when it is absent or expired.
+ */
+function liveSession(
+  stores: IdentityStores,
+  diagnostics: Diagnostics,
+  now: number,
+): string | undefined {
+  const raw = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { id?: string; lastSeenAt?: number };
+    return parsed.id && now - (parsed.lastSeenAt ?? 0) < SESSION_IDLE_MS ? parsed.id : undefined;
+  } catch {
+    diagnostics.report(
+      "storage.degraded",
+      "The session record is not valid JSON. The library starts a new session.",
+    );
+    return undefined;
+  }
+}
+
+/**
  * Resolves or initializes session, tab, and context identifiers for the active realm.
  * @param diagnostics Diagnostics reporter.
  * @param stores Identity stores.
@@ -174,24 +203,8 @@ export function resolveIdentity(
   const contextId = newId(diagnostics);
   const now = Date.now();
 
-  let sessionId = newId(diagnostics);
-  const rawSession = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
-  if (rawSession) {
-    try {
-      const parsed = JSON.parse(rawSession) as {
-        id?: string;
-        lastSeenAt?: number;
-      };
-      if (parsed.id && now - (parsed.lastSeenAt ?? 0) < SESSION_IDLE_MS) {
-        sessionId = parsed.id;
-      }
-    } catch {
-      diagnostics.report(
-        "storage.degraded",
-        "The session record is not valid JSON. The library starts a new session.",
-      );
-    }
-  }
+  const minted = newId(diagnostics);
+  const sessionId = liveSession(stores, diagnostics, now) ?? minted;
   const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
   safeWrite(stores, "local", SESSION_ID_KEY, session, diagnostics);
 
@@ -244,6 +257,14 @@ export class SessionTouch {
     const now = Date.now();
 
     if (now - this.lastTouchAt < SESSION_TOUCH_MS) {
+      return;
+    }
+
+    // Another tab can hold a newer session, for example after newSession(). Do not write the old
+    // id back. A reload would then resume the old session.
+    const stored = liveSession(this.stores, this.diagnostics, now);
+    if (stored !== undefined && stored !== sessionId) {
+      this.lastTouchAt = now;
       return;
     }
 

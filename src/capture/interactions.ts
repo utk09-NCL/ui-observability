@@ -4,7 +4,7 @@
 
 import { ARIA_LABEL_MAX_CHARS, CLICK_TEXT_MAX_CHARS, SELECTOR_MAX_CLASSES } from "../constants";
 import { patch } from "../utils/patch";
-import { stripUrlQuery } from "../utils/platform";
+import { recordedUrl } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
 /**
@@ -152,8 +152,8 @@ export class InteractionCapture implements Capture {
     // The comparison above uses the full URL. A change to the query only is a navigation.
     // The record does not keep the query unless you set fullUrls.
     const full = this.ctx.config.capture.fullUrls;
-    const fromUrl = full ? from : stripUrlQuery(from);
-    const toUrl = full ? to : stripUrlQuery(to);
+    const fromUrl = recordedUrl(from, full);
+    const toUrl = recordedUrl(to, full);
 
     this.ctx.tracing.rotate("navigation");
     this.ctx.breadcrumbs.push({

@@ -137,9 +137,16 @@ describe("start", () => {
     expect(engine.getToken()).toBeDefined();
   });
 
-  it("reports an id that is empty, too long or not a string, and makes a new id", () => {
+  it("keeps an id of letters, digits, underscore, dot, colon and dash", () => {
+    const { engine } = makeEngine();
+
+    expect(engine.start("checkout", { id: "ORD-1_a.b:c" }).id).toBe("ORD-1_a.b:c");
+  });
+
+  it("reports an id that is empty, too long, not a string or with other characters", () => {
     const { engine, handler } = makeEngine();
-    const ids = ["", "a".repeat(65), 42 as unknown as string];
+    // 64 CJK characters are 192 bytes in UTF-8. The token is then larger than its limit.
+    const ids = ["", "a".repeat(65), 42 as unknown as string, "訂".repeat(64), "has space"];
 
     const started = ids.map((id) => engine.start("checkout", { id }).id);
 
@@ -148,6 +155,8 @@ describe("start", () => {
     );
     expect(started).not.toContain("");
     expect(handler.mock.calls.map(([event]) => (event as { code: string }).code)).toEqual([
+      "config.invalid",
+      "config.invalid",
       "config.invalid",
       "config.invalid",
       "config.invalid",
@@ -364,17 +373,21 @@ describe("adopt", () => {
     ["an empty id", tokenFor({ i: "", n: "checkout", s: Date.now() })],
     ["no name", tokenFor({ i: "j-1", s: Date.now() })],
     ["a non-string name", tokenFor({ i: "j-1", n: 42, s: Date.now() })],
+    // The library always writes a start time. A token without one never expires.
+    ["no start time", tokenFor({ i: "j-1", n: "checkout" })],
+    [
+      "a start time 10 minutes ahead",
+      tokenFor({ i: "j-1", n: "checkout", s: Date.now() + 600_000 }),
+    ],
   ])("refuses a token encoding %s", (_label, token) => {
     expect(makeEngine().engine.adopt(token, "url")).toBe(false);
   });
 
-  it("treats a token with no usable start time as starting now", () => {
-    // An age that is not accurate costs less than the loss of a journey that is probably real. All
-    // correlation uses the id.
-    const { engine } = makeEngine({ maxAgeMs: 1000 });
+  it("accepts a start time a little ahead, for a clock difference between two machines", () => {
+    const { engine } = makeEngine();
+    const token = tokenFor({ i: "j-1", n: "checkout", s: Date.now() + 60_000 });
 
-    expect(engine.adopt(tokenFor({ i: "j-1", n: "checkout" }), "url")).toBe(true);
-    expect(engine.current()?.startedAt).toBeGreaterThan(0);
+    expect(engine.adopt(token, "url")).toBe(true);
   });
 });
 

@@ -103,6 +103,26 @@ describe("capture/types: matchesAny", () => {
 });
 
 describe("ErrorCapture", () => {
+  it("removes the user info and the query from the script URL of an uncaught error", () => {
+    // A signed CDN URL is a credential.
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    dispatchEvent(
+      new ErrorEvent("error", {
+        error: new Error("source"),
+        message: "source",
+        filename: "https://user:pw@cdn.example/app.js?Signature=abc",
+      }),
+    );
+
+    expect(logger.error.mock.calls[0][2]).toMatchObject({
+      "error.source": "https://cdn.example/app.js",
+    });
+    capture.uninstall();
+  });
+
   it("logs an uncaught error once and deduplicates the repeat", () => {
     const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
@@ -418,6 +438,21 @@ describe("NetworkCapture: fetch", () => {
 
   afterEach(() => {
     globalThis.fetch = original;
+  });
+
+  it("removes the user info from a recorded URL, also with fullUrls", async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response("", { status: 200 })));
+    const { ctx: c, logger } = ctx({ fetch: true, fullUrls: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await fetch("https://user:pass@api.internal/orders?id=7");
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      "GET https://api.internal/orders?id=7",
+      expect.objectContaining({ "url.full": "https://api.internal/orders?id=7" }),
+    );
+    capture.uninstall();
   });
 
   it("never logs a request to the ingest endpoint, or logging feeds itself", async () => {
@@ -1090,6 +1125,26 @@ describe("NetworkCapture: XMLHttpRequest", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("records a reused XHR one time for each send", () => {
+    const { ctx: c, logger } = ctx({ xhr: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+    const xhr = new XMLHttpRequest();
+    vi.spyOn(xhr, "status", "get").mockReturnValue(200);
+
+    for (const path of ["a", "b"]) {
+      xhr.open("get", `https://api.internal/${path}`);
+      xhr.send();
+      xhr.dispatchEvent(new Event("loadend"));
+    }
+
+    expect(logger.debug.mock.calls.map(([message]) => message)).toEqual([
+      "GET https://api.internal/a",
+      "GET https://api.internal/b",
+    ]);
+    capture.uninstall();
   });
 
   it("records a completed request and uppercases its method", () => {

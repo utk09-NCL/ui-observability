@@ -168,6 +168,21 @@ export function currentUrl(diagnostics: Diagnostics): string {
   }
 }
 
+/** Matches the user info of an absolute URL, for example "user:pass@". */
+const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
+
+/**
+ * Gives the form of a URL that the library records. It always removes the user info, which is a
+ * credential. Without fullUrls, it also removes the query and the fragment.
+ * @param url Absolute or relative URL.
+ * @param fullUrls Value of `capture.fullUrls`.
+ * @returns The URL to record.
+ */
+export function recordedUrl(url: string, fullUrls: boolean): string {
+  const bare = url.replace(USER_INFO_PATTERN, "$1");
+  return fullUrls ? bare : stripUrlQuery(bare);
+}
+
 /**
  * Drops the query string and fragment from a URL.
  * It cuts the string and does not parse a URL. A relative request target has no base URL.

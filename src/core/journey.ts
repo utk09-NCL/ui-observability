@@ -12,7 +12,9 @@ import {
   BASE64URL_DASH_PATTERN,
   BASE64URL_UNDERSCORE_PATTERN,
   JOURNEY_END_ON_OWNER_CLOSE,
+  JOURNEY_CLOCK_SKEW_MS,
   JOURNEY_ID_MAX_CHARS,
+  JOURNEY_ID_PATTERN,
   JOURNEY_MAX_AGE_MS,
   JOURNEY_STORAGE_KEY,
   JOURNEY_TOKEN_MAX_CHARS,
@@ -116,13 +118,16 @@ function journeyFromTokenPayload(value: unknown): Journey | null {
   }
   const id = readString(value, "i");
   const name = readString(value, "n");
-  if (id === undefined || name === undefined) {
+  const startedAt = readNumber(value, "s");
+  // The library always writes a start time. A token without one, or from the future, never expires.
+  const future = startedAt !== undefined && startedAt > Date.now() + JOURNEY_CLOCK_SKEW_MS;
+  if (id === undefined || name === undefined || startedAt === undefined || future) {
     return null;
   }
   return {
     id,
     name,
-    startedAt: readNumber(value, "s") ?? Date.now(),
+    startedAt,
     parentId: undefined,
     ownerContextId: "",
   };
@@ -227,25 +232,23 @@ export class JourneyEngine {
   }
 
   /**
-   * Gives the id of a new journey. A longer id makes the journey token too long for
-   * adoptJourney().
+   * Gives the id of a new journey. A longer id, or an id with multibyte characters, makes the
+   * journey token too long for adoptJourney().
    * @param requested Id from the app, or undefined.
-   * @returns The requested id when it has 1 to 64 characters, else a new id.
+   * @returns The requested id when it matches JOURNEY_ID_PATTERN, else a new id.
    */
   private journeyId(requested: unknown): string {
     if (requested === undefined) {
       return newId(this.diagnostics);
     }
 
-    const usable =
-      typeof requested === "string" && requested !== "" && requested.length <= JOURNEY_ID_MAX_CHARS;
-    if (usable) {
+    if (typeof requested === "string" && JOURNEY_ID_PATTERN.test(requested)) {
       return requested;
     }
 
     this.diagnostics.report(
       "config.invalid",
-      `startJourney() needs an id of 1 to ${String(JOURNEY_ID_MAX_CHARS)} characters. The library uses a new id.`,
+      `startJourney() needs an id of 1 to ${String(JOURNEY_ID_MAX_CHARS)} letters, digits, "_", ".", ":" or "-". The library uses a new id.`,
     );
     return newId(this.diagnostics);
   }
