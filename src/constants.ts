@@ -452,6 +452,13 @@ export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
 export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
 
 /**
+ * Max length of a journey id from startJourney(), in characters. The token of a journey with this
+ * id and a full name stays below the token limit.
+ * @see {@link JOURNEY_TOKEN_MAX_CHARS}
+ */
+export const JOURNEY_ID_MAX_CHARS = 64;
+
+/**
  * Max whole-token length, in characters. It rejects an oversized token. It does not
  * validate the token content.
  * @see {@link JOURNEY_TOKEN_NAME_MAX_CHARS}
@@ -714,6 +721,7 @@ export const REMOTE_SAMPLING_POLL_MS = 30_000;
  * @see {@link DEFAULT_CONFIG}
  */
 export const UNDEFAULTED_CONFIG_KEYS = [
+  "contextProvider",
   "redact",
   "onDiagnostic",
   "onDrop",
@@ -907,6 +915,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   environment: "",
   enabled: true,
   minLevel: "INFO",
+  minLevels: {},
   compression: "gzip",
   credentials: "omit",
   storage: "auto",

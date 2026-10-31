@@ -12,6 +12,7 @@ import {
   BASE64URL_DASH_PATTERN,
   BASE64URL_UNDERSCORE_PATTERN,
   JOURNEY_END_ON_OWNER_CLOSE,
+  JOURNEY_ID_MAX_CHARS,
   JOURNEY_MAX_AGE_MS,
   JOURNEY_STORAGE_KEY,
   JOURNEY_TOKEN_MAX_CHARS,
@@ -214,7 +215,7 @@ export class JourneyEngine {
    */
   start(name: string, opts: { parent?: boolean; id?: string } = {}): Journey {
     const journey: Journey = {
-      id: opts.id ?? newId(this.diagnostics),
+      id: this.journeyId(opts.id),
       name,
       startedAt: Date.now(),
       parentId: opts.parent ? this.journey?.id : undefined,
@@ -223,6 +224,30 @@ export class JourneyEngine {
     this.setJourney(journey);
     this.onLocalChange(journey);
     return journey;
+  }
+
+  /**
+   * Gives the id of a new journey. A longer id makes the journey token too long for
+   * adoptJourney().
+   * @param requested Id from the app, or undefined.
+   * @returns The requested id when it has 1 to 64 characters, else a new id.
+   */
+  private journeyId(requested: unknown): string {
+    if (requested === undefined) {
+      return newId(this.diagnostics);
+    }
+
+    const usable =
+      typeof requested === "string" && requested !== "" && requested.length <= JOURNEY_ID_MAX_CHARS;
+    if (usable) {
+      return requested;
+    }
+
+    this.diagnostics.report(
+      "config.invalid",
+      `startJourney() needs an id of 1 to ${String(JOURNEY_ID_MAX_CHARS)} characters. The library uses a new id.`,
+    );
+    return newId(this.diagnostics);
   }
 
   /** Ends the active journey and broadcasts the change. */

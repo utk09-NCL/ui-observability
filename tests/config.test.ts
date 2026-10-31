@@ -422,6 +422,78 @@ describe("resolveConfig", () => {
     });
   });
 
+  describe("minLevels", () => {
+    it("is empty by default, and keeps each valid prefix", () => {
+      const { events, diagnostics } = collect();
+
+      expect(resolveConfig(valid(), diagnostics).minLevels).toEqual({});
+      expect(
+        resolveConfig({ ...valid(), minLevels: { trading: "DEBUG", pricing: "WARN" } }, diagnostics)
+          .minLevels,
+      ).toEqual({ trading: "DEBUG", pricing: "WARN" });
+      expect(events).toEqual([]);
+    });
+
+    it("reports and drops an entry with a bad level or an empty prefix", () => {
+      const { events, diagnostics } = collect();
+
+      const resolved = resolveConfig(
+        { ...valid(), minLevels: { trading: "LOUD", "": "DEBUG", pricing: "WARN" } as never },
+        diagnostics,
+      );
+
+      expect(resolved.minLevels).toEqual({ pricing: "WARN" });
+      expect(messages(events)).toEqual([
+        expect.stringContaining('minLevels["trading"] must be a level name'),
+        expect.stringContaining('minLevels[""] must be a level name'),
+      ]);
+    });
+
+    it("keeps the map in force for a value that is not an object", () => {
+      const { events, diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), minLevels: { trading: "DEBUG" } }, diagnostics);
+
+      const second = resolveConfig({ minLevels: "DEBUG" as never }, diagnostics, first);
+
+      expect(second.minLevels).toEqual({ trading: "DEBUG" });
+      expect(messages(events)[0]).toContain("minLevels must be an object of level names");
+    });
+
+    it("replaces the map in force with a new map", () => {
+      const { diagnostics } = collect();
+      const first = resolveConfig({ ...valid(), minLevels: { trading: "DEBUG" } }, diagnostics);
+
+      const second = resolveConfig({ minLevels: { pricing: "WARN" } }, diagnostics, first);
+
+      expect(second.minLevels).toEqual({ pricing: "WARN" });
+    });
+  });
+
+  describe("contextProvider", () => {
+    it("keeps a function and reports nothing", () => {
+      const { events, diagnostics } = collect();
+      const provider = () => ({ route: "/" });
+
+      expect(
+        resolveConfig({ ...valid(), contextProvider: provider }, diagnostics).contextProvider,
+      ).toBe(provider);
+      expect(events).toEqual([]);
+    });
+
+    it("reports a value that is not a function, and keeps the provider in force", () => {
+      const { events, diagnostics } = collect();
+      const provider = () => ({ route: "/" });
+      const first = resolveConfig({ ...valid(), contextProvider: provider }, diagnostics);
+
+      const second = resolveConfig({ contextProvider: "route" as never }, diagnostics, first);
+
+      expect(second.contextProvider).toBe(provider);
+      expect(messages(events)).toEqual([
+        "contextProvider must be a function. The library ignores the value.",
+      ]);
+    });
+  });
+
   describe("metricsEndpoint", () => {
     const METRICS = "https://ingest.example/v1/metrics";
 

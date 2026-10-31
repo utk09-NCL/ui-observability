@@ -382,7 +382,7 @@ export class OneLogger {
 
     // minLevel limits what the library sends. The console level limits what it prints.
     // minLevel does not apply to an action or a metric.
-    if (!runtime.builder.isEnabled(level, type)) {
+    if (!runtime.builder.isEnabled(level, this.namespace, type)) {
       if (this.mirrors(runtime, level)) {
         this.print(runtime, level, body, payload, undefined, null);
       }
@@ -435,7 +435,7 @@ export class OneLogger {
       return;
     }
 
-    const ships = runtime.builder.isEnabled(level);
+    const ships = runtime.builder.isEnabled(level, this.namespace);
 
     if (!ships && !this.mirrors(runtime, level)) {
       return;

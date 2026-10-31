@@ -46,6 +46,7 @@ import {
   type LogType,
   nowUnixNano,
 } from "../models/log-record";
+import { isObject } from "../utils/guards";
 import type { Identity } from "../utils/identity";
 import { currentUrl, type PlatformMetadata, stripUrlQuery } from "../utils/platform";
 import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
@@ -55,7 +56,7 @@ import type { ContextStore } from "./context";
 import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
-import { shouldSampleInput } from "./sampling";
+import { levelFor, shouldSampleInput } from "./sampling";
 
 /** Prefix of the error fields. An oversized error record keeps them. */
 const ERROR_ATTR_PREFIX = "error.";
@@ -157,13 +158,14 @@ export class RecordBuilder {
   }
 
   /**
-   * Checks if logging is on and the level is at or above minLevel.
-   * minLevel does not apply to an action or a metric.
+   * Checks if logging is on and the level is at or above the minimum level of the namespace.
+   * The minimum level does not apply to an action or a metric.
    * @param level Target log severity level.
-   * @param type Record type. Without it, the check applies minLevel.
+   * @param namespace Logger namespace. `minLevels` can set its level.
+   * @param type Record type. Without it, the check applies the minimum level.
    * @returns True if the library builds a record of this level and type.
    */
-  isEnabled(level: LogLevel, type?: LogType): boolean {
+  isEnabled(level: LogLevel, namespace: string, type?: LogType): boolean {
     const { config } = this.deps;
     if (!config.enabled) {
       return false;
@@ -173,8 +175,9 @@ export class RecordBuilder {
       return true;
     }
 
-    // A remote rule can lower minLevel during an incident.
-    const minLevel = this.deps.remote.sampling?.minLevel() ?? config.minLevel;
+    // A remote rule can lower the level during an incident.
+    const minLevel =
+      this.deps.remote.sampling?.minLevelFor(namespace) ?? levelFor(namespace, config);
 
     return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel];
   }
@@ -187,7 +190,7 @@ export class RecordBuilder {
   build(input: BuildInput): BuildResult {
     const { config, diagnostics, tracing, journey, sequence, limits, remote } = this.deps;
 
-    if (!this.isEnabled(input.level, input.type)) {
+    if (!this.isEnabled(input.level, input.namespace, input.type)) {
       diagnostics.count("record.dropped_by_level");
       return { record: null, dropped: "level" };
     }
@@ -223,13 +226,16 @@ export class RecordBuilder {
     let bytes = 0;
     try {
       const fromContext = sanitizeWithSize(this.deps.context.getAll(), limits, diagnostics);
+      const fromProvider = sanitizeWithSize(this.provided(), limits, diagnostics);
       const fromScope = sanitizeWithSize(input.scoped ?? {}, limits, diagnostics);
       const fromPayload = sanitizeWithSize(input.payload ?? {}, limits, diagnostics);
-      bytes = fromContext.bytes + fromScope.bytes + fromPayload.bytes;
+      bytes = fromContext.bytes + fromProvider.bytes + fromScope.bytes + fromPayload.bytes;
 
-      // Merge in increasing precedence. Scope overrides context. Payload overrides scope.
+      // Merge in increasing precedence. The provider overrides the context. Scope overrides the
+      // provider. Payload overrides scope.
       attributes = {
         ...asAttributes(fromContext.value),
+        ...asAttributes(fromProvider.value),
         ...asAttributes(fromScope.value),
         ...asAttributes(fromPayload.value),
       };
@@ -393,6 +399,42 @@ export class RecordBuilder {
     }
 
     return { record };
+  }
+
+  /**
+   * Calls the contextProvider of the config. A provider that throws or gives a value that is not
+   * an object adds nothing. The record is still built. undefined means no attributes.
+   * @returns The attributes from the provider, or an empty object.
+   */
+  private provided(): unknown {
+    const provider = this.deps.config.contextProvider;
+    if (!provider) {
+      return {};
+    }
+
+    const { diagnostics } = this.deps;
+    const value = diagnostics.guard(
+      "handler.threw",
+      "The contextProvider threw an error. The record has no attributes from it.",
+      () => {
+        const given: unknown = provider();
+        if (given === undefined) {
+          return {};
+        }
+
+        // A promise is an object. Its fields are not attributes.
+        return isObject(given) && typeof given.then !== "function" ? given : null;
+      },
+    );
+
+    if (value === null) {
+      diagnostics.report(
+        "config.invalid",
+        "contextProvider must return an object of attributes. The library ignores the value.",
+      );
+    }
+
+    return value ?? {};
   }
 
   /**

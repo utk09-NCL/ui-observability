@@ -128,6 +128,32 @@ describe("start", () => {
     expect(engine.start("checkout", { id: "from-upstream" }).id).toBe("from-upstream");
   });
 
+  it("keeps an id of 64 characters, which still fits in a journey token", () => {
+    const { engine } = makeEngine();
+    const id = "a".repeat(64);
+    engine.start("x".repeat(64), { id });
+
+    expect(engine.current()?.id).toBe(id);
+    expect(engine.getToken()).toBeDefined();
+  });
+
+  it("reports an id that is empty, too long or not a string, and makes a new id", () => {
+    const { engine, handler } = makeEngine();
+    const ids = ["", "a".repeat(65), 42 as unknown as string];
+
+    const started = ids.map((id) => engine.start("checkout", { id }).id);
+
+    expect(started.every((id) => typeof id === "string" && id.length > 0 && id.length <= 64)).toBe(
+      true,
+    );
+    expect(started).not.toContain("");
+    expect(handler.mock.calls.map(([event]) => (event as { code: string }).code)).toEqual([
+      "config.invalid",
+      "config.invalid",
+      "config.invalid",
+    ]);
+  });
+
   it("replaces the previous journey rather than nesting inside it", () => {
     const { engine } = makeEngine();
     engine.start("checkout");
@@ -269,10 +295,16 @@ describe("getToken", () => {
   });
 
   it("refuses to issue a token past the size cap", () => {
-    // This check is a limit on the query-string budget. It is not input validation. Three fields
-    // and a truncated name cannot reach the limit. A token that reaches it has an id from a caller.
+    // This check is a limit on the query-string budget. It is not input validation. startJourney()
+    // limits its id, but a journey from a bus peer has no length check on its id.
     const { diagnostics, engine } = makeEngine();
-    engine.start("checkout", { id: "x".repeat(300) });
+    engine.applyRemote({
+      id: "x".repeat(300),
+      name: "checkout",
+      startedAt: Date.now(),
+      parentId: undefined,
+      ownerContextId: "ctx-2",
+    });
 
     expect(engine.getToken()).toBeUndefined();
     expect(diagnostics.snapshot()["journey.token_too_large"]).toBe(1);

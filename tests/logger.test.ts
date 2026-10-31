@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type { LogRecord } from "../src/models/log-record";
 import {
+  addBreadcrumb,
   configure,
   fatal,
   getDiagnosticCounters,
@@ -293,5 +294,57 @@ describe("breadcrumbs", () => {
 
     const crumbs = records[1].attributes.breadcrumbs as { message: string }[];
     expect(crumbs.at(-1)?.message).toBe("card #");
+  });
+
+  it("carry a custom breadcrumb with a copy of its data", () => {
+    const records = capture();
+    const data = { step: 2, card: { last4: "4242" } };
+
+    addBreadcrumb("opened the order ticket", data);
+    data.step = 3;
+    getLogger("trading").error("failed", new Error("x"));
+
+    const crumbs = records[0].attributes.breadcrumbs as Record<string, unknown>[];
+    expect(crumbs.at(-1)).toMatchObject({
+      category: "custom",
+      message: "opened the order ticket",
+      data: { step: 2, card: { last4: "4242" } },
+    });
+  });
+
+  it("carry a custom breadcrumb with no data key when the call has no data", () => {
+    const records = capture();
+
+    addBreadcrumb("route changed");
+    getLogger("trading").error("failed", new Error("x"));
+
+    const crumb = (records[0].attributes.breadcrumbs as Record<string, unknown>[]).at(-1);
+    expect(crumb).toMatchObject({ category: "custom", message: "route changed" });
+    expect(crumb).not.toHaveProperty("data");
+  });
+
+  it("wrap data that is not an object, and cut a long message", () => {
+    const records = capture({ limits: { maxBodyChars: 256 } });
+
+    addBreadcrumb("x".repeat(300), "plain" as unknown as Record<string, unknown>);
+    getLogger("trading").error("failed", new Error("x"));
+
+    const crumb = (records[0].attributes.breadcrumbs as Record<string, unknown>[]).at(-1);
+    expect(crumb?.data).toEqual({ value: "plain" });
+    expect(crumb?.message).toBe(`${"x".repeat(256)}… [truncated 44 chars]`);
+  });
+
+  it("report a message that throws, and do not throw into the app", () => {
+    capture();
+    const hostile = {
+      toString: () => {
+        throw new Error("no string");
+      },
+    };
+
+    expect(() => {
+      addBreadcrumb(hostile as unknown as string);
+    }).not.toThrow();
+    expect(getDiagnosticCounters()["record.sanitize_failed"]).toBe(1);
   });
 });

@@ -85,6 +85,32 @@ function readRates(value: unknown): Record<string, number> {
 }
 
 /**
+ * Reads the level for each namespace prefix.
+ * @param value Value of `minLevels`.
+ * @returns The levels.
+ * @throws RuleError when a level is not valid.
+ */
+function readMinLevels(value: unknown): Record<string, LogLevel> {
+  const rule = `minLevels must be an object with at most ${String(REMOTE_SAMPLING_MAX_RATES)} level names.`;
+
+  if (!isObject(value)) {
+    throw new RuleError(rule);
+  }
+
+  const entries = Object.entries(value);
+  const valid = entries.every(
+    ([, level]) => typeof level === "string" && Object.hasOwn(LEVEL_ORDER, level),
+  );
+
+  if (entries.length > REMOTE_SAMPLING_MAX_RATES || !valid) {
+    throw new RuleError(rule);
+  }
+
+  // fromEntries makes own properties. A "__proto__" key then cannot change the prototype.
+  return Object.fromEntries(entries) as Record<string, LogLevel>;
+}
+
+/**
  * Validates the rules. Sampling applies `remoteMaxRate` when it reads them.
  * @param value Parsed header value.
  * @param maxRate Highest rate that a remote rule can set.
@@ -127,6 +153,10 @@ function readRules(value: unknown): RemoteUpdate {
 
   if (minLevel !== undefined) {
     rules.minLevel = minLevel as LogLevel;
+  }
+
+  if (value.minLevels !== undefined) {
+    rules.minLevels = readMinLevels(value.minLevels);
   }
 
   return { rules, ttlMs };

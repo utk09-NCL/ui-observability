@@ -85,6 +85,21 @@ describe("parseRemoteRules", () => {
     expect(update?.rules).toEqual({ defaultRate: 1, rates: { a: 0.9 } });
   });
 
+  it("reads a level for each namespace prefix", () => {
+    const { diagnostics } = reporter();
+
+    const update = parseRemoteRules(
+      '{"v":1,"ttlMs":1000,"minLevels":{"trading.ticks":"DEBUG","__proto__":"TRACE"}}',
+      diagnostics,
+    );
+
+    expect(Object.entries(update?.rules.minLevels ?? {})).toEqual([
+      ["trading.ticks", "DEBUG"],
+      ["__proto__", "TRACE"],
+    ]);
+    expect(Object.getPrototypeOf(update?.rules.minLevels)).toBe(Object.prototype);
+  });
+
   it("keeps a __proto__ key as an own rate", () => {
     const { diagnostics } = reporter();
 
@@ -107,6 +122,21 @@ describe("parseRemoteRules", () => {
     [{ v: 1, ttlMs: 1000, minLevel: "LOUD" }, "minLevel must be a level name"],
     [{ v: 1, ttlMs: 1000, minLevel: "toString" }, "minLevel must be a level name"],
     [{ v: 1, ttlMs: 1000, minLevel: 3 }, "minLevel must be a level name"],
+    [{ v: 1, ttlMs: 1000, minLevels: "DEBUG" }, "minLevels must be an object"],
+    [{ v: 1, ttlMs: 1000, minLevels: { trading: "LOUD" } }, "minLevels must be an object"],
+    [
+      {
+        v: 1,
+        ttlMs: 1000,
+        minLevels: Object.fromEntries(
+          Array.from({ length: REMOTE_SAMPLING_MAX_RATES + 1 }, (_unused, i) => [
+            `ns${String(i)}`,
+            "DEBUG",
+          ]),
+        ),
+      },
+      "minLevels must be an object",
+    ],
     [{ v: 1, ttlMs: 1000, rates: [] }, "rates must be an object"],
     [{ v: 1, ttlMs: 1000, rates: { a: "1" } }, "rates must be an object"],
     [
@@ -167,7 +197,7 @@ describe("RemoteSampling", () => {
 
     expect(sut.current()).toBeNull();
     expect(sut.wire()).toBeNull();
-    expect(sut.minLevel()).toBe("INFO");
+    expect(sut.minLevelFor("grid")).toBe("INFO");
   });
 
   it("keeps the rules for their TTL, and gives the remaining TTL to a forwarder", () => {
@@ -222,9 +252,29 @@ describe("RemoteSampling", () => {
     const { sut } = overlay();
 
     sut.apply({ rules: { rates: {}, minLevel: "DEBUG" }, ttlMs: 60_000 });
-    expect(sut.minLevel()).toBe("DEBUG");
+    expect(sut.minLevelFor("grid")).toBe("DEBUG");
 
     sut.apply({ rules: { rates: {}, minLevel: "ERROR" }, ttlMs: 60_000 });
-    expect(sut.minLevel()).toBe("INFO");
+    expect(sut.minLevelFor("grid")).toBe("INFO");
+  });
+
+  it("uses the longest remote prefix over the remote minLevel, and only lowers the config level", () => {
+    const { sut, config } = overlay();
+    config.minLevels = { trading: "WARN" };
+
+    sut.apply({
+      rules: {
+        rates: {},
+        minLevel: "INFO",
+        minLevels: { "trading.ticks": "DEBUG", trading: "ERROR" },
+      },
+      ttlMs: 60_000,
+    });
+
+    // The remote prefix lowers WARN to DEBUG.
+    expect(sut.minLevelFor("trading.ticks.fx")).toBe("DEBUG");
+    // The remote ERROR does not raise the config level WARN.
+    expect(sut.minLevelFor("trading.orders")).toBe("WARN");
+    expect(sut.minLevelFor("pricing")).toBe("INFO");
   });
 });

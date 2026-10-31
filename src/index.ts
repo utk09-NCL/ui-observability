@@ -267,6 +267,15 @@ export function timeAsync<T>(
 }
 
 /**
+ * Adds a breadcrumb to the trail. The next error record carries the trail.
+ * @param message Description of the event.
+ * @param data Optional metadata. The library copies it now.
+ */
+export function addBreadcrumb(message: string, data?: Record<string, unknown>): void {
+  requireRuntime().addBreadcrumb(message, data);
+}
+
+/**
  * Sets a key-value pair on the ambient context. All later records include it.
  * @param key Attribute key.
  * @param value Attribute value.
@@ -294,10 +303,11 @@ export function removeContext(key: string): void {
 /**
  * Starts a new journey correlation context.
  * @param name Journey workflow identifier.
- * @param options Configuration options including parent linking.
+ * @param options `parent` links the active journey as the parent. `id` sets the journey id, a
+ * string of 1 to 64 characters. Without it, the library makes an id.
  * @returns Started Journey instance.
  */
-export function startJourney(name: string, options?: { parent?: boolean }): Journey {
+export function startJourney(name: string, options?: { parent?: boolean; id?: string }): Journey {
   return requireRuntime().journey.start(name, options);
 }
 

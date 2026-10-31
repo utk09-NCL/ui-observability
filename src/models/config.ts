@@ -544,6 +544,13 @@ export interface ObservabilityConfig {
    * @default "INFO"
    */
   minLevel?: LogLevel;
+  /**
+   * Minimum level for each namespace prefix. The longest matching prefix wins. For example,
+   * `{ "trading.ticks": "DEBUG" }` logs the DEBUG records of `trading.ticks` and of its child
+   * namespaces. A namespace with no match uses `minLevel`. A new map replaces the map in force.
+   * @default {}
+   */
+  minLevels?: Record<string, LogLevel>;
 
   /**
    * Set "gzip" to compress a payload that is larger than the compression threshold.
@@ -641,6 +648,15 @@ export interface ObservabilityConfig {
   otelLoader?: OtelLoader;
 
   /**
+   * Gives attributes for each record that the library builds. Its values override `setContext()`
+   * values. The logger scope and the call payload override its values. The library calls it for
+   * each record that sampling keeps. Keep it fast and synchronous. A provider that throws, or
+   * that returns a value that is not an object, adds nothing to the record.
+   * @returns The attributes, or undefined for none.
+   */
+  contextProvider?: () => Record<string, unknown> | undefined;
+
+  /**
    * Rewrites or drops a record before the library sends it. If the hook throws or returns a
    * value that is not a record, the library drops the record.
    * @param record The record that the library is about to send.
@@ -681,6 +697,8 @@ export interface ResolvedConfig {
   enabled: boolean;
   /** Minimum level that the library logs. */
   minLevel: LogLevel;
+  /** Minimum level for each namespace prefix. */
+  minLevels: Record<string, LogLevel>;
   /** "gzip" compresses a payload that is larger than the compression threshold. */
   compression: "gzip" | "none";
   /** The library passes this value to `fetch`. */
@@ -736,6 +754,8 @@ export interface ResolvedConfig {
   transportOnExit?: ExitTransport;
   /** Supplies the `@opentelemetry/api` module in place of importing it. */
   otelLoader?: OtelLoader;
+  /** Gives attributes for each record that the library builds. */
+  contextProvider?: ObservabilityConfig["contextProvider"];
   /**
    * Rewrites or drops a record before the library sends it.
    * @param record The record that the library is about to send.

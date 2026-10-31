@@ -30,6 +30,7 @@ import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { PruneResult } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
+import { isObject } from "../utils/guards";
 import {
   BROWSER_STORES,
   type Identity,
@@ -41,9 +42,10 @@ import {
   SessionTouch,
 } from "../utils/identity";
 import { detectPlatform, type PlatformMetadata } from "../utils/platform";
+import { sanitize, truncate } from "../utils/sanitize";
 import { Sequence } from "../utils/sequence";
 import { TraceEngine } from "../utils/tracing";
-import { BreadcrumbBuffer } from "./breadcrumbs";
+import { type Breadcrumb, BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
 import { Diagnostics } from "./diagnostics";
@@ -323,6 +325,36 @@ export class ObservabilityRuntime {
         this.emitPoint(name, attributes, fields);
       },
       this.diagnostics,
+    );
+  }
+
+  /**
+   * Adds a breadcrumb from app code. It copies the data now. A later change of the object of the
+   * app then does not change the trail.
+   * @param message Description of the event. A JavaScript caller can pass a value that is not a
+   * string. The library converts it.
+   * @param data Optional metadata.
+   */
+  addBreadcrumb(message: unknown, data?: Record<string, unknown>): void {
+    // A message with a toString() that throws, or a data getter that throws, must not throw
+    // into the call of the app.
+    this.diagnostics.guard(
+      "record.sanitize_failed",
+      "The library could not add the breadcrumb.",
+      () => {
+        const crumb: Breadcrumb = {
+          t: Date.now(),
+          category: "custom",
+          message: truncate(String(message), this.limits.maxBodyChars),
+        };
+
+        if (data !== undefined) {
+          const clean = sanitize(data, this.limits, this.diagnostics);
+          crumb.data = isObject(clean) ? clean : { value: clean };
+        }
+
+        this.breadcrumbs.push(crumb);
+      },
     );
   }
 

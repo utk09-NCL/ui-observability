@@ -19,7 +19,6 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost:5191", // microfrontend host
   "http://localhost:5192", // microfrontend remote, blotter
   "http://localhost:5193", // microfrontend remote, ticket
-  "http://localhost:5194", // openfin
 ]);
 
 let forcedStatus = 0;

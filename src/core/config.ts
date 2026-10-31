@@ -361,6 +361,48 @@ function resolveLevel(
 }
 
 /**
+ * Reads the minLevels option. It keeps each valid prefix and reports each other entry. A new map
+ * replaces the map in force.
+ * @param value Value that the consumer passed.
+ * @param fallback Levels in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The level for each namespace prefix.
+ */
+function resolveMinLevels(
+  value: unknown,
+  fallback: Record<string, LogLevel>,
+  diagnostics: Diagnostics,
+): Record<string, LogLevel> {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (!isObject(value)) {
+    reportInvalid(
+      diagnostics,
+      "minLevels",
+      "an object of level names",
+      value,
+      "the value in force",
+    );
+    return fallback;
+  }
+
+  const levels: [string, LogLevel][] = [];
+  for (const [prefix, raw] of Object.entries(value)) {
+    const level = toLevel(raw);
+    if (prefix !== "" && level !== undefined) {
+      levels.push([prefix, level]);
+    } else {
+      reportInvalid(diagnostics, `minLevels["${prefix}"]`, LEVEL_EXPECTED, raw, "minLevel for it");
+    }
+  }
+
+  // fromEntries makes own properties. A "__proto__" key then cannot change the prototype.
+  return Object.fromEntries(levels);
+}
+
+/**
  * Reads a list option. It keeps each accepted entry and reports each other entry.
  * @param key Config key.
  * @param value Value that the consumer passed.
@@ -953,6 +995,7 @@ export function resolveConfig(
     // minLevel drops each record with no message.
     enabled: resolveBoolean("enabled", input.enabled, base.enabled, diagnostics),
     minLevel: resolveLevel("minLevel", input.minLevel, base.minLevel, diagnostics),
+    minLevels: resolveMinLevels(input.minLevels, base.minLevels, diagnostics),
     compression: resolveChoice(
       "compression",
       input.compression,
@@ -1018,6 +1061,14 @@ export function resolveConfig(
       "onDrop must be a function. The library ignores the value.",
     );
     merged.onDrop = base.onDrop;
+  }
+
+  if (merged.contextProvider !== undefined && typeof merged.contextProvider !== "function") {
+    diagnostics.report(
+      "config.invalid",
+      "contextProvider must be a function. The library ignores the value.",
+    );
+    merged.contextProvider = base.contextProvider;
   }
 
   if (merged.transportOnExit !== undefined && typeof merged.transportOnExit !== "function") {

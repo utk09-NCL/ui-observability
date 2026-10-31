@@ -7,6 +7,7 @@
 import { LEVEL_ORDER, REMOTE_SAMPLING_VERSION } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LogLevel } from "../models/log-record";
+import { levelFor, longestPrefix } from "./sampling";
 
 /** Sampling rules from the ingest server, after validation. */
 export interface RemoteRules {
@@ -16,6 +17,8 @@ export interface RemoteRules {
   rates: Record<string, number>;
   /** Lowest level that the library sends. It can only lower `minLevel`. */
   minLevel?: LogLevel;
+  /** Lowest level for each namespace prefix. It can only lower the level of the config. */
+  minLevels?: Record<string, LogLevel>;
 }
 
 /** Rules and their TTL, after validation. */
@@ -95,14 +98,17 @@ export class RemoteSampling {
   }
 
   /**
-   * Returns the lowest level that the library sends.
-   * @returns The remote level if it is lower than `minLevel`. If not, `minLevel`.
+   * Returns the lowest level that the library sends for a namespace. A remote prefix level wins
+   * over the remote `minLevel`. A remote level applies only when it is lower than the config level.
+   * @param namespace Target application namespace.
+   * @returns The lower of the remote level and the config level of the namespace.
    */
-  minLevel(): LogLevel {
-    const { minLevel } = this.config;
-    const remote = this.current()?.minLevel;
+  minLevelFor(namespace: string): LogLevel {
+    const local = levelFor(namespace, this.config);
+    const rules = this.current();
+    const remote = longestPrefix(namespace, rules?.minLevels ?? {})?.value ?? rules?.minLevel;
 
-    return remote !== undefined && LEVEL_ORDER[remote] < LEVEL_ORDER[minLevel] ? remote : minLevel;
+    return remote !== undefined && LEVEL_ORDER[remote] < LEVEL_ORDER[local] ? remote : local;
   }
 
   /**

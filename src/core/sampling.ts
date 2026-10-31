@@ -52,33 +52,47 @@ function readAttr(record: LogRecord, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-/** Rate of the longest prefix that matches a namespace. */
-interface PrefixMatch {
-  /** Sampling rate of the prefix. */
-  rate: number;
+/** Value of the longest prefix that matches a namespace. */
+interface PrefixMatch<T> {
+  /** Value of the prefix, for example a rate or a level. */
+  value: T;
   /** Length of the prefix. */
   length: number;
 }
 
 /**
- * Finds the longest prefix in a rate map that matches a namespace.
+ * Finds the longest prefix in a map that matches a namespace.
  * For example, trading.ticks overrides trading.
  * @param namespace Target application namespace.
- * @param rates Rate for each namespace prefix.
+ * @param values Value for each namespace prefix.
  * @returns The match, or undefined if no prefix matches.
  */
-function longestPrefix(namespace: string, rates: Record<string, number>): PrefixMatch | undefined {
-  let best: PrefixMatch | undefined;
+export function longestPrefix<T>(
+  namespace: string,
+  values: Record<string, T>,
+): PrefixMatch<T> | undefined {
+  let best: PrefixMatch<T> | undefined;
 
-  for (const [prefix, rate] of Object.entries(rates)) {
+  for (const [prefix, value] of Object.entries(values)) {
     const matches = namespace === prefix || namespace.startsWith(`${prefix}.`);
 
     if (matches && prefix.length > (best?.length ?? -1)) {
-      best = { rate, length: prefix.length };
+      best = { value, length: prefix.length };
     }
   }
 
   return best;
+}
+
+/**
+ * Finds the minimum level of a namespace in the config. The longest matching prefix of
+ * `minLevels` wins. A namespace with no match uses `minLevel`.
+ * @param namespace Target application namespace.
+ * @param config Active configuration instance.
+ * @returns The minimum level of the namespace.
+ */
+export function levelFor(namespace: string, config: ResolvedConfig): LogLevel {
+  return longestPrefix(namespace, config.minLevels)?.value ?? config.minLevel;
 }
 
 /**
@@ -97,11 +111,11 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
   // Cap a remote rate when sampling reads it. A configure() that lowers the cap then applies
   // immediately.
   if (fromRemote && fromRemote.length >= (local?.length ?? -1)) {
-    return Math.min(fromRemote.rate, remoteMaxRate);
+    return Math.min(fromRemote.value, remoteMaxRate);
   }
 
   if (local) {
-    return local.rate;
+    return local.value;
   }
 
   return remote?.defaultRate === undefined
@@ -149,9 +163,10 @@ export function shouldSampleInput(
 
   let rate = rateFor(input.namespace, config, remote);
 
-  // A remote minLevel adds the records below minLevel. Cap them too, or they ship at the config rate.
-  // minLevel does not apply to an action or a metric. Do not cap them.
-  const belowMinLevel = LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[config.minLevel];
+  // A remote level adds the records below the config level of the namespace. Cap them too, or they
+  // ship at the config rate. The level does not apply to an action or a metric. Do not cap them.
+  const configLevel = levelFor(input.namespace, config);
+  const belowMinLevel = LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[configLevel];
   if (remote && belowMinLevel && !LEVEL_BYPASS_TYPES.includes(input.type as LogType)) {
     rate = Math.min(rate, config.sampling.remoteMaxRate);
   }

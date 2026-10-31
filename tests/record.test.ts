@@ -83,6 +83,95 @@ const built = (builder: RecordBuilder, overrides: Partial<BuildInput> = {}): Log
   return record!;
 };
 
+describe("minLevels", () => {
+  it("applies the level of the longest matching prefix, and minLevel to the rest", () => {
+    const { builder } = makeBuilder({
+      minLevel: "WARN",
+      minLevels: { trading: "INFO", "trading.ticks": "DEBUG" },
+    });
+
+    expect(builder.isEnabled("DEBUG", "trading.ticks.fx")).toBe(true);
+    expect(builder.isEnabled("DEBUG", "trading.orders")).toBe(false);
+    expect(builder.isEnabled("INFO", "trading.orders")).toBe(true);
+    // A prefix matches only at a dot. tradingdesk is not a child of trading.
+    expect(builder.isEnabled("INFO", "tradingdesk")).toBe(false);
+    expect(built(builder, { namespace: "trading.ticks", level: "DEBUG" }).severityText).toBe(
+      "DEBUG",
+    );
+  });
+
+  it("lets a remote prefix lower the level of a namespace", () => {
+    const { builder, deps, config } = makeBuilder({ sampling: { remote: true } });
+    const sampling = new RemoteSampling(config);
+    deps.remote.sampling = sampling;
+
+    sampling.apply({ rules: { rates: {}, minLevels: { pricing: "TRACE" } }, ttlMs: 60_000 });
+
+    expect(builder.isEnabled("TRACE", "pricing.grid")).toBe(true);
+    expect(builder.isEnabled("DEBUG", "trading")).toBe(false);
+  });
+});
+
+describe("contextProvider", () => {
+  it("adds its attributes over the context and under the scope and the payload", () => {
+    const { builder, deps } = makeBuilder({
+      contextProvider: () => ({ route: "/blotter", a: "provider", b: "provider", c: "provider" }),
+    });
+    deps.context.set("a", "context");
+    deps.context.set("user", "u1");
+
+    const record = built(builder, { scoped: { b: "scope" }, payload: { c: "payload" } });
+
+    expect(record.attributes).toMatchObject({
+      user: "u1",
+      route: "/blotter",
+      a: "provider",
+      b: "scope",
+      c: "payload",
+    });
+  });
+
+  it("is not called for a record that sampling drops", () => {
+    const provider = vi.fn(() => ({ route: "/blotter" }));
+    const { builder } = makeBuilder({ contextProvider: provider, sampling: { defaultRate: 0 } });
+
+    builder.build(input);
+
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("adds nothing for undefined, and reports nothing", () => {
+    const { builder, diagnostics } = makeBuilder({ contextProvider: () => undefined });
+
+    expect(built(builder).attributes).not.toHaveProperty("route");
+    expect(diagnostics.snapshot()["config.invalid"]).toBeUndefined();
+  });
+
+  it("reports a provider that throws, and still builds the record", () => {
+    const { builder, diagnostics } = makeBuilder({
+      contextProvider: () => {
+        throw new Error("store gone");
+      },
+    });
+
+    expect(built(builder).body).toBe("hello");
+    expect(diagnostics.snapshot()["handler.threw"]).toBe(1);
+  });
+
+  it.each([
+    ["a string", "route"],
+    ["a promise", Promise.resolve({ route: "/blotter" })],
+    ["an array", ["route"]],
+  ])("reports %s, and adds nothing", (_name, value) => {
+    const { builder, diagnostics } = makeBuilder({
+      contextProvider: () => value as unknown as Record<string, unknown>,
+    });
+
+    expect(built(builder).attributes).not.toHaveProperty("route");
+    expect(diagnostics.snapshot()["config.invalid"]).toBe(1);
+  });
+});
+
 describe("the level gate", () => {
   it("drops a record below the configured minimum and counts the drop", () => {
     const { builder, diagnostics } = makeBuilder();
@@ -99,21 +188,21 @@ describe("the level gate", () => {
     // message.
     const { builder } = makeBuilder({ minLevel: "WARN" });
 
-    expect(builder.isEnabled("WARN")).toBe(true);
+    expect(builder.isEnabled("WARN", "test")).toBe(true);
     expect(built(builder, { level: "WARN" }).severityText).toBe("WARN");
   });
 
   it("builds nothing at all when logging is disabled, whatever the level", () => {
     const { builder } = makeBuilder({ enabled: false });
 
-    expect(builder.isEnabled("FATAL")).toBe(false);
+    expect(builder.isEnabled("FATAL", "test")).toBe(false);
     expect(builder.build({ ...input, level: "FATAL" }).record).toBeNull();
   });
 
   it("keeps an action and a metric below minLevel, and drops a log record", () => {
     const { builder } = makeBuilder({ minLevel: "ERROR" });
 
-    expect(builder.isEnabled("INFO", "action")).toBe(true);
+    expect(builder.isEnabled("INFO", "test", "action")).toBe(true);
     expect(built(builder, { type: "action" }).attributes["log.type"]).toBe("action");
     expect(built(builder, { type: "metric" }).attributes["log.type"]).toBe("metric");
     expect(builder.build({ ...input, type: "log" }).dropped).toBe("level");
@@ -142,7 +231,7 @@ describe("the level gate", () => {
 
     sampling.apply({ rules: { rates: { test: 1 }, minLevel: "DEBUG" }, ttlMs: 60_000 });
 
-    expect(builder.isEnabled("DEBUG")).toBe(true);
+    expect(builder.isEnabled("DEBUG", "test")).toBe(true);
     expect(built(builder, { level: "DEBUG" }).severityText).toBe("DEBUG");
   });
 

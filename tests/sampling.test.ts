@@ -208,6 +208,27 @@ describe("shouldSample with remote rules", () => {
     expect(shouldSample(record(), rates, { rates: {}, minLevel: "DEBUG" })).toBe(true);
   });
 
+  it("caps a record by the config level of its namespace, not by the global minLevel", () => {
+    // trading.ticks allows DEBUG in the config. A remote rule must not cap it. trading raises its
+    // level to WARN. An INFO record that a remote rule adds there gets the cap.
+    const rates = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        minLevel: "INFO",
+        minLevels: { "trading.ticks": "DEBUG", trading: "WARN" },
+        sampling: { remoteMaxRate: 0 },
+      },
+      new Diagnostics(vi.fn(), 0),
+    );
+    const remote = { rates: {}, minLevel: "DEBUG" as const };
+    const tick = record({ [ATTR_APP_NAMESPACE]: "trading.ticks" }, { severityText: "DEBUG" });
+    const order = record({ [ATTR_APP_NAMESPACE]: "trading.orders" });
+
+    expect(shouldSample(tick, rates, remote)).toBe(true);
+    expect(shouldSample(order, rates, remote)).toBe(false);
+  });
+
   it("does not cap an action or a metric below minLevel", () => {
     // minLevel does not apply to an action or a metric. A remote rule must not drop them.
     const rates = resolveConfig(
