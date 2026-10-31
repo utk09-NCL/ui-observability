@@ -56,7 +56,10 @@ export abstract class StatusTransport implements BatchTransport {
    * Epoch time in milliseconds when the server throttle ends, for each endpoint. A 429 from
    * metricsEndpoint must not stop the log batches.
    */
-  private readonly throttledUntil: Record<BatchKind, number> = { logs: 0, metrics: 0 };
+  private readonly throttledUntil: Record<BatchKind, number> = { logs: 0, metrics: 0, traces: 0 };
+
+  /** Epoch time in milliseconds when the server last accepted a batch, or null. */
+  private acceptedAt: number | null = null;
 
   /**
    * @param config Active configuration instance.
@@ -89,6 +92,14 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
+   * Returns the time when the server last accepted a batch.
+   * @returns Epoch time in milliseconds, or null before the first accepted batch.
+   */
+  lastSendAt(): number | null {
+    return this.acceptedAt;
+  }
+
+  /**
    * Serializes a batch with the configured serializer. A metrics batch gets the OTLP metrics
    * format. It reports a serializer that throws.
    * @param batch Batch to serialize.
@@ -116,6 +127,7 @@ export abstract class StatusTransport implements BatchTransport {
    */
   protected accept(kind: BatchKind, sampling: unknown): void {
     this.throttledUntil[kind] = 0;
+    this.acceptedAt = Date.now();
 
     // Trust only the answer to a batch that the library sent. A null header means no rules.
     if (this.config.sampling.remote && sampling !== undefined && sampling !== null) {

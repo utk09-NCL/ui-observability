@@ -14,7 +14,7 @@ export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
  * `event` is something that the application did. `metric` is a measurement.
  * `log` is a log call of the application. `system` is the output of this library.
  */
-export type LogType = "action" | "event" | "metric" | "log" | "system";
+export type LogType = "action" | "event" | "metric" | "log" | "system" | "span";
 
 /** Metric value type: level, running total, or distribution. */
 export type MetricType = "gauge" | "counter" | "histogram";

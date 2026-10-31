@@ -7,6 +7,7 @@ import { isErrorLike } from "../utils/error-like";
 import { isLibraryRequest, isTransportPending } from "../utils/library-request";
 import { patch } from "../utils/patch";
 import { stripUrlQuery } from "../utils/platform";
+import type { ClientSpan } from "../utils/tracing";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
 /** Signature of the global fetch function. */
@@ -71,6 +72,8 @@ interface XhrMeta {
   url: string;
   /** Performance timestamp at send. */
   startedAt: number;
+  /** Client span that the traceparent names. */
+  span?: ClientSpan;
 }
 
 /** XMLHttpRequest extended with internal telemetry tracking metadata. */
@@ -99,6 +102,8 @@ interface FetchPlan {
   input: RequestInfo | URL;
   /** Init to pass to the original fetch. */
   init: RequestInit | undefined;
+  /** Client span that the traceparent names. */
+  span?: ClientSpan;
 }
 
 /**
@@ -259,14 +264,8 @@ export class NetworkCapture implements Capture {
     let active = true;
     const prepare = (input: RequestInfo | URL, init: RequestInit | undefined) =>
       this.prepareFetch(input, init);
-    const record = (
-      method: string,
-      url: string,
-      status: number,
-      durationMs: number,
-      error: unknown,
-    ): void => {
-      this.record(method, url, status, durationMs, error);
+    const record = (plan: FetchPlan, status: number, durationMs: number, error: unknown): void => {
+      this.record(plan.method, plan.url, status, durationMs, error, plan.span);
     };
 
     const restore = patch(globalThis, "fetch", (original: FetchFn) => {
@@ -281,10 +280,10 @@ export class NetworkCapture implements Capture {
         const startedAt = performance.now();
         try {
           const response = await call(plan.input, plan.init);
-          record(plan.method, plan.url, response.status, performance.now() - startedAt, undefined);
+          record(plan, response.status, performance.now() - startedAt, undefined);
           return response;
         } catch (error) {
-          record(plan.method, plan.url, 0, performance.now() - startedAt, error);
+          record(plan, 0, performance.now() - startedAt, error);
           throw error;
         }
       };
@@ -333,7 +332,8 @@ export class NetworkCapture implements Capture {
     }
 
     try {
-      const injected = Object.entries(this.ctx.tracing.headers());
+      const trace = this.ctx.tracing.request();
+      const injected = Object.entries(trace.headers);
 
       if (input instanceof Request) {
         // Do not spread a non-empty init with a Request input. That runs the Request
@@ -351,6 +351,9 @@ export class NetworkCapture implements Capture {
         }
         plan.init = { ...init, headers };
       }
+
+      // Record the client span only for a request that carries its traceparent.
+      plan.span = trace.span;
     } catch (error) {
       // Send the request that the caller gave, without changes. A missing header is
       // better than a failed request.
@@ -378,8 +381,8 @@ export class NetworkCapture implements Capture {
     const ctx = this.ctx;
     const ignored = (url: string): boolean => this.ignored(url);
     const propagates = (url: string): boolean => this.propagates(url);
-    const record = (method: string, url: string, status: number, durationMs: number): void => {
-      this.record(method, url, status, durationMs, undefined);
+    const record = (meta: XhrMeta, status: number, durationMs: number): void => {
+      this.record(meta.method, meta.url, status, durationMs, undefined, meta.span);
     };
 
     const proto = xhrMethods();
@@ -420,12 +423,12 @@ export class NetworkCapture implements Capture {
 
                 meta.startedAt = performance.now();
                 this.addEventListener("loadend", () => {
-                  record(meta.method, meta.url, this.status, performance.now() - meta.startedAt);
+                  record(meta, this.status, performance.now() - meta.startedAt);
                 });
 
                 // setRequestHeader works only between open and send.
                 if (propagates(meta.url)) {
-                  addTraceHeaders(this, meta.url, ctx);
+                  meta.span = addTraceHeaders(this, meta.url, ctx);
                 }
               },
             );
@@ -448,6 +451,7 @@ export class NetworkCapture implements Capture {
    * @param status HTTP response status code, or 0 on failure.
    * @param durationMs Request duration in milliseconds.
    * @param error Caught error instance on failed requests.
+   * @param span Client span that the traceparent of the request names.
    */
   private record(
     method: string,
@@ -455,6 +459,7 @@ export class NetworkCapture implements Capture {
     status: number,
     durationMs: number,
     error: unknown,
+    span?: ClientSpan,
   ): void {
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
@@ -477,6 +482,25 @@ export class NetworkCapture implements Capture {
         () => {
           const attributes = durationAttributes(method, target, status, error);
           this.ctx.recordMetric(HTTP_DURATION, durationMs / MS_PER_SECOND, attributes);
+        },
+      );
+    }
+
+    if (span) {
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        `The library could not record the span of ${method} ${url}.`,
+        () => {
+          const endMs = Date.now();
+          this.ctx.recordSpan({
+            ...span,
+            name: method,
+            kind: "client",
+            startMs: endMs - durationMs,
+            endMs,
+            error: status === 0 || status >= 400,
+            attributes: { ...durationAttributes(method, target, status, error), "url.full": url },
+          });
         },
       );
     }
@@ -525,12 +549,19 @@ export class NetworkCapture implements Capture {
  * @param xhr Request between open and send.
  * @param url Request target URL, for the diagnostic.
  * @param ctx Capture context with tracing and diagnostics.
+ * @returns The client span that the traceparent names, or undefined.
  */
-function addTraceHeaders(xhr: XMLHttpRequest, url: string, ctx: CaptureContext): void {
+function addTraceHeaders(
+  xhr: XMLHttpRequest,
+  url: string,
+  ctx: CaptureContext,
+): ClientSpan | undefined {
   try {
-    for (const [key, value] of Object.entries(ctx.tracing.headers())) {
+    const trace = ctx.tracing.request();
+    for (const [key, value] of Object.entries(trace.headers)) {
       xhr.setRequestHeader(key, value);
     }
+    return trace.span;
   } catch (error) {
     ctx.diagnostics.report(
       "capture.header_failed",
@@ -538,5 +569,6 @@ function addTraceHeaders(xhr: XMLHttpRequest, url: string, ctx: CaptureContext):
       { url },
       error,
     );
+    return undefined;
   }
 }

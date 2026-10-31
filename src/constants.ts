@@ -545,10 +545,10 @@ export const FNV_PRIME = 0x01000193;
 export const UINT32_MAX = 0xffffffff;
 
 /**
- * Types that minLevel does not drop. An action is an audit fact and a metric is a measurement.
+ * Types that minLevel does not drop. An action is an audit fact. A metric and a span are measurements.
  * The remote rate cap for records below minLevel does not apply to them.
  */
-export const LEVEL_BYPASS_TYPES: readonly LogType[] = ["action", "metric"];
+export const LEVEL_BYPASS_TYPES: readonly LogType[] = ["action", "metric", "span"];
 
 // ----------------------------------
 // Pipeline
@@ -559,6 +559,9 @@ export const LOG_TYPE_METRIC: LogType = "metric";
 
 /** Record kind of an audit fact. Storage and the hold buffers drop it last. */
 export const LOG_TYPE_ACTION: LogType = "action";
+
+/** Record kind routed to the trace stream. */
+export const LOG_TYPE_SPAN: LogType = "span";
 
 // ----------------------------------
 // Bus
@@ -604,6 +607,9 @@ export const LONG_FRAME_THRESHOLD_MS = 100;
 
 /** Maximum long frames recorded in each storm window. A frozen tab cannot flood the pipeline. */
 export const LONG_FRAME_MAX_PER_WINDOW = 20;
+
+/** Maximum WebSocket events recorded in each storm window. A reconnect loop cannot flood the pipeline. */
+export const WEBSOCKET_MAX_PER_WINDOW = 20;
 
 /** Maximum character length of a console breadcrumb message. */
 export const CONSOLE_BREADCRUMB_MAX_CHARS = 200;
@@ -680,6 +686,18 @@ export const METRIC_KEYS = {
   max: "metric.max",
   bounds: "metric.bounds",
   buckets: "metric.bucket_counts",
+} as const;
+
+/** Namespace of the span records. */
+export const TRACE_NAMESPACE = "uiobs.traces";
+
+/** Attribute keys of the span fields of a span record. The traces serializer reads them. */
+export const SPAN_KEYS = {
+  kind: "span.kind",
+  parentId: "span.parent_id",
+  start: "span.start_time_unix_nano",
+  end: "span.end_time_unix_nano",
+  status: "span.status",
 } as const;
 
 // ----------------------------------
@@ -910,12 +928,14 @@ export const RECORD_LIMITS = {
 export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   endpoint: "",
   metricsEndpoint: "",
+  tracesEndpoint: "",
   serviceName: "",
   serviceVersion: "",
   environment: "",
   enabled: true,
   minLevel: "INFO",
   minLevels: {},
+  processors: [],
   compression: "gzip",
   credentials: "omit",
   storage: "auto",
@@ -953,6 +973,8 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     fullUrls: false,
     ignoreUrls: [],
     propagateTraceHeaderTo: [],
+    webSocket: false,
+    plugins: [],
   },
   console: { level: null, styles: CONSOLE_DEFAULT_STYLES },
 };

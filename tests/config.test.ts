@@ -4,6 +4,7 @@ import { applyResolvedConfig, resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { CONSOLE_DEFAULT_STYLES } from "../src/constants";
 import type { ConsoleStyles, ObservabilityConfig, SamplingOptions } from "../src/models/config";
+import type { LogRecord } from "../src/models/log-record";
 
 const ENDPOINT = "https://ingest.example/v1/logs";
 const OTHER_ENDPOINT = "https://ingest-two.example/v1/logs";
@@ -490,6 +491,88 @@ describe("resolveConfig", () => {
       expect(second.contextProvider).toBe(provider);
       expect(messages(events)).toEqual([
         "contextProvider must be a function. The library ignores the value.",
+      ]);
+    });
+  });
+
+  describe("processors", () => {
+    it("is empty by default, keeps each function and reports each other entry", () => {
+      const { events, diagnostics } = collect();
+      const processor = (record: LogRecord) => record;
+
+      expect(resolveConfig(valid(), diagnostics).processors).toEqual([]);
+
+      const resolved = resolveConfig(
+        { ...valid(), processors: [processor, "mask"] as never },
+        diagnostics,
+      );
+
+      expect(resolved.processors).toEqual([processor]);
+      expect(messages(events)).toEqual([
+        expect.stringContaining("processors must be a list of functions"),
+      ]);
+    });
+  });
+
+  describe("capture.plugins", () => {
+    it("is empty by default, keeps each plugin and reports each other entry", () => {
+      const { events, diagnostics } = collect();
+      const plugin = { name: "visibility", install: () => undefined, uninstall: () => undefined };
+
+      expect(resolveConfig(valid(), diagnostics).capture.plugins).toEqual([]);
+
+      const resolved = resolveConfig(
+        { ...valid(), capture: { plugins: [plugin, { ...plugin, name: "" }, "x"] as never } },
+        diagnostics,
+      );
+
+      expect(resolved.capture.plugins).toEqual([plugin]);
+      expect(messages(events)).toEqual([
+        expect.stringContaining("capture.plugins must be a list of objects"),
+        expect.stringContaining("capture.plugins must be a list of objects"),
+      ]);
+    });
+  });
+
+  describe("tracesEndpoint", () => {
+    const TRACES = "https://ingest.example/v1/traces";
+
+    it("is off by default, keeps an absolute URL and joins ignoreUrls", () => {
+      const { events, diagnostics } = collect();
+
+      expect(resolveConfig(valid(), diagnostics).tracesEndpoint).toBe("");
+
+      const resolved = resolveConfig({ ...valid(), tracesEndpoint: TRACES }, diagnostics);
+
+      expect(resolved.tracesEndpoint).toBe(TRACES);
+      expect(resolved.capture.ignoreUrls).toEqual([ENDPOINT, TRACES]);
+      expect(events).toEqual([]);
+
+      const second = resolveConfig({ tracesEndpoint: "" }, diagnostics, resolved);
+      expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
+    });
+
+    it("turns off with a serializer that has no traces format, and says so", () => {
+      const { events, diagnostics } = collect();
+
+      const resolved = resolveConfig(
+        { ...valid(), serializer: "ecs", tracesEndpoint: TRACES },
+        diagnostics,
+      );
+
+      expect(resolved.tracesEndpoint).toBe("");
+      expect(messages(events)).toEqual([
+        'tracesEndpoint needs serializer "otlp". The library sends no span.',
+      ]);
+    });
+
+    it("reports a tracesEndpoint with no endpoint and no transport", () => {
+      const { events, diagnostics } = collect();
+
+      resolveConfig({ ...valid(), endpoint: null, tracesEndpoint: TRACES }, diagnostics);
+
+      expect(messages(events)).toEqual([
+        "tracesEndpoint needs endpoint or transport. The library sends nothing to tracesEndpoint.",
       ]);
     });
   });

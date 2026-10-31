@@ -52,10 +52,66 @@ export interface TraceContext {
 /** Cause of a rotation of the ambient trace context. */
 export type RotateReason = "start" | "interaction" | "navigation" | "explicit" | "maxAge";
 
+/** Ambient trace that ended. Its root span covers it. */
+export interface EndedTrace {
+  /** Trace ID. */
+  traceId: string;
+  /** Span ID of the root span. */
+  spanId: string;
+  /** Cause of the start of the trace. */
+  reason: RotateReason;
+  /** Start time in epoch milliseconds. */
+  startedAt: number;
+  /** End time in epoch milliseconds. */
+  endedAt: number;
+}
+
+/** Client span that a traceparent header names. */
+export interface ClientSpan {
+  /** Trace ID. */
+  traceId: string;
+  /** Span ID of the client span. */
+  spanId: string;
+  /** Span ID of the root span of the trace. */
+  parentSpanId: string;
+}
+
+/** Headers of one request, and the client span that they name. */
+export interface RequestTrace {
+  /** Header map containing traceparent. */
+  headers: Record<string, string>;
+  /** Client span of the request. It is undefined when the library records no span for it. */
+  span?: ClientSpan;
+}
+
+/** Span decisions of the runtime. */
+export interface SpanHooks {
+  /**
+   * Tests if the library records spans.
+   * @returns True with a traces endpoint.
+   */
+  enabled(): boolean;
+  /**
+   * Tests if sampling keeps the spans of a trace.
+   * @param traceId Trace ID.
+   * @returns True if the library sends the spans of the trace.
+   */
+  keeps(traceId: string): boolean;
+  /**
+   * Receives an ambient trace that ended.
+   * @param ended The trace.
+   */
+  onEnd(ended: EndedTrace): void;
+}
+
 /** Internal trace context tracking creation timestamp for expiration. */
 interface AmbientTrace extends TraceContext {
   /** Creation timestamp in epoch milliseconds. */
   startedAt: number;
+  /** Cause of the start of the trace. */
+  reason: RotateReason;
+  /** True after the root span ended. It ends one time. */
+  ended: boolean;
 }
 
 /**
@@ -79,15 +135,32 @@ export function newSpanId(): string {
 /**
  * Creates a new AmbientTrace instance with the sampled trace flag set. It always sets
  * the flag. Sampling runs before the library builds the record.
+ * @param reason Cause of the start of the trace.
  * @returns Initialized AmbientTrace object.
  */
-function mintAmbient(): AmbientTrace {
+function mintAmbient(reason: RotateReason): AmbientTrace {
   return {
     traceId: newTraceId(),
     spanId: newSpanId(),
     traceFlags: TRACE_FLAGS_SAMPLED,
     startedAt: Date.now(),
+    reason,
+    ended: false,
   };
+}
+
+/**
+ * Formats a W3C traceparent value.
+ * @param traceId Trace ID.
+ * @param spanId Span ID of the caller.
+ * @param traceFlags Trace flags.
+ * @returns The traceparent value.
+ */
+function traceparent(traceId: string, spanId: string, traceFlags: number): string {
+  // Mask the trace flags to a 2-digit hex byte, as the W3C specification requires.
+  // trace-flags is a bitfield, not a boolean. A fixed 00 or 01 discards upstream flags.
+  const flags = (traceFlags & TRACE_FLAGS_MASK).toString(16).padStart(2, "0");
+  return `${TRACEPARENT_VERSION}-${traceId}-${spanId}-${flags}`;
 }
 
 /**
@@ -109,7 +182,7 @@ export class TraceEngine {
    * Active ambient trace context. The instance keeps this state, not the module. Two
    * runtimes in one document must not share a trace id.
    */
-  private ambient: AmbientTrace = mintAmbient();
+  private ambient: AmbientTrace = mintAmbient("start");
 
   /** The optional peer after it loads. It is undefined while it loads or when it is absent. */
   private otel: OtelApi | undefined;
@@ -119,11 +192,13 @@ export class TraceEngine {
    * @param maxAgeMs Maximum lifetime of an un-rotated ambient trace in milliseconds.
    * @param load Loader for the OpenTelemetry API. If it is not set, OTel is off.
    * Do not import the peer by name. The Vite dev server fails if the peer is not installed.
+   * @param spans Span decisions of the runtime. Without them, the library records no span.
    */
   constructor(
     private readonly diagnostics: Diagnostics,
     private readonly maxAgeMs = TRACE_MAX_AGE_MS,
     private readonly load?: OtelLoader,
+    private readonly spans?: SpanHooks,
   ) {}
 
   /**
@@ -153,11 +228,14 @@ export class TraceEngine {
    * @returns Active TraceContext.
    */
   resolve(): TraceContext {
-    const fromOtel = this.activeSpanContext();
-    if (fromOtel !== undefined) {
-      return fromOtel;
-    }
+    return this.activeSpanContext() ?? this.ambientContext();
+  }
 
+  /**
+   * Reads the ambient trace. It rotates a trace that is too old.
+   * @returns Ambient TraceContext.
+   */
+  private ambientContext(): TraceContext {
     // Rotate the ambient trace when its age exceeds maxAgeMs. The check runs on read,
     // not on a timer. A timer keeps this instance alive for the life of the document.
     if (Date.now() - this.ambient.startedAt > this.maxAgeMs) {
@@ -198,13 +276,35 @@ export class TraceEngine {
   }
 
   /**
-   * Rotates the ambient trace context to mark the start of a new logical operation.
-   * @param _reason Event reason triggering the rotation.
+   * Rotates the ambient trace context to mark the start of a new logical operation. It ends the
+   * root span of the old trace.
+   * @param reason Event reason triggering the rotation.
    * @returns Newly created TraceContext.
    */
-  rotate(_reason: RotateReason): TraceContext {
-    this.ambient = mintAmbient();
+  rotate(reason: RotateReason): TraceContext {
+    this.end();
+    this.ambient = mintAmbient(reason);
     return toTraceContext(this.ambient);
+  }
+
+  /**
+   * Ends the root span of the ambient trace one time. Later records can still use the trace.
+   * The exit flush calls it. A closing document has no later rotation.
+   */
+  end(): void {
+    const ambient = this.ambient;
+    if (ambient.ended) {
+      return;
+    }
+
+    ambient.ended = true;
+    this.spans?.onEnd({
+      traceId: ambient.traceId,
+      spanId: ambient.spanId,
+      reason: ambient.reason,
+      startedAt: ambient.startedAt,
+      endedAt: Date.now(),
+    });
   }
 
   /**
@@ -213,6 +313,24 @@ export class TraceEngine {
    * @returns Header map containing traceparent.
    */
   headers(): Record<string, string> {
+    return this.trace(false).headers;
+  }
+
+  /**
+   * Generates the headers of one request of the network capture. With spans on, the traceparent
+   * names a new client span of the ambient trace.
+   * @returns The headers, and the client span that the library records.
+   */
+  request(): RequestTrace {
+    return this.trace(true);
+  }
+
+  /**
+   * Generates the trace headers.
+   * @param client True to name a new client span in the traceparent.
+   * @returns The headers, and the client span that the library records.
+   */
+  private trace(client: boolean): RequestTrace {
     const carrier: Record<string, string> = {};
     const otel = this.otel;
     if (otel) {
@@ -224,13 +342,31 @@ export class TraceEngine {
         },
       );
     }
-    if (!carrier[TRACEPARENT_HEADER]) {
-      const ctx = this.resolve();
-      // Mask the trace flags to a 2-digit hex byte, as the W3C specification requires.
-      // trace-flags is a bitfield, not a boolean. A fixed 00 or 01 discards upstream flags.
-      const flags = (ctx.traceFlags & TRACE_FLAGS_MASK).toString(16).padStart(2, "0");
-      carrier[TRACEPARENT_HEADER] = `${TRACEPARENT_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
+    if (carrier[TRACEPARENT_HEADER]) {
+      return { headers: carrier };
     }
-    return carrier;
+
+    // The peer keeps its own spans. The library records no span for a trace of the peer.
+    const fromOtel = this.activeSpanContext();
+    const ctx = fromOtel ?? this.ambientContext();
+    const spans = fromOtel ? undefined : this.spans;
+
+    if (!spans?.enabled()) {
+      carrier[TRACEPARENT_HEADER] = traceparent(ctx.traceId, ctx.spanId, ctx.traceFlags);
+      return { headers: carrier };
+    }
+
+    // Clear the sampled flag of a trace that sampling drops. A downstream service then drops
+    // its spans too. The whole trace stays or goes.
+    const kept = spans.keeps(ctx.traceId);
+    const flags = kept ? ctx.traceFlags : ctx.traceFlags & ~TRACE_FLAGS_SAMPLED;
+    const spanId = client ? newSpanId() : ctx.spanId;
+    carrier[TRACEPARENT_HEADER] = traceparent(ctx.traceId, spanId, flags);
+
+    if (!client || !kept) {
+      return { headers: carrier };
+    }
+
+    return { headers: carrier, span: { traceId: ctx.traceId, spanId, parentSpanId: ctx.spanId } };
   }
 }

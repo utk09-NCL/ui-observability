@@ -4,19 +4,14 @@
 // logging primitives, and types.
 
 import type { WorkerLike } from "./bus/links";
-import { DEFAULT_METRIC_UNIT, METRIC_DEFAULT_BOUNDARIES } from "./constants";
 import type { Journey } from "./core/journey";
 import { OneLogger, type OneLoggerOptions } from "./core/logger";
+import { makeCounter, makeHistogram } from "./core/meter";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
 import type { MetricType } from "./models/log-record";
-import type {
-  Counter,
-  Histogram,
-  HistogramOptions,
-  InstrumentDef,
-  InstrumentOptions,
-} from "./models/metric";
+import type { DeliveryStats } from "./models/stats";
+import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./models/metric";
 
 export { OneLogger };
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
@@ -40,7 +35,9 @@ export type {
   InstrumentOptions,
   MetricAttributes,
 } from "./models/metric";
+export type { CapturePlugin, PluginContext } from "./models/plugin";
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
+export type { DeliveryStats } from "./models/stats";
 export type { StorageAdapter } from "./models/storage";
 
 /**
@@ -204,18 +201,9 @@ export function logMetric(
  * @returns The counter.
  */
 export function counter(name: string, options: InstrumentOptions = {}): Counter {
-  const def: InstrumentDef = {
-    name,
-    kind: "counter",
-    unit: options.unit ?? DEFAULT_METRIC_UNIT,
-    boundaries: [],
-  };
-
-  return {
-    add: (value, attributes) => {
-      requireRuntime().recordMetric(def, value, attributes);
-    },
-  };
+  return makeCounter(name, options, (def, value, attributes) => {
+    requireRuntime().recordMetric(def, value, attributes);
+  });
 }
 
 /**
@@ -226,18 +214,9 @@ export function counter(name: string, options: InstrumentOptions = {}): Counter 
  * @returns The histogram.
  */
 export function histogram(name: string, options: HistogramOptions = {}): Histogram {
-  const def: InstrumentDef = {
-    name,
-    kind: "histogram",
-    unit: options.unit ?? DEFAULT_METRIC_UNIT,
-    boundaries: options.boundaries ?? METRIC_DEFAULT_BOUNDARIES,
-  };
-
-  return {
-    record: (value, attributes) => {
-      requireRuntime().recordMetric(def, value, attributes);
-    },
-  };
+  return makeHistogram(name, options, (def, value, attributes) => {
+    requireRuntime().recordMetric(def, value, attributes);
+  });
 }
 
 /**
@@ -377,6 +356,23 @@ export function flush(): Promise<void> {
  */
 export function getQueueDepth(): Promise<number> {
   return requireRuntime().queueDepth();
+}
+
+/**
+ * Reads the delivery state of this context.
+ * @returns Promise that resolves to the records that wait, the records in requests, the batches
+ * in storage and the time of the last accepted send. A forwarder reports only its own buffers.
+ */
+export function getStats(): Promise<DeliveryStats> {
+  return requireRuntime().stats();
+}
+
+/**
+ * Starts a new session in this tab, for example after a logout. It ends the active journey and
+ * starts a new trace. Other tabs read the new id at their next startup.
+ */
+export function newSession(): void {
+  requireRuntime().newSession();
 }
 
 /**

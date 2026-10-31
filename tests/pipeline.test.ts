@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ERROR_CEILING_MAX_PER_WINDOW } from "../src/constants";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import { LogPipeline, type StreamOptions } from "../src/core/pipeline";
+import { LogPipeline, type StreamName, type StreamOptions } from "../src/core/pipeline";
 import type { LogBatch } from "../src/models/batch";
 import type { LogRecord } from "../src/models/log-record";
 import type { StorageAdapter } from "../src/models/storage";
@@ -38,14 +38,15 @@ const metric = (over: Partial<LogRecord> = {}): LogRecord =>
   record({ attributes: { "log.type": "metric", "app.namespace": "trading" }, ...over });
 
 /** A real MemoryStorage, stubbed transport and retry, and a pipeline wired to all three. */
-const DEFAULT_STREAMS: Record<"logs" | "metrics", StreamOptions> = {
+const DEFAULT_STREAMS: Record<StreamName, StreamOptions> = {
   logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: BATCH_SIZE },
   metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+  traces: { flushIntervalMs: LOG_FLUSH_MS, batchSize: BATCH_SIZE },
 };
 
 const setup = (
   override?: StorageAdapter,
-  streams: Record<"logs" | "metrics", StreamOptions> = DEFAULT_STREAMS,
+  streams: Partial<Record<StreamName, StreamOptions>> = {},
 ) => {
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const diagnostics = new Diagnostics(handler, 0);
@@ -67,7 +68,7 @@ const setup = (
     storage,
     { nudge, storeFailed } as unknown as RetryEngine,
     diagnostics,
-    streams,
+    { ...DEFAULT_STREAMS, ...streams },
   );
 
   return { pipeline, send, throttledForMs, storage, nudge, storeFailed, diagnostics, handler };
@@ -389,6 +390,69 @@ describe("LogPipeline", () => {
 
     expect(send).toHaveBeenCalledOnce();
     expect(batch.records.map((one) => one.body)).toEqual(["buffered"]);
+    pipeline.destroy();
+  });
+
+  it("batches the span records in their own stream, and hands them to the exit flush", async () => {
+    const { pipeline, send } = setup();
+    const span = record({ attributes: { "log.type": "span" } });
+
+    pipeline.push(span);
+    pipeline.push(record());
+    pipeline.push(metric());
+
+    expect(pipeline.drainForExit().map((batch) => batch.records)).toEqual([
+      [
+        expect.objectContaining({
+          attributes: { "log.type": "metric", "app.namespace": "trading" },
+        }),
+      ],
+      [span],
+      [
+        expect.objectContaining({
+          attributes: { "log.type": "system", "app.namespace": "trading" },
+        }),
+      ],
+    ]);
+
+    pipeline.push(span);
+    pipeline.push(record());
+    await pipeline.flushPending();
+
+    expect(send.mock.calls.map(([batch]) => batch.records.length)).toEqual([1, 1]);
+    expect(send.mock.calls[0][0].records).toEqual([span]);
+    pipeline.destroy();
+  });
+
+  it("counts the buffered and queued records as pending, and the dispatched records as in flight", async () => {
+    // Three batches of 2 form. Two go in flight. The pipeline holds the third in the queue.
+    const { pipeline, send } = setup(undefined, {
+      logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
+      metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
+    });
+    let finish = (): void => undefined;
+    send.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    for (let i = 0; i < 6; i++) {
+      pipeline.push(record());
+    }
+    pipeline.push(metric());
+
+    expect(pipeline.counts()).toEqual({ pending: 7, inFlight: 0 });
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pipeline.counts()).toEqual({ pending: 3, inFlight: 4 });
+
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pipeline.counts()).toEqual({ pending: 1, inFlight: 4 });
     pipeline.destroy();
   });
 

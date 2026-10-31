@@ -12,12 +12,20 @@ import {
   ATTR_LOG_TYPE,
   ATTR_METRIC_OVERFLOW,
   ATTR_PAGE_URL,
+  DEFAULT_METRIC_UNIT,
   METRIC_DEFAULT_BOUNDARIES,
   METRIC_KEYS,
   METRIC_MAX_BOUNDARIES,
   METRIC_MAX_SERIES,
 } from "../constants";
-import type { InstrumentDef, MetricAttributes } from "../models/metric";
+import type {
+  Counter,
+  Histogram,
+  HistogramOptions,
+  InstrumentDef,
+  InstrumentOptions,
+  MetricAttributes,
+} from "../models/metric";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
@@ -148,6 +156,65 @@ function fieldsOf(def: InstrumentDef, series: Series, start: string): Record<str
     [METRIC_KEYS.max]: series.max,
     [METRIC_KEYS.bounds]: def.boundaries,
     [METRIC_KEYS.buckets]: series.buckets,
+  };
+}
+
+/** Adds a value to an instrument of the runtime. */
+export type RecordMetric = (
+  def: InstrumentDef,
+  value: number,
+  attributes?: MetricAttributes,
+) => void;
+
+/**
+ * Makes a counter handle.
+ * @param name Metric name.
+ * @param options Unit of the values.
+ * @param record Adds a value to the instrument.
+ * @returns The counter.
+ */
+export function makeCounter(
+  name: string,
+  options: InstrumentOptions,
+  record: RecordMetric,
+): Counter {
+  const def: InstrumentDef = {
+    name,
+    kind: "counter",
+    unit: options.unit ?? DEFAULT_METRIC_UNIT,
+    boundaries: [],
+  };
+
+  return {
+    add: (value, attributes) => {
+      record(def, value, attributes);
+    },
+  };
+}
+
+/**
+ * Makes a histogram handle.
+ * @param name Metric name.
+ * @param options Unit of the values and the bucket boundaries.
+ * @param record Adds a value to the instrument.
+ * @returns The histogram.
+ */
+export function makeHistogram(
+  name: string,
+  options: HistogramOptions,
+  record: RecordMetric,
+): Histogram {
+  const def: InstrumentDef = {
+    name,
+    kind: "histogram",
+    unit: options.unit ?? DEFAULT_METRIC_UNIT,
+    boundaries: options.boundaries ?? METRIC_DEFAULT_BOUNDARIES,
+  };
+
+  return {
+    record: (value, attributes) => {
+      record(def, value, attributes);
+    },
   };
 }
 

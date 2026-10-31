@@ -401,8 +401,8 @@ export class OneLogger {
 
     // Breadcrumbs stay in memory and have no delivery cost. A breadcrumb keeps the body
     // after redact. A record that sampling drops did not go through redact. It keeps its
-    // body, and redact sees it later inside the error record. A record that redact or
-    // the shape check drops adds no breadcrumb.
+    // body, and redact sees it later inside the error record. A record that a processor,
+    // redact or the shape check drops adds no breadcrumb.
     const crumb = record ? record.body : dropped === "sampling" ? body : undefined;
     if (type !== "metric" && crumb !== undefined) {
       runtime.breadcrumbs.push({
@@ -520,8 +520,8 @@ export class OneLogger {
       return;
     }
 
-    // A record that redact or the shape check dropped prints no line. Its text did not pass redact.
-    if (dropped === "redact" || dropped === "malformed") {
+    // A record that a hook or the shape check dropped prints no line. Its text did not pass redact.
+    if (dropped === "processor" || dropped === "redact" || dropped === "malformed") {
       return;
     }
 

@@ -82,6 +82,7 @@ function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
     tracing: new TraceEngine(diagnostics),
     once,
     recordMetric: vi.fn(),
+    recordSpan: vi.fn(),
   };
   events.length = 0;
 

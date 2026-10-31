@@ -514,6 +514,65 @@ describe("the redact hook", () => {
   });
 });
 
+describe("processors", () => {
+  it("run in list order before redact, and keep each change", () => {
+    const order: string[] = [];
+    const { builder } = makeBuilder(
+      {
+        processors: [
+          (record) => {
+            order.push("first");
+            record.attributes.first = true;
+            return record;
+          },
+          (record) => {
+            order.push("second");
+            return { ...record, attributes: { ...record.attributes, huge: "x".repeat(5000) } };
+          },
+        ],
+        redact: (record) => {
+          order.push("redact");
+          record.attributes.masked = record.attributes.first === true;
+          return record;
+        },
+      },
+      browser,
+      { ...RECORD_LIMITS, maxRecordBytes: 200 },
+    );
+
+    const record = built(builder);
+
+    expect(order).toEqual(["first", "second", "redact"]);
+    // The size of the record from the second processor applies after redact.
+    expect(record.attributes["uiobs.attributes_dropped"]).toBe(true);
+    expect(record.attributes.huge).toBeUndefined();
+  });
+
+  it("let a processor drop a record, and do not call redact", () => {
+    const redact = vi.fn((record: LogRecord) => record);
+    const { builder, diagnostics } = makeBuilder({ processors: [() => null], redact });
+
+    expect(builder.build(input)).toEqual({ record: null, dropped: "processor" });
+    expect(diagnostics.snapshot()["record.dropped_by_processor"]).toBe(1);
+    expect(redact).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "throws",
+      () => {
+        throw new Error("consumer bug");
+      },
+    ],
+    ["returns a value that is not a record", () => "masked" as unknown as LogRecord],
+  ])("drop the record when a processor %s", (_name, processor) => {
+    const { builder, diagnostics } = makeBuilder({ processors: [processor] });
+
+    expect(builder.build(input)).toEqual({ record: null, dropped: "processor" });
+    expect(diagnostics.snapshot()["record.dropped_by_processor"]).toBe(1);
+  });
+});
+
 describe("the size budget", () => {
   it("keeps the keys that make a record findable when oversized attributes are dropped", () => {
     // If the builder drops the journey here, the record with the most value for a search has no key

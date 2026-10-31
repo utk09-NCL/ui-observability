@@ -13,7 +13,7 @@ import type { LogBatch } from "../src/models/batch";
 import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
 import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
-import { TraceEngine } from "../src/utils/tracing";
+import { type SpanHooks, TraceEngine } from "../src/utils/tracing";
 
 /** A logger with a spy for each method. A test can read what the logger recorded. */
 interface SpyLogger {
@@ -29,14 +29,20 @@ const INGEST = "https://ingest.example/v1/logs";
 /**
  * Builds a capture context around a spy logger.
  * @param over Capture settings layered over errors and rejections on.
+ * @param spans Span decisions of the trace engine. Without them, spans are off.
  * @returns The context and the spy logger inside it.
  */
-function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
+function ctx(
+  over: Partial<ObservabilityConfig["capture"]> = {},
+  spans?: SpanHooks,
+): {
   ctx: CaptureContext;
   logger: SpyLogger;
   recordMetric: ReturnType<typeof vi.fn<CaptureContext["recordMetric"]>>;
+  recordSpan: ReturnType<typeof vi.fn<CaptureContext["recordSpan"]>>;
 } {
   const recordMetric = vi.fn<CaptureContext["recordMetric"]>();
+  const recordSpan = vi.fn<CaptureContext["recordSpan"]>();
   const diagnostics = new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 0);
   const logger: SpyLogger = {
     error: vi.fn<CaptureLogger["error"]>(),
@@ -49,6 +55,7 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
   return {
     logger,
     recordMetric,
+    recordSpan,
     ctx: {
       config: resolveConfig(
         {
@@ -61,10 +68,11 @@ function ctx(over: Partial<ObservabilityConfig["capture"]> = {}): {
       diagnostics,
       logger,
       breadcrumbs: new BreadcrumbBuffer(10),
-      tracing: new TraceEngine(diagnostics),
+      tracing: new TraceEngine(diagnostics, undefined, undefined, spans),
       // Fresh per context, as a new runtime gets a fresh set.
       once: { webVitals: false, navigationTiming: false, longFrames: false },
       recordMetric,
+      recordSpan,
     },
   };
 }
@@ -834,6 +842,53 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
+  it("records the client span that the traceparent of a request names", async () => {
+    const seen: Headers[] = [];
+    globalThis.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/offline")) {
+        return Promise.reject(new TypeError("offline"));
+      }
+      return Promise.resolve(new Response("", { status: url.endsWith("/fail") ? 500 : 200 }));
+    });
+    const spans: SpanHooks = { enabled: () => true, keeps: () => true, onEnd: vi.fn() };
+    const { ctx: c, recordSpan } = ctx(
+      { fetch: true, propagateTraceHeaderTo: ["https://api.internal"] },
+      spans,
+    );
+    const root = c.tracing.resolve();
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    await fetch("https://api.internal/orders?id=7");
+    await fetch("https://api.internal/fail", { method: "post" });
+    await fetch("https://api.internal/offline").catch(() => undefined);
+    await fetch("https://third-party.example/widget");
+
+    const recorded = recordSpan.mock.calls.map(([span]) => span);
+    expect(recorded.map((span) => span.spanId)).toEqual(
+      seen.slice(0, 3).map((headers) => headers.get("traceparent")?.split("-")[2]),
+    );
+    expect(recorded[0]).toMatchObject({
+      name: "GET",
+      kind: "client",
+      traceId: root.traceId,
+      parentSpanId: root.spanId,
+      error: false,
+      attributes: {
+        "http.request.method": "GET",
+        "url.full": "https://api.internal/orders",
+        "server.address": "api.internal",
+        "http.response.status_code": 200,
+      },
+    });
+    expect(recorded[0].startMs).toBeLessThanOrEqual(recorded[0].endMs);
+    expect(recorded.map((span) => span.error)).toEqual([false, true, true]);
+    expect(recorded[2].attributes["error.type"]).toBe("TypeError");
+    capture.uninstall();
+  });
+
   it("matches a string entry on the origin of the URL only", async () => {
     // A substring test also matches a query value or a longer host name of a third party.
     const seen: Headers[] = [];
@@ -1234,6 +1289,31 @@ describe("NetworkCapture: XMLHttpRequest", () => {
 
     sendXhr("https://api.internal/orders", 200);
     expect(setHeader).toHaveBeenCalledWith("traceparent", expect.any(String));
+    capture.uninstall();
+  });
+
+  it("records the client span of an allowlisted XHR at loadend", () => {
+    const setHeader = vi
+      .spyOn(XMLHttpRequest.prototype, "setRequestHeader")
+      .mockImplementation(() => undefined);
+    const spans: SpanHooks = { enabled: () => true, keeps: () => true, onEnd: vi.fn() };
+    const { ctx: c, recordSpan } = ctx(
+      { xhr: true, propagateTraceHeaderTo: ["https://api.internal"] },
+      spans,
+    );
+    const capture = new NetworkCapture(c);
+    capture.install();
+
+    sendXhr("https://api.internal/orders", 404);
+
+    const header = setHeader.mock.calls[0][1];
+    expect(recordSpan).toHaveBeenCalledOnce();
+    expect(recordSpan.mock.calls[0][0]).toMatchObject({
+      name: "GET",
+      spanId: header.split("-")[2],
+      error: true,
+      attributes: { "http.response.status_code": 404, "error.type": "404" },
+    });
     capture.uninstall();
   });
 

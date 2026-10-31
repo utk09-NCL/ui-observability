@@ -51,7 +51,7 @@ import type { Identity } from "../utils/identity";
 import { currentUrl, type PlatformMetadata, stripUrlQuery } from "../utils/platform";
 import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
 import type { Sequence } from "../utils/sequence";
-import type { TraceEngine } from "../utils/tracing";
+import type { TraceContext, TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
 import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
@@ -97,10 +97,22 @@ export interface RecordLimits extends SanitizeLimits {
 }
 
 /**
- * Reason a record was not built. "malformed" means the redact hook broke the record shape
- * or set an unknown severityText.
+ * Reason a record was not built. "malformed" means a processor or the redact hook broke the
+ * record shape or set an unknown severityText.
  */
-export type DropReason = "level" | "sampling" | "redact" | "malformed";
+export type DropReason = "level" | "sampling" | "processor" | "redact" | "malformed";
+
+/** Consumer hook that changes or drops a record. */
+type RecordHook = (record: LogRecord) => LogRecord | null;
+
+/** Stage of a consumer hook. */
+type HookStage = "processor" | "redact";
+
+/** Message subject and drop code of each hook stage. */
+const HOOK_STAGES = {
+  processor: { label: "A processor", code: "record.dropped_by_processor" },
+  redact: { label: "The redact hook", code: "record.dropped_by_redact" },
+} as const;
 
 /** Outcome of one build call. */
 export interface BuildResult {
@@ -131,6 +143,8 @@ export interface BuildInput {
   fixed?: Record<string, unknown>;
   /** True for a point of a counter or histogram. Sampling keeps it. */
   aggregated?: boolean;
+  /** Trace IDs of a span. Without them, the builder reads the active trace. */
+  trace?: TraceContext;
 }
 
 /**
@@ -195,7 +209,7 @@ export class RecordBuilder {
       return { record: null, dropped: "level" };
     }
 
-    const traceCtx = tracing.resolve();
+    const traceCtx = input.trace ?? tracing.resolve();
     const activeJourney = journey.current();
 
     // Sample before the attribute walk below. Do not sanitize, redact or build the
@@ -283,68 +297,20 @@ export class RecordBuilder {
       resource: this.resource(),
     };
 
-    const redact = config.redact;
-    if (redact) {
-      // A plain JavaScript hook can edit the record in place without a return value.
-      let redacted: unknown;
-      try {
-        redacted = redact(record);
-      } catch (error) {
-        // Drop the record. A record that redact did not clean must not leave the page.
-        diagnostics.report(
-          "record.dropped_by_redact",
-          "The redact hook threw an error. The library dropped the record.",
-          undefined,
-          error,
-        );
-        return { record: null, dropped: "redact" };
+    // The processors run first. redact is the last privacy gate.
+    const stages = config.processors.map((hook): [RecordHook, HookStage] => [hook, "processor"]);
+    if (config.redact) {
+      stages.push([config.redact, "redact"]);
+    }
+
+    for (const [hook, stage] of stages) {
+      const outcome = this.runHook(hook, stage, record, input.fixed);
+      if (typeof outcome === "string") {
+        return { record: null, dropped: outcome };
       }
 
-      if (redacted === null) {
-        diagnostics.count("record.dropped_by_redact");
-        return { record: null, dropped: "redact" };
-      }
-
-      const candidate: unknown = redacted ?? record;
-
-      if (!isLogRecord(candidate)) {
-        // The hook changed the record in place. The library has no intact copy.
-        if (candidate === record) {
-          diagnostics.report(
-            "record.dropped_malformed",
-            "The redact hook changed the record to a shape that is not a record. The library dropped it.",
-          );
-          return { record: null, dropped: "malformed" };
-        }
-
-        // A plain JavaScript hook can return a string or a Promise. The record did not pass redact.
-        diagnostics.report(
-          "record.dropped_by_redact",
-          "The redact hook returned a value that is not a record. The library dropped the record.",
-        );
-        return { record: null, dropped: "redact" };
-      } else if (!isLogLevel(candidate.severityText)) {
-        // An unknown level has no severity number. The serializer cannot map it.
-        diagnostics.report(
-          "record.dropped_malformed",
-          "The redact hook set a severityText that is not a log level. The library dropped the record.",
-        );
-        return { record: null, dropped: "malformed" };
-      } else {
-        if (candidate !== record) {
-          // Sanitize the record from the redact hook again. The hook is consumer code.
-          // A cycle, a hostile getter or a BigInt throws at serialization. The transport
-          // then loses the batch.
-          const remeasured = sanitizeWithSize(candidate.attributes, limits, diagnostics);
-          record = { ...candidate, attributes: asAttributes(remeasured.value) };
-          bytes = remeasured.bytes;
-          // The limits must not cut the fields that the library builds. The hook cannot change them.
-          Object.assign(record.attributes, input.fixed);
-        }
-
-        // The hook can change severityText. Keep the number in step with the text.
-        record.severityNumber = SEVERITY_NUMBER[record.severityText];
-      }
+      record = outcome.record;
+      bytes = outcome.bytes ?? bytes;
     }
 
     // Drop the caller attributes when their size exceeds maxRecordBytes. Keep the index keys.
@@ -399,6 +365,91 @@ export class RecordBuilder {
     }
 
     return { record };
+  }
+
+  /**
+   * Runs one consumer hook on a record. A processor and the redact hook have the same contract.
+   * @param hook Processor or redact hook.
+   * @param stage Stage of the hook.
+   * @param record Record before the hook.
+   * @param fixed Fields that the library builds. The hook cannot change them.
+   * @returns The record and the size of its new attributes, or the reason of the drop.
+   */
+  private runHook(
+    hook: RecordHook,
+    stage: HookStage,
+    record: LogRecord,
+    fixed: Record<string, unknown> | undefined,
+  ): { record: LogRecord; bytes?: number } | DropReason {
+    const { diagnostics, limits } = this.deps;
+    const { label, code } = HOOK_STAGES[stage];
+
+    // A plain JavaScript hook can edit the record in place without a return value.
+    let changed: unknown;
+    try {
+      changed = hook(record);
+    } catch (error) {
+      // Drop the record. A record that the hook did not clean must not leave the page.
+      diagnostics.report(
+        code,
+        `${label} threw an error. The library dropped the record.`,
+        undefined,
+        error,
+      );
+      return stage;
+    }
+
+    if (changed === null) {
+      diagnostics.count(code);
+      return stage;
+    }
+
+    const candidate: unknown = changed ?? record;
+
+    if (!isLogRecord(candidate)) {
+      // The hook changed the record in place. The library has no intact copy.
+      if (candidate === record) {
+        diagnostics.report(
+          "record.dropped_malformed",
+          `${label} changed the record to a shape that is not a record. The library dropped it.`,
+        );
+        return "malformed";
+      }
+
+      // A plain JavaScript hook can return a string or a Promise. The record did not pass the hook.
+      diagnostics.report(
+        code,
+        `${label} returned a value that is not a record. The library dropped the record.`,
+      );
+      return stage;
+    }
+
+    if (!isLogLevel(candidate.severityText)) {
+      // An unknown level has no severity number. The serializer cannot map it.
+      diagnostics.report(
+        "record.dropped_malformed",
+        `${label} set a severityText that is not a log level. The library dropped the record.`,
+      );
+      return "malformed";
+    }
+
+    let next = candidate;
+    let bytes: number | undefined;
+
+    if (candidate !== record) {
+      // Sanitize a record from the hook again. The hook is consumer code. A cycle, a hostile
+      // getter or a BigInt throws at serialization. The transport then loses the batch.
+      const remeasured = sanitizeWithSize(candidate.attributes, limits, diagnostics);
+      next = { ...candidate, attributes: asAttributes(remeasured.value) };
+      bytes = remeasured.bytes;
+      // The limits must not cut the fields that the library builds. The hook cannot change them.
+      Object.assign(next.attributes, fixed);
+    }
+
+    // The hook can change severityText. Keep the number in step with the text.
+    next.severityNumber = SEVERITY_NUMBER[next.severityText];
+
+    return { record: next, bytes };
   }
 
   /**

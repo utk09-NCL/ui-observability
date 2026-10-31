@@ -14,6 +14,7 @@ import {
   FNV_PRIME,
   LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
+  LOG_TYPE_SPAN,
   METRIC_KEYS,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
@@ -123,6 +124,23 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
     : Math.min(remote.defaultRate, remoteMaxRate);
 }
 
+/**
+ * Decides if sampling keeps a key at a rate. One key always gives the same result.
+ * @param key Journey ID or trace ID.
+ * @param rate Sampling rate, 0..1.
+ * @returns True if sampling keeps the key.
+ */
+export function sampleKey(key: string, rate: number): boolean {
+  if (rate >= SAMPLING_RATE_MAX) {
+    return true;
+  }
+  if (rate <= SAMPLING_RATE_MIN) {
+    return false;
+  }
+
+  return hash(key) / UINT32_MAX < rate;
+}
+
 /** Fields that sampling reads. The caller knows all of them before it builds a record. */
 export interface SampleInput {
   /** Severity level of the entry. */
@@ -152,8 +170,14 @@ export function shouldSampleInput(
   config: ResolvedConfig,
   remote: RemoteRules | null,
 ): boolean {
-  // Errors, fatal records and aggregated points bypass sampling filters.
-  if (input.aggregated === true || input.level === "ERROR" || input.level === "FATAL") {
+  // Errors, fatal records and aggregated points bypass sampling filters. The runtime samples a
+  // span by its trace before it records the span.
+  if (
+    input.aggregated === true ||
+    input.type === LOG_TYPE_SPAN ||
+    input.level === "ERROR" ||
+    input.level === "FATAL"
+  ) {
     return true;
   }
 
@@ -171,18 +195,9 @@ export function shouldSampleInput(
     rate = Math.min(rate, config.sampling.remoteMaxRate);
   }
 
-  if (rate >= SAMPLING_RATE_MAX) {
-    return true;
-  }
-  if (rate <= SAMPLING_RATE_MIN) {
-    return false;
-  }
-
   // Use the trace ID when the journey ID is absent. The trace ID still groups one
   // operation.
-  const key = input.journeyId || input.traceId;
-
-  return hash(key) / UINT32_MAX < rate;
+  return sampleKey(input.journeyId || input.traceId, rate);
 }
 
 /**

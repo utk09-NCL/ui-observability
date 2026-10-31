@@ -247,6 +247,23 @@ export class SessionTouch {
       return;
     }
 
+    this.write(sessionId, now);
+  }
+
+  /**
+   * Writes a new session id to the local store now. The throttle does not apply.
+   * @param sessionId New session identifier.
+   */
+  restart(sessionId: string): void {
+    this.write(sessionId, Date.now());
+  }
+
+  /**
+   * Writes the session record and starts a new throttle window.
+   * @param sessionId Session identifier.
+   * @param now Epoch time in milliseconds.
+   */
+  private write(sessionId: string, now: number): void {
     this.lastTouchAt = now;
     const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
     safeWrite(this.stores, "local", SESSION_ID_KEY, session, this.diagnostics);

@@ -15,6 +15,8 @@ import {
   RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
   TELEMETRY_SDK_VERSION,
+  TRACE_FLAGS_SAMPLED,
+  TRACE_NAMESPACE,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { BusMessage, BusRole } from "../models/bus";
@@ -27,7 +29,9 @@ import type {
 } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
+import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
+import type { DeliveryStats } from "../models/stats";
 import type { PruneResult } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
 import { isObject } from "../utils/guards";
@@ -41,6 +45,7 @@ import {
   resolveIdentity,
   SessionTouch,
 } from "../utils/identity";
+import { runAsLibraryRequest } from "../utils/library-request";
 import { detectPlatform, type PlatformMetadata } from "../utils/platform";
 import { sanitize, truncate } from "../utils/sanitize";
 import { Sequence } from "../utils/sequence";
@@ -53,11 +58,12 @@ import { DropReporter } from "./drops";
 import { HoldBuffer } from "./hold-buffer";
 import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
 import { OneLogger } from "./logger";
-import { Meter } from "./meter";
+import { makeCounter, makeHistogram, Meter, type RecordMetric } from "./meter";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
-import { shouldSample } from "./sampling";
+import { sampleKey, shouldSample } from "./sampling";
 import type { Sender } from "./sender";
+import { rootSpan, type SpanData, spanFields } from "./spans";
 
 /** Constructor of one capture module. */
 type CaptureClass = new (ctx: CaptureContext) => Capture;
@@ -77,6 +83,32 @@ const CAPTURE_LOADERS = {
 
 /** Name of one capture module. */
 type CaptureName = keyof typeof CAPTURE_LOADERS;
+
+/** Constructor of the WebSocket capture plugin. */
+type WebSocketClass = new (diagnostics: Diagnostics) => CapturePlugin;
+
+/** Id of each plugin object. A new plugin object then changes the capture key. */
+const pluginIds = new WeakMap<CapturePlugin, number>();
+
+/** Last plugin id that pluginId() gave. */
+let lastPluginId = 0;
+
+/**
+ * Gives the id of a plugin object. The capture key must not hold the plugin. A plugin can hold
+ * a cycle, and JSON.stringify then throws.
+ * @param plugin Plugin of the app.
+ * @returns The id of the object.
+ */
+function pluginId(plugin: CapturePlugin): number {
+  let id = pluginIds.get(plugin);
+
+  if (id === undefined) {
+    id = ++lastPluginId;
+    pluginIds.set(plugin, id);
+  }
+
+  return id;
+}
 
 /** Global symbol key of the singleton runtime. All federated bundles share it. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
@@ -102,6 +134,7 @@ function captureKey(capture: CaptureOptions): string {
     webVitalsLoader: capture.webVitalsLoader !== undefined,
     ignoreUrls: capture.ignoreUrls.map(String),
     propagateTraceHeaderTo: capture.propagateTraceHeaderTo.map(String),
+    plugins: capture.plugins.map(pluginId),
   });
 }
 
@@ -287,7 +320,18 @@ export class ObservabilityRuntime {
     this.identity = resolveIdentity(this.diagnostics, this.stores);
     this.sessionTouch = new SessionTouch(this.diagnostics, this.stores);
     this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
-    this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader);
+    // Sample a span by its trace. The whole trace stays or goes.
+    const keeps = (traceId: string): boolean =>
+      sampleKey(traceId, this.config.sampling.defaultRate);
+    this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader, {
+      enabled: () => this.config.tracesEndpoint !== "",
+      keeps,
+      onEnd: (ended) => {
+        if (keeps(ended.traceId)) {
+          this.recordSpan(rootSpan(ended));
+        }
+      },
+    });
     // Do not await. Without OTel, records use the ambient trace. The library loses no record.
     void this.tracing.loadOtel();
     // The startup values stay. A later configure() cannot change the limits or the journey age.
@@ -369,6 +413,28 @@ export class ObservabilityRuntime {
     if (!this.destroyed) {
       this.meter.record(def, value, attributes);
     }
+  }
+
+  /**
+   * Builds and emits the record of one span. The console does not print it. minLevel does not
+   * drop it. The trace engine sampled the trace before the span existed.
+   * @param span The span data.
+   */
+  private recordSpan(span: SpanData): void {
+    if (this.config.tracesEndpoint === "") {
+      return;
+    }
+
+    const { record } = this.builder.build({
+      level: "INFO",
+      type: "span",
+      body: span.name,
+      namespace: TRACE_NAMESPACE,
+      payload: span.attributes,
+      fixed: spanFields(span),
+      trace: { traceId: span.traceId, spanId: span.spanId, traceFlags: TRACE_FLAGS_SAMPLED },
+    });
+    this.emit(record);
   }
 
   /**
@@ -873,6 +939,7 @@ export class ObservabilityRuntime {
             remote: this.remote,
             beforeExit: () => {
               this.meter.collect();
+              this.tracing.end();
             },
           });
 
@@ -935,7 +1002,10 @@ export class ObservabilityRuntime {
       names.push("console");
     }
 
-    const classes = await Promise.all(names.map((name) => this.loadCapture(name)));
+    const [classes, WebSocketCapture] = await Promise.all([
+      Promise.all(names.map((name) => this.loadCapture(name))),
+      settings.webSocket ? this.loadWebSocket() : undefined,
+    ]);
 
     // Guard against a later install or a shutdown during the load. A stale capture leaks its listeners.
     if (generation !== this.captureGeneration || this.destroyed) {
@@ -955,12 +1025,23 @@ export class ObservabilityRuntime {
       recordMetric: (def, value, attributes) => {
         this.recordMetric(def, value, attributes);
       },
+      recordSpan: (span) => {
+        this.recordSpan(span);
+      },
     };
 
     for (const CaptureModule of classes) {
       if (CaptureModule) {
         this.captures.push(new CaptureModule(ctx));
       }
+    }
+
+    const plugins = WebSocketCapture
+      ? [...settings.plugins, new WebSocketCapture(this.diagnostics)]
+      : settings.plugins;
+
+    for (const plugin of plugins) {
+      this.captures.push(this.pluginCapture(plugin));
     }
 
     for (const capture of this.captures) {
@@ -986,6 +1067,49 @@ export class ObservabilityRuntime {
       );
     }
     this.captures.length = 0;
+  }
+
+  /**
+   * Imports the WebSocket capture plugin. A failed import reports and skips it.
+   * @returns Promise that resolves to the class, or undefined if the import failed.
+   */
+  private loadWebSocket(): Promise<WebSocketClass | undefined> {
+    return this.diagnostics.guardAsync(
+      "capture.install_failed",
+      "The library could not load the webSocket capture.",
+      async () => (await import("../capture/web-socket")).WebSocketCapture,
+    );
+  }
+
+  /**
+   * Wraps a plugin as a capture module. The plugin gets public tools only.
+   * @param plugin Plugin of the app, or a built-in plugin.
+   * @returns The capture module.
+   */
+  private pluginCapture(plugin: CapturePlugin): Capture {
+    const { name } = plugin;
+    const record: RecordMetric = (def, value, attributes) => {
+      this.recordMetric(def, value, attributes);
+    };
+    const ctx: PluginContext = {
+      logger: new OneLogger(() => this, `${CAPTURE_NAMESPACE}.${name}`),
+      counter: (metric, options = {}) => makeCounter(metric, options, record),
+      histogram: (metric, options = {}) => makeHistogram(metric, options, record),
+      addBreadcrumb: (message, data) => {
+        this.addBreadcrumb(message, data);
+      },
+      ownRequest: runAsLibraryRequest,
+    };
+
+    return {
+      name,
+      install: () => {
+        plugin.install(ctx);
+      },
+      uninstall: () => {
+        plugin.uninstall();
+      },
+    };
   }
 
   /**
@@ -1035,8 +1159,9 @@ export class ObservabilityRuntime {
       return;
     }
 
-    // The points of the open interval go out with the final flush.
+    // The points of the open interval and the root span go out with the final flush.
     this.meter.collect();
+    this.tracing.end();
     this.destroyed = true;
 
     this.uninstallCaptures();
@@ -1245,6 +1370,37 @@ export class ObservabilityRuntime {
     (this.identity as { tabId: string }).tabId = fresh;
     persistTabId(fresh, this.diagnostics, this.stores);
     this.builder.invalidateResource();
+  }
+
+  /**
+   * Starts a new session in this context. Other tabs and frames read the new id at their next
+   * startup. It ends the active journey and starts a new trace.
+   */
+  newSession(): void {
+    if (this.destroyed) {
+      return;
+    }
+
+    const fresh = newId(this.diagnostics);
+    (this.identity as { sessionId: string }).sessionId = fresh;
+    this.sessionTouch.restart(fresh);
+    this.builder.invalidateResource();
+
+    this.journey.end();
+    this.tracing.rotate("explicit");
+  }
+
+  /**
+   * Reads the delivery state of this context.
+   * @returns Promise that resolves to the counts and the time of the last accepted send.
+   */
+  async stats(): Promise<DeliveryStats> {
+    // queueDepth() waits for a loading delivery stack. The held records are then in the pipeline.
+    const stored = await this.queueDepth();
+    const delivery = this.sender?.stats() ?? { pending: 0, inFlight: 0, lastSendAt: null };
+    const held = this.bootBuffer.length + this.pendingRecords.length + this.forwardBuffer.length;
+
+    return { ...delivery, pending: delivery.pending + held, stored };
   }
 
   /**

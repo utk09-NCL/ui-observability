@@ -9,6 +9,7 @@ import { BATCHES_PER_DRAIN, STORAGE_DB_NAME } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { LogRecord } from "../models/log-record";
+import type { DeliveryStats } from "../models/stats";
 import { type GapReporter, type StorageAdapter, storageLimits } from "../models/storage";
 import { drainEmergencyQueue } from "../storage/emergency-queue";
 import { createStorage } from "../storage/factory";
@@ -16,7 +17,7 @@ import { ExitFlush } from "../transport/exit-flush";
 import { CustomTransport } from "../transport/custom-transport";
 import { HttpTransport } from "../transport/http-transport";
 import { RetryEngine } from "../transport/retry-engine";
-import type { BatchTransport } from "../transport/status-transport";
+import type { StatusTransport } from "../transport/status-transport";
 import type { Diagnostics } from "./diagnostics";
 import { LogPipeline } from "./pipeline";
 import { applyRemote, parseRemoteRules } from "./remote-rules";
@@ -46,6 +47,7 @@ export class Sender {
    * @param pipeline Pipeline that batches records.
    * @param exitFlush Handler that sends pending records on unload.
    * @param diagnostics Diagnostics reporter.
+   * @param transport Transport of the pipeline and the retry engine.
    */
   private constructor(
     private readonly storage: StorageAdapter,
@@ -53,6 +55,7 @@ export class Sender {
     private readonly pipeline: LogPipeline,
     private readonly exitFlush: ExitFlush,
     private readonly diagnostics: Diagnostics,
+    private readonly transport: StatusTransport,
   ) {}
 
   /**
@@ -85,7 +88,7 @@ export class Sender {
     const http = config.transport
       ? undefined
       : new HttpTransport(config, diagnostics, onSampling, onLoss);
-    const transport: BatchTransport =
+    const transport: StatusTransport =
       http ?? new CustomTransport(config, diagnostics, onSampling, onLoss);
     const retry = new RetryEngine(
       storage,
@@ -102,6 +105,8 @@ export class Sender {
         flushIntervalMs: batching.metricFlushIntervalMs,
         batchSize: batching.metricBatchSize,
       },
+      // A span has the size of a log record. The traces stream uses the log batching.
+      traces: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
     });
 
     const exitFlush = new ExitFlush({
@@ -128,7 +133,7 @@ export class Sender {
       }
     }
 
-    const sender = new Sender(storage, retry, pipeline, exitFlush, diagnostics);
+    const sender = new Sender(storage, retry, pipeline, exitFlush, diagnostics, transport);
     void sender.importEmergency();
     return sender;
   }
@@ -161,6 +166,14 @@ export class Sender {
     );
 
     return count ?? 0;
+  }
+
+  /**
+   * Reads the delivery state of the pipeline and the transport.
+   * @returns Records that wait, records in requests and the last accepted send.
+   */
+  stats(): Omit<DeliveryStats, "stored"> {
+    return { ...this.pipeline.counts(), lastSendAt: this.transport.lastSendAt() };
   }
 
   /**

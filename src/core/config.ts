@@ -40,6 +40,7 @@ import type {
   SerializerChoice,
 } from "../models/config";
 import type { LogLevel } from "../models/log-record";
+import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
 import { isObject } from "../utils/guards";
 import type { Diagnostics } from "./diagnostics";
@@ -108,6 +109,7 @@ const CAPTURE_FLAG_KEYS = [
   "webVitals",
   "longFrames",
   "fullUrls",
+  "webSocket",
 ] as const;
 
 /** Origin of a sandboxed frame without allow-same-origin. */
@@ -445,6 +447,31 @@ function resolveList<T>(
   }
 
   return kept;
+}
+
+/**
+ * Accepts a function entry.
+ * @param entry List entry.
+ * @returns The entry, or undefined.
+ */
+function toProcessor(entry: unknown): ResolvedConfig["processors"][number] | undefined {
+  return typeof entry === "function" ? (entry as ResolvedConfig["processors"][number]) : undefined;
+}
+
+/**
+ * Accepts a capture plugin entry.
+ * @param entry List entry.
+ * @returns The entry, or undefined.
+ */
+function toPlugin(entry: unknown): CapturePlugin | undefined {
+  const valid =
+    isObject(entry) &&
+    typeof entry.name === "string" &&
+    entry.name !== "" &&
+    typeof entry.install === "function" &&
+    typeof entry.uninstall === "function";
+
+  return valid ? (entry as unknown as CapturePlugin) : undefined;
 }
 
 /**
@@ -917,6 +944,14 @@ function resolveCapture(
       toTarget,
       diagnostics,
     ),
+    plugins: resolveList(
+      "capture.plugins",
+      given.plugins,
+      base.plugins,
+      "a list of objects with a name, install() and uninstall()",
+      toPlugin,
+      diagnostics,
+    ),
   };
 
   for (const key of CAPTURE_FLAG_KEYS) {
@@ -926,15 +961,23 @@ function resolveCapture(
   return capture;
 }
 
+/** Result of a signal endpoint that is off, for each key. */
+const SIGNAL_OFF = {
+  metricsEndpoint: "The library sends metric records as log records.",
+  tracesEndpoint: "The library sends no span.",
+} as const;
+
 /**
- * Validates the metrics endpoint. Only the OTLP serializer has a metrics format.
+ * Validates the metrics or traces endpoint. Only the OTLP serializer has these formats.
+ * @param key Config key.
  * @param value Value that the consumer passed.
  * @param fallback Value in force.
  * @param serializer Resolved serializer option.
  * @param diagnostics Diagnostics reporter.
- * @returns A valid absolute URL, or "" to send metric records as log records.
+ * @returns A valid absolute URL, or "" to turn the endpoint off.
  */
-function resolveMetricsEndpoint(
+function resolveSignalEndpoint(
+  key: keyof typeof SIGNAL_OFF,
   value: unknown,
   fallback: string,
   serializer: SerializerChoice,
@@ -949,7 +992,7 @@ function resolveMetricsEndpoint(
     } catch (error) {
       diagnostics.report(
         "config.invalid",
-        `metricsEndpoint is not a valid absolute URL: ${value}. The library keeps the value in force.`,
+        `${key} is not a valid absolute URL: ${value}. The library keeps the value in force.`,
         undefined,
         error,
       );
@@ -957,14 +1000,14 @@ function resolveMetricsEndpoint(
   } else if (value === "") {
     url = "";
   } else if (value !== undefined) {
-    reportInvalid(diagnostics, "metricsEndpoint", "a URL string", value, "the value in force");
+    reportInvalid(diagnostics, key, "a URL string", value, "the value in force");
   }
 
-  // A custom or ECS serializer cannot encode a metrics request.
+  // A custom or ECS serializer cannot encode a metrics or traces request.
   if (url !== "" && serializer !== SERIALIZER_NAME_OTLP) {
     diagnostics.report(
       "config.invalid",
-      `metricsEndpoint needs serializer "${SERIALIZER_NAME_OTLP}". The library sends metric records as log records.`,
+      `${key} needs serializer "${SERIALIZER_NAME_OTLP}". ${SIGNAL_OFF[key]}`,
     );
     return "";
   }
@@ -996,6 +1039,14 @@ export function resolveConfig(
     enabled: resolveBoolean("enabled", input.enabled, base.enabled, diagnostics),
     minLevel: resolveLevel("minLevel", input.minLevel, base.minLevel, diagnostics),
     minLevels: resolveMinLevels(input.minLevels, base.minLevels, diagnostics),
+    processors: resolveList(
+      "processors",
+      input.processors,
+      base.processors,
+      "a list of functions",
+      toProcessor,
+      diagnostics,
+    ),
     compression: resolveChoice(
       "compression",
       input.compression,
@@ -1038,12 +1089,9 @@ export function resolveConfig(
     capture: resolveCapture(input.capture, base.capture, diagnostics),
   };
 
-  merged.metricsEndpoint = resolveMetricsEndpoint(
-    input.metricsEndpoint,
-    base.metricsEndpoint,
-    merged.serializer,
-    diagnostics,
-  );
+  for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
+    merged[key] = resolveSignalEndpoint(key, input[key], base[key], merged.serializer, diagnostics);
+  }
 
   // Guard against a value that cannot send. Keep the function in force.
   // Without a transport, the pipeline drops each batch.
@@ -1102,11 +1150,13 @@ export function resolveConfig(
   }
 
   // Only the delivery stack sends. It loads only with an endpoint or a custom transport.
-  if (merged.metricsEndpoint !== "" && merged.endpoint === null && !merged.transport) {
-    diagnostics.report(
-      "config.invalid",
-      "metricsEndpoint needs endpoint or transport. The library sends nothing to metricsEndpoint.",
-    );
+  for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
+    if (merged[key] !== "" && merged.endpoint === null && !merged.transport) {
+      diagnostics.report(
+        "config.invalid",
+        `${key} needs endpoint or transport. The library sends nothing to ${key}.`,
+      );
+    }
   }
 
   if (!merged.serviceName) {
@@ -1153,9 +1203,12 @@ export function resolveConfig(
   // Replace the previous endpoints in the ignore list. This prevents a self-logging loop.
   // Without it, one failed POST logs another failed POST with no end.
   merged.capture.ignoreUrls = merged.capture.ignoreUrls.filter(
-    (url) => url !== previous?.endpoint && url !== previous?.metricsEndpoint,
+    (url) =>
+      url !== previous?.endpoint &&
+      url !== previous?.metricsEndpoint &&
+      url !== previous?.tracesEndpoint,
   );
-  for (const url of [merged.endpoint, merged.metricsEndpoint]) {
+  for (const url of [merged.endpoint, merged.metricsEndpoint, merged.tracesEndpoint]) {
     if (url && !merged.capture.ignoreUrls.includes(url)) {
       merged.capture.ignoreUrls = [...merged.capture.ignoreUrls, url];
     }

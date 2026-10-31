@@ -23,6 +23,12 @@ const record = (body: string): LogRecord => ({
   resource: { "service.name": "svc" },
 });
 
+/** A record of a span. */
+const spanRecord = (): LogRecord => ({
+  ...record("ui.start"),
+  attributes: { "log.type": "span", "span.kind": "internal", "span.parent_id": "" },
+});
+
 /** A record of an aggregated counter point. */
 const pointRecord = (): LogRecord => ({
   ...record("orders"),
@@ -473,6 +479,22 @@ describe("ExitFlush flush", () => {
     const urls = beacon.mock.calls.map(([url]) => new URL(url));
     expect(urls.map((url) => url.pathname)).toEqual(["/v1/metrics", "/v1/logs"]);
     expect(urls.map((url) => url.searchParams.get("uiobs_batch_id"))).toEqual(["m1", "l1"]);
+  });
+
+  it("beacons a batch of span records to tracesEndpoint, and drops it without tracesEndpoint", () => {
+    const beacon = stubBeacon();
+    const batches = () => [
+      { id: "t1", createdAt: Date.now(), attempts: 0, records: [spanRecord()] },
+      { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
+    ];
+    const withTraces = setup({ config: { tracesEndpoint: "https://x/v1/traces" }, batches });
+    const without = setup({ batches });
+
+    withTraces.flush.flush("pagehide");
+    without.flush.flush("pagehide");
+
+    const paths = beacon.mock.calls.map(([url]) => new URL(url).pathname);
+    expect(paths).toEqual(["/v1/traces", "/v1/logs", "/v1/logs"]);
   });
 
   it("sends the points of the open metric interval before the drain", () => {

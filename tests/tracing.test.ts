@@ -2,7 +2,7 @@ import { trace as otelTrace, propagation, type Span, type SpanContext } from "@o
 import { describe, expect, it, vi } from "vitest";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { OtelApi, OtelSpan } from "../src/models/config";
-import { newSpanId, newTraceId, TraceEngine } from "../src/utils/tracing";
+import { newSpanId, newTraceId, type SpanHooks, TraceEngine } from "../src/utils/tracing";
 
 /** No throttle. A test can read a count back in the same tick as the report. */
 const diagnostics = (): Diagnostics => new Diagnostics(vi.fn(), 0);
@@ -275,5 +275,96 @@ describe("TraceEngine.headers", () => {
 
     expect(engine.headers().traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     expect(reporter.snapshot()["trace.otel_failed"]).toBe(1);
+  });
+});
+
+describe("TraceEngine spans", () => {
+  /**
+   * Builds span hooks with spies.
+   * @param keeps Result of the sampling decision.
+   * @returns The hooks.
+   */
+  const hooks = (keeps = true) => ({
+    enabled: () => true,
+    keeps: () => keeps,
+    onEnd: vi.fn<SpanHooks["onEnd"]>(),
+  });
+
+  /**
+   * Splits a traceparent value.
+   * @param headers Header map.
+   * @returns The trace id, the span id and the flags.
+   */
+  const parts = (headers: Record<string, string>): string[] =>
+    headers.traceparent.split("-").slice(1);
+
+  it("ends the root span one time on rotate, with the cause of the start of the trace", () => {
+    const spans = hooks();
+    const engine = new TraceEngine(diagnostics(), undefined, undefined, spans);
+    const first = engine.resolve();
+
+    engine.rotate("interaction");
+    engine.end();
+    engine.end();
+    engine.rotate("explicit");
+
+    expect(spans.onEnd.mock.calls.map(([ended]) => ended)).toEqual([
+      expect.objectContaining({ traceId: first.traceId, spanId: first.spanId, reason: "start" }),
+      expect.objectContaining({ reason: "interaction" }),
+    ]);
+  });
+
+  it("names a new client span in the traceparent of a request, with the root span as parent", () => {
+    const engine = new TraceEngine(diagnostics(), undefined, undefined, hooks());
+    const root = engine.resolve();
+
+    const { headers, span } = engine.request();
+
+    expect(span).toMatchObject({ traceId: root.traceId, parentSpanId: root.spanId });
+    expect(span?.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(span?.spanId).not.toBe(root.spanId);
+    expect(parts(headers)).toEqual([root.traceId, span?.spanId, "01"]);
+    // getTraceHeaders() names the root span.
+    expect(engine.headers().traceparent).toBe(`00-${root.traceId}-${root.spanId}-01`);
+  });
+
+  it("clears the sampled flag of a trace that sampling drops, and gives no span", () => {
+    const engine = new TraceEngine(diagnostics(), undefined, undefined, hooks(false));
+    const root = engine.resolve();
+
+    const { headers, span } = engine.request();
+
+    expect(parts(headers)[0]).toBe(root.traceId);
+    expect(parts(headers)[2]).toBe("00");
+    expect(span).toBeUndefined();
+  });
+
+  it("gives no span without span hooks, or with spans off", () => {
+    const off: SpanHooks = { enabled: () => false, keeps: () => true, onEnd: vi.fn() };
+
+    expect(new TraceEngine(diagnostics()).request().span).toBeUndefined();
+    expect(
+      new TraceEngine(diagnostics(), undefined, undefined, off).request().span,
+    ).toBeUndefined();
+  });
+
+  it("gives no span for a trace of the OpenTelemetry peer", async () => {
+    const engine = new TraceEngine(
+      diagnostics(),
+      undefined,
+      () =>
+        Promise.resolve(
+          fakeApi({
+            spanContext: () => ({ traceId: VALID_TRACE_ID, spanId: VALID_SPAN_ID, traceFlags: 1 }),
+          }),
+        ),
+      hooks(),
+    );
+    await engine.loadOtel();
+
+    const { headers, span } = engine.request();
+
+    expect(parts(headers)).toEqual([VALID_TRACE_ID, VALID_SPAN_ID, "01"]);
+    expect(span).toBeUndefined();
   });
 });

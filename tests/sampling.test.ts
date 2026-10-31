@@ -9,7 +9,7 @@ import {
 } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
-import { ErrorCeiling, shouldSample } from "../src/core/sampling";
+import { ErrorCeiling, sampleKey, shouldSample } from "../src/core/sampling";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 
@@ -76,6 +76,20 @@ describe("shouldSample bypasses", () => {
 
   it("keeps an ordinary record at rate one", () => {
     expect(shouldSample(record(), config({ defaultRate: 1 }))).toBe(true);
+  });
+});
+
+describe("sampleKey and spans", () => {
+  it("keeps each key at 1, no key at 0, and one result for one key", () => {
+    expect(sampleKey("k", 1)).toBe(true);
+    expect(sampleKey("k", 0)).toBe(false);
+    expect(sampleKey(traceId(7), 0.5)).toBe(sampleKey(traceId(7), 0.5));
+  });
+
+  it("keeps a span at any rate, because the runtime sampled its trace", () => {
+    expect(shouldSample(record({ [ATTR_LOG_TYPE]: "span" }), config({ defaultRate: 0 }))).toBe(
+      true,
+    );
   });
 });
 

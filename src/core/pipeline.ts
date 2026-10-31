@@ -8,6 +8,7 @@
 import {
   ATTR_LOG_TYPE,
   LOG_TYPE_METRIC,
+  LOG_TYPE_SPAN,
   MAX_CONCURRENT_REQUESTS,
   STORAGE_DEADLINE_MS,
 } from "../constants";
@@ -23,15 +24,24 @@ import type { Diagnostics } from "./diagnostics";
 import { ErrorCeiling } from "./sampling";
 
 /** Name of a pipeline stream. */
-export type StreamName = "logs" | "metrics";
+export type StreamName = "logs" | "metrics" | "traces";
+
+/** Streams in the order of the exit batches. */
+const STREAM_ORDER: readonly StreamName[] = ["metrics", "traces", "logs"];
 
 /**
- * Checks if a log record is a metric.
+ * Gives the stream of a record. Each stream makes batches of one kind.
  * @param record Record to evaluate.
- * @returns True if the record log type attribute equals metric.
+ * @returns "metrics" for a metric, "traces" for a span, else "logs".
  */
-function isMetric(record: LogRecord): boolean {
-  return record.attributes[ATTR_LOG_TYPE] === LOG_TYPE_METRIC;
+function streamOf(record: LogRecord): StreamName {
+  const type = record.attributes[ATTR_LOG_TYPE];
+
+  if (type === LOG_TYPE_METRIC) {
+    return "metrics";
+  }
+
+  return type === LOG_TYPE_SPAN ? "traces" : "logs";
 }
 
 /** Batching policy for one record stream. */
@@ -97,6 +107,11 @@ class RecordStream {
     this.pending = [];
 
     return records;
+  }
+
+  /** Number of buffered records. */
+  get size(): number {
+    return this.pending.length;
   }
 
   /** Stops the flush timer. The buffered records stay in place. */
@@ -175,6 +190,7 @@ export class LogPipeline {
     this.streams = {
       logs: new RecordStream(streamOptions.logs, flush),
       metrics: new RecordStream(streamOptions.metrics, flush),
+      traces: new RecordStream(streamOptions.traces, flush),
     };
   }
 
@@ -196,17 +212,19 @@ export class LogPipeline {
    * Records already given to fetch go again under a new batch ID. The server cannot
    * deduplicate them. Thus the exit flush can deliver duplicates. This is intentional.
    * A closing document cannot confirm delivery.
-   * @returns One batch of metric records and one batch of other records. A kind with no
-   * records has no batch. A mixed batch sends a metric to the endpoint of the logs.
+   * @returns One batch for each stream, metrics first. A stream with no records has no batch.
+   * A mixed batch sends a metric to the endpoint of the logs.
    */
   drainForExit(): LogBatch[] {
     const inFlight = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
     this.unconfirmed.clear();
 
-    const metrics = [...inFlight.filter(isMetric), ...this.streams.metrics.take()];
-    const logs = [...inFlight.filter((record) => !isMetric(record)), ...this.streams.logs.take()];
-
-    return [this.toBatch(metrics), this.toBatch(logs)].filter((batch) => batch !== null);
+    return STREAM_ORDER.map((name) =>
+      this.toBatch([
+        ...inFlight.filter((record) => streamOf(record) === name),
+        ...this.streams[name].take(),
+      ]),
+    ).filter((batch) => batch !== null);
   }
 
   /**
@@ -220,19 +238,42 @@ export class LogPipeline {
     // The claim does not take an in-flight batch. A second copy under a new ID is a duplicate
     // that the server cannot remove.
     if (!this.stopped) {
-      this.claim(this.streams.metrics);
-      this.claim(this.streams.logs);
+      for (const name of STREAM_ORDER) {
+        this.claim(this.streams[name]);
+      }
     }
 
     // A batch in the queue counts too. If not, the exit flush sends it again under a new id.
     await Promise.all([...this.open].map((pending) => pending.done));
   }
 
+  /**
+   * Counts the records that wait and the records in requests.
+   * @returns Records in the buffers and the queue, and records in dispatch.
+   */
+  counts(): { pending: number; inFlight: number } {
+    const records = (items: Iterable<Pending>): number => {
+      let total = 0;
+      for (const item of items) {
+        total += item.batch.records.length;
+      }
+      return total;
+    };
+
+    // Each batch in the queue is also in the open set.
+    const queued = records(this.queue);
+
+    const buffered = STREAM_ORDER.reduce((total, name) => total + this.streams[name].size, 0);
+
+    return { pending: buffered + queued, inFlight: records(this.open) - queued };
+  }
+
   /** Stops the flush timers and refuses further records. */
   destroy(): void {
     this.stopped = true;
-    this.streams.logs.stop();
-    this.streams.metrics.stop();
+    for (const name of STREAM_ORDER) {
+      this.streams[name].stop();
+    }
     this.queue.length = 0;
 
     // destroy() drops each queued batch. Release each flushPending that waits for one.
@@ -258,13 +299,13 @@ export class LogPipeline {
   /**
    * Sorts a record into its stream. Sampling already ran. RecordBuilder samples a local
    * record. The runtime samples a forwarded record. This method catches each fault.
-   * A record without `attributes` makes isMetric throw. An uncaught throw goes into the
+   * A record without `attributes` makes streamOf throw. An uncaught throw goes into the
    * log call of the caller.
    * @param record Record to sort.
    */
   private route(record: LogRecord): void {
     try {
-      const stream = isMetric(record) ? this.streams.metrics : this.streams.logs;
+      const stream = this.streams[streamOf(record)];
 
       // ERROR and FATAL records bypass sampling upstream. This ceiling is their only
       // limit.

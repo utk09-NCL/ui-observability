@@ -15,6 +15,7 @@ export type DiagnosticCode =
   | "record.dropped_by_level"
   | "record.dropped_by_sampling"
   | "record.dropped_by_ceiling"
+  | "record.dropped_by_processor"
   | "record.dropped_by_redact"
   | "record.dropped_boot_buffer_full"
   | "record.dropped_malformed"

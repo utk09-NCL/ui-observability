@@ -11,6 +11,7 @@ import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 import { ecsSerializer } from "./ecs";
 import { otlpSerializer } from "./otlp";
 import { otlpMetricsSerializer } from "./otlp-metrics";
+import { otlpTracesSerializer } from "./otlp-traces";
 
 /**
  * Returns the implementation for a resolved serializer option.
@@ -30,34 +31,50 @@ export function serializerFor(choice: SerializerChoice): LogSerializer {
 }
 
 /**
- * Gives the kind of a batch. Only a batch of metric records goes to metricsEndpoint. A stored
- * record can be corrupt. It then is not a metric.
+ * Gives the kind of a batch. Only a batch of metric records goes to metricsEndpoint. A batch of
+ * span records is always "traces". It must not go to endpoint as log records. A stored record
+ * can be corrupt. It then is not a metric or a span.
  * @param batch Batch to test.
  * @param config Active configuration.
- * @returns "metrics" with metricsEndpoint set and only metric records, else "logs".
+ * @returns "metrics" with metricsEndpoint set and only metric records, "traces" for only span
+ * records, else "logs".
  */
 export function batchKind(batch: LogBatch, config: ResolvedConfig): BatchKind {
-  const metrics =
-    config.metricsEndpoint !== "" &&
+  const only = (type: string): boolean =>
     batch.records.length > 0 &&
-    batch.records.every((record) => attributeOf(record, ATTR_LOG_TYPE) === "metric");
+    batch.records.every((record) => attributeOf(record, ATTR_LOG_TYPE) === type);
 
-  return metrics ? "metrics" : "logs";
+  if (config.metricsEndpoint !== "" && only("metric")) {
+    return "metrics";
+  }
+
+  return only("span") ? "traces" : "logs";
 }
 
 /**
  * Gives the endpoint of a batch kind.
  * @param kind Kind of the batch.
  * @param config Active configuration.
- * @returns metricsEndpoint for a metrics batch, else endpoint.
+ * @returns metricsEndpoint for a metrics batch, tracesEndpoint for a traces batch, else
+ * endpoint. "" means that the batch has no destination.
  */
 export function endpointFor(kind: BatchKind, config: ResolvedConfig): string | null {
-  return kind === "metrics" ? config.metricsEndpoint : config.endpoint;
+  if (kind === "metrics") {
+    return config.metricsEndpoint;
+  }
+
+  return kind === "traces" ? config.tracesEndpoint : config.endpoint;
 }
+
+/** Serializer of each batch kind that does not use the configured serializer. */
+const SIGNAL_SERIALIZERS: Partial<Record<BatchKind, LogSerializer>> = {
+  metrics: otlpMetricsSerializer,
+  traces: otlpTracesSerializer,
+};
 
 /**
  * Serializes a batch. It reports a serializer that throws, and the caller drops the batch.
- * A metrics batch gets the OTLP metrics format.
+ * A metrics batch gets the OTLP metrics format. A traces batch gets the OTLP traces format.
  * @param config Active configuration.
  * @param batch Batch to serialize.
  * @param diagnostics Diagnostics reporter.
@@ -72,9 +89,7 @@ export function serializeBatch(
 ): SerializedBatch | undefined {
   try {
     const serializer =
-      batchKind(batch, config) === "metrics"
-        ? otlpMetricsSerializer
-        : serializerFor(config.serializer);
+      SIGNAL_SERIALIZERS[batchKind(batch, config)] ?? serializerFor(config.serializer);
     return serializer.serialize(batch.records);
   } catch (error) {
     diagnostics.report("transport.serialize_failed", message, { batchId: batch.id }, error);

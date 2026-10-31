@@ -51,6 +51,7 @@ function setup(value: unknown = true) {
     tracing: new TraceEngine(diagnostics),
     once: { webVitals: false, navigationTiming: false, longFrames: false },
     recordMetric: vi.fn(),
+    recordSpan: vi.fn(),
   };
   ctx.config.capture.console = value as CaptureOptions["console"];
 

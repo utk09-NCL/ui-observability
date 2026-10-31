@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
+import { WebSocketCapture } from "../src/capture/web-socket";
 import {
   BUS_MAX_BOOT_BUFFER_ACTIONS,
   BUS_MAX_BOOT_BUFFER_RECORDS,
   CONSOLE_DEFAULT_STYLES as STYLES,
   METRIC_DEFAULT_BOUNDARIES,
+  SESSION_ID_KEY,
   TELEMETRY_SDK_VERSION,
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
@@ -17,9 +19,11 @@ import { Sender } from "../src/core/sender";
 import type { LogBatch } from "../src/models/batch";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
+import type { CapturePlugin, PluginContext } from "../src/models/plugin";
 import { TransportError } from "../src/transport/errors";
 import { ExitFlush } from "../src/transport/exit-flush";
 import { RetryEngine } from "../src/transport/retry-engine";
+import { isLibraryRequest } from "../src/utils/library-request";
 import {
   adoptJourney,
   configure,
@@ -33,12 +37,14 @@ import {
   getJourneyToken,
   getLogger,
   getQueueDepth,
+  getStats,
   getTraceHeaders,
   histogram,
   info,
   logAction,
   logEvent,
   logMetric,
+  newSession,
   registerWorker,
   removeContext,
   setContext,
@@ -1502,6 +1508,74 @@ describe("queue depth", () => {
   });
 });
 
+describe("delivery stats", () => {
+  it("counts a record that waits, the stored batches and the last accepted send", async () => {
+    configure(base);
+    await ready();
+    await flush();
+    const storage = runtime()["sender"]?.["storage"];
+    if (!storage) {
+      throw new Error("sender was not built");
+    }
+    vi.spyOn(storage, "count").mockResolvedValue(2);
+    const start = await getStats();
+
+    info("waits");
+    const waiting = await getStats();
+
+    expect(waiting).toMatchObject({ pending: start.pending + 1, inFlight: 0, stored: 2 });
+
+    const before = Date.now();
+    await flush();
+
+    expect((await getStats()).lastSendAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it("reports empty counts for a forwarder, which sends nothing itself", async () => {
+    configure({ ...base, bus: { mode: "forwarder" } });
+    await ready();
+
+    await expect(getStats()).resolves.toEqual({
+      pending: 0,
+      inFlight: 0,
+      stored: 0,
+      lastSendAt: null,
+    });
+  });
+});
+
+describe("newSession", () => {
+  it("gives later records a new session id, ends the journey and starts a new trace", async () => {
+    configure(base);
+    await ready();
+    const before = runtime().identity.sessionId;
+    startJourney("checkout");
+    const traceBefore = getTraceHeaders().traceparent;
+
+    newSession();
+    info("after");
+
+    const after = runtime().identity.sessionId;
+    expect(after).not.toBe(before);
+    expect(localStorage.getItem(SESSION_ID_KEY)).toContain(after);
+    expect(currentJourney()).toBeNull();
+    expect(getTraceHeaders().traceparent).not.toBe(traceBefore);
+    expect(buffered().at(-1)?.resource["session.id"]).toBe(after);
+  });
+
+  it("does nothing after shutdown", async () => {
+    configure(base);
+    await ready();
+    const stopped = runtime();
+    const before = stopped.identity.sessionId;
+    await shutdown();
+
+    newSession();
+
+    expect(stopped.identity.sessionId).toBe(before);
+  });
+});
+
 describe("OneLogger", () => {
   it("mirrors a record below minLevel to the console and does not send it", () => {
     // minLevel limits what the library sends. The console level limits what it prints.
@@ -1550,6 +1624,20 @@ describe("OneLogger", () => {
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     getLogger("pay").info("charged 4111", { card: "4111" });
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("prints no line when a processor drops the record before redact", () => {
+    configure({
+      ...base,
+      console: "DEBUG",
+      processors: [() => null],
+      redact: (record) => record,
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    getLogger("pay").info("charged 4111");
 
     expect(spy).not.toHaveBeenCalled();
   });
@@ -2219,6 +2307,174 @@ describe("runtime reconfigure", () => {
     info("console only");
 
     expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
+  });
+});
+
+describe("capture plugins", () => {
+  /**
+   * Builds a plugin with spies.
+   * @param name Name of the plugin.
+   * @returns The plugin and the contexts that install() got.
+   */
+  const spyPlugin = (name = "visibility") => {
+    const seen: PluginContext[] = [];
+    const plugin = {
+      name,
+      install: vi.fn((ctx: PluginContext) => {
+        seen.push(ctx);
+      }),
+      uninstall: vi.fn(),
+    } satisfies CapturePlugin;
+
+    return { plugin, seen };
+  };
+
+  it("installs a plugin with the public tools, and uninstalls it at shutdown", async () => {
+    const { plugin, seen } = spyPlugin();
+    configure({ ...base, capture: { plugins: [plugin] } });
+    await vi.waitFor(() => {
+      expect(plugin.install).toHaveBeenCalledOnce();
+    });
+    const [ctx] = seen;
+    const emit = vi.spyOn(runtime(), "emit");
+
+    ctx.logger.info("seen");
+    ctx.addBreadcrumb("step", { n: 1 });
+    ctx.counter("plugin.count").add(2);
+    ctx.histogram("plugin.time").record(5);
+    await flush();
+
+    const records = emit.mock.calls.map(([record]) => record);
+    expect(records.find((record) => record?.body === "seen")?.attributes["app.namespace"]).toBe(
+      "uiobs.capture.visibility",
+    );
+    expect(
+      records
+        .filter((record) => record?.attributes["log.type"] === "metric")
+        .map((record) => record?.body),
+    ).toEqual(expect.arrayContaining(["plugin.count", "plugin.time"]));
+    expect(runtime().breadcrumbs.snapshot().at(-1)).toMatchObject({
+      category: "custom",
+      message: "step",
+    });
+    expect(ctx.ownRequest(() => isLibraryRequest())).toBe(true);
+
+    await shutdown();
+
+    expect(plugin.uninstall).toHaveBeenCalledOnce();
+  });
+
+  it("reinstalls for a new plugin object, and not for the same list", async () => {
+    const { plugin } = spyPlugin();
+    configure({ ...base, capture: { plugins: [plugin] } });
+    await ready();
+    const install = vi.spyOn(
+      runtime() as unknown as { installCaptures: () => Promise<void> },
+      "installCaptures",
+    );
+
+    configure({ capture: { plugins: [plugin] } });
+    expect(install).not.toHaveBeenCalled();
+
+    configure({ capture: { plugins: [spyPlugin().plugin] } });
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it("reports a plugin that throws in install, and installs the others", async () => {
+    const broken: CapturePlugin = {
+      name: "broken",
+      install: () => {
+        throw new Error("plugin bug");
+      },
+      uninstall: () => undefined,
+    };
+    const { plugin } = spyPlugin();
+
+    configure({ ...base, capture: { plugins: [broken, plugin] } });
+    await vi.waitFor(() => {
+      expect(plugin.install).toHaveBeenCalledOnce();
+    });
+
+    expect(getDiagnosticCounters()["capture.install_failed"]).toBe(1);
+  });
+
+  it("loads the WebSocket capture for capture.webSocket", async () => {
+    const install = vi.spyOn(WebSocketCapture.prototype, "install");
+
+    configure({ ...base, capture: { webSocket: true } });
+
+    await vi.waitFor(() => {
+      expect(install).toHaveBeenCalledOnce();
+    });
+  });
+});
+
+describe("spans", () => {
+  const TRACES = "https://x/v1/traces";
+
+  /**
+   * Reads the span records that the runtime emitted.
+   * @param emit Spy on emit.
+   * @returns The span records.
+   */
+  const spansOf = (emit: { mock: { calls: [LogRecord | null][] } }): LogRecord[] =>
+    emit.mock.calls
+      .map(([record]) => record)
+      .filter((record): record is LogRecord => record?.attributes["log.type"] === "span");
+
+  it("records a client span for a propagated request, and the root span on rotate", async () => {
+    configure({
+      ...base,
+      tracesEndpoint: TRACES,
+      capture: { fetch: true, propagateTraceHeaderTo: ["https://api.internal"] },
+    });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].length).toBeGreaterThan(0);
+    });
+    const emit = vi.spyOn(runtime(), "emit");
+    const root = runtime().tracing.resolve();
+
+    await fetch("https://api.internal/orders");
+    startTrace();
+
+    const [client, rootSpan] = spansOf(emit);
+    expect(client).toMatchObject({
+      traceId: root.traceId,
+      body: "GET",
+      attributes: expect.objectContaining({
+        "span.kind": "client",
+        "span.parent_id": root.spanId,
+        "app.namespace": "uiobs.traces",
+      }) as Record<string, unknown>,
+    });
+    expect(rootSpan).toMatchObject({
+      traceId: root.traceId,
+      spanId: root.spanId,
+      body: "ui.start",
+      attributes: expect.objectContaining({ "span.kind": "internal" }) as Record<string, unknown>,
+    });
+  });
+
+  it("records no span without tracesEndpoint, or for a trace that sampling drops", async () => {
+    configure(base);
+    await ready();
+    const emit = vi.spyOn(runtime(), "emit");
+
+    startTrace();
+    configure({ tracesEndpoint: TRACES, sampling: { defaultRate: 0 } });
+    startTrace();
+
+    expect(spansOf(emit)).toEqual([]);
+  });
+
+  it("ends the root span at shutdown", async () => {
+    configure({ ...base, tracesEndpoint: TRACES });
+    await ready();
+    const emit = vi.spyOn(runtime(), "emit");
+
+    await shutdown();
+
+    expect(spansOf(emit).map((record) => record.body)).toEqual(["ui.start"]);
   });
 });
 

@@ -363,6 +363,29 @@ describe("HttpTransport", () => {
     expect(t.lastHeaders()).toBeUndefined();
   });
 
+  it("sends a batch of span records to tracesEndpoint, and nowhere without it", async () => {
+    const fetchMock = answer(204);
+    const live = config({
+      tracesEndpoint: "https://x/v1/traces",
+      headers: () => ({ authorization: "Bearer tenant-a" }),
+    });
+    const t = new HttpTransport(live, diagnostics());
+    const sent = batch(1);
+    sent.records[0].attributes = { "log.type": "span" };
+
+    await t.send(sent);
+    expect(t.lastHeaders()).toEqual({ authorization: "Bearer tenant-a" });
+
+    live.tracesEndpoint = "https://tenant-b/v1/traces";
+    expect(t.lastHeaders()).toBeUndefined();
+
+    live.tracesEndpoint = "";
+    await t.send(sent);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://x/v1/traces"]);
+    expect(Object.keys(JSON.parse(initOf(fetchMock).body as string))).toEqual(["resourceSpans"]);
+  });
+
   it("gives no cached headers when configure() changes the endpoint during headers()", async () => {
     // headers() can give the token of the old tenant after the switch.
     answer(204);

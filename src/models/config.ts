@@ -9,6 +9,7 @@
 import type { DiagnosticHandler } from "../core/diagnostics";
 import type { DropSummary } from "./drop";
 import type { LogLevel, LogRecord } from "./log-record";
+import type { CapturePlugin } from "./plugin";
 import type { LogSerializer } from "./serializer";
 
 /** Backing store for undelivered records. "auto" picks the best one the host supports. */
@@ -401,6 +402,17 @@ export interface CaptureOptions {
    */
   propagateTraceHeaderTo: (string | RegExp)[];
   /**
+   * Record the open, close and error events of each WebSocket, and count its messages in the
+   * counter `ui.websocket.messages`. The library never records the content of a message.
+   * @default false
+   */
+  webSocket: boolean;
+  /**
+   * Capture modules from the app. A new list replaces the list in force.
+   * @default []
+   */
+  plugins: CapturePlugin[];
+  /**
    * Supplies the `web-vitals` module without a hard dependency on the package.
    * @returns A promise that resolves to the `web-vitals` module.
    */
@@ -446,13 +458,14 @@ export interface ResolvedConsole {
 
 /**
  * Kind of a batch. A batch of metric records is "metrics" when `metricsEndpoint` is set. Its body
- * is then an OTLP `ExportMetricsServiceRequest`.
+ * is then an OTLP `ExportMetricsServiceRequest`. A batch of span records is "traces". Its body is
+ * an OTLP `ExportTraceServiceRequest`.
  */
-export type BatchKind = "logs" | "metrics";
+export type BatchKind = "logs" | "metrics" | "traces";
 
 /** One batch that the library gives to a custom transport. */
 export interface TransportRequest {
-  /** Kind of the batch. Send a "metrics" body to your metrics endpoint. */
+  /** Kind of the batch. Send a "metrics" body to your metrics endpoint, and a "traces" body to your traces endpoint. */
   kind: BatchKind;
   /** Serialized batch from the configured serializer. The library does not compress it. */
   body: string;
@@ -517,6 +530,16 @@ export interface ObservabilityConfig {
    * @default ""
    */
   metricsEndpoint?: string;
+
+  /**
+   * OTLP traces endpoint URL, for example `"https://ingest.example/v1/traces"`. With this key, the
+   * library records one root span for each trace of the library, and one CLIENT span for each
+   * request that gets `traceparent`. It sends them there as an OTLP `ExportTraceServiceRequest`.
+   * Without it, the library sends no span. The key needs `serializer: "otlp"`. Set `""` to turn
+   * it off.
+   * @default ""
+   */
+  tracesEndpoint?: string;
 
   /**
    * The library reports this value as `service.name`.
@@ -657,6 +680,13 @@ export interface ObservabilityConfig {
   contextProvider?: () => Record<string, unknown> | undefined;
 
   /**
+   * Changes or drops a record. The processors run in list order, before `redact`. A processor has
+   * the contract of `redact`. If it throws or returns a value that is not a record, the library
+   * drops the record.
+   */
+  processors?: ((record: LogRecord) => LogRecord | null)[];
+
+  /**
    * Rewrites or drops a record before the library sends it. If the hook throws or returns a
    * value that is not a record, the library drops the record.
    * @param record The record that the library is about to send.
@@ -671,8 +701,8 @@ export interface ObservabilityConfig {
   onDiagnostic?: DiagnosticHandler;
 
   /**
-   * Receives a summary when the library loses records that it built. Sampling, `minLevel` and
-   * `redact` do not cause a loss. The library joins the losses of one reason in one task.
+   * Receives a summary when the library loses records that it built. Sampling, `minLevel`,
+   * `processors` and `redact` do not cause a loss. The library joins the losses of one reason in one task.
    * Do not log through the library in the hook. A record from the hook can evict a stored batch.
    * A batch that storage evicts during its send can still reach the server.
    * @param summary Reason, record count, batch ids, journey ids and action names of the loss.
@@ -687,6 +717,8 @@ export interface ResolvedConfig {
   endpoint: string | null;
   /** OTLP metrics endpoint URL. An empty string sends metric records as log records. */
   metricsEndpoint: string;
+  /** OTLP traces endpoint URL, or "" when the library sends no span. */
+  tracesEndpoint: string;
   /** The library reports this value as `service.name`. */
   serviceName: string;
   /** The library reports this value as `service.version`. */
@@ -699,6 +731,8 @@ export interface ResolvedConfig {
   minLevel: LogLevel;
   /** Minimum level for each namespace prefix. */
   minLevels: Record<string, LogLevel>;
+  /** Hooks that change or drop a record before `redact`. */
+  processors: NonNullable<ObservabilityConfig["processors"]>;
   /** "gzip" compresses a payload that is larger than the compression threshold. */
   compression: "gzip" | "none";
   /** The library passes this value to `fetch`. */

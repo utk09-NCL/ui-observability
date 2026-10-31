@@ -87,6 +87,37 @@ function printMetrics(payload, batchId) {
   }
 }
 
+// One line for each span of an ExportTraceServiceRequest. A root span has no parent.
+function printTraces(payload, batchId) {
+  const lines = [];
+  for (const rs of payload.resourceSpans ?? []) {
+    const resAttrs = kv(rs.resource?.attributes);
+    for (const ss of rs.scopeSpans ?? []) {
+      for (const span of ss.spans ?? []) {
+        const ms =
+          Number((BigInt(span.endTimeUnixNano) - BigInt(span.startTimeUnixNano)) / 1000n) / 1000;
+        lines.push(
+          [
+            iso(span.startTimeUnixNano),
+            `[${resAttrs["service.name"]}]`,
+            span.kind === 3 ? "[client]" : "[internal]",
+            span.name,
+            `${ms}ms`,
+            `trace=${String(span.traceId).slice(0, 8)}`,
+            `span=${String(span.spanId).slice(0, 8)}`,
+            `parent=${String(span.parentSpanId ?? "-").slice(0, 8)}`,
+            span.status?.code === 2 ? "ERROR" : "",
+          ].join("  "),
+        );
+      }
+    }
+  }
+  console.log(`[traces] batch=${batchId} spans=${lines.length}`);
+  for (const line of lines) {
+    console.log(line);
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -121,9 +152,11 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // The library sends a batch of metric records to /v1/metrics when metricsEndpoint is set.
+  // The library sends a batch of metric records to /v1/metrics when metricsEndpoint is set, and
+  // a batch of span records to /v1/traces when tracesEndpoint is set.
   const isMetrics = url.pathname === "/v1/metrics";
-  if ((url.pathname !== "/v1/logs" && !isMetrics) || req.method !== "POST") {
+  const isTraces = url.pathname === "/v1/traces";
+  if ((url.pathname !== "/v1/logs" && !isMetrics && !isTraces) || req.method !== "POST") {
     res.writeHead(404).end();
     return;
   }
@@ -188,6 +221,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (isTraces) {
+    printTraces(payload, batchId);
+    res.writeHead(204).end();
+    return;
+  }
+
   // Per-request record count: the per-record lines below cannot show where one
   // batch ends and the next begins.
   const batchSize = (payload.resourceLogs ?? []).reduce(
@@ -222,5 +261,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`mock ingest listening on http://localhost:${PORT}/v1/logs and /v1/metrics`);
+  console.log(
+    `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics and /v1/traces`,
+  );
 });

@@ -4,6 +4,7 @@
 
 import type { BreadcrumbBuffer } from "../core/breadcrumbs";
 import type { Diagnostics } from "../core/diagnostics";
+import type { SpanData } from "../core/spans";
 import type { ResolvedConfig } from "../models/config";
 import type { MetricType } from "../models/log-record";
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
@@ -91,6 +92,8 @@ export interface CaptureContext {
   once: CaptureOnce;
   /** Adds a value to a counter or a histogram of the runtime. */
   recordMetric: (def: InstrumentDef, value: number, attributes?: MetricAttributes) => void;
+  /** Records a span. The runtime drops it when spans are off. */
+  recordSpan: (span: SpanData) => void;
 }
 
 /** Lifecycle interface for browser instrumentation modules. */

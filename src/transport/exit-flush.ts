@@ -22,7 +22,7 @@ import { runAsLibraryRequest } from "../utils/library-request";
 import { getFin } from "../utils/openfin";
 import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
-import { batchKind, serializeBatch } from "./serializers/select";
+import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
 /** This type names the lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
@@ -185,9 +185,13 @@ export class ExitFlush {
     this.keepaliveBytes = 0;
 
     for (const batch of this.deps.drainForExit()) {
-      // resolveConfig keeps only a valid absolute metricsEndpoint.
-      const target = batchKind(batch, config) === "metrics" ? config.metricsEndpoint : url.href;
-      this.flushBatch(batch, reason, new URL(target));
+      // resolveConfig keeps only a valid absolute metricsEndpoint and tracesEndpoint. A traces
+      // batch without tracesEndpoint has no destination.
+      const kind = batchKind(batch, config);
+      const target = kind === "logs" ? url.href : endpointFor(kind, config);
+      if (target) {
+        this.flushBatch(batch, reason, new URL(target));
+      }
     }
   }
 

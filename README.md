@@ -89,7 +89,7 @@ configure({
 - `identity: "memory"` writes no key to `localStorage` or `sessionStorage`.
 - `console` and `minLevel` are independent. `console` sets what the library prints. `minLevel` sets what the library sends.
 - The console output does not depend on the bus or the endpoint.
-- With a `redact` hook, the console shows only what `redact` returns. A record that `redact` drops prints no line. A record below `minLevel` shows its message and error only, because the library does not build it.
+- With a `redact` hook, the console shows only what `redact` returns. A record that a processor or `redact` drops prints no line. A record below `minLevel` shows its message and error only, because the library does not build it.
 
 ### Console Output
 
@@ -159,7 +159,8 @@ configure({
 - A rejected promise counts as a network error. The library sends the batch again later. A call that does not settle in 15 seconds counts as a timeout.
 - The library does not compress `request.body`. Compress it in your transport if necessary.
 - `request.records` holds the built records after `redact`. Do not change them, because the retry engine can send them again.
-- `request.kind` is `"metrics"` for a batch of metric records when `metricsEndpoint` is set. `request.body` is then an OTLP `ExportMetricsServiceRequest`. Send it to your metrics endpoint. Each other batch has the kind `"logs"`.
+- `request.kind` is `"metrics"` for a batch of metric records when `metricsEndpoint` is set. `request.body` is then an OTLP `ExportMetricsServiceRequest`. Send it to your metrics endpoint.
+- `request.kind` is `"traces"` for a batch of span records. `request.body` is then an OTLP `ExportTraceServiceRequest`. Send it to your traces endpoint. Each other batch has the kind `"logs"`.
 - Without `transportOnExit`, the last batch goes to the emergency queue when the page closes. The next page load sends it.
 - With `storage: "none"`, the next page load cannot keep that batch. Set `transportOnExit`, or the library loses the last batch.
 - The library ignores a `retryAfterMs` or a `maxBytes` that is not a finite number. It uses 0 for a negative value.
@@ -281,14 +282,16 @@ The level methods give records with `log.type: "log"`. Records of the library it
 | `startTrace()`                  | Rotates the ambient trace context.                                                                                                                                                                        |
 | `getTraceHeaders()`             | Returns the W3C `traceparent` header for an outgoing request.                                                                                                                                             |
 | `registerWorker(worker)`        | Attaches a Web Worker or MessagePort to the bus.                                                                                                                                                          |
+| `newSession()`                  | Starts a new session in this tab, for example after a logout. It ends the active journey and starts a new trace. Other tabs read the new id at their next startup.                                        |
 
 ### Delivery & Diagnostics
 
-| Function                  | Description                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `flush()`                 | Sends the records held in the pipeline or the forward buffer, and waits for the batches in flight. |
-| `getQueueDepth()`         | Returns the number of batches in storage.                                                          |
-| `getDiagnosticCounters()` | Returns the count of each diagnostic code.                                                         |
+| Function                  | Description                                                                                                                                                                                                                                                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `flush()`                 | Sends the records held in the pipeline or the forward buffer, and waits for the batches in flight.                                                                                                                                                                                                                       |
+| `getQueueDepth()`         | Returns the number of batches in storage.                                                                                                                                                                                                                                                                                |
+| `getStats()`              | Returns `{ pending, inFlight, stored, lastSendAt }`. `pending` counts the records in the buffers. `inFlight` counts the records in requests. `stored` counts the batches in storage. `lastSendAt` is the epoch time in ms of the last batch that the server accepted, or null. A forwarder reports only its own buffers. |
+| `getDiagnosticCounters()` | Returns the count of each diagnostic code.                                                                                                                                                                                                                                                                               |
 
 ---
 
@@ -300,6 +303,7 @@ No key is required. Set `endpoint` to send records. A value of the wrong type or
 | -------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`                       | `""`         | HTTP endpoint that receives the batches. `null` selects console-only mode. `""` reports `config.invalid`.                                                                                                                                                                                                                                                                                                                                               |
 | `metricsEndpoint`                | `""`         | OTLP metrics endpoint, for example `https://ingest.example/v1/metrics`. With it, each batch of metric records goes there as an OTLP `ExportMetricsServiceRequest`. Without it, metric records are log records on `endpoint`. It needs `serializer: "otlp"`, and `endpoint` or `transport`.                                                                                                                                                              |
+| `tracesEndpoint`                 | `""`         | OTLP traces endpoint, for example `https://ingest.example/v1/traces`. With it, the library records spans and sends them there as an OTLP `ExportTraceServiceRequest`. Without it, the library sends no span. It needs `serializer: "otlp"`, and `endpoint` or `transport`. See [Spans](#spans).                                                                                                                                                         |
 | `serviceName`                    | `""`         | `service.name` on every record.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `serviceVersion`                 | `""`         | `service.version` on every record.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `environment`                    | `""`         | `deployment.environment` on every record.                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -344,9 +348,10 @@ No key is required. Set `endpoint` to send records. A value of the wrong type or
 | `transportOnExit(request)`       | `undefined`  | Sends the last batch while the page closes. It must return a boolean and must not wait.                                                                                                                                                                                                                                                                                                                                                                 |
 | `otelLoader()`                   | `undefined`  | Loads `@opentelemetry/api`. Without it, OTel is off.                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `contextProvider()`              | `undefined`  | Returns attributes for each record that sampling keeps, for example the current route. Its values override `setContext()` values. The logger scope and the call payload override its values. Keep it fast and synchronous. A provider that throws reports `handler.threw`. A value that is not an object reports `config.invalid`. The record is still built.                                                                                           |
+| `processors`                     | `[]`         | Functions that change or drop a record. They run in list order, before `redact`. A processor has the contract of `redact`. Return the record or a new record to keep it, or `null` to drop it. If a processor throws or returns a value that is not a record, the library drops the record. It counts `record.dropped_by_processor`. A new list replaces the list in force.                                                                             |
 | `redact(record)`                 | `undefined`  | Changes a record before the library sends or prints it. Return `null` to drop the record. If the hook throws or returns a value that is not a record, the library drops the record. It counts `record.dropped_by_redact`.                                                                                                                                                                                                                               |
 | `onDiagnostic(event)`            | `undefined`  | Receives the faults of the library itself.                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `onDrop(summary)`                | `undefined`  | Receives a summary when the library loses records that it built. The summary has `reason`, `records`, `batchIds`, `journeyIds` and `actions`. Sampling, `minLevel` and `redact` do not cause a loss. Do not log through the library in the hook. A record from the hook can evict a stored batch. A batch that storage evicts during its send can still reach the server.                                                                               |
+| `onDrop(summary)`                | `undefined`  | Receives a summary when the library loses records that it built. The summary has `reason`, `records`, `batchIds`, `journeyIds` and `actions`. Sampling, `minLevel`, `processors` and `redact` do not cause a loss. Do not log through the library in the hook. A record from the hook can evict a stored batch. A batch that storage evicts during its send can still reach the server.                                                                 |
 
 ### Auto-Capture Options
 
@@ -368,6 +373,8 @@ capture: {
   fullUrls: false,       // Keep query strings and fragments on recorded URLs
   ignoreUrls: [],        // URL patterns excluded from network capture
   propagateTraceHeaderTo: [], // Origins, or RegExp patterns, that receive traceparent
+  webSocket: false,      // WebSocket open, close and error, and ui.websocket.messages
+  plugins: [],           // Capture plugins of your app
 }
 ```
 
@@ -390,9 +397,61 @@ capture: {
 - To record an argument, the library reads each property, also a getter. A getter with a side effect then runs during the console call.
 - On `shutdown()`, the library restores each method. If another script wrapped the method later, the library leaves it and reports `capture.install_failed`.
 
+`webSocket` records the lifecycle of each WebSocket that the app opens after the capture loads.
+
+- `websocket.open` and `websocket.close` are events. `websocket.error` is a WARN record. Each has `url.full` and `server.address`.
+- `websocket.close` adds `websocket.close.code` and `websocket.close.clean`.
+- `url.full` has no user info, no query and no fragment, also with `fullUrls`. A socket URL often holds a token.
+- The counter `ui.websocket.messages` counts the messages, with `network.io.direction` (`transmit` or `receive`) and `server.address`.
+- The library never reads the content of a message.
+- The library records at most 20 lifecycle records in each 10-second window. The counter counts each message.
+
+`plugins` adds your own capture modules. A plugin is an object with `name`, `install(ctx)` and `uninstall()`.
+
+- `ctx` gives `logger`, `counter()`, `histogram()`, `addBreadcrumb()` and `ownRequest(fn)`. The logger namespace is `uiobs.capture.<name>`.
+- `ownRequest(fn)` runs `fn`. The network capture does not record a request that `fn` starts before its first `await`, and does not add `traceparent` to it.
+- A `configure()` that changes the capture section calls `uninstall()`, then `install(ctx)` again. `shutdown()` calls `uninstall()`.
+- If `install()` or `uninstall()` throws, the library reports `capture.install_failed`. The other capture modules keep working.
+- The console-only runtime next to another version of the library installs no plugin.
+
+```ts
+import { type CapturePlugin, configure } from "@utk09/ui-observability";
+
+let onChange: (() => void) | undefined;
+
+const visibility: CapturePlugin = {
+  name: "visibility",
+  install(ctx) {
+    onChange = () => {
+      ctx.logger.logEvent("page.visibility", { state: document.visibilityState });
+    };
+    document.addEventListener("visibilitychange", onChange);
+  },
+  uninstall() {
+    if (onChange) {
+      document.removeEventListener("visibilitychange", onChange);
+    }
+  },
+};
+
+configure({ endpoint: "https://ingest.example/v1/logs", capture: { plugins: [visibility] } });
+```
+
 `fullUrls` is off by default. The library then cuts each recorded URL at the first `?` or `#`. This applies to the page URL, the request target and the URL of a failed resource. `ignoreUrls` and a RegExp in `propagateTraceHeaderTo` match the full URL.
 
 A string in `propagateTraceHeaderTo` is an origin, for example `"https://api.example"`. It matches a request to that origin only. A URL with a path gives its origin. A relative request URL resolves against the page. To match a path, use a RegExp. A RegExp tests the request URL in the form that the caller gives. Start each RegExp with `^`. Without it, `/\/api\//` also matches `https://vendor.example/api/`. For example, `/^https:\/\/api\.example\/v2\//` matches one path on one origin. `/^\/api\//` matches a relative request URL only.
+
+### Spans
+
+With `tracesEndpoint`, the library sends spans. The backend then has a root span for each trace of the library.
+
+- **Root span:** Each ambient trace has one root span of kind INTERNAL. It starts with the trace and ends when the trace rotates. Its name tells why the trace started: `ui.start`, `ui.interaction`, `ui.navigation` or `ui.trace`.
+- **Client span:** Each `fetch` or XHR request that gets `traceparent` from `capture.propagateTraceHeaderTo` has one span of kind CLIENT. The `traceparent` names the client span, and the root span is its parent. Its name is the HTTP method. Its attributes are `http.request.method`, `url.full`, `server.address`, `http.response.status_code` and `error.type`. A status of 0 or 400 and more sets the status ERROR.
+- **Sampling:** `sampling.defaultRate` samples each trace by its trace id. The whole trace stays or goes. `minLevel` does not apply to a span. For a trace that sampling drops, the `traceparent` has the sampled flag off. A downstream service then drops its spans too.
+- **Exit:** The exit flush and `shutdown()` end the root span of the active trace. The root span of a trace ends one time. A tab that becomes hidden ends it too, because a mobile OS can stop a hidden page.
+- **OpenTelemetry:** With `otelLoader`, a trace from the OpenTelemetry API keeps its own spans. The library sends no span for it.
+- `getTraceHeaders()` names the root span. Your server span is then a child of the root span.
+- Span records go through `processors` and `redact`. They also carry the context attributes of a record, for example `page.url` and `journey.id`.
 
 ### Browser Storage Keys
 
@@ -449,7 +508,7 @@ The ingest server must meet these requirements:
 3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours.
 4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`. The library waits 60 s at most.
 5. **Status codes:** `200`, `202` and `204` accept the batch. `413` makes the library split the batch. With a `headers` function, a `401` or `403` gets one more send with new headers. The library drops a batch that gets any other `4xx`.
-6. **Metrics endpoint (optional):** With `metricsEndpoint`, the library sends each batch of metric records there as an OTLP/JSON `ExportMetricsServiceRequest`. The rules 1 to 5 also apply to that endpoint. A throttle or a failed batch of one endpoint does not hold back the batches of the other endpoint. `headers` applies to both endpoints. Each point is a delta from the previous point of its attribute set. A histogram point with a negative value has no `sum`.
+6. **Metrics and traces endpoints (optional):** With `metricsEndpoint`, the library sends each batch of metric records there as an OTLP/JSON `ExportMetricsServiceRequest`. With `tracesEndpoint`, it sends each batch of span records there as an OTLP/JSON `ExportTraceServiceRequest`. The rules 1 to 5 also apply to these endpoints. A throttle or a failed batch of one endpoint does not hold back the batches of another endpoint. `headers` applies to each endpoint. Each point is a delta from the previous point of its attribute set. A histogram point with a negative value has no `sum`.
 7. **Remote sampling (optional):** To send sampling rules, add `X-UiObs-Sampling` to a `2xx` answer. Expose the header with `Access-Control-Expose-Headers: x-uiobs-sampling`.
 
 ---

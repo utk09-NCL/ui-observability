@@ -109,6 +109,21 @@ describe("Sender emergency import", () => {
   });
 });
 
+describe("Sender stats", () => {
+  it("counts a buffered record, then gives the time of the accepted send", async () => {
+    const { sender } = await setup();
+    sender.push(record("one"));
+
+    expect(sender.stats()).toEqual({ pending: 1, inFlight: 0, lastSendAt: null });
+
+    const before = Date.now();
+    await sender.flush();
+
+    expect(sender.stats()).toMatchObject({ pending: 0, inFlight: 0 });
+    expect(sender.stats().lastSendAt).toBeGreaterThanOrEqual(before);
+  });
+});
+
 describe("Sender shutdown", () => {
   it("sends the pending records with a normal request before the exit flush", async () => {
     const { sender } = await setup();

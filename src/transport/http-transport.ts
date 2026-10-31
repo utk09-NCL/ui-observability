@@ -49,6 +49,8 @@ interface CachedHeaders {
   endpoint: string | null;
   /** The metricsEndpoint in force when headers() ran. */
   metricsEndpoint: string;
+  /** The tracesEndpoint in force when headers() ran. */
+  tracesEndpoint: string;
   /** The headers. */
   headers: Record<string, string>;
 }
@@ -71,7 +73,8 @@ export class HttpTransport extends StatusTransport {
   private cachedHeaders: CachedHeaders | undefined;
 
   /**
-   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint.
+   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint. A traces batch goes to
+   * tracesEndpoint. A batch without an endpoint goes nowhere.
    * @param batch Batch to send.
    * @param onKeepalive Runs when a request of the batch starts with keepalive.
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
@@ -102,12 +105,13 @@ export class HttpTransport extends StatusTransport {
       return headers;
     }
 
-    // The headers apply to both endpoints. A change of either endpoint can be a tenant switch.
+    // The headers apply to each endpoint. A change of any endpoint can be a tenant switch.
     const cached = this.cachedHeaders;
     const current =
       cached?.source === headers &&
       cached.endpoint === this.config.endpoint &&
-      cached.metricsEndpoint === this.config.metricsEndpoint;
+      cached.metricsEndpoint === this.config.metricsEndpoint &&
+      cached.tracesEndpoint === this.config.tracesEndpoint;
 
     return current ? cached.headers : undefined;
   }
@@ -354,7 +358,7 @@ export class HttpTransport extends StatusTransport {
     }
 
     // Read the endpoints before the call. A configure() during the call then ends the cache.
-    const { endpoint, metricsEndpoint } = this.config;
+    const { endpoint, metricsEndpoint, tracesEndpoint } = this.config;
     const resolved = await this.diagnostics.guardAsync(
       "transport.http_error",
       "The headers() function threw an error.",
@@ -362,7 +366,13 @@ export class HttpTransport extends StatusTransport {
     );
 
     if (resolved) {
-      this.cachedHeaders = { source: headers, endpoint, metricsEndpoint, headers: resolved };
+      this.cachedHeaders = {
+        source: headers,
+        endpoint,
+        metricsEndpoint,
+        tracesEndpoint,
+        headers: resolved,
+      };
     }
 
     return resolved ?? {};
