@@ -163,13 +163,45 @@ export interface SamplingOptions {
 /** Bus settings. They control how this context finds, trusts, and sends messages to others. */
 export interface BusOptions {
   /**
+   * Rule for accepting child windows. "registered" requires a window registration.
+   * "trusted-origin" accepts child windows from a trusted origin.
+   * @default "registered"
+   */
+  sourcePolicy: "registered" | "trusted-origin";
+  /**
+   * Message checks. "strict" checks each record and control message.
+   * "envelope" checks the protocol tag only.
+   * @default "strict"
+   */
+  validation: "strict" | "envelope";
+  /**
+   * Maximum encoded bytes in one message. Set 0 for no size limit.
+   * @default 262144
+   */
+  maxMessageBytes: number;
+  /**
+   * Maximum records in one message. Set 0 for no record limit.
+   * @default 100
+   */
+  maxRecordsPerMessage: number;
+  /**
+   * Maximum messages from one source in one second. Set 0 for no rate limit.
+   * @default 100
+   */
+  maxMessagesPerSecond: number;
+  /**
+   * Maximum named sources to track, for example OpenFin identities. Set 0 for no limit.
+   * @default 256
+   */
+  maxTrackedSources: number;
+  /**
    * This context's role.
    * @default "auto"
    */
   mode: BusMode;
   /**
-   * Origins that can send postMessage records to this document.
-   * A document that gets records from a cross-origin iframe must list the iframe origin.
+   * Additional trusted parent origins. With sourcePolicy "trusted-origin", the list also
+   * permits child origins. A registered child uses the exact origin in its registration.
    * The library does not accept "null". A sandboxed frame must set `mode: "sender"`.
    * @default []
    */
@@ -314,11 +346,100 @@ export interface LimitOptions {
 /** Console method that the console capture can wrap. */
 export type CapturedConsoleMethod = "error" | "warn" | "info" | "log";
 
+/** Click settings. An object turns on capture. With true, capture uses the defaults below. */
+export interface InteractionOptions {
+  /**
+   * Record the textContent of the clicked element.
+   * @default false
+   */
+  text?: boolean;
+  /**
+   * Record a DOM selector. Its attributes can identify a user or an account.
+   * @default false
+   */
+  selector?: boolean;
+  /**
+   * CSS selector for regions to exclude. Set null to include all regions.
+   * @default "[data-observability-ignore]"
+   */
+  ignoreSelector?: string | null;
+  /**
+   * Maximum click text length, in characters.
+   * @default 50
+   */
+  maxTextChars?: number;
+}
+
+/** Cache settings. A logger that the app holds stays valid after removal from the cache. */
+export interface LoggerCacheOptions {
+  /**
+   * Maximum cached loggers. The cache removes the least recently used logger first.
+   * Set 0 for no cache. Set null for no cache limit.
+   * @default 256
+   */
+  maxEntries: number | null;
+}
+
+/** Identity of one delivery context. Do not put secrets or personal data in the id. */
+export interface SecurityContextOptions {
+  /** Stable id for delivery after a page reload. An empty id gives this runtime a new id. */
+  id: string;
+  /**
+   * Keep stored batches in separate contexts. With true, change delivery settings through
+   * rotateSecurityContext() instead of configure().
+   * @default true
+   */
+  isolation: boolean;
+}
+
+/** Delivery settings that the runtime replaces together when the security context changes. */
+export type DeliveryOptions = Pick<
+  ObservabilityConfig,
+  | "endpoint"
+  | "metricsEndpoint"
+  | "tracesEndpoint"
+  | "headers"
+  | "credentials"
+  | "transport"
+  | "transportOnExit"
+>;
+
+/** New security context. A delivery field that is not supplied resets to its default. */
+export interface SecurityContextUpdate {
+  /** New delivery context id. If not supplied, the runtime makes a new id. */
+  id?: string;
+  /** New delivery settings. A field that is not supplied resets to its default. */
+  delivery: DeliveryOptions;
+  /** New ambient attributes. If not supplied, the runtime removes the old attributes. */
+  context?: Record<string, unknown>;
+}
+
+/** Policy for old records. */
+export interface SecurityContextRotationOptions {
+  /**
+   * Rule for old records. "discard" removes them. "flush" tries delivery, then removes them.
+   * "retain" keeps them in the old context. "carry" gives them to the new context.
+   * @default "discard"
+   */
+  pending?: "discard" | "flush" | "retain" | "carry";
+  /**
+   * Maximum wait for a flush of old records, in milliseconds.
+   * @default 5000
+   */
+  timeoutMs?: number;
+}
+
 /**
  * What the library instruments automatically. By default, only `errors` and `rejections`
  * are on.
  */
 export interface CaptureOptions {
+  /**
+   * Changes a URL before capture records it. Applies to page, HTTP, resource and WebSocket URLs.
+   * @param url Original URL, before the default URL changes.
+   * @returns URL to record. Null, an invalid result or an exception gives an empty URL.
+   */
+  urlTransform?: (url: string) => string | null;
   /**
    * Log uncaught errors from `window.onerror`.
    * @default true
@@ -354,7 +475,7 @@ export interface CaptureOptions {
    * Log clicks and other interactions as breadcrumbs.
    * @default false
    */
-  interactions: boolean;
+  interactions: boolean | InteractionOptions;
   /**
    * Log route changes, including single-page-application navigation.
    * @default false
@@ -465,6 +586,10 @@ export type BatchKind = "logs" | "metrics" | "traces";
 
 /** One batch that the library gives to a custom transport. */
 export interface TransportRequest {
+  /** Abort signal for this delivery context. A custom transport must check it to cancel its work. */
+  signal?: AbortSignal;
+  /** Delivery context of this batch. */
+  routingContextId?: string;
   /** Kind of the batch. Send a "metrics" body to your metrics endpoint, and a "traces" body to your traces endpoint. */
   kind: BatchKind;
   /** Serialized batch from the configured serializer. The library does not compress it. */
@@ -512,8 +637,215 @@ export type Transport = (request: TransportRequest) => Promise<TransportResponse
  */
 export type ExitTransport = (request: TransportRequest) => boolean;
 
+/** Request timing, retry timing and delivery capacity. Durations are in milliseconds. */
+export interface DeliveryPolicy {
+  /**
+   * Maximum wait for one request. The value must be at least 1.
+   * @default 15000
+   */
+  requestTimeoutMs: number;
+  /**
+   * Maximum requests that have not completed. The value must be at least 1.
+   * @default 2
+   */
+  maxConcurrentRequests: number;
+  /**
+   * First retry delay. Set 0 for an immediate retry.
+   * @default 2000
+   */
+  retryBaseDelayMs: number;
+  /**
+   * Maximum retry delay. It must be at least retryBaseDelayMs.
+   * @default 60000
+   */
+  retryMaxDelayMs: number;
+  /**
+   * Wait before the next check for stored work.
+   * @default 30000
+   */
+  retryIdleDelayMs: number;
+  /**
+   * Maximum batches in one delivery pass. The value must be at least 1.
+   * @default 20
+   */
+  batchesPerDrain: number;
+}
+
+/** Record and byte limits for the live delivery buffers. */
+export interface BufferingPolicy {
+  /**
+   * Maximum records in the buffers and requests. Set 0 for no record limit.
+   * @default 10000
+   */
+  maxPendingRecords: number;
+  /**
+   * Maximum encoded JSON bytes in the buffers and requests. Set 0 for no byte limit.
+   * @default 16777216
+   */
+  maxPendingBytes: number;
+  /**
+   * Rule when a new record does not fit. Remove old records, drop the new record, or try storage.
+   * @default "drop-oldest"
+   */
+  overflow: "drop-oldest" | "drop-newest" | "persist";
+}
+
+/** Metric capacity in one collection interval. */
+export interface MetricsPolicy {
+  /**
+   * Maximum histogram boundaries. Set 0 for no limit.
+   * @default 50
+   */
+  maxHistogramBoundaries: number;
+  /**
+   * Maximum attribute sets per instrument. Extra sets use the overflow set. Set 0 for no limit.
+   * @default 100
+   */
+  maxSeries: number;
+  /**
+   * Maximum instrument names. Drop extra names. Set 0 for no limit.
+   * @default 1000
+   */
+  maxInstruments: number;
+}
+
+/** Session and trace timing. The runtime sets these values at startup. */
+export interface CorrelationPolicy {
+  /**
+   * Maximum idle time of a stored session, in milliseconds. Set 0 for no idle expiration.
+   * @default 1800000
+   */
+  sessionIdleMs: number;
+  /**
+   * Minimum wait between session activity writes, in milliseconds. Set 0 to write each time.
+   * @default 60000
+   */
+  sessionTouchMs: number;
+  /**
+   * Maximum idle time of an ambient trace, in milliseconds. Set 0 for no idle expiration.
+   * @default 300000
+   */
+  traceMaxAgeMs: number;
+}
+
+/** Rules for diagnostic reports and the console fallback. */
+export interface DiagnosticsPolicy {
+  /**
+   * Minimum wait between reports of one code, in milliseconds. Set 0 to report each event.
+   * @default 1000
+   */
+  throttleMs: number;
+  /**
+   * Print a fixed warning if onDiagnostic throws. Do not print the exception.
+   * @default false
+   */
+  consoleFallback: boolean;
+}
+
+/** Application storage settings. The runtime sets these values at startup. */
+export interface PersistencePolicy {
+  /**
+   * Namespace for batch storage and emergency queues. An empty value uses the previous storage keys.
+   * @default ""
+   */
+  namespace: string;
+}
+
+/** Resource and page fields that the SDK records. */
+export interface MetadataPolicy {
+  /**
+   * Record the page URL. With false, page.url is empty.
+   * @default true
+   */
+  pageUrl: boolean;
+  /**
+   * Include browser.user_agent in resource attributes.
+   * @default true
+   */
+  userAgent: boolean;
+  /**
+   * Include the OpenFin application uuid and window name in resource attributes.
+   * @default true
+   */
+  openfin: boolean;
+}
+
+/** Capture capacity, duplicate checks and rate limits. */
+export interface CapturePolicy {
+  /**
+   * Maximum breadcrumbs to keep. Set 0 to keep none.
+   * @default 50
+   */
+  breadcrumbs: number;
+  /**
+   * Time to suppress repeated errors, in milliseconds. Set 0 to report each error.
+   * @default 5000
+   */
+  errorDedupeMs: number;
+  /**
+   * Maximum error signatures to keep for duplicate checks. Set 0 for no limit.
+   * @default 200
+   */
+  maxErrorSignatures: number;
+  /**
+   * Maximum captured errors in one window. Set 0 for no limit.
+   * @default 20
+   */
+  errorsPerWindow: number;
+  /**
+   * Maximum captured console records in one window. Set 0 for no limit.
+   * @default 20
+   */
+  consolePerWindow: number;
+  /**
+   * Maximum long frames in one window. Set 0 for no limit.
+   * @default 20
+   */
+  longFramesPerWindow: number;
+  /**
+   * Maximum WebSocket events in one window. Set 0 for no limit.
+   * @default 20
+   */
+  webSocketPerWindow: number;
+  /**
+   * Rate limit window, in milliseconds. Set 0 to reset the window for each event.
+   * @default 10000
+   */
+  windowMs: number;
+  /**
+   * Maximum pipeline ERROR and FATAL records in one window. Set 0 for no limit.
+   * @default 500
+   */
+  errorCeiling: number;
+}
+
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
+  /** Capture capacity and rate limits. */
+  capturePolicy?: Partial<CapturePolicy>;
+  /** Resource and page fields to record. */
+  metadata?: Partial<MetadataPolicy>;
+  /** Application storage namespace. */
+  persistence?: Partial<PersistencePolicy>;
+  /** Diagnostic report and console fallback settings. */
+  diagnostics?: Partial<DiagnosticsPolicy>;
+  /** Session and trace timing. */
+  correlation?: Partial<CorrelationPolicy>;
+  /** Metric capacity in one interval. */
+  metrics?: Partial<MetricsPolicy>;
+  /** Live buffer capacity and the overflow rule. */
+  buffering?: Partial<BufferingPolicy>;
+  /** Request timing and delivery capacity. */
+  delivery?: Partial<DeliveryPolicy>;
+  /**
+   * Refuse changes through configure(). Call setConfigurationLocked(false) to permit changes again.
+   * @default false
+   */
+  lockConfiguration?: boolean;
+  /** Logger cache capacity. The app can change it until configuration is locked. */
+  loggerCache?: Partial<LoggerCacheOptions>;
+  /** Delivery identity and isolation rule. Use rotateSecurityContext() to change the identity. */
+  securityContext?: Partial<SecurityContextOptions>;
   /**
    * Ingest endpoint URL. Set `null` for console-only mode.
    * In console-only mode, the library sends nothing. It writes records to the console
@@ -673,8 +1005,9 @@ export interface ObservabilityConfig {
   /**
    * Gives attributes for each record that the library builds. Its values override `setContext()`
    * values. The logger scope and the call payload override its values. The library calls it for
-   * each record that sampling keeps. Keep it fast and synchronous. A provider that throws, or
-   * that returns a value that is not an object, adds nothing to the record.
+   * each built record. This includes records used only for the console or breadcrumbs.
+   * Keep it fast and synchronous. If it throws or returns a value that is not an object,
+   * it adds nothing to the record.
    * @returns The attributes, or undefined for none.
    */
   contextProvider?: () => Record<string, unknown> | undefined;
@@ -687,9 +1020,9 @@ export interface ObservabilityConfig {
   processors?: ((record: LogRecord) => LogRecord | null)[];
 
   /**
-   * Rewrites or drops a record before the library sends it. If the hook throws or returns a
+   * Changes or drops a record before the SDK prints or sends it. If the hook throws or returns a
    * value that is not a record, the library drops the record.
-   * @param record The record that the library is about to send.
+   * @param record Record to process. It can be used only for the console or breadcrumbs.
    * @returns The record to send, or `null` to drop it.
    */
   redact?: (record: LogRecord) => LogRecord | null;
@@ -713,6 +1046,28 @@ export interface ObservabilityConfig {
 
 /** Fully resolved configuration that the runtime holds. */
 export interface ResolvedConfig {
+  /** Capture capacity and rate limits. */
+  capturePolicy: CapturePolicy;
+  /** Resource and page fields to record. */
+  metadata: MetadataPolicy;
+  /** Application storage namespace. */
+  persistence: PersistencePolicy;
+  /** Diagnostic report and console fallback settings. */
+  diagnostics: DiagnosticsPolicy;
+  /** Session and trace timing. */
+  correlation: CorrelationPolicy;
+  /** Metric capacity in one interval. */
+  metrics: MetricsPolicy;
+  /** Live buffer capacity and the overflow rule. */
+  buffering: BufferingPolicy;
+  /** Request timing and delivery capacity. */
+  delivery: DeliveryPolicy;
+  /** True if configure() must refuse changes to the active settings. */
+  lockConfiguration: boolean;
+  /** Capacity of the logger cache. */
+  loggerCache: LoggerCacheOptions;
+  /** Active delivery context id and isolation rule. */
+  securityContext: SecurityContextOptions;
   /** Ingest endpoint URL, or null in console-only mode. */
   endpoint: string | null;
   /** OTLP metrics endpoint URL. An empty string sends metric records as log records. */
@@ -791,8 +1146,8 @@ export interface ResolvedConfig {
   /** Gives attributes for each record that the library builds. */
   contextProvider?: ObservabilityConfig["contextProvider"];
   /**
-   * Rewrites or drops a record before the library sends it.
-   * @param record The record that the library is about to send.
+   * Changes or drops a record before the SDK prints or sends it.
+   * @param record Record to process. It can be used only for the console or breadcrumbs.
    * @returns The record to send, or `null` to drop it.
    */
   redact?: ObservabilityConfig["redact"];

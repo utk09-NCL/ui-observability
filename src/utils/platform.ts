@@ -176,9 +176,31 @@ const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
  * credential. Without fullUrls, it also removes the query and the fragment.
  * @param url Absolute or relative URL.
  * @param fullUrls Value of `capture.fullUrls`.
+ * @param transform Value of `capture.urlTransform`. It replaces the default rule.
+ * @param diagnostics Diagnostics reporter for a transform that throws.
  * @returns The URL to record.
  */
-export function recordedUrl(url: string, fullUrls: boolean): string {
+export function recordedUrl(
+  url: string,
+  fullUrls: boolean,
+  transform?: (url: string) => string | null,
+  diagnostics?: Diagnostics,
+): string {
+  if (transform) {
+    try {
+      const value = transform(url);
+      return typeof value === "string" ? value : "";
+    } catch (error) {
+      // Report the fault. Without a report, each recorded URL is empty with no visible cause.
+      diagnostics?.report(
+        "capture.record_failed",
+        "capture.urlTransform threw an error. The library records an empty URL.",
+        undefined,
+        error,
+      );
+      return "";
+    }
+  }
   const bare = url.replace(USER_INFO_PATTERN, "$1");
   return fullUrls ? bare : stripUrlQuery(bare);
 }

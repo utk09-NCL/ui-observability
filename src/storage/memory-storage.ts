@@ -45,6 +45,27 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
+   * Returns up to `limit` batches of one context in FIFO order. It does not delete them.
+   * @param id Delivery context id.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Promise that resolves to the batches of this context.
+   */
+  takeContext(id: string, limit: number): Promise<LogBatch[]> {
+    return Promise.resolve(
+      this.batches.filter((batch) => batch.routingContextId === id).slice(0, limit),
+    );
+  }
+
+  /**
+   * Counts the stored batches of one context.
+   * @param id Delivery context id.
+   * @returns Promise that resolves to the batch count of this context.
+   */
+  countContext(id: string): Promise<number> {
+    return Promise.resolve(this.batches.filter((batch) => batch.routingContextId === id).length);
+  }
+
+  /**
    * Deletes the batch with the given ID.
    * @param id Batch identifier.
    */

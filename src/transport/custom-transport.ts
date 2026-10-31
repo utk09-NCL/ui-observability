@@ -3,13 +3,7 @@
 // Sends batches through the transport function that the consumer supplies. The status codes
 // have the same meaning as on the HTTP path. Retry, storage and the exit flush do not change.
 
-import {
-  HTTP_STATUS_MAX,
-  HTTP_STATUS_MIN,
-  HTTP_SUCCESS_END,
-  HTTP_SUCCESS_MIN,
-  REQUEST_TIMEOUT_MS,
-} from "../constants";
+import { HTTP_STATUS_MAX, HTTP_STATUS_MIN, HTTP_SUCCESS_END, HTTP_SUCCESS_MIN } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { BatchKind, TransportRequest, TransportResponse } from "../models/config";
 import type { SerializedBatch } from "../models/serializer";
@@ -39,6 +33,7 @@ export function toTransportRequest(
     batchId: batch.id,
     attempt: batch.attempts,
     records: batch.records,
+    routingContextId: batch.routingContextId,
   };
 }
 
@@ -78,6 +73,7 @@ export class CustomTransport extends StatusTransport {
    * @throws TransportError when the batch is not accepted.
    */
   async send(batch: LogBatch): Promise<void> {
+    this.assertContext(batch);
     const { transport } = this.config;
 
     if (!transport || batch.records.length === 0) {
@@ -92,6 +88,7 @@ export class CustomTransport extends StatusTransport {
 
     const kind = batchKind(batch, this.config);
     const request = toTransportRequest(batch, serialized, kind);
+    request.signal = this.cancellation.signal;
 
     let response: unknown;
 
@@ -100,10 +97,12 @@ export class CustomTransport extends StatusTransport {
       response = await withDeadline(
         // The capture modules skip a request or a console line inside these scopes. Network
         // capture warns about a request after an await, which is outside the scopes.
-        trackTransportCall(() =>
-          runAsLibraryRequest(() => runAsLibraryConsole(() => transport(request))),
+        this.untilCancelled(
+          trackTransportCall(() =>
+            runAsLibraryRequest(() => runAsLibraryConsole(() => transport(request))),
+          ),
         ),
-        REQUEST_TIMEOUT_MS,
+        this.config.delivery.requestTimeoutMs,
       );
     } catch (error) {
       // The pipeline reports the thrown error. Classify it here.
@@ -114,6 +113,7 @@ export class CustomTransport extends StatusTransport {
       throw new TransportError(kind, message, undefined, undefined, undefined, error);
     }
 
+    this.assertContext(batch);
     if (!isResponse(response)) {
       this.diagnostics.report(
         "transport.http_error",

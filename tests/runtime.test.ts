@@ -59,7 +59,14 @@ import {
   warn,
 } from "../src/index";
 
+// These tests select the old policy. It permits routing changes and source discovery by origin.
 const base = {
+  securityContext: { isolation: false },
+  bus: {
+    sourcePolicy: "trusted-origin" as const,
+    validation: "envelope" as const,
+    maxMessagesPerSecond: 0,
+  },
   endpoint: "https://x/v1/logs",
   serviceName: "svc",
   minLevel: "TRACE" as const,
@@ -233,7 +240,7 @@ describe("runtime lifecycle", () => {
     const streams = sender["pipeline"]["streams"];
     expect(streams.logs.options).toEqual({ flushIntervalMs: 2000, batchSize: 7 });
     expect(streams.metrics.options).toEqual({ flushIntervalMs: 5000, batchSize: 500 });
-    expect((sender["storage"] as unknown as { limits: unknown }).limits).toEqual({
+    expect((sender["storage"]["store"] as unknown as { limits: unknown }).limits).toEqual({
       maxBatches: 40,
       maxAgeMs: Infinity,
       maxAttempts: Infinity,
@@ -696,7 +703,7 @@ describe("runtime lifecycle", () => {
   it("attaches a worker, and ignores a registration after shutdown", async () => {
     configure(base);
     await ready();
-    const attach = vi.spyOn(bus(), "attachWorker").mockImplementation(() => undefined);
+    const attach = vi.spyOn(bus(), "attachWorker").mockImplementation(() => () => undefined);
     const held = runtime();
     const worker: WorkerLike = {
       postMessage: vi.fn(),
@@ -706,7 +713,7 @@ describe("runtime lifecycle", () => {
 
     registerWorker(worker);
     await settle();
-    expect(attach).toHaveBeenCalledWith(worker);
+    expect(attach).toHaveBeenCalledWith(worker, {});
 
     held.registerWorker(worker);
     await shutdown();
@@ -1334,7 +1341,10 @@ describe("bus loading", () => {
 
   it("loads the bus with bus.mode off when a same-origin child calls in", async () => {
     // A child frame attaches to this runtime without a handshake. Its records must still arrive.
-    configure({ ...base, bus: { mode: "off" } });
+    configure({
+      ...base,
+      bus: { mode: "off", sourcePolicy: "trusted-origin", validation: "envelope" },
+    });
     await ready();
 
     runtime().busAccept(
@@ -1354,7 +1364,9 @@ describe("bus loading", () => {
   it("attaches a worker before the bus completes its start", async () => {
     // A nested frame can hold start() for the full handshake. The worker's own handshake times out first.
     vi.spyOn(Bus.prototype, "start").mockReturnValue(new Promise(() => undefined));
-    const attach = vi.spyOn(Bus.prototype, "attachWorker").mockImplementation(() => undefined);
+    const attach = vi
+      .spyOn(Bus.prototype, "attachWorker")
+      .mockImplementation(() => () => undefined);
     const worker: WorkerLike = {
       postMessage: vi.fn(),
       addEventListener: vi.fn(),
@@ -1365,7 +1377,7 @@ describe("bus loading", () => {
     registerWorker(worker);
     await settle();
 
-    expect(attach).toHaveBeenCalledWith(worker);
+    expect(attach).toHaveBeenCalledWith(worker, {});
   });
 
   it("sends its own records when the bus chunk does not load", async () => {
@@ -1748,8 +1760,8 @@ describe("OneLogger", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("prints the message only below minLevel when a redact hook is set", () => {
-    // redact runs only on a built record. A record below minLevel is not built.
+  it("sanitizes console-only records below minLevel with redact", () => {
+    // redact processes a console-only record even when its level is below the delivery minLevel.
     configure({ ...base, minLevel: "INFO", console: "DEBUG", redact: (record) => record });
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
@@ -1762,10 +1774,11 @@ describe("OneLogger", () => {
       STYLES.DEBUG,
       "",
       "charged",
+      expect.objectContaining({ card: "4111" }),
     );
   });
 
-  it("prints the message and the error only for an error below minLevel with redact set", () => {
+  it("prints structured sanitized errors below minLevel with redact", () => {
     configure({ ...base, minLevel: "FATAL", console: "DEBUG", redact: (record) => record });
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const failure = new Error("boom");
@@ -1779,7 +1792,7 @@ describe("OneLogger", () => {
       STYLES.ERROR,
       "",
       "failed",
-      failure,
+      expect.objectContaining({ "error.message": "boom", card: "4111" }),
     );
   });
 

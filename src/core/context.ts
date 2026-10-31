@@ -35,6 +35,11 @@ export class ContextStore {
     this.map.delete(key);
   }
 
+  /** Removes all ambient context attributes. */
+  clear(): void {
+    this.map.clear();
+  }
+
   /**
    * Returns a copy of all ambient context attributes. The copy prevents a merge
    * target or a sanitizer from changing the store.

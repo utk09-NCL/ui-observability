@@ -13,11 +13,7 @@ import type { Capture, CaptureContext } from "./types";
  * @param element Target DOM element.
  * @returns Generated CSS selector string.
  */
-function describeElement(element: Element | null): string {
-  if (element === null) {
-    return "unknown";
-  }
-
+function describeElement(element: Element): string {
   const tag = element.tagName.toLowerCase();
 
   const testId = element.getAttribute("data-testid") ?? element.getAttribute("data-test-id");
@@ -122,21 +118,30 @@ export class InteractionCapture implements Capture {
 
   /** Rotates trace context and records a click breadcrumb. */
   private readonly onClick = (event: Event): void => {
+    if (this.ctx.isActive?.() === false) return;
     const target = event.target;
-    const selector = describeElement(target instanceof Element ? target : null);
-    // Use textContent, not innerText. A read of innerText causes style and layout work
-    // at each click.
-    const text =
-      target instanceof HTMLElement ? target.textContent.trim().slice(0, CLICK_TEXT_MAX_CHARS) : "";
-
-    // A click starts a new logical operation. All work that the click causes shares one
-    // trace id. Without the rotation, one query cannot find a click and its API calls.
+    if (!(target instanceof Element)) return;
+    const settings = this.ctx.config.capture.interactions;
+    const options = typeof settings === "object" ? settings : {};
+    const ignore =
+      options.ignoreSelector === undefined ? "[data-observability-ignore]" : options.ignoreSelector;
+    if (ignore && target.closest(ignore)) return;
+    const action = target
+      .closest("[data-observability-action]")
+      ?.getAttribute("data-observability-action");
+    const data: Record<string, unknown> = {};
+    if (options.selector) data.selector = describeElement(target);
+    if (options.text)
+      data.text = target.textContent.trim().slice(0, options.maxTextChars ?? CLICK_TEXT_MAX_CHARS);
     this.ctx.tracing.rotate("interaction");
     this.ctx.breadcrumbs.push({
       t: Date.now(),
       category: "click",
-      message: selector,
-      data: text === "" ? undefined : { text },
+      message: (action === "" ? "unknown-click" : (action ?? "unknown-click")).slice(
+        0,
+        this.ctx.config.limits.maxBodyChars,
+      ),
+      data: Object.keys(data).length > 0 ? data : undefined,
     });
   };
 
@@ -148,12 +153,14 @@ export class InteractionCapture implements Capture {
       return;
     }
     this.lastUrl = to;
+    if (this.ctx.isActive?.() === false) return;
 
     // The comparison above uses the full URL. A change to the query only is a navigation.
     // The record does not keep the query unless you set fullUrls.
     const full = this.ctx.config.capture.fullUrls;
-    const fromUrl = recordedUrl(from, full);
-    const toUrl = recordedUrl(to, full);
+    const { urlTransform } = this.ctx.config.capture;
+    const fromUrl = recordedUrl(from, full, urlTransform, this.ctx.diagnostics);
+    const toUrl = recordedUrl(to, full, urlTransform, this.ctx.diagnostics);
 
     this.ctx.tracing.rotate("navigation");
     this.ctx.breadcrumbs.push({

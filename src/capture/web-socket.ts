@@ -4,12 +4,12 @@
 // and server. It never reads the content of a message. It is a capture plugin, and the runtime
 // loads it as a separate chunk.
 
-import { WEBSOCKET_MAX_PER_WINDOW } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConfig } from "../models/config";
 import type { Counter, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLibraryRequest } from "../utils/library-request";
+import { recordedUrl } from "../utils/platform";
 import { patch } from "../utils/patch";
 import { allowInWindow, type StormWindow } from "./storm";
 import { matchesAny } from "./types";
@@ -30,18 +30,28 @@ interface InstallState {
   messages: Counter;
   /** Server host name of each tracked socket. */
   servers: WeakMap<WebSocket, string>;
+  /** Delivery context in force when each socket opened. */
+  contexts: WeakMap<WebSocket, string>;
+  /** Active capture settings and isolation rule. */
+  config: ResolvedConfig;
 }
 
 /**
  * Removes the user info, the query and the fragment from a socket URL. They can hold a token.
  * @param url Absolute URL of the socket.
+ * @param config Active capture settings.
+ * @param diagnostics Diagnostics reporter for a URL transform that throws.
  * @returns The URL to record and the host name of the server.
  */
-function socketTarget(url: string): { target: string; server: string } {
+function socketTarget(
+  url: string,
+  config: ResolvedConfig,
+  diagnostics: Diagnostics,
+): { target: string; server: string } {
   const parsed = new URL(url);
 
   return {
-    target: `${parsed.protocol}//${parsed.host}${parsed.pathname}`,
+    target: recordedUrl(url, config.capture.fullUrls, config.capture.urlTransform, diagnostics),
     server: parsed.hostname,
   };
 }
@@ -57,7 +67,13 @@ function count(state: InstallState, socket: WebSocket, direction: "transmit" | "
 
   // A send of the library, for example a custom transport, must not make the next send.
   const own = direction === "transmit" && isLibraryRequest();
-  if (!state.active || server === undefined || own) {
+  if (
+    !state.active ||
+    server === undefined ||
+    own ||
+    (state.config.securityContext.isolation &&
+      state.contexts.get(socket) !== state.config.securityContext.id)
+  ) {
     return;
   }
 
@@ -105,6 +121,8 @@ export class WebSocketCapture implements CapturePlugin {
       ctx,
       messages: ctx.counter(MESSAGES_METRIC),
       servers: new WeakMap(),
+      contexts: new WeakMap(),
+      config: this.config,
     };
     this.state = state;
 
@@ -185,13 +203,18 @@ export class WebSocketCapture implements CapturePlugin {
           return;
         }
 
-        const { target, server } = socketTarget(socket.url);
+        const { target, server } = socketTarget(socket.url, this.config, this.diagnostics);
         const attributes = { "url.full": target, "server.address": server };
         const { logger } = state.ctx;
         state.servers.set(socket, server);
+        state.contexts.set(socket, this.config.securityContext.id);
 
         const lifecycle = (write: () => void): void => {
-          if (this.allow(state)) {
+          if (
+            (!this.config.securityContext.isolation ||
+              state.contexts.get(socket) === this.config.securityContext.id) &&
+            this.allow(state)
+          ) {
             write();
           }
         };
@@ -230,7 +253,13 @@ export class WebSocketCapture implements CapturePlugin {
   private allow(state: InstallState): boolean {
     return (
       state.active &&
-      allowInWindow(this.window, WEBSOCKET_MAX_PER_WINDOW, this.diagnostics, "WebSocket events")
+      allowInWindow(
+        this.window,
+        this.config.capturePolicy.webSocketPerWindow,
+        this.diagnostics,
+        "WebSocket events",
+        this.config.capturePolicy.windowMs,
+      )
     );
   }
 }

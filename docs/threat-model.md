@@ -48,11 +48,11 @@ The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history
 
 ### 4. Other Documents (the Bus)
 
-| Threat                                      | Control                                                                                                                                                              |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A hostile frame sends records or journeys.  | A cross-origin message must come from an origin in `bus.trustedOrigins`. The list is empty by default. A forwarded record must pass a shape check and sampling.      |
-| A closed window keeps a document in memory. | The bus drops a link when its window closes.                                                                                                                         |
-| A forged journey token.                     | `adoptJourney()` checks the shape, the start time and the age of the token. It refuses a token without a start time, or with a start time more than 5 minutes ahead. |
+| Threat                                      | Control                                                                                                                                                                                                                       |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A hostile frame sends records or journeys.  | By default, a child window must be registered with its exact origin and permissions. The bus validates schemas and applies configurable size/rate limits. Origin-based discovery and relaxed validation are explicit options. |
+| A closed window keeps a document in memory. | The bus drops a link when its window closes.                                                                                                                                                                                  |
+| A forged journey token.                     | `adoptJourney()` checks the shape, the start time and the age of the token. It refuses a token without a start time, or with a start time more than 5 minutes ahead.                                                          |
 
 ### 5. The Ingest Server to the Library
 
@@ -76,8 +76,10 @@ The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history
 | Threat                                                                | Control                                                                                                                                                                                                                                                                |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Another user of the device reads the stored records.                  | IndexedDB and `localStorage` keep failed batches for `retention.maxAgeMs`. Use `storage: "memory"` and `identity: "memory"` to write nothing to the device. With these settings, the exit flush does not use the emergency queue. A batch that it cannot send is lost. |
-| The next user of a shared device sees the trail of the previous user. | `newSession()` clears the breadcrumbs. Call it at logout.                                                                                                                                                                                                              |
+| The next user of a shared device sees the trail of the previous user. | Use awaited `rotateSecurityContext()` at logout to retire queued delivery and clear ambient state. `newSession()` only rotates correlation and breadcrumbs. Isolation can be explicitly disabled.                                                                      |
 
 ## Supply Chain
 
 The package has no runtime dependencies. `@opentelemetry/api` and `web-vitals` are optional peers. The library loads them only through `otelLoader` and `capture.webVitalsLoader`, which your code supplies.
+
+Defaults and intentional policy overrides are documented in [runtime policies](runtime-policies.md). Client-side controls do not authorize tenant access on the ingest server.

@@ -23,6 +23,19 @@ export interface StorageAdapter {
    * @returns Oldest persisted batches.
    */
   take(limit: number): Promise<LogBatch[]>;
+  /**
+   * Reads batches of one context without loading batches of other contexts.
+   * @param id Delivery context id.
+   * @param limit Maximum batches to return.
+   * @returns Batches of this context, oldest first.
+   */
+  takeContext?(id: string, limit: number): Promise<LogBatch[]>;
+  /**
+   * Counts batches of one context without loading them.
+   * @param id Delivery context id.
+   * @returns Number of batches in this context.
+   */
+  countContext?(id: string): Promise<number>;
 
   /**
    * Removes a batch by ID. A call with an unknown ID resolves without error.

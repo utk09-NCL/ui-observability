@@ -15,8 +15,6 @@ import {
   DEFAULT_METRIC_UNIT,
   METRIC_DEFAULT_BOUNDARIES,
   METRIC_KEYS,
-  METRIC_MAX_BOUNDARIES,
-  METRIC_MAX_SERIES,
 } from "../constants";
 import type {
   Counter,
@@ -99,13 +97,13 @@ function cleanAttributes(attributes: MetricAttributes = {}): MetricAttributes {
  * @returns A plain array with at most one value more than the limit, or null for a value that is
  * not an array.
  */
-function copyBounds(bounds: unknown): unknown[] | null {
+function copyBounds(bounds: unknown, limit: number): unknown[] | null {
   if (!Array.isArray(bounds)) {
     return null;
   }
 
   // One value more than the limit. isAscending then refuses a list that is too long.
-  const count = Math.min(bounds.length, METRIC_MAX_BOUNDARIES + 1);
+  const count = limit === 0 ? bounds.length : Math.min(bounds.length, limit + 1);
   return Array.from({ length: count }, (_unused, i): unknown => bounds[i]);
 }
 
@@ -114,10 +112,10 @@ function copyBounds(bounds: unknown): unknown[] | null {
  * @param bounds Value of the boundaries option.
  * @returns True for at most 50 finite numbers in ascending order.
  */
-function isAscending(bounds: unknown): bounds is number[] {
+function isAscending(bounds: unknown, limit: number): bounds is number[] {
   return (
     Array.isArray(bounds) &&
-    bounds.length <= METRIC_MAX_BOUNDARIES &&
+    (limit === 0 || bounds.length <= limit) &&
     bounds.every(
       (bound: unknown, i) =>
         typeof bound === "number" &&
@@ -243,6 +241,7 @@ export class Meter {
       fields: Record<string, unknown>,
     ) => void,
     private readonly diagnostics: Diagnostics,
+    private readonly policy = { maxSeries: 100, maxInstruments: 1000, maxHistogramBoundaries: 50 },
   ) {}
 
   /**
@@ -315,13 +314,17 @@ export class Meter {
       return null;
     }
 
+    if (this.policy.maxInstruments && this.instruments.size >= this.policy.maxInstruments) {
+      this.diagnostics.count("record.dropped_by_ceiling");
+      return null;
+    }
     // Copy before the check. A later change of the array of the app must not change the buckets.
-    const copy = copyBounds(def.boundaries);
-    const valid = isAscending(copy);
+    const copy = copyBounds(def.boundaries, this.policy.maxHistogramBoundaries);
+    const valid = isAscending(copy, this.policy.maxHistogramBoundaries);
     if (def.kind === "histogram" && !valid) {
       this.diagnostics.report(
         "config.invalid",
-        `The boundaries of the metric ${def.name} must be at most 50 finite numbers in ascending order. The library uses the default boundaries.`,
+        `The boundaries of the metric ${def.name} must meet metrics.maxHistogramBoundaries and contain finite numbers in ascending order. The library uses the default boundaries.`,
       );
     }
 
@@ -345,7 +348,7 @@ export class Meter {
     let set = attributes;
 
     // A storm of attribute sets cannot grow the memory and the payload without a limit.
-    if (!series && instrument.series.size >= METRIC_MAX_SERIES) {
+    if (!series && this.policy.maxSeries > 0 && instrument.series.size >= this.policy.maxSeries) {
       key = OVERFLOW_KEY;
       series = instrument.series.get(key);
       set = { [ATTR_METRIC_OVERFLOW]: true };

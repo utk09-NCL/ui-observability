@@ -16,9 +16,11 @@ import { gzipSync } from "node:zlib";
  * the 0.9.2 size (26,055 B) plus 10 percent, for the counter, the histogram and the OTLP metrics
  * export. In 0.9.3 it is the 0.9.3 size (26,513 B) plus 10 percent, after the shared helpers of
  * the cleanup. In 0.9.4 it is the 0.9.4 size (29,216 B) plus 10 percent, for the spans, the
- * plugins, the processors, the stats and the forwarder redact. Raise it only in a reviewed commit.
+ * plugins, the processors, the stats and the forwarder redact. The operational controls increase
+ * the main graph to 33,831 B. The 36,000 B budget includes the delivery, capture and correlation
+ * settings and the storage controls. Raise it only in a reviewed commit.
  */
-const SIZE_BUDGET_GZIP_BYTES = 32_200;
+const SIZE_BUDGET_GZIP_BYTES = 36_000;
 
 const DIST = new URL("../dist/", import.meta.url);
 const ENTRY = "index.js";

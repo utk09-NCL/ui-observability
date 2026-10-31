@@ -17,7 +17,6 @@ import {
   HTTP_FORBIDDEN,
   HTTP_PAYLOAD_TOO_LARGE,
   HTTP_UNAUTHORIZED,
-  REQUEST_TIMEOUT_MS,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { BatchKind } from "../models/config";
@@ -80,6 +79,7 @@ export class HttpTransport extends StatusTransport {
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
+    this.assertContext(batch);
     const { config } = this;
     const kind = batchKind(batch, config);
     const endpoint = endpointFor(kind, config);
@@ -144,12 +144,14 @@ export class HttpTransport extends StatusTransport {
     }
 
     let response = await this.attempt(batch, endpoint, serialized, onKeepalive);
+    this.assertContext(batch);
 
     // A token can expire between two calls of headers(). Send one time more with new
     // headers. A second 401 or 403 drops the batch.
     if (this.rejectsCredentials(response.status) && typeof this.config.headers === "function") {
       this.cachedHeaders = undefined;
       response = await this.attempt(batch, endpoint, serialized, onKeepalive);
+      this.assertContext(batch);
     }
 
     if (response.ok) {
@@ -195,7 +197,7 @@ export class HttpTransport extends StatusTransport {
     serialized: SerializedBatch,
     onKeepalive: (() => void) | undefined,
   ): Promise<Response> {
-    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    const deadline = Date.now() + this.config.delivery.requestTimeoutMs;
 
     // Headers ignores the case of header names. A config header cannot duplicate a header below.
     const headers = new Headers(await this.before(this.resolveHeaders(), deadline, endpoint));
@@ -204,6 +206,7 @@ export class HttpTransport extends StatusTransport {
     headers.set(HEADER_ATTEMPT, String(batch.attempts));
 
     const body = await this.before(this.encodeBody(serialized.body), deadline, endpoint);
+    this.assertContext(batch);
     if (typeof body !== "string") {
       headers.set(HEADER_CONTENT_ENCODING, ENCODING_GZIP);
     }
@@ -227,8 +230,10 @@ export class HttpTransport extends StatusTransport {
    */
   private async before<T>(work: Promise<T>, deadline: number, endpoint: string): Promise<T> {
     try {
-      return await withDeadline(work, Math.max(0, deadline - Date.now()));
+      return await withDeadline(this.untilCancelled(work), Math.max(0, deadline - Date.now()));
     } catch {
+      if (this.cancellation.signal.aborted)
+        throw new TransportError("permanent", "The delivery context retired.");
       throw this.timeout(endpoint);
     }
   }
@@ -239,7 +244,7 @@ export class HttpTransport extends StatusTransport {
    * @returns TransportError of kind "timeout".
    */
   private timeout(endpoint: string): TransportError {
-    const waited = String(REQUEST_TIMEOUT_MS);
+    const waited = String(this.config.delivery.requestTimeoutMs);
     const message = `The request took longer than ${waited} ms.`;
 
     this.diagnostics.report("transport.timeout", message, { endpoint });
@@ -287,6 +292,11 @@ export class HttpTransport extends StatusTransport {
   ): Promise<Response> {
     const { config } = this;
     const controller = new AbortController();
+    const cancel = (): void => {
+      controller.abort();
+    };
+    this.cancellation.signal.addEventListener("abort", cancel, { once: true });
+    if (this.cancellation.signal.aborted) controller.abort();
     // The fetch gets the rest of the time after the headers and the encoding.
     const timer = setTimeout(
       () => {
@@ -309,11 +319,15 @@ export class HttpTransport extends StatusTransport {
         }),
       );
     } catch {
+      if (this.cancellation.signal.aborted) {
+        throw new TransportError("permanent", "The delivery context retired.");
+      }
       if (controller.signal.aborted) {
         throw this.timeout(endpoint);
       }
       throw new TransportError(isOnline() ? "transient" : "offline", "A network error occurred.");
     } finally {
+      this.cancellation.signal.removeEventListener("abort", cancel);
       clearTimeout(timer);
     }
   }

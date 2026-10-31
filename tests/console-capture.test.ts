@@ -214,9 +214,13 @@ describe("ConsoleCapture", () => {
 
   it("does not record the diagnostics fallback line", () => {
     const { logger } = setup(true);
-    const diagnostics = new Diagnostics(() => {
-      throw new Error("handler failed");
-    }, 0);
+    const diagnostics = new Diagnostics(
+      () => {
+        throw new Error("handler failed");
+      },
+      0,
+      true,
+    );
 
     diagnostics.report("config.invalid", "Bad value.");
 
@@ -269,9 +273,13 @@ describe("ConsoleCapture", () => {
 
   it("does not record a console line from the onDiagnostic handler", () => {
     const { logger } = setup(true);
-    const diagnostics = new Diagnostics(() => {
-      console.warn("handler saw an event");
-    }, 0);
+    const diagnostics = new Diagnostics(
+      () => {
+        console.warn("handler saw an event");
+      },
+      0,
+      true,
+    );
 
     diagnostics.report("config.invalid", "Bad value.");
 

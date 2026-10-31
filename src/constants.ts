@@ -397,12 +397,11 @@ export const QUOTA_EVICTION_DIVISOR = 4;
 export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
 
 /**
- * Native IndexedDB version. It starts at 11. Dexie, the previous adapter, opened the
- * same database at ten times its declared version. A version below 11 makes open()
- * fail with VersionError for an existing installation. Then no code can read the
- * batches in that database.
+ * Native IndexedDB version. Version 11 replaced Dexie. Version 12 adds the context index.
+ * Dexie opened this database at ten times its declared version. A version below 11 makes
+ * open() fail with VersionError for an existing installation. Then no code can read its batches.
  */
-export const INDEXEDDB_SCHEMA_VERSION = 11;
+export const INDEXEDDB_SCHEMA_VERSION = 12;
 
 /** IndexedDB object store that holds batches. Dexie set this name before the library removed it. */
 export const INDEXEDDB_STORE_NAME = "batches";
@@ -770,6 +769,16 @@ export const UNDEFAULTED_CONFIG_KEYS = [
  * @see {@link ResolvedConfig}
  */
 export const CONFIG_SECTIONS = [
+  "capturePolicy",
+  "metadata",
+  "persistence",
+  "diagnostics",
+  "correlation",
+  "metrics",
+  "buffering",
+  "delivery",
+  "loggerCache",
+  "securityContext",
   "sampling",
   "bus",
   "journey",
@@ -784,13 +793,23 @@ export const CONFIG_SECTIONS = [
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
 export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], string[]> = {
+  capturePolicy: [],
+  metadata: [],
+  persistence: [],
+  diagnostics: [],
+  correlation: [],
+  metrics: [],
+  buffering: [],
+  delivery: [],
+  loggerCache: [],
+  securityContext: [],
   sampling: [],
   bus: [],
   journey: [],
   batching: [],
   retention: [],
   limits: [],
-  capture: ["webVitalsLoader"],
+  capture: ["webVitalsLoader", "urlTransform"],
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */
@@ -941,6 +960,42 @@ export const RECORD_LIMITS = {
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
 export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
+  capturePolicy: {
+    breadcrumbs: MAX_BREADCRUMBS,
+    errorDedupeMs: ERROR_DEDUPE_MS,
+    maxErrorSignatures: MAX_TRACKED_ERROR_SIGNATURES,
+    errorsPerWindow: 20,
+    consolePerWindow: 20,
+    longFramesPerWindow: 20,
+    webSocketPerWindow: 20,
+    windowMs: 10000,
+    errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
+  },
+  metadata: { pageUrl: true, userAgent: true, openfin: true },
+  persistence: { namespace: "" },
+  diagnostics: { throttleMs: 1000, consoleFallback: false },
+  correlation: {
+    sessionIdleMs: SESSION_IDLE_MS,
+    sessionTouchMs: SESSION_TOUCH_MS,
+    traceMaxAgeMs: TRACE_MAX_AGE_MS,
+  },
+  metrics: {
+    maxSeries: METRIC_MAX_SERIES,
+    maxInstruments: 1000,
+    maxHistogramBoundaries: METRIC_MAX_BOUNDARIES,
+  },
+  buffering: { maxPendingRecords: 10000, maxPendingBytes: 16777216, overflow: "drop-oldest" },
+  delivery: {
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,
+    retryBaseDelayMs: RETRY_BASE_DELAY_MS,
+    retryMaxDelayMs: RETRY_MAX_DELAY_MS,
+    retryIdleDelayMs: RETRY_IDLE_DELAY_MS,
+    batchesPerDrain: BATCHES_PER_DRAIN,
+  },
+  lockConfiguration: false,
+  loggerCache: { maxEntries: 256 },
+  securityContext: { id: "", isolation: true },
   endpoint: "",
   metricsEndpoint: "",
   tracesEndpoint: "",
@@ -962,7 +1017,17 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     remote: false,
     remoteMaxRate: 1,
   },
-  bus: { mode: "auto", trustedOrigins: [], openFinRole: "auto" },
+  bus: {
+    mode: "auto",
+    trustedOrigins: [],
+    openFinRole: "auto",
+    sourcePolicy: "registered",
+    validation: "strict",
+    maxMessageBytes: 262144,
+    maxRecordsPerMessage: 100,
+    maxMessagesPerSecond: 100,
+    maxTrackedSources: 256,
+  },
   journey: { scope: "auto", maxAgeMs: JOURNEY_MAX_AGE_MS },
   batching: {
     logFlushIntervalMs: LOG_FLUSH_INTERVAL_MS,

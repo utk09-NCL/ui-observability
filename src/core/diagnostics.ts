@@ -8,6 +8,11 @@ import { runAsLibraryConsole } from "../utils/library-console";
 
 /** Closed set of diagnostic event codes emitted by library subsystems. */
 export type DiagnosticCode =
+  | "config.locked"
+  | "security.rotated"
+  | "security.context_mismatch"
+  | "record.dropped_during_rotation"
+  | "bus.rejected_message"
   | "config.invalid"
   | "config.reconfigured"
   | "record.sanitize_failed"
@@ -82,11 +87,23 @@ export class Diagnostics {
   /**
    * @param handler Optional diagnostic event listener callback.
    * @param throttleMs Minimum duration in milliseconds between emitted events for a single code.
+   * @param consoleFallback True to print a fixed warning if the diagnostic handler throws.
    */
   constructor(
     private handler?: DiagnosticHandler,
-    private readonly throttleMs = DIAGNOSTIC_THROTTLE_MS,
+    private throttleMs = DIAGNOSTIC_THROTTLE_MS,
+    private consoleFallback = false,
   ) {}
+
+  /**
+   * Changes the report interval and the console fallback rule.
+   * @param throttleMs Minimum wait between reports of one code, in milliseconds.
+   * @param consoleFallback True to print a fixed warning if the handler throws.
+   */
+  setPolicy(throttleMs: number, consoleFallback: boolean): void {
+    this.throttleMs = throttleMs;
+    this.consoleFallback = consoleFallback;
+  }
 
   /**
    * Updates or removes the active diagnostic event handler.
@@ -150,17 +167,14 @@ export class Diagnostics {
       runAsLibraryConsole(() => {
         handler(event);
       });
-    } catch (handlerError) {
+    } catch (_handlerError) {
       // Increment the counter directly. A call to report() recurses when the handler throws.
       this.count("handler.threw");
-      if (typeof console !== "undefined") {
+      if (this.consoleFallback && typeof console !== "undefined") {
         // The console capture skips a call in this scope.
         runAsLibraryConsole(() => {
           // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
-          console.warn(
-            `${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`,
-            handlerError,
-          );
+          console.warn(`${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`);
         });
       }
     }

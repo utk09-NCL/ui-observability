@@ -53,10 +53,15 @@ function readBatch(raw: string, diagnostics: Diagnostics): LogBatch | null {
  * @param diagnostics Diagnostics reporter.
  * @returns Total number of recovered batches.
  */
-async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Promise<number> {
+async function importAll(
+  storage: StorageAdapter,
+  diagnostics: Diagnostics,
+  accepts: (batch: LogBatch) => boolean,
+  prefix: string,
+): Promise<number> {
   let moved = 0;
 
-  for (const key of keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics)) {
+  for (const key of keysWithPrefix(prefix, diagnostics)) {
     // Read and remove the key in one synchronous step, before the async save. A second window
     // that imports at the same time cannot take the same batch.
     const raw = diagnostics.guard(
@@ -64,6 +69,10 @@ async function importAll(storage: StorageAdapter, diagnostics: Diagnostics): Pro
       "The library could not read the emergency queue.",
       () => {
         const value = localStorage.getItem(key);
+        if (value) {
+          const batch = readBatch(value, diagnostics);
+          if (batch && !accepts(batch)) return null;
+        }
         localStorage.removeItem(key);
         return value;
       },
@@ -110,11 +119,12 @@ export function saveToEmergencyQueue(
 ): void {
   // Name the record count. A full localStorage drops this batch permanently. Removal of
   // emergency keys cannot free quota that the keys of other applications use.
+  const prefix = emergencyPrefix(batch.persistenceNamespace);
   const context = `writing the emergency queue, ${String(batch.records.length)} records`;
   const evicted: LogBatch[] = [];
 
   const saved = diagnostics.guard("storage.quota_exceeded", context, () => {
-    const keys = keysWithPrefix(EMERGENCY_STORAGE_KEY_PREFIX, diagnostics);
+    const keys = keysWithPrefix(prefix, diagnostics);
 
     // Remove the oldest entries to keep the queue within its capacity.
     for (const old of keys.slice(0, Math.max(0, keys.length - EMERGENCY_MAX_ENTRIES + 1))) {
@@ -126,7 +136,7 @@ export function saveToEmergencyQueue(
       localStorage.removeItem(old);
     }
 
-    localStorage.setItem(batchKey(EMERGENCY_STORAGE_KEY_PREFIX, batch), JSON.stringify(batch));
+    localStorage.setItem(batchKey(prefix, batch), JSON.stringify(batch));
     return true;
   });
 
@@ -156,13 +166,53 @@ export function saveToEmergencyQueue(
 export async function drainEmergencyQueue(
   storage: StorageAdapter,
   diagnostics: Diagnostics,
+  accepts: (batch: LogBatch) => boolean = () => true,
+  namespace = "",
 ): Promise<number> {
   const moved = await withDrainLock(
     EMERGENCY_LOCK_NAME,
     diagnostics,
-    () => importAll(storage, diagnostics),
+    () => importAll(storage, diagnostics, accepts, emergencyPrefix(namespace)),
     { skipIfBusy: false },
   );
 
   return moved ?? 0;
+}
+
+/**
+ * Removes emergency entries of one context, or all entries in its namespace.
+ * @param id Delivery context id.
+ * @param diagnostics Diagnostics reporter.
+ * @param namespace Application storage namespace.
+ * @param all True to remove entries of all contexts in this namespace.
+ */
+export function clearEmergencyContext(
+  id: string,
+  diagnostics: Diagnostics,
+  namespace = "",
+  all = false,
+): void {
+  const prefix = emergencyPrefix(namespace);
+  diagnostics.guard(
+    "storage.unavailable",
+    "The library could not clear the retired emergency queue.",
+    () => {
+      for (const key of keysWithPrefix(prefix, diagnostics)) {
+        const raw = localStorage.getItem(key);
+        if (raw && (all || readBatch(raw, diagnostics)?.routingContextId === id))
+          localStorage.removeItem(key);
+      }
+    },
+  );
+}
+
+/**
+ * Gives the emergency storage prefix of one application namespace.
+ * @param namespace Application namespace. An empty value uses the previous prefix.
+ * @returns Prefix for this application emergency queue.
+ */
+function emergencyPrefix(namespace = ""): string {
+  return namespace
+    ? `ui-observability:namespaced:${encodeURIComponent(namespace)}:emergency:`
+    : EMERGENCY_STORAGE_KEY_PREFIX;
 }

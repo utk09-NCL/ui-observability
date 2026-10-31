@@ -22,7 +22,7 @@ export interface FinIab {
   subscribe(
     identity: { uuid: string },
     topic: string,
-    listener: (message: unknown) => void,
+    listener: (message: unknown, uuid?: string, name?: string) => void,
   ): Promise<void>;
 }
 

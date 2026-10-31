@@ -12,6 +12,10 @@ import type { LogRecord } from "./log-record";
  * @see {@link splitBatch}
  */
 export interface LogBatch {
+  /** Application namespace that owns this stored batch. */
+  readonly persistenceNamespace?: string;
+  /** Delivery context id. It does not change. With isolation, a batch without this id stays stored. */
+  readonly routingContextId?: string;
   /** Deduplication key. It stays the same across retries and reloads. */
   id: string;
   /** Records to deliver, in log order. */
@@ -67,6 +71,8 @@ export function splitBatch(batch: LogBatch, diagnostics: Diagnostics): [LogBatch
     records,
     createdAt: batch.createdAt,
     attempts: batch.attempts,
+    routingContextId: batch.routingContextId,
+    persistenceNamespace: batch.persistenceNamespace,
   });
 
   return [halve(batch.records.slice(0, middle)), halve(batch.records.slice(middle))];

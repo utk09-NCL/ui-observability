@@ -42,7 +42,14 @@ export interface DirectHost {
    * @param message Child bus message.
    * @param reply Callback for synchronous response.
    */
-  busAccept(message: BusMessage, reply: Receive): void;
+  busAccept(message: BusMessage, reply: Receive, source?: Window): void;
+  /**
+   * Checks if the parent permits a direct link from the child window.
+   * @param source Child window.
+   * @param origin Origin of the child window.
+   * @returns True if the parent permits this source.
+   */
+  busCanAccept?: (source: Window, origin: string) => boolean;
 }
 
 /** Message port or dedicated/shared worker interface. */
@@ -144,6 +151,7 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
     return null;
   }
 
+  if (host.busCanAccept && !host.busCanAccept(window, location.origin)) return null;
   const target = host;
   let open = true;
 
@@ -159,7 +167,7 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
         "bus.send_failed",
         "The direct call into the parent runtime failed.",
         () => {
-          target.busAccept(message, receive);
+          target.busAccept(message, receive, window);
         },
       );
     },
@@ -233,7 +241,7 @@ export function createParentLink(
       return;
     }
 
-    receive(message, { link: "parent", origin: event.origin });
+    receive(message, { link: "parent", origin: event.origin, peer: event.source });
   };
   addEventListener("message", onMessage);
 
@@ -263,6 +271,8 @@ export function createChildrenLink(
   receive: Receive,
   trustedOrigins: string[],
   diagnostics: Diagnostics,
+  authorize?: (source: MessageEventSource | null, origin: string) => boolean,
+  mayPost?: (message: BusMessage, source: MessageEventSource) => boolean,
 ): Link | null {
   if (typeof window === "undefined") {
     return null;
@@ -281,7 +291,11 @@ export function createChildrenLink(
     if (!message) {
       return;
     }
-    if (!trusted.has(event.origin)) {
+    // A nested frame also receives the messages of its parent. The parent link owns them.
+    if (window.parent !== window && event.source === window.parent) {
+      return;
+    }
+    if (!authorize && !trusted.has(event.origin)) {
       diagnostics.report("bus.untrusted_origin", untrustedText(event.origin, "a message"), {
         origin: event.origin,
         type: message.t.slice(0, BUS_TYPE_DETAIL_MAX_CHARS),
@@ -289,10 +303,11 @@ export function createChildrenLink(
       return;
     }
 
+    if (authorize && !authorize(event.source, event.origin)) return;
     if (event.source) {
       sources.set(event.source, event.origin);
     }
-    receive(message, { link: "children", origin: event.origin });
+    receive(message, { link: "children", origin: event.origin, peer: event.source ?? undefined });
   };
   addEventListener("message", onMessage);
 
@@ -300,6 +315,11 @@ export function createChildrenLink(
     kind: "children",
     post(message) {
       for (const [source, origin] of sources) {
+        if (authorize && !authorize(source, origin)) {
+          sources.delete(source);
+          continue;
+        }
+        if (mayPost && !mayPost(message, source)) continue;
         const target = source as Window;
         // Evicts closed child windows to prevent memory leaks.
         if (target.closed) {
@@ -412,10 +432,14 @@ export function createOpenFinLink(
     "bus.send_failed",
     "The InterApplicationBus.subscribe call failed.",
     () =>
-      iab.subscribe({ uuid: appUuid }, scoped, (raw) => {
+      iab.subscribe({ uuid: appUuid }, scoped, (raw, uuid, name) => {
         const message = unwrap(raw);
         if (message) {
-          receive(message, { link: "openfin", origin: "openfin" });
+          receive(message, {
+            link: "openfin",
+            origin: "openfin",
+            peer: uuid && name ? `${uuid}:${name}` : undefined,
+          });
         }
       }),
   );
@@ -490,7 +514,7 @@ export function createWorkerLink(
   const onMessage = (event: MessageEvent): void => {
     const message = unwrap(event.data);
     if (message) {
-      receive(message, { link: "worker", origin: "same-origin" });
+      receive(message, { link: "worker", origin: "same-origin", peer: worker });
     }
   };
   worker.addEventListener("message", onMessage);

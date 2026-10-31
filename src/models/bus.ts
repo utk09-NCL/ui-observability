@@ -5,6 +5,19 @@
 import { BUS_PROTOCOL } from "../constants";
 import type { LogRecord } from "./log-record";
 
+/** Permissions of one child window or worker. The handshake needs no separate permission. */
+export type BusPermission = "records" | "journey:read" | "journey:write" | "sampling:read";
+export interface SourceOptions {
+  /** Permissions of this source. Without this list, the source can send records only. */
+  permissions?: BusPermission[];
+}
+
+/** Origin and permissions for one child frame registration. */
+export interface FrameOptions extends SourceOptions {
+  /** Expected window origin, with its scheme and port. The origin must match exactly. */
+  origin: string;
+}
+
 /** Delivery role. It tells if this context sends its records or forwards them upstream. */
 export type BusRole = "sender" | "forwarder";
 
@@ -31,6 +44,8 @@ export type LinkKind =
 
 /** Origin and transport metadata for an incoming bus message. */
 export interface MessageSource {
+  /** Source identity from the transport. The source does not supply it in message.from. */
+  peer?: object | string;
   /** Inbound transport channel kind. */
   link: LinkKind;
   /** `event.origin` for `parent` and `children`. Other links use `"same-origin"` or `"openfin"`. */
@@ -46,9 +61,11 @@ export type BusMessage =
    * A welcome on InterApplicationBus goes to every subscriber. Without an address,
    * each waiting view accepts the welcome as its own.
    */
-  | { t: "welcome"; from: string; to: string; tabId: string }
+  | { t: "welcome"; from: string; to: string; tabId: string; routingContextId?: string }
   /** Telemetry log records forwarded to an upstream sender. */
-  | { t: "records"; from: string; records: LogRecord[] }
+  | { t: "records"; from: string; records: LogRecord[]; routingContextId?: string }
+  /** Delivery context update. Only the owner from the handshake can send it to its children. */
+  | { t: "security-context"; from: string; id: string }
   /**
    * Journey update, or the answer to a journey question. An answer holds the address of the
    * context that asked in `to`. The payload comes from another realm. The receiver parses it.

@@ -1407,13 +1407,13 @@ describe("InteractionCapture", () => {
     expect(c.tracing.resolve().traceId).not.toBe(before);
     expect(c.breadcrumbs.snapshot().at(-1)).toMatchObject({
       category: "click",
-      message: "#submit",
+      message: "unknown-click",
     });
     capture.uninstall();
   });
 
   it("describes a target by test id, then id, then aria-label, then tag and class", () => {
-    const { ctx: c } = ctx({ interactions: true });
+    const { ctx: c } = ctx({ interactions: { selector: true } });
     const capture = new InteractionCapture(c);
     capture.install();
 
@@ -1427,7 +1427,7 @@ describe("InteractionCapture", () => {
       element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     }
 
-    expect(c.breadcrumbs.snapshot().map((crumb) => crumb.message)).toEqual([
+    expect(c.breadcrumbs.snapshot().map((crumb) => crumb.data?.selector)).toEqual([
       '[data-testid="buy"]',
       "#named",
       'button[aria-label="Cancel order"]',
@@ -1438,7 +1438,7 @@ describe("InteractionCapture", () => {
   });
 
   it("falls back to data-test-id and reports an unknown target", () => {
-    const { ctx: c } = ctx({ interactions: true });
+    const { ctx: c } = ctx({ interactions: { selector: true } });
     const capture = new InteractionCapture(c);
     capture.install();
 
@@ -1448,14 +1448,14 @@ describe("InteractionCapture", () => {
     // window looks like.
     dispatchEvent(new MouseEvent("click"));
 
-    const messages = c.breadcrumbs.snapshot().map((crumb) => crumb.message);
+    const messages = c.breadcrumbs.snapshot().map((crumb) => crumb.data?.selector);
     expect(messages).toContain('[data-testid="legacy"]');
-    expect(messages).toContain("unknown");
+    expect(messages).toHaveLength(1);
     capture.uninstall();
   });
 
   it("keeps the clicked text on the breadcrumb, and omits it when there is none", () => {
-    const { ctx: c } = ctx({ interactions: true });
+    const { ctx: c } = ctx({ interactions: { text: true } });
     const capture = new InteractionCapture(c);
     capture.install();
 
@@ -1465,7 +1465,7 @@ describe("InteractionCapture", () => {
 
     const crumbs = c.breadcrumbs.snapshot();
     expect(crumbs.at(-2)?.data).toEqual({ text: "Submit order" });
-    expect(crumbs.at(-1)?.data).toBeUndefined();
+    expect(crumbs.at(-1)?.data).toEqual({ text: "" });
     capture.uninstall();
   });
 

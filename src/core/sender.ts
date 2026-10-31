@@ -5,14 +5,16 @@
 // The runtime imports this module dynamically only when the config sets an endpoint.
 // Console-only mode does not download this module.
 
-import { BATCHES_PER_DRAIN, STORAGE_DB_NAME } from "../constants";
+import { STORAGE_DB_NAME } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
 import { type GapReporter, type StorageAdapter, storageLimits } from "../models/storage";
-import { drainEmergencyQueue } from "../storage/emergency-queue";
+import { clearEmergencyContext, drainEmergencyQueue } from "../storage/emergency-queue";
 import { createStorage } from "../storage/factory";
+import { ContextStorage } from "../storage/context-storage";
+import { withDeadline } from "../utils/deadline";
 import { ExitFlush } from "../transport/exit-flush";
 import { CustomTransport } from "../transport/custom-transport";
 import { HttpTransport } from "../transport/http-transport";
@@ -25,6 +27,9 @@ import type { RemoteSlot } from "./remote-sampling";
 
 /** Inputs to build the delivery stack. */
 export interface SenderDeps {
+  /** Memory store that this runtime keeps when the security context changes. */
+  storage?: StorageAdapter;
+  onStorage?: (storage: StorageAdapter) => void;
   /** Active configuration instance. */
   config: ResolvedConfig;
   /** Diagnostics reporter. */
@@ -49,8 +54,11 @@ export class Sender {
    * @param diagnostics Diagnostics reporter.
    * @param transport Transport of the pipeline and the retry engine.
    */
+  private retired = false;
+  private emergencyImport: Promise<void> = Promise.resolve();
+
   private constructor(
-    private readonly storage: StorageAdapter,
+    private readonly storage: ContextStorage,
     private readonly retry: RetryEngine,
     private readonly pipeline: LogPipeline,
     private readonly exitFlush: ExitFlush,
@@ -67,12 +75,23 @@ export class Sender {
   static async create(deps: SenderDeps): Promise<Sender> {
     const { config, diagnostics } = deps;
 
-    const storage = await createStorage(
-      config.storage,
-      STORAGE_DB_NAME,
-      storageLimits(config.retention),
-      diagnostics,
-      deps.onGap,
+    const backing =
+      deps.storage ??
+      (await createStorage(
+        config.storage,
+        config.persistence.namespace
+          ? `${STORAGE_DB_NAME}:${config.persistence.namespace}`
+          : STORAGE_DB_NAME,
+        storageLimits(config.retention),
+        diagnostics,
+        deps.onGap,
+        config.persistence.namespace,
+      ));
+    deps.onStorage?.(backing);
+    const storage = new ContextStorage(
+      backing,
+      config.securityContext,
+      config.persistence.namespace,
     );
     const onSampling = (raw: unknown): void => {
       const update = parseRemoteRules(raw, diagnostics);
@@ -90,24 +109,26 @@ export class Sender {
       : new HttpTransport(config, diagnostics, onSampling, onLoss);
     const transport: StatusTransport =
       http ?? new CustomTransport(config, diagnostics, onSampling, onLoss);
-    const retry = new RetryEngine(
-      storage,
+    const retry = new RetryEngine(storage, transport, diagnostics, config, undefined, onLoss);
+    const { batching } = config;
+    const pipeline = new LogPipeline(
       transport,
+      storage,
+      retry,
       diagnostics,
+      {
+        logs: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
+        metrics: {
+          flushIntervalMs: batching.metricFlushIntervalMs,
+          batchSize: batching.metricBatchSize,
+        },
+        // A span has the size of a log record. The traces stream uses the log batching.
+        traces: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
+      },
+      () => config.securityContext.id || undefined,
       config,
-      BATCHES_PER_DRAIN,
       onLoss,
     );
-    const { batching } = config;
-    const pipeline = new LogPipeline(transport, storage, retry, diagnostics, {
-      logs: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
-      metrics: {
-        flushIntervalMs: batching.metricFlushIntervalMs,
-        batchSize: batching.metricBatchSize,
-      },
-      // A span has the size of a log record. The traces stream uses the log batching.
-      traces: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
-    });
 
     const exitFlush = new ExitFlush({
       config,
@@ -134,7 +155,7 @@ export class Sender {
     }
 
     const sender = new Sender(storage, retry, pipeline, exitFlush, diagnostics, transport);
-    void sender.importEmergency();
+    sender.emergencyImport = sender.importEmergency();
     return sender;
   }
 
@@ -152,6 +173,23 @@ export class Sender {
    */
   async flush(): Promise<void> {
     await this.pipeline.flushPending();
+  }
+
+  /**
+   * Removes stored normal and emergency batches without sending them.
+   * @param scope Part of storage to clear.
+   * @param contextId Active delivery context id.
+   * @returns Promise that resolves when removal completes.
+   */
+  async clearPersisted(scope: "context" | "namespace", contextId: string): Promise<void> {
+    if (scope === "namespace") await this.storage.clearNamespace();
+    else await this.storage.clear();
+    clearEmergencyContext(
+      contextId,
+      this.diagnostics,
+      this.storage.namespace,
+      scope === "namespace",
+    );
   }
 
   /**
@@ -196,6 +234,58 @@ export class Sender {
   }
 
   /**
+   * Stops this sender before a new delivery identity takes effect. It does not run exit delivery.
+   * @param policy Rule for the old records.
+   * @param timeoutMs Maximum wait for a flush, in milliseconds.
+   * @param contextId Identity of the old delivery context.
+   * @returns Records of the old context after the delivery attempt.
+   */
+  async retire(
+    policy: "discard" | "flush" | "retain" | "carry",
+    timeoutMs: number,
+    contextId: string,
+  ): Promise<LogRecord[]> {
+    this.retired = true;
+    this.exitFlush.uninstall();
+    this.retry.stop();
+    if (policy === "flush") {
+      try {
+        await withDeadline(Promise.all([this.flush(), this.retry.flush()]), timeoutMs);
+      } catch (error) {
+        // The remaining records follow the selected rule.
+        this.diagnostics.report(
+          "transport.timeout",
+          "The flush of the old security context did not complete before its time limit.",
+          undefined,
+          error,
+        );
+      }
+    }
+    this.retry.stop();
+    this.transport.stop();
+    const drained = this.pipeline.drainForExit();
+    const buffered = drained.flatMap((batch) => batch.records);
+    this.pipeline.destroy();
+    await this.emergencyImport;
+    const stored = await this.storage.take(Number.MAX_SAFE_INTEGER);
+    const records = [...buffered, ...stored.flatMap((batch) => batch.records)];
+    if (policy === "retain") {
+      // Store the drained batches whole. One batch for each record fills retention.maxBatches.
+      for (const batch of drained) {
+        await this.storage.save({
+          ...batch,
+          routingContextId: contextId,
+          persistenceNamespace: this.storage.namespace,
+        });
+      }
+    }
+    await this.storage.retire(policy !== "retain");
+    if (policy !== "retain")
+      clearEmergencyContext(contextId, this.diagnostics, this.storage.namespace);
+    return records;
+  }
+
+  /**
    * Moves the batches of the emergency queue into storage, then wakes the retry engine.
    * The previous page load parked them during its unload.
    */
@@ -203,10 +293,16 @@ export class Sender {
     const moved = await this.diagnostics.guardAsync(
       "storage.degraded",
       "The emergency import failed.",
-      () => drainEmergencyQueue(this.storage, this.diagnostics),
+      () =>
+        drainEmergencyQueue(
+          this.storage,
+          this.diagnostics,
+          (batch) => this.storage.accepts(batch),
+          this.storage.namespace,
+        ),
     );
 
-    if (moved !== undefined && moved > 0) {
+    if (!this.retired && moved !== undefined && moved > 0) {
       this.retry.nudge();
     }
   }

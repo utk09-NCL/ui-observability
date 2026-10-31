@@ -3,7 +3,37 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import tseslint from "typescript-eslint";
 
+// Permit an import that runs a module. Refuse an empty list of named imports.
+const projectRules = {
+  rules: {
+    "no-empty-imports": {
+      meta: {
+        type: "problem",
+        schema: [],
+        messages: {
+          empty: "Remove the empty named import. Use an explicit side-effect import if needed.",
+        },
+      },
+      create(context) {
+        return {
+          ImportDeclaration(node) {
+            if (
+              node.specifiers.length === 0 &&
+              context.sourceCode
+                .getTokens(node)
+                .some((token) => token.value === "{" && token.range[0] < node.source.range[0])
+            ) {
+              context.report({ node, messageId: "empty" });
+            }
+          },
+        };
+      },
+    },
+  },
+};
+
 export default defineConfig(
+  { plugins: { project: projectRules }, rules: { "project/no-empty-imports": "error" } },
   globalIgnores([
     "dist",
     "coverage",

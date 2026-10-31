@@ -12,8 +12,6 @@ import {
   HTTP_SERVICE_UNAVAILABLE,
   HTTP_TOO_MANY_REQUESTS,
   HTTP_UNAUTHORIZED,
-  RETRY_BASE_DELAY_MS,
-  RETRY_MAX_DELAY_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
@@ -52,6 +50,55 @@ export interface RejectHints {
 
 /** Base class of the HTTP transport and the custom transport. */
 export abstract class StatusTransport implements BatchTransport {
+  /** Abort controller shared by the requests of this delivery context. */
+  protected readonly cancellation = new AbortController();
+  /** Cancels work of this context. A custom transport receives the same abort signal. */
+  stop(): void {
+    this.cancellation.abort();
+  }
+
+  /**
+   * Checks the batch context after each asynchronous step and before a send.
+   * @param batch Batch to check.
+   * @throws TransportError if the context stopped or the context id does not match.
+   */
+  protected assertContext(batch: LogBatch): void {
+    if (
+      this.cancellation.signal.aborted ||
+      (this.config.securityContext.isolation &&
+        this.config.securityContext.id &&
+        batch.routingContextId !== this.config.securityContext.id)
+    ) {
+      this.diagnostics.count("security.context_mismatch");
+      throw new TransportError(
+        "permanent",
+        "The delivery context is inactive or does not match the batch.",
+      );
+    }
+  }
+
+  /**
+   * Ends the wait if this context stops before the work completes.
+   * @param work Work to wait for.
+   * @returns The result of the work.
+   * @throws TransportError if this context stops first.
+   */
+  protected async untilCancelled<T>(work: Promise<T>): Promise<T> {
+    if (this.cancellation.signal.aborted)
+      throw new TransportError("permanent", "The delivery context retired.");
+    let cancel!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = () => {
+        reject(new TransportError("permanent", "The delivery context retired."));
+      };
+      this.cancellation.signal.addEventListener("abort", cancel, { once: true });
+    });
+    try {
+      return await Promise.race([work, cancelled]);
+    } finally {
+      this.cancellation.signal.removeEventListener("abort", cancel);
+    }
+  }
   /**
    * Epoch time in milliseconds when the server throttle ends, for each endpoint. A 429 from
    * metricsEndpoint must not stop the log batches.
@@ -179,8 +226,9 @@ export abstract class StatusTransport implements BatchTransport {
       const retryAfterMs =
         hints.retryAfterMs === undefined
           ? undefined
-          : Math.min(hints.retryAfterMs, RETRY_MAX_DELAY_MS);
-      this.throttledUntil[kind] = Date.now() + (retryAfterMs ?? RETRY_BASE_DELAY_MS);
+          : Math.min(hints.retryAfterMs, this.config.delivery.retryMaxDelayMs);
+      this.throttledUntil[kind] =
+        Date.now() + (retryAfterMs ?? this.config.delivery.retryBaseDelayMs);
 
       if (throttled) {
         this.diagnostics.report("transport.throttled", "The server throttles the requests.", {

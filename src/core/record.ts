@@ -223,12 +223,13 @@ export class RecordBuilder {
   /**
    * Builds a structured LogRecord from the input. It sanitizes attributes and applies size limits.
    * @param input Logger call input parameters.
+   * @param forConsole True to skip delivery sampling and level checks. Privacy hooks still run.
    * @returns The record, or null with the reason of the drop.
    */
-  build(input: BuildInput): BuildResult {
+  build(input: BuildInput, forConsole = false): BuildResult {
     const { config, diagnostics, tracing, journey, sequence, limits, remote } = this.deps;
 
-    if (!this.isEnabled(input.level, input.namespace, input.type)) {
+    if (!forConsole && !this.isEnabled(input.level, input.namespace, input.type)) {
       diagnostics.count("record.dropped_by_level");
       return { record: null, dropped: "level" };
     }
@@ -236,8 +237,8 @@ export class RecordBuilder {
     const traceCtx = input.trace ?? tracing.resolve();
     const activeJourney = journey.current();
 
-    // Sample before the attribute walk below. Do not sanitize, redact or build the
-    // resource block for a record that the runtime does not send.
+    // Sample delivery records before the attribute walk. A record for the console or a
+    // breadcrumb skips this check. The privacy hooks process that record, but do not send it.
     const sampled = shouldSampleInput(
       {
         level: input.level,
@@ -250,7 +251,7 @@ export class RecordBuilder {
       config,
       remote.sampling?.current() ?? null,
     );
-    if (!sampled) {
+    if (!forConsole && !sampled) {
       diagnostics.count("record.dropped_by_sampling");
       return { record: null, dropped: "sampling" };
     }
@@ -258,7 +259,9 @@ export class RecordBuilder {
     const seq = sequence.next();
     // The query and fragment can contain tokens and user input. The path groups records.
     const url = currentUrl(diagnostics);
-    const pageUrl = recordedUrl(url, config.capture.fullUrls);
+    const pageUrl = config.metadata.pageUrl
+      ? recordedUrl(url, config.capture.fullUrls, config.capture.urlTransform, diagnostics)
+      : "";
 
     let attributes: Record<string, unknown>;
     let bytes = 0;
@@ -561,12 +564,12 @@ export class RecordBuilder {
       [RESOURCE_SESSION_ID]: identity.sessionId,
       [RESOURCE_TAB_ID]: identity.tabId,
       [RESOURCE_CONTEXT_ID]: identity.contextId,
-      [RESOURCE_BROWSER_USER_AGENT]: platform.userAgent,
+      ...(config.metadata.userAgent ? { [RESOURCE_BROWSER_USER_AGENT]: platform.userAgent } : {}),
       // Omits undefined OpenFin properties from resource attributes.
-      ...(platform.openfinUuid === undefined
+      ...(!config.metadata.openfin || platform.openfinUuid === undefined
         ? {}
         : { [RESOURCE_OPENFIN_UUID]: platform.openfinUuid }),
-      ...(platform.openfinName === undefined
+      ...(!config.metadata.openfin || platform.openfinName === undefined
         ? {}
         : { [RESOURCE_OPENFIN_NAME]: platform.openfinName }),
     };

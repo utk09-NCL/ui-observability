@@ -3,7 +3,7 @@
 // Reports long animation frames. A long frame freezes the page with no user input.
 // INP does not show it, for example a grid that re-renders 5,000 rows.
 
-import { LONG_FRAME_MAX_PER_WINDOW, LONG_FRAME_THRESHOLD_MS } from "../constants";
+import { LONG_FRAME_THRESHOLD_MS } from "../constants";
 import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
@@ -142,7 +142,15 @@ export class LongFrameCapture implements Capture {
 
     const { diagnostics } = this.ctx;
 
-    if (!allowInWindow(this.window, LONG_FRAME_MAX_PER_WINDOW, diagnostics, "long frames")) {
+    if (
+      !allowInWindow(
+        this.window,
+        this.ctx.config.capturePolicy.longFramesPerWindow,
+        diagnostics,
+        "long frames",
+        this.ctx.config.capturePolicy.windowMs,
+      )
+    ) {
       return;
     }
 
@@ -156,7 +164,13 @@ export class LongFrameCapture implements Capture {
     const script = longestScript(entry.scripts);
 
     // A signed URL is a credential. Keep the query only if you set fullUrls.
-    const url = (value: string): string => recordedUrl(value, this.ctx.config.capture.fullUrls);
+    const url = (value: string): string =>
+      recordedUrl(
+        value,
+        this.ctx.config.capture.fullUrls,
+        this.ctx.config.capture.urlTransform,
+        diagnostics,
+      );
 
     if (script?.invoker) {
       // The invoker of a script entry is the script URL. Other invokers, for example

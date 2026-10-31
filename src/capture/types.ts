@@ -78,6 +78,8 @@ export interface CaptureOnce {
 
 /** Shared runtime dependencies provided to auto-capture instances. */
 export interface CaptureContext {
+  /** False while the runtime stops or changes its security context. */
+  isActive?: () => boolean;
   /** Active runtime configuration. */
   config: ResolvedConfig;
   /** Diagnostics reporter for capture faults. */

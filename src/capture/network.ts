@@ -66,6 +66,8 @@ function durationAttributes(
 
 /** Request data that the XHR wrapper keeps from open to send. */
 interface XhrMeta {
+  /** Delivery context when the request started. */
+  routingContextId?: string;
   /** Uppercase HTTP method. */
   method: string;
   /** Request target URL. */
@@ -94,6 +96,8 @@ function xhrMethods(): XhrMethods {
 
 /** The fetch call to make, and the method and URL to record. */
 interface FetchPlan {
+  /** Delivery context when the request started. */
+  routingContextId?: string;
   /** Uppercase HTTP method. */
   method: string;
   /** Request target URL. */
@@ -265,7 +269,15 @@ export class NetworkCapture implements Capture {
     const prepare = (input: RequestInfo | URL, init: RequestInit | undefined) =>
       this.prepareFetch(input, init);
     const record = (plan: FetchPlan, status: number, durationMs: number, error: unknown): void => {
-      this.record(plan.method, plan.url, status, durationMs, error, plan.span);
+      this.record(
+        plan.method,
+        plan.url,
+        status,
+        durationMs,
+        error,
+        plan.span,
+        plan.routingContextId,
+      );
     };
 
     const restore = patch(globalThis, "fetch", (original: FetchFn) => {
@@ -324,7 +336,13 @@ export class NetworkCapture implements Capture {
     }
 
     const { method, url } = read;
-    const plan: FetchPlan = { method, url, input, init };
+    const plan: FetchPlan = {
+      method,
+      url,
+      input,
+      init,
+      routingContextId: this.ctx.config.securityContext.id,
+    };
     // An init with headers replaces all headers of a foreign Request, for example
     // Authorization. Send a foreign input without the trace headers.
     if (!read.propagate || isForeignInput(input)) {
@@ -382,7 +400,15 @@ export class NetworkCapture implements Capture {
     const ignored = (url: string): boolean => this.ignored(url);
     const propagates = (url: string): boolean => this.propagates(url);
     const record = (meta: XhrMeta, status: number, durationMs: number): void => {
-      this.record(meta.method, meta.url, status, durationMs, undefined, meta.span);
+      this.record(
+        meta.method,
+        meta.url,
+        status,
+        durationMs,
+        undefined,
+        meta.span,
+        meta.routingContextId,
+      );
     };
 
     const proto = xhrMethods();
@@ -422,6 +448,7 @@ export class NetworkCapture implements Capture {
                 }
 
                 meta.startedAt = performance.now();
+                meta.routingContextId = ctx.config.securityContext.id;
                 // A reused XHR gets a new listener at each send. The old one must not fire again.
                 this.addEventListener(
                   "loadend",
@@ -465,10 +492,23 @@ export class NetworkCapture implements Capture {
     durationMs: number,
     error: unknown,
     span?: ClientSpan,
+    routingContextId?: string,
   ): void {
+    if (
+      this.ctx.isActive?.() === false ||
+      (this.ctx.config.securityContext.isolation &&
+        routingContextId !== undefined &&
+        routingContextId !== this.ctx.config.securityContext.id)
+    )
+      return;
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
-    const url = recordedUrl(target, this.ctx.config.capture.fullUrls);
+    const url = recordedUrl(
+      target,
+      this.ctx.config.capture.fullUrls,
+      this.ctx.config.capture.urlTransform,
+      this.ctx.diagnostics,
+    );
 
     // A request of the transport after an await records a value. That value causes the next send.
     if (!this.warnedTransport && isTransportPending()) {

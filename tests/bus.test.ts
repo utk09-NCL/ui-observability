@@ -98,7 +98,7 @@ function make(
     {
       endpoint: "https://x/v1/logs",
       serviceName: "svc",
-      bus: busOver,
+      bus: { sourcePolicy: "trusted-origin", validation: "envelope", ...busOver },
     },
     diagnostics,
   );
@@ -213,7 +213,11 @@ describe("createDirectLink", () => {
     expect(link).not.toBeNull();
 
     link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
-    expect(busAccept).toHaveBeenCalledWith(expect.objectContaining({ t: "hello" }), receive);
+    expect(busAccept).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "hello" }),
+      receive,
+      window,
+    );
 
     link?.close();
     busAccept.mockClear();
@@ -360,7 +364,7 @@ describe("createParentLink", () => {
     postFrom(fakeParent, PARENT);
     expect(receive).toHaveBeenCalledWith(
       { t: "hello", from: "parent-ctx", tabId: "tab-9" },
-      { link: "parent", origin: PARENT },
+      { link: "parent", origin: PARENT, peer: fakeParent },
     );
 
     receive.mockClear();
@@ -967,7 +971,7 @@ describe("createWorkerLink", () => {
     );
     expect(receive).toHaveBeenCalledWith(
       { t: "hello", from: "doc", tabId: "t" },
-      { link: "worker", origin: "same-origin" },
+      { link: "worker", origin: "same-origin", peer: w },
     );
   });
 
@@ -1101,7 +1105,7 @@ describe("Bus role resolution: auto mode", () => {
     bus.destroy();
   });
 
-  it("attaches directly to a same-origin parent, with no handshake", async () => {
+  it("attaches directly to a same-origin parent and negotiates its context", async () => {
     const busAccept = vi.fn();
     const fakeParent = {} as unknown as Window & typeof globalThis;
     (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = { busAccept };
@@ -1115,6 +1119,7 @@ describe("Bus role resolution: auto mode", () => {
     expect(busAccept).toHaveBeenCalledWith(
       expect.objectContaining({ t: "records" }),
       expect.any(Function),
+      window,
     );
 
     bus.destroy();
@@ -1800,10 +1805,10 @@ describe("Bus internals: openControlLinks", () => {
     bus.destroy();
   });
 
-  it("opens no children or broadcast link inside a frame with no OpenFin platform", () => {
+  it("opens a children link inside a frame for registered grandchildren", () => {
     const { bus } = make({}, { isTopLevelDocument: false });
     (bus as unknown as { openControlLinks: () => void }).openControlLinks();
-    expect((bus as unknown as { links: Link[] }).links).toHaveLength(0);
+    expect((bus as unknown as { links: Link[] }).links).toHaveLength(1);
   });
 
   it("opens the OpenFin control link on both OpenFin platforms", () => {
@@ -1812,12 +1817,14 @@ describe("Bus internals: openControlLinks", () => {
     const desktop = make({}, { platform: "openfin", isTopLevelDocument: false });
     (desktop.bus as unknown as { openControlLinks: () => void }).openControlLinks();
     expect((desktop.bus as unknown as { links: Link[] }).links.map((l) => l.kind)).toEqual([
+      "children",
       "openfin",
     ]);
 
     const coreWeb = make({}, { platform: "openfin_web", isTopLevelDocument: false });
     (coreWeb.bus as unknown as { openControlLinks: () => void }).openControlLinks();
     expect((coreWeb.bus as unknown as { links: Link[] }).links.map((l) => l.kind)).toEqual([
+      "children",
       "openfin",
     ]);
   });

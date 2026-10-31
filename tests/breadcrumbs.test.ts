@@ -46,22 +46,11 @@ describe("BreadcrumbBuffer", () => {
     expect(messages(buffer)).toEqual(["C", "D", "E"]);
   });
 
-  it("clamps a zero capacity up to one instead of storing nothing or throwing", () => {
-    // The version in the guide threw on this input. This constructor runs inside configure(). A
-    // throw there stops the host application during its logging setup. The constructor clamps the
-    // value. It does not reject it.
-    expect(() => new BreadcrumbBuffer(0)).not.toThrow();
-
+  it("disables breadcrumb storage with zero capacity", () => {
     const buffer = new BreadcrumbBuffer(0);
     buffer.push(crumb("A"));
-    // A true capacity of zero makes the write pointer advance modulo zero. The result is NaN. Each
-    // crumb then goes to index NaN. The ring gives no crumb back. This test proves that this does
-    // not occur. The ring acts as an ordinary ring of capacity one. One crumb goes in. The same
-    // crumb comes out.
-    expect(messages(buffer)).toEqual(["A"]);
-
     buffer.push(crumb("B"));
-    expect(messages(buffer)).toEqual(["B"]);
+    expect(messages(buffer)).toEqual([]);
   });
 
   it("hands back a fresh array on every call, so a caller cannot mutate the stored trail", () => {

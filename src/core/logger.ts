@@ -376,7 +376,9 @@ export class OneLogger {
     const runtime = this.bind();
 
     // Guard against a write after shutdown. The write must do nothing on the stopped runtime.
-    if (runtime.isDestroyed()) {
+    if (runtime.isDestroyed()) return;
+    if (runtime.isRotating()) {
+      runtime.diagnostics.count("record.dropped_during_rotation");
       return;
     }
 
@@ -390,29 +392,32 @@ export class OneLogger {
       return;
     }
 
-    const { record, dropped } = runtime.builder.build({
+    const input = {
       level,
       type,
       body,
       namespace: this.namespace,
       scoped: this.options.scopedContext,
       payload: copied ? payload : copyPayload(payload, runtime.diagnostics),
-    });
-
-    // Breadcrumbs stay in memory and have no delivery cost. A breadcrumb keeps the body
-    // after redact. A record that sampling drops did not go through redact. It keeps its
-    // body, and redact sees it later inside the error record. A record that a processor,
-    // redact or the shape check drops adds no breadcrumb.
-    const crumb = record ? record.body : dropped === "sampling" ? body : undefined;
-    if (type !== "metric" && crumb !== undefined) {
+    };
+    const { record, dropped } = runtime.builder.build(input);
+    const hooks = Boolean(runtime.config.redact) || runtime.config.processors.length > 0;
+    // Run the hooks on a sampled-out record only if a breadcrumb keeps its message.
+    const keepsCrumb = type !== "metric" && runtime.config.capturePolicy.breadcrumbs > 0;
+    const protectedCrumb =
+      dropped === "sampling" && hooks && keepsCrumb
+        ? runtime.builder.build(input, true)
+        : undefined;
+    const safe = record ?? protectedCrumb?.record ?? null;
+    const crumb = safe ? safe.body : dropped === "sampling" && !hooks ? body : undefined;
+    if (keepsCrumb && crumb !== undefined) {
       runtime.breadcrumbs.push({
         t: Date.now(),
         category: type === "action" ? "action" : type === "event" ? "event" : "log",
         message: crumb,
       });
     }
-
-    this.print(runtime, level, body, payload, undefined, record, dropped);
+    this.print(runtime, level, body, payload, undefined, safe, protectedCrumb?.dropped ?? dropped);
     runtime.emit(record);
   }
 
@@ -431,7 +436,9 @@ export class OneLogger {
   ): void {
     const runtime = this.bind();
 
-    if (runtime.isDestroyed()) {
+    if (runtime.isDestroyed()) return;
+    if (runtime.isRotating()) {
+      runtime.diagnostics.count("record.dropped_during_rotation");
       return;
     }
 
@@ -509,7 +516,7 @@ export class OneLogger {
     record: LogRecord | null,
     dropped?: DropReason,
   ): void {
-    if (!runtime.config.redact) {
+    if (!runtime.config.redact && runtime.config.processors.length === 0) {
       runtime.console.write(this.namespace, level, message, payload, error);
       return;
     }
@@ -525,7 +532,30 @@ export class OneLogger {
       return;
     }
 
-    runtime.console.write(this.namespace, level, message, undefined, error);
+    if (!runtime.config.enabled || !runtime.console.accepts(level)) return;
+    // Use the record builder without the delivery level and sampling checks. Do not process
+    // a record again if a hook refused it. Do not send this record or add it as a breadcrumb.
+    const clean = runtime.builder.build(
+      {
+        level,
+        type: this.levelType,
+        body: message,
+        namespace: this.namespace,
+        scoped: this.options.scopedContext,
+        payload: {
+          ...copyPayload(payload, runtime.diagnostics),
+          ...(error
+            ? {
+                "error.type": error.name,
+                "error.message": error.message,
+                "error.stack_trace": error.stack,
+              }
+            : {}),
+        },
+      },
+      true,
+    ).record;
+    if (clean) runtime.console.write(this.namespace, level, clean.body, clean.attributes);
   }
 
   /**

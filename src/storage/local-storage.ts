@@ -29,8 +29,8 @@ interface Entry {
  * @param key Prefixed storage key.
  * @returns Creation time in epoch milliseconds, or null for a malformed key.
  */
-function createdAtOf(key: string): number | null {
-  const start = BATCH_STORAGE_KEY_PREFIX.length;
+function createdAtOf(key: string, prefix: string): number | null {
+  const start = prefix.length;
   const at = Number(key.slice(start, start + BATCH_KEY_TIME_WIDTH));
 
   return Number.isFinite(at) ? at : null;
@@ -50,6 +50,7 @@ export class LocalStorageStorage implements StorageAdapter {
     private readonly limits: StorageLimits,
     private readonly diagnostics: Diagnostics,
     private readonly onGap?: GapReporter,
+    private readonly prefix = BATCH_STORAGE_KEY_PREFIX,
   ) {}
 
   /**
@@ -92,6 +93,60 @@ export class LocalStorageStorage implements StorageAdapter {
     }
 
     return Promise.resolve(out);
+  }
+
+  /**
+   * Returns up to `limit` batches of one context in FIFO order. It does not delete them.
+   * It stops at the limit. The later entries then stay unparsed.
+   * @param id Delivery context id.
+   * @param limit Maximum number of batches to retrieve.
+   * @returns Promise that resolves to the batches of this context.
+   */
+  takeContext(id: string, limit: number): Promise<LogBatch[]> {
+    const out: LogBatch[] = [];
+
+    for (const batch of this.batches()) {
+      if (out.length >= limit) {
+        break;
+      }
+      if (batch.routingContextId === id) {
+        out.push(batch);
+      }
+    }
+
+    return Promise.resolve(out);
+  }
+
+  /**
+   * Counts the stored batches of one context. The context id is not in the key. Each entry is read.
+   * @param id Delivery context id.
+   * @returns Promise that resolves to the batch count of this context.
+   */
+  countContext(id: string): Promise<number> {
+    let count = 0;
+
+    for (const batch of this.batches()) {
+      if (batch.routingContextId === id) {
+        count++;
+      }
+    }
+
+    return Promise.resolve(count);
+  }
+
+  /**
+   * Reads the valid batches one at a time, oldest first. It removes a corrupt entry.
+   * @yields Each valid batch.
+   */
+  private *batches(): Generator<LogBatch> {
+    for (const key of this.keys()) {
+      const batch = this.read(key);
+      if (batch === null) {
+        this.removeKey(key);
+        continue;
+      }
+      yield batch;
+    }
   }
 
   /**
@@ -146,7 +201,7 @@ export class LocalStorageStorage implements StorageAdapter {
     const alive: string[] = [];
 
     for (const key of this.keys()) {
-      const createdAt = createdAtOf(key);
+      const createdAt = createdAtOf(key, this.prefix);
       // A key with no readable time also has no position in the sort order.
       if (createdAt === null || createdAt < cutoff) {
         expired.push(key);
@@ -194,7 +249,7 @@ export class LocalStorageStorage implements StorageAdapter {
    */
   private write(batch: LogBatch, context: string): boolean {
     const written = this.diagnostics.guard("storage.quota_exceeded", context, () => {
-      localStorage.setItem(batchKey(BATCH_STORAGE_KEY_PREFIX, batch), JSON.stringify(batch));
+      localStorage.setItem(batchKey(this.prefix, batch), JSON.stringify(batch));
       return true;
     });
 
@@ -337,6 +392,6 @@ export class LocalStorageStorage implements StorageAdapter {
    * @returns Sorted array of storage keys.
    */
   private keys(): string[] {
-    return keysWithPrefix(BATCH_STORAGE_KEY_PREFIX, this.diagnostics);
+    return keysWithPrefix(this.prefix, this.diagnostics);
   }
 }

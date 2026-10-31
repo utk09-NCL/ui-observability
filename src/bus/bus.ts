@@ -13,6 +13,8 @@ import { type Journey, parseJourney } from "../core/journey";
 import { applyRemote, parseRemoteRules } from "../core/remote-rules";
 import type { RemoteSlot } from "../core/remote-sampling";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
+import type { SourceOptions, FrameOptions } from "../models/bus";
+import { validMessage } from "./validation";
 import type { JourneyScope, ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 import { getFin } from "../utils/openfin";
@@ -47,6 +49,8 @@ export const HANDSHAKE_OPTIONS: HandshakeOptions = {
 
 /** Callbacks for handling records and journey events from connected realms. */
 export interface BusHandlers {
+  /** Adopts the delivery context of the owner. False refuses a different identity. */
+  onSecurityContext?: (id: string) => boolean;
   /** Processes records forwarded from child contexts. */
   onRecords: (records: LogRecord[]) => void;
   /** Applies journey updates received from the control bus. */
@@ -67,6 +71,83 @@ type ResolvedScope = Exclude<JourneyScope, "auto">;
 
 /** Coordinates cross-realm communication, role resolution, and message dispatch. */
 export class Bus {
+  /** Window and worker registrations with their permissions. */
+  private readonly sources = new Map<object, SourceOptions & { origin?: string }>();
+  /** Message counts for each window and worker in the current rate window. */
+  private readonly rates = new WeakMap<object, { start: number; count: number }>();
+  /** Message counts for each named source or link in the current rate window. */
+  private readonly channelRates = new Map<string, { start: number; count: number }>();
+
+  /**
+   * Checks if this source can receive a control message. A window can read a message
+   * even when its address names another window.
+   * @param message Control message to send.
+   * @param peer Window or worker that receives the message.
+   * @returns True if the source has the required permission.
+   */
+  private mayPost(message: BusMessage, peer: object): boolean {
+    const permissions = this.sources.get(peer)?.permissions;
+    if (!permissions) return this.config.bus.sourcePolicy === "trusted-origin";
+    if (message.t === "journey") return permissions.includes("journey:read");
+    if (message.t === "journey?") return permissions.includes("journey:write");
+    if (message.t === "sampling") return permissions.includes("sampling:read");
+    return true;
+  }
+
+  /**
+   * Registers one child window and its permissions.
+   * @param frame Frame element or window to register.
+   * @param options Expected origin and source permissions.
+   * @returns Function that removes this registration.
+   */
+  registerFrame(frame: HTMLIFrameElement | Window, options: FrameOptions): () => void {
+    // Use instanceof, not "in". The "in" operator throws on a cross-origin window.
+    const element = typeof HTMLIFrameElement === "undefined" ? undefined : HTMLIFrameElement;
+    const source = element && frame instanceof element ? frame.contentWindow : frame;
+    if (!source || new URL(options.origin).origin !== options.origin || options.origin === "null")
+      throw new Error("A frame registration requires a window and an exact origin.");
+    const registration = { ...options, permissions: [...(options.permissions ?? ["records"])] };
+    this.sources.set(source, registration);
+    this.ensureChildrenLink();
+    return () => {
+      if (this.sources.get(source) === registration) this.sources.delete(source);
+    };
+  }
+
+  /**
+   * Checks if a source is permitted at the given origin.
+   * @param source Window or port that sent the message.
+   * @param origin Origin supplied by the transport.
+   * @returns True if the current source policy permits this source.
+   */
+  isRegistered(source: object | null, origin: string): boolean {
+    if (!source) return false;
+    const registration = this.sources.get(source);
+    if (this.config.bus.sourcePolicy === "registered") return registration?.origin === origin;
+    return (
+      origin !== "null" &&
+      (origin === location.origin || this.config.bus.trustedOrigins.includes(origin))
+    );
+  }
+
+  /**
+   * Sends the new context id to child frames, workers and OpenFin views. Other tabs keep their
+   * own context.
+   */
+  rotateContext(): void {
+    const message: BusMessage = {
+      t: "security-context",
+      from: this.contextId,
+      id: this.config.securityContext.id,
+    };
+    this.postOver("children", message);
+    this.postOver("worker", message);
+
+    // Only the owner sends on the OpenFin link. Without this message, each view keeps the old id.
+    if (this.role === "sender") {
+      this.postOver("openfin", message);
+    }
+  }
   /** Current bus role. The default is "sender". */
   private role: BusRole = "sender";
   /** Upstream forwarding link, or null when acting as sender. */
@@ -83,6 +164,8 @@ export class Bus {
   private destroyed = false;
   /** Context id of the owner that answered the handshake. Null with no handshake. */
   private ownerId: string | null = null;
+  /** Transport identity of the owner from the handshake. */
+  private ownerPeer?: object | string;
   /** Active handshake state awaiting welcome response. */
   private awaitingWelcome: {
     link: LinkKind;
@@ -149,6 +232,7 @@ export class Bus {
     if (direct) {
       this.role = "forwarder";
       this.upstream = direct;
+      await this.handshake(direct);
       this.diagnostics.report(
         "bus.role_resolved",
         "This context attached directly to the runtime of its same-origin parent.",
@@ -210,7 +294,46 @@ export class Bus {
    * @param records Batch of log records to send.
    */
   sendRecords(records: LogRecord[]): void {
-    this.upstream?.post({ t: "records", from: this.contextId, records });
+    const { maxRecordsPerMessage, maxMessageBytes } = this.config.bus;
+    const encoder = new TextEncoder();
+    const size = (value: unknown): number =>
+      maxMessageBytes ? encoder.encode(JSON.stringify(value)).length : 0;
+    const message = (chunk: LogRecord[]): BusMessage => ({
+      t: "records",
+      from: this.contextId,
+      records: chunk,
+      routingContextId: this.config.securityContext.id || undefined,
+    });
+
+    // Measure each record one time. A message is the empty envelope, its records and the commas.
+    const envelope = size(message([]));
+    let chunk: LogRecord[] = [];
+    let bytes = envelope;
+
+    for (const record of records) {
+      const recordBytes = size(record);
+      if (maxMessageBytes && envelope + recordBytes > maxMessageBytes) {
+        this.diagnostics.count("bus.rejected_message");
+        continue;
+      }
+
+      const comma = chunk.length > 0 ? 1 : 0;
+      if (
+        (maxRecordsPerMessage && chunk.length >= maxRecordsPerMessage) ||
+        (maxMessageBytes && bytes + comma + recordBytes > maxMessageBytes)
+      ) {
+        this.upstream?.post(message(chunk));
+        chunk = [];
+        bytes = envelope;
+      }
+
+      bytes += (chunk.length > 0 ? 1 : 0) + recordBytes;
+      chunk.push(record);
+    }
+
+    if (chunk.length > 0) {
+      this.upstream?.post(message(chunk));
+    }
   }
 
   /**
@@ -218,11 +341,12 @@ export class Bus {
    * @param message Received bus message.
    * @param reply Direct response callback.
    */
-  acceptDirect(message: BusMessage, reply: Receive): void {
+  acceptDirect(message: BusMessage, reply: Receive, peer?: Window): void {
+    const source: MessageSource = { link: "direct", origin: "same-origin", peer };
+    if (!this.acceptsMessage(message, source)) return;
     if (message.from === this.contextId) {
       return;
     }
-    const source: MessageSource = { link: "direct", origin: "same-origin" };
 
     if (message.t === "hello") {
       if (this.canOwn("direct")) {
@@ -232,6 +356,7 @@ export class Bus {
             from: this.contextId,
             to: message.from,
             tabId: this.tabId,
+            routingContextId: this.config.securityContext.id || undefined,
           },
           source,
         );
@@ -250,15 +375,36 @@ export class Bus {
       reply(this.rulesAnswer(message.from), source);
       return;
     }
-    this.receive(message, source);
+    if (message.t === "records" && message.routingContextId !== this.config.securityContext.id) {
+      reply(
+        { t: "security-context", from: this.contextId, id: this.config.securityContext.id },
+        source,
+      );
+    }
+    this.routeMessage(message, source);
   }
 
   /**
    * Connects a worker instance to the bus control plane.
    * @param worker Worker instance.
    */
-  attachWorker(worker: WorkerLike): void {
-    this.links.push(createWorkerLink(worker, this.receive, this.diagnostics));
+  attachWorker(worker: WorkerLike, options: SourceOptions = {}): () => void {
+    const registration = { ...options, permissions: [...(options.permissions ?? ["records"])] };
+    this.sources.set(worker, registration);
+    const raw = createWorkerLink(worker, this.receive, this.diagnostics);
+    const link: Link = {
+      ...raw,
+      post: (message) => {
+        if (this.mayPost(message, worker)) raw.post(message);
+      },
+    };
+    this.links.push(link);
+    return () => {
+      link.close();
+      const index = this.links.indexOf(link);
+      if (index >= 0) this.links.splice(index, 1);
+      if (this.sources.get(worker) === registration) this.sources.delete(worker);
+    };
   }
 
   /**
@@ -271,6 +417,7 @@ export class Bus {
 
   /** Closes all open links and clears internal state. */
   destroy(): void {
+    this.sources.clear();
     this.destroyed = true;
     clearInterval(this.rulesPoll);
     this.rulesPoll = undefined;
@@ -311,6 +458,95 @@ export class Bus {
 
   /** Routes incoming messages to registered handlers or upstream targets. */
   private readonly receive = (message: BusMessage, source: MessageSource): void => {
+    if (this.acceptsMessage(message, source)) this.routeMessage(message, source);
+  };
+
+  /**
+   * Checks the source, the message limits and the message shape before delivery.
+   * @param message Message from the source.
+   * @param source Link and identity of the source.
+   * @returns True if the bus can accept the message.
+   */
+  private acceptsMessage(message: BusMessage, source: MessageSource): boolean {
+    try {
+      if (this.destroyed) return false;
+      const { bus } = this.config;
+      const child =
+        source.link === "children" || source.link === "direct" || source.link === "worker";
+      const registration =
+        typeof source.peer === "object" ? this.sources.get(source.peer) : undefined;
+      if (child && bus.sourcePolicy === "registered" && !registration)
+        throw new Error("Unregistered source");
+      const object = typeof source.peer === "object" ? source.peer : undefined;
+      const key = typeof source.peer === "string" ? source.peer : source.link;
+      const previous = object ? this.rates.get(object) : this.channelRates.get(key);
+      const rate =
+        previous && Date.now() - previous.start < 1000 ? previous : { start: Date.now(), count: 0 };
+      if (object) this.rates.set(object, rate);
+      else {
+        for (const [peer, previous] of this.channelRates) {
+          if (Date.now() - previous.start >= 1000) this.channelRates.delete(peer);
+        }
+        if (
+          bus.maxTrackedSources &&
+          this.channelRates.size >= bus.maxTrackedSources &&
+          !this.channelRates.has(key)
+        )
+          throw new Error("Too many sources");
+        this.channelRates.set(key, rate);
+      }
+      if (bus.maxMessagesPerSecond && ++rate.count > bus.maxMessagesPerSecond)
+        throw new Error("Rate limit");
+      const encoded = JSON.stringify(message, (_key, value: unknown) => {
+        if (bus.validation === "strict" && typeof value === "number" && !Number.isFinite(value))
+          throw new Error("Non-finite value");
+        return value;
+      });
+      if (bus.maxMessageBytes && new TextEncoder().encode(encoded).length > bus.maxMessageBytes)
+        throw new Error("Message too large");
+      if (bus.validation === "strict" && !validMessage(message))
+        throw new Error("Malformed message");
+      if (
+        message.t === "records" &&
+        bus.maxRecordsPerMessage &&
+        message.records.length > bus.maxRecordsPerMessage
+      )
+        throw new Error("Too many records");
+      if (registration) {
+        const permission =
+          message.t === "records"
+            ? "records"
+            : message.t === "journey"
+              ? "journey:write"
+              : message.t === "journey?"
+                ? "journey:read"
+                : message.t === "sampling?"
+                  ? "sampling:read"
+                  : undefined;
+        if (permission && !registration.permissions?.includes(permission))
+          throw new Error("Permission denied");
+      }
+      if (child && (message.t === "sampling" || message.t === "security-context"))
+        throw new Error("Only an upstream owner can publish this control message");
+      if (
+        bus.sourcePolicy === "registered" &&
+        source.link === "broadcast" &&
+        message.t === "records"
+      )
+        throw new Error("Broadcast is a control channel");
+      return true;
+    } catch {
+      this.diagnostics.count("bus.rejected_message");
+      return false;
+    }
+  }
+
+  /**
+   * Gives an accepted message to its handler or the upstream link.
+   * @param message Message that passed the source and shape checks.
+   * @param source Link and identity of the source.
+   */
+  private routeMessage(message: BusMessage, source: MessageSource): void {
     if (message.from === this.contextId) {
       return;
     }
@@ -323,6 +559,7 @@ export class Bus {
             from: this.contextId,
             to: message.from,
             tabId: this.tabId,
+            routingContextId: this.config.securityContext.id || undefined,
           });
         }
         break;
@@ -331,19 +568,46 @@ export class Bus {
         if (message.to !== this.contextId) {
           break;
         }
-        if (this.awaitingWelcome?.link === source.link) {
+        if (
+          this.awaitingWelcome?.link === source.link ||
+          (this.upstream?.kind === source.link && this.ownerId === null)
+        ) {
           // Keep the owner. Only it can set the journey of this context on a shared link.
           this.ownerId = message.from;
-          this.awaitingWelcome.settle(true);
+          this.ownerPeer = source.peer;
+          if (
+            message.routingContextId &&
+            this.handlers.onSecurityContext?.(message.routingContextId) === false
+          )
+            break;
+          this.awaitingWelcome?.settle(true);
         }
         break;
 
       case "records":
+        if (
+          this.config.securityContext.isolation &&
+          this.config.securityContext.id &&
+          message.routingContextId !== this.config.securityContext.id
+        ) {
+          this.diagnostics.count("security.context_mismatch");
+          break;
+        }
         if (this.role === "sender") {
           this.handlers.onRecords(message.records);
         } else if (this.upstream && this.canRelay(source.link)) {
           // Relays records upstream in nested frame chains.
           this.upstream.post(message);
+        }
+        break;
+
+      case "security-context":
+        if (
+          source.link === this.upstream?.kind &&
+          this.ownerId === message.from &&
+          this.ownerPeer === source.peer
+        ) {
+          if (this.handlers.onSecurityContext?.(message.id) !== false) this.rotateContext();
         }
         break;
 
@@ -396,7 +660,7 @@ export class Bus {
         }
         break;
     }
-  };
+  }
 
   /**
    * Tells if records from a link can go upstream. Records that go back on
@@ -479,13 +743,37 @@ export class Bus {
       }
     };
 
+    if (!this.platform.isWorker) this.ensureChildrenLink();
     if (this.platform.isTopLevelDocument) {
-      push(createChildrenLink(this.receive, this.config.bus.trustedOrigins, this.diagnostics));
       push(createBroadcastLink(BUS_CHANNEL_NAME, this.receive, this.diagnostics));
     }
     if (this.platform.platform === "openfin" || this.platform.platform === "openfin_web") {
       push(this.ensureOpenFinLink());
     }
+  }
+
+  /** Opens the link to child frames if it is not already open. */
+  private ensureChildrenLink(): void {
+    if (this.links.some((link) => link.kind === "children")) return;
+    const link = createChildrenLink(
+      this.receive,
+      this.config.bus.trustedOrigins,
+      this.diagnostics,
+      (source, origin) => {
+        const accepted = this.isRegistered(source, origin);
+        if (!accepted) {
+          this.diagnostics.count("bus.rejected_message");
+          if (origin !== location.origin && !this.config.bus.trustedOrigins.includes(origin))
+            this.diagnostics.report(
+              "bus.untrusted_origin",
+              "The bus rejected a message from an untrusted origin.",
+            );
+        }
+        return accepted;
+      },
+      (message, source) => this.mayPost(message, source),
+    );
+    if (link) this.links.push(link);
   }
 
   /** Returns the singleton OpenFin InterApplicationBus link. */
@@ -536,6 +824,8 @@ export class Bus {
       from: this.contextId,
       tabId: this.tabId,
     });
+    if (this.upstream && this.ownerId === null)
+      this.upstream.post({ t: "hello", from: this.contextId, tabId: this.tabId });
     this.postJourney({ t: "journey?", from: this.contextId });
     this.pollRules();
   }
@@ -588,7 +878,11 @@ export class Bus {
       return false;
     }
 
-    return this.journeyScope() === "origin" || this.fromOwner(message.from, source.link);
+    return (
+      this.journeyScope() === "origin" ||
+      (this.fromOwner(message.from, source.link) &&
+        (this.ownerPeer === undefined || this.ownerPeer === source.peer))
+    );
   }
 
   /**
@@ -667,7 +961,7 @@ export class Bus {
       return false;
     }
 
-    return true;
+    return this.ownerPeer === undefined || this.ownerPeer === source.peer;
   }
 
   /**

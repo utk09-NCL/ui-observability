@@ -95,6 +95,37 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
+   * Reads batches of one context in creation order without removing them.
+   * @param id Delivery context id.
+   * @param limit Maximum batches to return.
+   * @returns Batches of this context, oldest first.
+   */
+  async takeContext(id: string, limit: number): Promise<LogBatch[]> {
+    return (
+      (await this.diagnostics.guardAsync(
+        "storage.degraded",
+        "Could not query the context partition.",
+        () => this.db.takeContext(id, Math.min(limit, 0xffffffff)),
+      )) ?? []
+    );
+  }
+
+  /**
+   * Counts stored batches of one context.
+   * @param id Delivery context id.
+   * @returns Number of batches in this context.
+   */
+  async countContext(id: string): Promise<number> {
+    return (
+      (await this.diagnostics.guardAsync(
+        "storage.degraded",
+        "Could not count the context partition.",
+        () => this.db.countContext(id),
+      )) ?? 0
+    );
+  }
+
+  /**
    * Reads up to `limit` batches in FIFO order. It does not delete them.
    * @param limit Maximum number of batches to retrieve.
    * @returns Array of retrieved batches.

@@ -9,7 +9,6 @@ import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
   CAPTURE_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
-  MAX_BREADCRUMBS,
   METRIC_NAMESPACE,
   RUNTIME_GLOBAL_KEY,
   RUNTIME_STOPPED_KEY,
@@ -20,19 +19,23 @@ import {
 } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { BusMessage, BusRole } from "../models/bus";
+import type { FrameOptions, SourceOptions } from "../models/bus";
 import type {
   CaptureOptions,
   IdentityStrategy,
   ObservabilityConfig,
   ResolvedConfig,
   StorageStrategy,
+  SecurityContextUpdate,
+  SecurityContextRotationOptions,
 } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
-import type { PruneResult } from "../models/storage";
+import type { ObservabilityHealth } from "../models/health";
+import type { PruneResult, StorageAdapter } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
 import { isObject } from "../utils/guards";
 import {
@@ -88,7 +91,7 @@ type CaptureName = keyof typeof CAPTURE_LOADERS;
 type WebSocketClass = new (diagnostics: Diagnostics, config: ResolvedConfig) => CapturePlugin;
 
 /** Id of each plugin object. A new plugin object then changes the capture key. */
-const pluginIds = new WeakMap<CapturePlugin, number>();
+const pluginIds = new WeakMap<object, number>();
 
 /** Last plugin id that pluginId() gave. */
 let lastPluginId = 0;
@@ -99,7 +102,7 @@ let lastPluginId = 0;
  * @param plugin Plugin of the app.
  * @returns The id of the object.
  */
-function pluginId(plugin: CapturePlugin): number {
+function pluginId(plugin: object): number {
   let id = pluginIds.get(plugin);
 
   if (id === undefined) {
@@ -122,6 +125,17 @@ const SENDER_SECTIONS = ["batching", "retention"] as const;
 /** Config sections that a later configure() cannot change. */
 type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 
+/** Delivery settings that configure() cannot change while isolation is on. */
+const ROUTING_KEYS = [
+  "endpoint",
+  "metricsEndpoint",
+  "tracesEndpoint",
+  "headers",
+  "credentials",
+  "transport",
+  "transportOnExit",
+] as const;
+
 /**
  * Makes a text key of the capture section. A later configure() reinstalls the capture
  * modules only when the key changes. A reinstall unpatches and patches each host function.
@@ -131,6 +145,7 @@ type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 function captureKey(capture: CaptureOptions): string {
   return JSON.stringify({
     ...capture,
+    urlTransform: capture.urlTransform ? pluginId(capture.urlTransform) : undefined,
     webVitalsLoader: capture.webVitalsLoader !== undefined,
     ignoreUrls: capture.ignoreUrls.map(String),
     propagateTraceHeaderTo: capture.propagateTraceHeaderTo.map(String),
@@ -181,6 +196,37 @@ function ownVersion(runtime: ObservabilityRuntime): boolean {
 
 /** Manages subsystem lifecycles, bus coordination and record delivery. */
 export class ObservabilityRuntime {
+  /** True while the runtime changes the security context. */
+  private rotating = false;
+  /** True while the runtime collects the last records of the old context. */
+  private closingContext = false;
+  /** Version of another SDK copy that owns the page runtime, or null. */
+  private mismatchVersion: string | null = null;
+  /** True if the configured context id differs from the owner context id. */
+  private contextMismatch = false;
+  /** Current context change. Shutdown waits for this promise. */
+  private rotation?: Promise<void>;
+  /** Memory store kept for later context changes. */
+  private memoryStorage?: StorageAdapter;
+  /** True if the app supplied a context id at startup. */
+  private readonly explicitSecurityContext: boolean;
+
+  /**
+   * Checks if a security context change is in progress.
+   * @returns True until the current change completes.
+   */
+  isRotating(): boolean {
+    return this.rotating;
+  }
+
+  /**
+   * Locks or unlocks configuration at the request of the app. Other code of this origin can
+   * call this method. The lock does not control access.
+   * @param locked True to refuse changes through configure().
+   */
+  setConfigurationLocked(locked: boolean): void {
+    if (typeof locked === "boolean") this.config.lockConfiguration = locked;
+  }
   /**
    * Runtime of this copy of the library when another version owns the page runtime.
    * It stays off the global key.
@@ -351,24 +397,44 @@ export class ObservabilityRuntime {
     // A server has no page to capture and no storage. It writes to the console only.
     this.degraded = mismatch || this.onServer();
     this.config = resolveConfig(this.allowed(input), this.diagnostics);
+    this.explicitSecurityContext = Boolean(input.securityContext?.id);
+    this.config.securityContext.id ||= newId(this.diagnostics);
+    this.diagnostics.setPolicy(
+      this.config.diagnostics.throttleMs,
+      this.config.diagnostics.consoleFallback,
+    );
     this.identityBuiltAs = this.config.identity;
     this.stores =
       this.identityBuiltAs === "memory" || this.onServer() ? memoryStores() : BROWSER_STORES;
-    this.identity = resolveIdentity(this.diagnostics, this.stores);
-    this.sessionTouch = new SessionTouch(this.diagnostics, this.stores);
-    this.breadcrumbs = new BreadcrumbBuffer(MAX_BREADCRUMBS);
+    this.identity = resolveIdentity(
+      this.diagnostics,
+      this.stores,
+      this.config.correlation.sessionIdleMs,
+    );
+    this.sessionTouch = new SessionTouch(
+      this.diagnostics,
+      this.stores,
+      this.config.correlation.sessionTouchMs,
+      this.config.correlation.sessionIdleMs,
+    );
+    this.breadcrumbs = new BreadcrumbBuffer(this.config.capturePolicy.breadcrumbs);
     // Sample a span by its trace. The whole trace stays or goes.
     const keeps = (traceId: string): boolean =>
       sampleKey(traceId, this.config.sampling.defaultRate);
-    this.tracing = new TraceEngine(this.diagnostics, undefined, this.config.otelLoader, {
-      enabled: () => this.config.tracesEndpoint !== "",
-      keeps,
-      onEnd: (ended) => {
-        if (keeps(ended.traceId)) {
-          this.recordSpan(rootSpan(ended));
-        }
+    this.tracing = new TraceEngine(
+      this.diagnostics,
+      this.config.correlation.traceMaxAgeMs || Infinity,
+      this.config.otelLoader,
+      {
+        enabled: () => this.config.tracesEndpoint !== "",
+        keeps,
+        onEnd: (ended) => {
+          if (keeps(ended.traceId)) {
+            this.recordSpan(rootSpan(ended));
+          }
+        },
       },
-    });
+    );
     // Do not await. Without OTel, records use the ambient trace. The library loses no record.
     void this.tracing.loadOtel();
     // The startup values stay. A later configure() cannot change the limits or the journey age.
@@ -406,6 +472,7 @@ export class ObservabilityRuntime {
         this.emitPoint(name, attributes, fields);
       },
       this.diagnostics,
+      this.config.metrics,
     );
   }
 
@@ -417,6 +484,7 @@ export class ObservabilityRuntime {
    * @param data Optional metadata.
    */
   addBreadcrumb(message: unknown, data?: Record<string, unknown>): void {
+    if (this.rotating || this.destroyed) return;
     // A message with a toString() that throws, or a data getter that throws, must not throw
     // into the call of the app.
     this.diagnostics.guard(
@@ -447,7 +515,7 @@ export class ObservabilityRuntime {
    */
   recordMetric(def: InstrumentDef, value: number, attributes?: MetricAttributes): void {
     // Guard against a value after shutdown. Its interval timer would outlive the runtime.
-    if (!this.destroyed) {
+    if (!this.destroyed && !this.rotating) {
       this.meter.record(def, value, attributes);
     }
   }
@@ -502,7 +570,16 @@ export class ObservabilityRuntime {
    * @param message Inbound bus message.
    * @param reply Direct response callback.
    */
-  readonly busAccept = (message: BusMessage, reply: Receive): void => {
+  /**
+   * Checks the source policy before a direct child link opens.
+   * @param source Child window.
+   * @param origin Origin of the child window.
+   * @returns True if the bus permits this source.
+   */
+  readonly busCanAccept = (source: Window, origin: string): boolean =>
+    this.bus?.isRegistered(source, origin) ?? false;
+
+  readonly busAccept = (message: BusMessage, reply: Receive, source?: Window): void => {
     if (this.destroyed) {
       return;
     }
@@ -517,7 +594,7 @@ export class ObservabilityRuntime {
         "bus.send_failed",
         "The bus could not accept a direct message from a child frame.",
         () => {
-          bus.acceptDirect(message, reply);
+          bus.acceptDirect(message, reply, source);
         },
       );
     });
@@ -625,6 +702,7 @@ export class ObservabilityRuntime {
     ObservabilityRuntime.local = runtime;
 
     const foundText = typeof found === "string" ? found : "before 0.9.0";
+    runtime.mismatchVersion = foundText;
     runtime.diagnostics.report(
       "runtime.version_mismatch",
       `Another copy of the library, version ${foundText}, owns the page runtime. This copy, version ${TELEMETRY_SDK_VERSION}, runs in console-only mode and installs no capture. Load one version of the library on the page.`,
@@ -640,12 +718,42 @@ export class ObservabilityRuntime {
    * @param input Partial configuration to merge.
    */
   private reconfigure(input: Partial<ObservabilityConfig>): void {
-    const accepted = this.keepDestination(this.allowed(input));
+    if (this.rotating) {
+      this.diagnostics.report(
+        "config.locked",
+        "Configuration cannot change during security-context rotation.",
+      );
+      return;
+    }
+    if (this.config.lockConfiguration) {
+      const next = resolveConfig(input, this.diagnostics, this.config);
+      if (!sameConfig(this.config, next))
+        this.diagnostics.report(
+          "config.locked",
+          "Runtime configuration is locked. Use setConfigurationLocked(false) to unlock it explicitly.",
+        );
+      return;
+    }
+    const accepted = this.keepDestination(this.keepRouting(this.allowed(input)));
+    for (const key of ["correlation", "persistence"] as const) {
+      if (
+        accepted[key] &&
+        !sameConfig({ ...this.config[key], ...accepted[key] }, this.config[key])
+      ) {
+        this.diagnostics.report("config.invalid", `${key} cannot change after startup.`);
+        Object.assign(accepted, { [key]: this.config[key] });
+      }
+    }
     const capturesBefore = captureKey(this.config.capture);
     const next = resolveConfig(accepted, this.diagnostics, this.config);
     this.keepStartupTunables(next);
     applyResolvedConfig(this.config, next);
+    this.breadcrumbs.resize(this.config.capturePolicy.breadcrumbs);
     this.diagnostics.setHandler(this.config.onDiagnostic);
+    this.diagnostics.setPolicy(
+      this.config.diagnostics.throttleMs,
+      this.config.diagnostics.consoleFallback,
+    );
 
     this.builder.invalidateResource();
     this.console.update(this.config.console);
@@ -693,6 +801,48 @@ export class ObservabilityRuntime {
     }
 
     return consoleOnly(input);
+  }
+
+  /**
+   * Removes delivery and identity changes while isolation is on. The other settings still apply.
+   * @param input Consumer configuration options.
+   * @returns The options without the refused delivery or identity changes.
+   */
+  private keepRouting(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
+    if (!this.tunablesLocked || this.degraded || !this.config.securityContext.isolation) {
+      return input;
+    }
+
+    // Compare resolved values. An unset endpoint keeps the endpoint in force. It is not a change.
+    // A separate reporter prevents a second count of the diagnostics of the real resolve.
+    const probe = resolveConfig(input, new Diagnostics(), this.config);
+    const refused: string[] = ROUTING_KEYS.filter(
+      (key) => !sameConfig(probe[key], this.config[key]),
+    );
+    if (probe.securityContext.id !== this.config.securityContext.id) {
+      refused.push("securityContext.id");
+    }
+    if (refused.length === 0) {
+      return input;
+    }
+
+    const kept: Partial<ObservabilityConfig> = { ...input };
+    for (const key of ROUTING_KEYS) {
+      if (refused.includes(key)) {
+        Reflect.deleteProperty(kept, key);
+      }
+    }
+    if (refused.includes("securityContext.id")) {
+      const context = { ...input.securityContext };
+      Reflect.deleteProperty(context, "id");
+      kept.securityContext = context;
+    }
+
+    this.diagnostics.report(
+      "config.invalid",
+      `Isolation refuses changes to ${refused.join(", ")}. Use rotateSecurityContext() for these changes. To permit them, set securityContext.isolation: false in a separate configure() call. The other settings apply.`,
+    );
+    return kept;
   }
 
   /**
@@ -929,6 +1079,41 @@ export class ObservabilityRuntime {
         this.identity.contextId,
         this.identity.tabId,
         {
+          onSecurityContext: (id) => {
+            if (this.explicitSecurityContext && this.config.securityContext.id !== id) {
+              this.contextMismatch = true;
+              this.diagnostics.report(
+                "security.context_mismatch",
+                "The configured security context differs from the upstream owner.",
+              );
+              return false;
+            }
+            this.contextMismatch = false;
+            if (this.config.securityContext.id !== id) {
+              if (this.ready) {
+                this.bootBuffer.take();
+                this.pendingRecords.take();
+                this.forwardBuffer = [];
+                this.context.clear();
+                this.breadcrumbs.clear();
+                // collect() removes the open measurements. emit() refuses them during this reset.
+                const rotating = this.rotating;
+                this.rotating = true;
+                this.meter.collect();
+                // A same-origin owner stores its new session before it sends the new id. Use that
+                // session. Without it, each frame starts a different session.
+                const shared = this.sessionTouch.stored();
+                this.resetSession(
+                  shared !== undefined && shared !== this.identity.sessionId
+                    ? shared
+                    : newId(this.diagnostics),
+                );
+                this.rotating = rotating;
+              }
+              this.config.securityContext.id = id;
+            }
+            return true;
+          },
           onRecords: (records) => {
             this.ingestForwarded(records);
           },
@@ -1004,6 +1189,10 @@ export class ObservabilityRuntime {
       const sender = this.destroyed
         ? null
         : await Sender.create({
+            storage: this.memoryStorage,
+            onStorage: (storage) => {
+              if (storage.name === "memory") this.memoryStorage = storage;
+            },
             config: this.config,
             diagnostics: this.diagnostics,
             onGap: this.reportGap,
@@ -1088,6 +1277,7 @@ export class ObservabilityRuntime {
     this.uninstallCaptures();
 
     const ctx: CaptureContext = {
+      isActive: () => !this.destroyed && !this.rotating,
       config: this.config,
       diagnostics: this.diagnostics,
       breadcrumbs: this.breadcrumbs,
@@ -1201,14 +1391,16 @@ export class ObservabilityRuntime {
    * Attaches a Web Worker or MessagePort to the bus for record forwarding.
    * @param worker Target Worker or MessagePort instance.
    */
-  registerWorker(worker: WorkerLike): void {
+  registerWorker(worker: WorkerLike, options: SourceOptions = {}): () => void {
+    let cancelled = false;
+    let detach: (() => void) | undefined;
     if (this.destroyed) {
-      return;
+      return () => undefined;
     }
 
     // Attach on construction. The worker's handshake can time out while the bus starts.
     void this.constructBus().then((bus) => {
-      if (!bus || this.destroyed) {
+      if (!bus || this.destroyed || cancelled) {
         return;
       }
 
@@ -1216,13 +1408,39 @@ export class ObservabilityRuntime {
         "bus.send_failed",
         "The library could not register the worker.",
         () => {
-          bus.attachWorker(worker);
+          detach = bus.attachWorker(worker, options);
         },
       );
 
       // Start the bus in bus.mode "off", where startup did not start it.
       void this.ensureBus();
     });
+    return () => {
+      cancelled = true;
+      detach?.();
+    };
+  }
+
+  /**
+   * Registers a frame after the bus loads. Early removal cancels the registration.
+   * @param frame Child frame or window.
+   * @param options Expected origin and source permissions.
+   * @returns Function that removes this registration.
+   */
+  registerFrame(frame: HTMLIFrameElement | Window, options: FrameOptions): () => void {
+    let cancelled = false;
+    let detach: (() => void) | undefined;
+    void this.constructBus().then((bus) => {
+      if (!bus || this.destroyed || cancelled) return;
+      detach = this.diagnostics.guard("bus.send_failed", "The frame could not be registered.", () =>
+        bus.registerFrame(frame, options),
+      );
+      void this.ensureBus();
+    });
+    return () => {
+      cancelled = true;
+      detach?.();
+    };
   }
 
   /** Flushes pending telemetry, unregisters listeners, and unpins the runtime instance. */
@@ -1254,6 +1472,8 @@ export class ObservabilityRuntime {
     await closing;
     // A load in progress destroys its own stack. shutdown() resolves only after that.
     await this.senderLoad;
+    await this.rotation?.catch(() => undefined);
+    await this.memoryStorage?.close();
 
     // A local runtime must not remove the runtime of the other version from the global key.
     if (ObservabilityRuntime.pinned() === this) {
@@ -1269,7 +1489,7 @@ export class ObservabilityRuntime {
    * @param record Log record to emit, or null when the build dropped it.
    */
   emit(record: LogRecord | null): void {
-    if (!record || this.destroyed) {
+    if (!record || this.destroyed || (this.rotating && !this.closingContext)) {
       return;
     }
 
@@ -1363,6 +1583,7 @@ export class ObservabilityRuntime {
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
+    if (this.rotating || this.destroyed) return;
     if (!Array.isArray(records)) {
       this.diagnostics.count("record.dropped_malformed");
       return;
@@ -1465,6 +1686,14 @@ export class ObservabilityRuntime {
       return;
     }
 
+    this.resetSession(newId(this.diagnostics));
+  }
+
+  /**
+   * Closes the work of the old session and starts the given session.
+   * @param sessionId Id of the session to start.
+   */
+  private resetSession(sessionId: string): void {
     // Close the work of the old session first. Its points and its root span keep the old id.
     this.meter.collect();
     this.tracing.rotate("explicit");
@@ -1472,10 +1701,198 @@ export class ObservabilityRuntime {
     // A shared machine: the next user must not see the trail of the previous user.
     this.breadcrumbs.clear();
 
-    const fresh = newId(this.diagnostics);
-    (this.identity as { sessionId: string }).sessionId = fresh;
-    this.sessionTouch.restart(fresh);
+    (this.identity as { sessionId: string }).sessionId = sessionId;
+    this.sessionTouch.restart(sessionId);
     this.builder.invalidateResource();
+  }
+
+  /**
+   * Changes the delivery context in one operation. A second change must wait for this change.
+   * @param update New identity, delivery settings and context attributes.
+   * @param options Rule for records of the old context and the flush deadline.
+   * @returns Promise that resolves when the change completes. Invalid settings reject it.
+   */
+  rotateSecurityContext(
+    update: SecurityContextUpdate,
+    options: SecurityContextRotationOptions = {},
+  ): Promise<void> {
+    if (this.rotating)
+      return Promise.reject(new Error("A security-context rotation is already running."));
+    const pending = options.pending ?? "discard";
+    const timeoutMs = options.timeoutMs ?? 5000;
+    if (
+      !isObject(update) ||
+      !isObject(update.delivery) ||
+      !["discard", "flush", "retain", "carry"].includes(pending) ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs < 0 ||
+      (update.id !== undefined && (typeof update.id !== "string" || update.id.length === 0))
+    ) {
+      return Promise.reject(new Error("Invalid security-context rotation options."));
+    }
+    if (this.destroyed) return Promise.reject(new Error("The runtime has stopped."));
+    this.rotating = true;
+    this.rotation = this.rotateContext(update, pending, timeoutMs).finally(() => {
+      this.rotating = false;
+      this.rotation = undefined;
+    });
+    return this.rotation;
+  }
+
+  /**
+   * Checks new settings, stops old delivery and starts the new context.
+   * @param update New identity, delivery settings and attributes.
+   * @param pending Rule for the old records.
+   * @param timeoutMs Maximum wait for an old-context flush, in milliseconds.
+   * @returns Promise that resolves when the context change completes.
+   */
+  private async rotateContext(
+    update: SecurityContextUpdate,
+    pending: "discard" | "flush" | "retain" | "carry",
+    timeoutMs: number,
+  ): Promise<void> {
+    await this.started;
+    if (this.role() === "forwarder")
+      throw new Error(
+        "Rotate the security context on the upstream owner, or use bus.mode: sender for an independent identity.",
+      );
+    await this.senderLoad;
+    const previous = this.config.securityContext.id;
+    const nextId = update.id ?? newId(this.diagnostics);
+    if (nextId === previous)
+      throw new Error("A rotation requires a different security-context id.");
+    // Check the new settings before the old sender stops. Invalid settings keep the old sender.
+    const delivery = {
+      endpoint: null,
+      metricsEndpoint: "",
+      tracesEndpoint: "",
+      headers: undefined,
+      credentials: "omit" as const,
+      transport: undefined,
+      transportOnExit: undefined,
+      ...update.delivery,
+    };
+    const before = this.diagnostics.snapshot()["config.invalid"] ?? 0;
+    const next = resolveConfig(
+      this.allowed({ ...delivery, securityContext: { id: nextId } }),
+      this.diagnostics,
+      {
+        ...this.config,
+        ...delivery,
+        endpoint: null,
+        metricsEndpoint: "",
+        tracesEndpoint: "",
+        headers: undefined,
+        credentials: "omit",
+        transport: undefined,
+        transportOnExit: undefined,
+      },
+    );
+    if ((this.diagnostics.snapshot()["config.invalid"] ?? 0) !== before)
+      throw new Error("Invalid delivery settings for the next security context.");
+
+    // The base above has no endpoints. Remove the old endpoints from the ignore list here.
+    // If they stay, network capture ignores calls to the old destination.
+    const retired = new Set<unknown>([
+      this.config.endpoint,
+      this.config.metricsEndpoint,
+      this.config.tracesEndpoint,
+    ]);
+    const current = new Set<unknown>([next.endpoint, next.metricsEndpoint, next.tracesEndpoint]);
+    next.capture.ignoreUrls = next.capture.ignoreUrls.filter(
+      (url) => !retired.has(url) || current.has(url),
+    );
+
+    this.closingContext = true;
+    try {
+      this.meter.collect();
+      this.tracing.end();
+      this.journey.end();
+    } finally {
+      this.closingContext = false;
+    }
+    const held = [...this.bootBuffer.take(), ...this.pendingRecords.take(), ...this.forwardBuffer];
+    this.forwardBuffer = [];
+    const old = this.sender;
+    this.sender = undefined;
+    this.senderLoad = undefined;
+    const oldRecords = (await old?.retire(pending, timeoutMs, previous)) ?? [];
+    if (this.destroyed) return;
+    const records = [...held, ...oldRecords];
+    if (pending !== "retain" && pending !== "carry") this.drops.add("security_context", records);
+    // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
+    applyResolvedConfig(this.config, next);
+    this.remote.sampling = null;
+    this.context.clear();
+    if (update.context) this.context.setMany(update.context);
+    this.breadcrumbs.clear();
+    this.newSession();
+    this.builder.invalidateResource();
+    await this.syncSender();
+    this.bus?.rotateContext();
+    if (pending === "carry") for (const record of records) this.route(record);
+    this.diagnostics.report("security.rotated", "The runtime rotated its security context.", {
+      pending,
+    });
+  }
+
+  /**
+   * Reads the state of this runtime. It does not wait for startup or the sender to load.
+   * @returns State, delivery counts and policies. The facade adds the logger cache counts.
+   */
+  async health(): Promise<Omit<ObservabilityHealth, "loggerCache">> {
+    const delivery = this.sender?.stats() ?? { pending: 0, inFlight: 0, lastSendAt: null };
+    const issues: ObservabilityHealth["issues"] = [];
+    if (this.mismatchVersion) issues.push("runtime.version_mismatch");
+    if (this.contextMismatch) issues.push("security.context_mismatch");
+    if (this.ready && this.hasDestination() && this.role() === "sender" && !this.sender)
+      issues.push("sender.unavailable");
+    const {
+      sourcePolicy,
+      validation,
+      maxMessageBytes,
+      maxRecordsPerMessage,
+      maxMessagesPerSecond,
+      maxTrackedSources,
+    } = this.config.bus;
+    return {
+      ...delivery,
+      pending:
+        delivery.pending +
+        this.bootBuffer.length +
+        this.pendingRecords.length +
+        this.forwardBuffer.length,
+      stored: (await this.sender?.queueDepth()) ?? 0,
+      sdkVersion: this.sdkVersion,
+      owningSdkVersion: this.mismatchVersion,
+      status: this.destroyed
+        ? "stopped"
+        : this.rotating
+          ? "rotating"
+          : issues.length
+            ? "degraded"
+            : !this.ready
+              ? "starting"
+              : "ready",
+      mode:
+        this.role() === "forwarder"
+          ? "forwarder"
+          : this.hasDestination()
+            ? "sender"
+            : "console-only",
+      senderReady: this.sender !== undefined && !this.destroyed && !this.rotating,
+      configurationLocked: this.config.lockConfiguration,
+      issues,
+      securityContext: { ...this.config.securityContext },
+      bus: {
+        sourcePolicy,
+        validation,
+        maxMessageBytes,
+        maxRecordsPerMessage,
+        maxMessagesPerSecond,
+        maxTrackedSources,
+      },
+    };
   }
 
   /**
@@ -1489,6 +1906,50 @@ export class ObservabilityRuntime {
     const held = this.bootBuffer.length + this.pendingRecords.length + this.forwardBuffer.length;
 
     return { ...delivery, pending: delivery.pending + held, stored };
+  }
+
+  /**
+   * Removes stored records of one context or all contexts in the application namespace.
+   * @param scope Part of storage to clear.
+   * @returns Promise that resolves when removal completes.
+   */
+  async clearPersisted(scope: "context" | "namespace"): Promise<void> {
+    await this.senderLoad;
+    if (this.sender) {
+      await this.sender.clearPersisted(scope, this.config.securityContext.id);
+      return;
+    }
+    const [{ createStorage }, { ContextStorage }, { storageLimits }, { clearEmergencyContext }] =
+      await Promise.all([
+        import("../storage/factory"),
+        import("../storage/context-storage"),
+        import("../models/storage"),
+        import("../storage/emergency-queue"),
+      ]);
+    const namespace = this.config.persistence.namespace;
+    const backing =
+      this.memoryStorage ??
+      (await createStorage(
+        this.config.storage,
+        namespace ? `UiObservability:${namespace}` : "UiObservability",
+        storageLimits(this.config.retention),
+        this.diagnostics,
+        undefined,
+        namespace,
+      ));
+    const store = new ContextStorage(backing, this.config.securityContext, namespace);
+    try {
+      if (scope === "namespace") await store.clearNamespace();
+      else await store.clear();
+      clearEmergencyContext(
+        this.config.securityContext.id,
+        this.diagnostics,
+        namespace,
+        scope === "namespace",
+      );
+    } finally {
+      if (backing !== this.memoryStorage) await store.close();
+    }
   }
 
   /**
@@ -1522,4 +1983,28 @@ export class ObservabilityRuntime {
     await this.senderLoad;
     await this.sender?.flush();
   }
+}
+
+/**
+ * Compares resolved settings without JSON conversion. Functions keep their object identity.
+ * The seen map stops a cycle from causing a repeated comparison.
+ * @param a First value.
+ * @param b Second value.
+ * @param seen Object pairs already compared.
+ * @returns True if the values are equal.
+ */
+function sameConfig(a: unknown, b: unknown, seen = new WeakMap<object, object>()): boolean {
+  if (Object.is(a, b)) return true;
+  if (a instanceof RegExp && b instanceof RegExp) return String(a) === String(b);
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
+  if (seen.has(a)) return seen.get(a) === b;
+  seen.set(a, b);
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  return (
+    ak.length === bk.length &&
+    ak.every(
+      (key) => Object.hasOwn(b, key) && sameConfig(Reflect.get(a, key), Reflect.get(b, key), seen),
+    )
+  );
 }

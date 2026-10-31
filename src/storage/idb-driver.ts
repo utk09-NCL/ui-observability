@@ -61,6 +61,32 @@ export class IdbDriver {
   }
 
   /**
+   * Reads batches of one context in creation order without removing them.
+   * @param id Delivery context id.
+   * @param limit Maximum batches to return.
+   * @returns Batches of this context, oldest first.
+   */
+  async takeContext(id: string, limit: number): Promise<LogBatch[]> {
+    const store = await this.store("readonly");
+    const range = IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]);
+    return promisify<LogBatch[]>(store.index("routingContext").getAll(range, limit));
+  }
+
+  /**
+   * Counts stored batches of one context.
+   * @param id Delivery context id.
+   * @returns Number of batches in this context.
+   */
+  async countContext(id: string): Promise<number> {
+    const store = await this.store("readonly");
+    return promisify<number>(
+      store
+        .index("routingContext")
+        .count(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER])),
+    );
+  }
+
+  /**
    * Reads the oldest batches by createdAt. It does not remove them.
    * @param limit Maximum number of batches to return.
    * @returns Batches in ascending createdAt order.
@@ -211,6 +237,12 @@ export class IdbDriver {
           const store = db.createObjectStore(INDEXEDDB_STORE_NAME, { keyPath: "id" });
           store.createIndex(INDEXEDDB_CREATED_AT_INDEX, INDEXEDDB_CREATED_AT_INDEX);
         }
+        // IndexedDB supplies the versionchange transaction during upgradeneeded.
+        // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style
+        const transaction = request.transaction as IDBTransaction;
+        const store = transaction.objectStore(INDEXEDDB_STORE_NAME);
+        if (!store.indexNames.contains("routingContext"))
+          store.createIndex("routingContext", ["routingContextId", "createdAt"]);
       };
 
       request.onsuccess = () => {

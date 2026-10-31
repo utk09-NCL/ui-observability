@@ -9,6 +9,10 @@ import { OneLogger, type OneLoggerOptions } from "./core/logger";
 import { makeCounter, makeHistogram } from "./core/meter";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
+import type { SecurityContextUpdate, SecurityContextRotationOptions } from "./models/config";
+import type { ObservabilityHealth } from "./models/health";
+import type { FrameOptions, SourceOptions } from "./models/bus";
+export type { FrameOptions, SourceOptions, BusPermission } from "./models/bus";
 import type { MetricType } from "./models/log-record";
 import type { DeliveryStats } from "./models/stats";
 import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./models/metric";
@@ -17,6 +21,22 @@ export { OneLogger };
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
 export type { Journey, ObservabilityConfig, OneLoggerOptions };
 export type {
+  DeliveryPolicy,
+  BufferingPolicy,
+  MetricsPolicy,
+  CorrelationPolicy,
+  DiagnosticsPolicy,
+  PersistencePolicy,
+  MetadataPolicy,
+  CapturePolicy,
+  BusOptions,
+  CaptureOptions,
+  InteractionOptions,
+  LoggerCacheOptions,
+  SecurityContextOptions,
+  SecurityContextUpdate,
+  SecurityContextRotationOptions,
+  DeliveryOptions,
   ConsoleOptions,
   ConsoleStyles,
   ExitTransport,
@@ -24,6 +44,7 @@ export type {
   TransportRequest,
   TransportResponse,
 } from "./models/config";
+export type { ObservabilityHealth } from "./models/health";
 export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { DropSummary, LossReason } from "./models/drop";
@@ -64,31 +85,95 @@ function requireRuntime(): ObservabilityRuntime {
 }
 
 /**
+ * Removes stored logs. Pending records and requests can write to storage again.
+ * @param scope Context or namespace whose stored records to remove.
+ * @returns Promise that resolves when removal completes.
+ */
+export function clearPersistedLogs(scope: "context" | "namespace" = "context"): Promise<void> {
+  if (!["context", "namespace"].includes(scope))
+    return Promise.reject(new Error("Invalid persistence scope."));
+  return requireRuntime().clearPersisted(scope);
+}
+
+/**
  * Initializes or reconfigures the observability runtime instance.
  * @param config Consumer configuration options.
  */
 export function configure(config: Partial<ObservabilityConfig>): void {
   ObservabilityRuntime.configure(config);
+  trimLoggerCache();
 }
 
 /**
- * Retrieves a cached logger for a namespace, or builds an uncached scoped logger.
+ * Locks or unlocks configuration. The lock does not control access by other code of this origin.
+ * @param locked True to refuse changes through configure().
+ */
+export function setConfigurationLocked(locked: boolean): void {
+  requireRuntime().setConfigurationLocked(locked);
+}
+
+/**
+ * Stops delivery for the old context and starts delivery for the new context.
+ * @param update New identity, delivery settings and context attributes.
+ * @param options Rule for old records and the flush deadline.
+ * @returns Promise that resolves when the change completes.
+ */
+export function rotateSecurityContext(
+  update: SecurityContextUpdate,
+  options?: SecurityContextRotationOptions,
+): Promise<void> {
+  return requireRuntime().rotateSecurityContext(update, options);
+}
+
+/**
+ * Reads the runtime state, delivery counts and policies of this SDK copy.
+ * @returns Promise that resolves to the current state.
+ */
+export async function getHealth(): Promise<ObservabilityHealth> {
+  const runtime = requireRuntime();
+  trimLoggerCache();
+  return {
+    ...(await runtime.health()),
+    loggerCache: { ...runtime.config.loggerCache, size: loggers.size },
+  };
+}
+
+/**
+ * Removes the least recently used loggers until the cache meets its limit.
+ * @returns Cache limit, or null for no limit.
+ */
+function trimLoggerCache(): number | null {
+  const limit = (ObservabilityRuntime.current() ?? ObservabilityRuntime.stopped())?.config
+    .loggerCache.maxEntries;
+  const max = limit === undefined ? 256 : limit;
+  if (max !== null)
+    while (loggers.size > max) {
+      for (const key of loggers.keys()) {
+        loggers.delete(key);
+        break;
+      }
+    }
+  return max;
+}
+
+/**
+ * Gives a namespace logger from the cache, or a new scoped logger.
  * @param namespace Application subsystem or module namespace.
- * @param options Scoped context merged into records emitted by this logger.
- * @returns Cached OneLogger instance, or a new one when the call gives options.
+ * @param options Context attributes for this logger only.
+ * @returns Logger for the namespace. Options or a disabled cache give a new logger.
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
-  // Do not cache a scoped logger. The cache keeps its scopedContext for the life of the document.
-  if (options) {
-    return new OneLogger(requireRuntime, namespace, options);
-  }
+  const max = trimLoggerCache();
+  if (options || max === 0) return new OneLogger(requireRuntime, namespace, options);
 
   let logger = loggers.get(namespace);
 
-  if (!logger) {
-    logger = new OneLogger(requireRuntime, namespace);
-    loggers.set(namespace, logger);
-  }
+  logger ??= new OneLogger(requireRuntime, namespace);
+
+  // Move a cached logger to the end. The first entry is then the least recently used logger.
+  loggers.delete(namespace);
+  loggers.set(namespace, logger);
+  trimLoggerCache();
 
   return logger;
 }
@@ -324,8 +409,21 @@ export function adoptJourney(token: string): boolean {
  * Connects a Web Worker or MessagePort to the document bus for record routing.
  * @param worker Target Worker or MessagePort instance.
  */
-export function registerWorker(worker: WorkerLike): void {
-  requireRuntime().registerWorker(worker);
+export function registerWorker(worker: WorkerLike, options?: SourceOptions): () => void {
+  return requireRuntime().registerWorker(worker, options);
+}
+
+/**
+ * Registers one frame or window at an exact origin.
+ * @param frame Child frame or window to register.
+ * @param options Expected origin and source permissions.
+ * @returns Function that removes this registration.
+ */
+export function registerFrame(
+  frame: HTMLIFrameElement | Window,
+  options: FrameOptions,
+): () => void {
+  return requireRuntime().registerFrame(frame, options);
 }
 
 /** Rotates trace context to begin a new distributed trace. */
@@ -368,7 +466,8 @@ export function getStats(): Promise<DeliveryStats> {
 }
 
 /**
- * Starts a new session in this tab, for example after a logout. It ends the active journey and
+ * Starts new correlation in this tab. Use rotateSecurityContext() at logout or a tenant change.
+ * Ends the active journey and
  * starts a new trace. Other tabs read the new id at their next startup.
  */
 export function newSession(): void {

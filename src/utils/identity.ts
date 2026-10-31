@@ -172,6 +172,7 @@ function liveSession(
   stores: IdentityStores,
   diagnostics: Diagnostics,
   now: number,
+  idleMs: number,
 ): string | undefined {
   const raw = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
   if (!raw) {
@@ -180,7 +181,9 @@ function liveSession(
 
   try {
     const parsed = JSON.parse(raw) as { id?: string; lastSeenAt?: number };
-    return parsed.id && now - (parsed.lastSeenAt ?? 0) < SESSION_IDLE_MS ? parsed.id : undefined;
+    return parsed.id && (idleMs === 0 || now - (parsed.lastSeenAt ?? 0) < idleMs)
+      ? parsed.id
+      : undefined;
   } catch {
     diagnostics.report(
       "storage.degraded",
@@ -199,12 +202,13 @@ function liveSession(
 export function resolveIdentity(
   diagnostics: Diagnostics,
   stores: IdentityStores = BROWSER_STORES,
+  idleMs = SESSION_IDLE_MS,
 ): Identity {
   const contextId = newId(diagnostics);
   const now = Date.now();
 
   const minted = newId(diagnostics);
-  const sessionId = liveSession(stores, diagnostics, now) ?? minted;
+  const sessionId = liveSession(stores, diagnostics, now, idleMs) ?? minted;
   const session = JSON.stringify({ id: sessionId, lastSeenAt: now });
   safeWrite(stores, "local", SESSION_ID_KEY, session, diagnostics);
 
@@ -247,6 +251,8 @@ export class SessionTouch {
   constructor(
     private diagnostics: Diagnostics,
     private readonly stores: IdentityStores = BROWSER_STORES,
+    private readonly touchMs = SESSION_TOUCH_MS,
+    private readonly idleMs = SESSION_IDLE_MS,
   ) {}
 
   /**
@@ -256,19 +262,27 @@ export class SessionTouch {
   touch(sessionId: string): void {
     const now = Date.now();
 
-    if (now - this.lastTouchAt < SESSION_TOUCH_MS) {
+    if (now - this.lastTouchAt < this.touchMs) {
       return;
     }
 
     // Another tab can hold a newer session, for example after newSession(). Do not write the old
     // id back. A reload would then resume the old session.
-    const stored = liveSession(this.stores, this.diagnostics, now);
+    const stored = liveSession(this.stores, this.diagnostics, now, this.idleMs);
     if (stored !== undefined && stored !== sessionId) {
       this.lastTouchAt = now;
       return;
     }
 
     this.write(sessionId, now);
+  }
+
+  /**
+   * Reads the live session id in the local store.
+   * @returns The stored session id, or undefined if no session is live.
+   */
+  stored(): string | undefined {
+    return liveSession(this.stores, this.diagnostics, Date.now(), this.idleMs);
   }
 
   /**

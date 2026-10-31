@@ -2,11 +2,6 @@
 //
 // Captures uncaught errors, unhandled rejections and failed resource loads.
 
-import {
-  ERROR_DEDUPE_MS,
-  ERROR_STORM_MAX_PER_WINDOW,
-  MAX_TRACKED_ERROR_SIGNATURES,
-} from "../constants";
 import { isErrorLike } from "../utils/error-like";
 import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
@@ -105,7 +100,12 @@ export class ErrorCapture implements Capture {
 
       // A cache buster is noise. A signed URL is a credential.
       // The record keeps neither unless you set fullUrls.
-      const url = recordedUrl(resourceUrl, this.ctx.config.capture.fullUrls);
+      const url = recordedUrl(
+        resourceUrl,
+        this.ctx.config.capture.fullUrls,
+        this.ctx.config.capture.urlTransform,
+        this.ctx.diagnostics,
+      );
 
       this.ctx.breadcrumbs.push({
         t: Date.now(),
@@ -131,7 +131,12 @@ export class ErrorCapture implements Capture {
 
     this.report("window.onerror", error, {
       // A signed script URL is a credential.
-      "error.source": recordedUrl(errorEvent.filename, this.ctx.config.capture.fullUrls),
+      "error.source": recordedUrl(
+        errorEvent.filename,
+        this.ctx.config.capture.fullUrls,
+        this.ctx.config.capture.urlTransform,
+        this.ctx.diagnostics,
+      ),
       "error.line": errorEvent.lineno,
       "error.column": errorEvent.colno,
     });
@@ -155,7 +160,15 @@ export class ErrorCapture implements Capture {
    * @param extra Contextual error attributes.
    */
   private report(source: string, error: unknown, extra: Record<string, unknown>): void {
-    if (!allowInWindow(this.window, ERROR_STORM_MAX_PER_WINDOW, this.ctx.diagnostics, "errors")) {
+    if (
+      !allowInWindow(
+        this.window,
+        this.ctx.config.capturePolicy.errorsPerWindow,
+        this.ctx.diagnostics,
+        "errors",
+        this.ctx.config.capturePolicy.windowMs,
+      )
+    ) {
       return;
     }
 
@@ -169,7 +182,7 @@ export class ErrorCapture implements Capture {
     ) ?? { message: "", key: `${typeof error}||` };
     const previous = this.seen.get(key);
 
-    if (previous && now - previous.at < ERROR_DEDUPE_MS) {
+    if (previous && now - previous.at < this.ctx.config.capturePolicy.errorDedupeMs) {
       previous.count++;
       previous.at = now;
       return;
@@ -186,7 +199,10 @@ export class ErrorCapture implements Capture {
 
     // A page can throw with a new message at each render, for example from a template literal
     // in a loop. Without this cap, the map grows until the document closes.
-    if (this.seen.size > MAX_TRACKED_ERROR_SIGNATURES) {
+    if (
+      this.ctx.config.capturePolicy.maxErrorSignatures > 0 &&
+      this.seen.size > this.ctx.config.capturePolicy.maxErrorSignatures
+    ) {
       const [oldest] = this.seen.keys();
       this.seen.delete(oldest);
     }

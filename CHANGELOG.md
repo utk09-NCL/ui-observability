@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - Unreleased
+
+### Added - v0.9.5
+
+- `rotateSecurityContext(update, options?)` changes the delivery identity and settings together. The `pending` rule is `"discard"`, `"flush"`, `"retain"` or `"carry"`. The default is `"discard"`. `newSession()` remains a correlation change; use awaited rotation for logout or tenant changes.
+- `lockConfiguration` refuses changes through `configure()`. Identical repeated settings are accepted. `setConfigurationLocked(false)` permits changes again. Explicit context rotation remains available while configuration is locked.
+- `getHealth()` reports SDK versions, runtime state, delivery role and counts, configuration lock state, cache usage and security/bus policies. Version conflicts and context conflicts have machine-readable issue codes. A configured console-only runtime can report `"ready"`.
+- `registerFrame(frame, options)` binds a child window to an exact origin and source permissions. `registerWorker(worker, options?)` now accepts permissions. Both functions return a function that removes the registration. The default permission is `"records"`; journey and sampling access need separate permissions.
+- `bus.sourcePolicy`, `bus.validation` and bus budgets control source checks, message checks, message bytes, record counts, message rates and named source tracking. Limits can be disabled where documented.
+- `loggerCache.maxEntries` sets the LRU logger cache limit. The default is 256. Set 0 for no cache or null for no limit. A logger that the app holds stays valid after removal from the cache.
+- `delivery` sets request timeouts, request concurrency, retry delays and the number of batches in one stored delivery pass.
+- `buffering` sets live record and encoded-byte limits. Its overflow rule removes old records, drops new records or tries storage. The storage rule permits only one overflow write at a time.
+- `metrics` sets limits for instrument names, attribute sets and histogram boundaries. `correlation` sets session and trace timing. Correlation settings take effect at startup.
+- `capturePolicy` sets breadcrumb capacity, error duplicate checks, capture rate limits and the pipeline error ceiling. `diagnostics` sets the report interval and the console fallback rule.
+- `persistence.namespace` separates application batch stores and emergency queues. It takes effect at startup. `clearPersistedLogs()` removes stored records of the active context; `clearPersistedLogs("namespace")` removes stored records of all contexts in that namespace. Pending requests can store records again after removal.
+- `metadata` controls page URL, user agent and OpenFin resource fields. `capture.urlTransform` replaces the default URL formatting rule. It receives the original URL. Null, an invalid result or an exception gives an empty URL.
+- Custom transport requests include `signal` and `routingContextId`. A custom transport must check the signal to cancel its own work when the old context stops.
+
+### Changed - v0.9.5
+
+- Enabled click capture records a stable `data-observability-action` value, or `"unknown-click"`, by default. It does not record text or selectors. The object form of `capture.interactions` can enable those details. Selectors are in `breadcrumb.data.selector`. `ignoreSelector: null` permits capture in all regions.
+- Delivery is isolated by context by default. Replay after a page reload requires an explicit stable `securityContext.id`. Batches from other contexts and old batches without an id stay stored. They remain subject to storage retention and capacity limits. Set `securityContext.isolation: false` to permit cross-context replay and ordinary delivery reconfiguration.
+- With isolation enabled, changes to delivery settings or identity use `rotateSecurityContext()` instead of `configure()`. `configure()` keeps the delivery settings in force, reports `config.invalid` and applies its other settings. Delivery fields not supplied during rotation reset to their defaults. Old credentials and signal endpoints are not retained. Calls logged during rotation are dropped and counted.
+- Child-frame forwarding requires registration by default, including the same-origin direct path. Select `bus.sourcePolicy: "trusted-origin"` to permit automatic source discovery by origin. Message validation defaults to `"strict"`.
+- Live delivery buffers default to 10,000 records and 16 MiB of encoded JSON, with `"drop-oldest"` overflow. Metric instrument names default to a limit of 1,000 per collection interval. Extra instrument names are dropped and counted. Set the corresponding limit to 0 for no limit.
+- `capturePolicy.breadcrumbs: 0` disables breadcrumb storage. Before, a zero capacity kept one breadcrumb.
+- Diagnostic console fallback is off by default. When enabled, it prints a fixed warning if `onDiagnostic` throws. It does not print the exception, message or stack.
+- `capture.fullUrls` now applies to WebSocket URLs as well as the other captured URLs. Without a URL callback, the default still removes credentials, query strings and fragments.
+- IndexedDB schema version 12 adds a context/time index. Context reads and counts no longer load batches of other contexts.
+- The size budget of the main graph is 36,000 B to include the operational controls.
+- See [runtime policies and migration](docs/runtime-policies.md) for defaults, overrides, update timing and upgrade steps.
+
+### Fixed - v0.9.5
+
+- Console output below the delivery level or outside the sample now passes through configured processors and redaction. Sampled-out breadcrumbs use the processed message too. Hooks can run without a telemetry send, but a local record is not processed twice for console output.
+- Old queued records cannot use a new delivery context when isolation is enabled. Context ids stay with batches through storage, retries and splitting. Old HTTP requests are cancelled where possible; requests already accepted cannot be recalled.
+- HTTP capture ignores completions from an old security context. WebSocket capture also checks the context that opened each socket before it records lifecycle events or message counts.
+- Retained memory queues survive context rotation. A slow save that completes after a discard removes its old batch. A rejected rotation no longer causes a later shutdown to reject.
+- Incoming and outgoing bus controls check source permissions. Changing a self-reported context id does not reset the physical source's rate budget.
+- Lint rejects empty named imports and continues to permit imports that run a module for its side effects.
+
 ## [0.9.4] - 2026-10-31
 
 ### Added - v0.9.4

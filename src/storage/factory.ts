@@ -90,6 +90,7 @@ export async function createStorage(
   limits: StorageLimits,
   diagnostics: Diagnostics,
   onGap?: GapReporter,
+  namespace = "",
 ): Promise<StorageAdapter> {
   if (strategy === STORAGE_NAME_NONE) {
     return noop(onGap);
@@ -130,7 +131,12 @@ export async function createStorage(
   }
 
   if (hasLocalStorage(diagnostics)) {
-    return new LocalStorageStorage(limits, diagnostics, onGap);
+    return new LocalStorageStorage(
+      limits,
+      diagnostics,
+      onGap,
+      namespace ? `ui-observability:namespaced:${encodeURIComponent(namespace)}:batch:` : undefined,
+    );
   }
 
   diagnostics.report(

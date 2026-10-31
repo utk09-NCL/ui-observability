@@ -83,7 +83,7 @@ describe("Diagnostics", () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>(() => {
       throw new Error("consumer bug");
     });
-    const d = new Diagnostics(handler, 0);
+    const d = new Diagnostics(handler, 0, true);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     expect(() => {
@@ -94,7 +94,6 @@ describe("Diagnostics", () => {
     expect(d.snapshot()["handler.threw"]).toBe(1);
     expect(warnSpy).toHaveBeenCalledWith(
       "[ui-observability] The onDiagnostic handler threw an error.",
-      expect.any(Error),
     );
   });
 

@@ -4,14 +4,7 @@
 // backoff with jitter. It keeps one timer, never a chain of timers. Each scheduling path
 // clears the pending timer first.
 
-import {
-  BATCHES_PER_DRAIN,
-  DRAIN_LOCK_NAME,
-  RETRY_BASE_DELAY_MS,
-  RETRY_IDLE_DELAY_MS,
-  RETRY_MAX_DELAY_MS,
-  STORAGE_DEADLINE_MS,
-} from "../constants";
+import { DRAIN_LOCK_NAME, STORAGE_DEADLINE_MS } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
 import type { BatchKind, ResolvedConfig } from "../models/config";
@@ -67,7 +60,7 @@ export class RetryEngine {
     private readonly transport: BatchTransport,
     private readonly diagnostics: Diagnostics,
     private readonly config: ResolvedConfig,
-    private readonly batchesPerDrain = BATCHES_PER_DRAIN,
+    private readonly batchesPerDrain?: number,
     private readonly onLoss: LossReporter = () => undefined,
   ) {
     this.maxAttempts = storageLimits(config.retention).maxAttempts;
@@ -81,13 +74,13 @@ export class RetryEngine {
       addEventListener("online", this.onOnline);
     }
 
-    this.schedule(RETRY_IDLE_DELAY_MS);
+    this.schedule(this.config.delivery.retryIdleDelayMs);
   }
 
   /** This method schedules an earlier retry when storage receives a new offline batch. */
   nudge(): void {
     if (!this.draining) {
-      this.schedule(RETRY_BASE_DELAY_MS);
+      this.schedule(this.config.delivery.retryBaseDelayMs);
     }
   }
 
@@ -119,6 +112,19 @@ export class RetryEngine {
     }
 
     this.clearTimer();
+  }
+
+  /**
+   * Tries one delivery pass of stored batches before a context change. The caller sets the deadline.
+   * @returns Promise that resolves when this pass stops.
+   */
+  async flush(): Promise<void> {
+    this.stopped = false;
+    try {
+      await this.drain();
+    } finally {
+      this.stop();
+    }
   }
 
   /**
@@ -165,7 +171,10 @@ export class RetryEngine {
    * @returns Backoff duration in milliseconds.
    */
   private backoffMs(): number {
-    const exponential = Math.min(RETRY_BASE_DELAY_MS * 2 ** this.attempt, RETRY_MAX_DELAY_MS);
+    const exponential = Math.min(
+      this.config.delivery.retryBaseDelayMs * 2 ** this.attempt,
+      this.config.delivery.retryMaxDelayMs,
+    );
 
     return Math.random() * exponential;
   }
@@ -183,7 +192,7 @@ export class RetryEngine {
       // The value is undefined when another window holds the lock. Without this reschedule,
       // one lost lock race stops all drains in this window.
       if (ran !== true) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(this.config.delivery.retryIdleDelayMs);
       }
     } finally {
       this.draining = false;
@@ -198,14 +207,16 @@ export class RetryEngine {
   private async drainLocked(): Promise<true> {
     try {
       if (!isOnline()) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(this.config.delivery.retryIdleDelayMs);
         return true;
       }
 
-      const batches = await this.bounded(this.storage.take(this.batchesPerDrain));
+      const batches = await this.bounded(
+        this.storage.take(this.batchesPerDrain ?? this.config.delivery.batchesPerDrain),
+      );
 
       if (batches.length === 0) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(this.config.delivery.retryIdleDelayMs);
         return true;
       }
 
@@ -238,7 +249,11 @@ export class RetryEngine {
       if (blocked.size > 0) {
         this.schedule(delayMs);
       } else {
-        this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
+        this.schedule(
+          batches.length === (this.batchesPerDrain ?? this.config.delivery.batchesPerDrain)
+            ? 0
+            : this.config.delivery.retryIdleDelayMs,
+        );
       }
       return true;
     } catch (error) {
@@ -279,6 +294,7 @@ export class RetryEngine {
       this.attempt = 0;
       return "next";
     } catch (error) {
+      if (this.stopped) return "stop";
       const failure = error instanceof TransportError ? error : undefined;
 
       if (failure?.kind === "permanent" || failure?.kind === "too_large") {
@@ -288,7 +304,7 @@ export class RetryEngine {
 
       // Offline stops both kinds. The other endpoint is not reachable either.
       if (failure?.kind === "offline") {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(this.config.delivery.retryIdleDelayMs);
         return "stop";
       }
 

@@ -2,7 +2,7 @@
 //
 // Records the app's own console calls. Third-party code often reports a fault only to the console.
 
-import { CONSOLE_BREADCRUMB_MAX_CHARS, ERROR_STORM_MAX_PER_WINDOW } from "../constants";
+import { CONSOLE_BREADCRUMB_MAX_CHARS } from "../constants";
 import type { CapturedConsoleMethod } from "../models/config";
 import { type ErrorLike, isErrorLike } from "../utils/error-like";
 import { isLibraryConsole, runAsLibraryConsole } from "../utils/library-console";
@@ -186,7 +186,15 @@ export class ConsoleCapture implements Capture {
 
     const { diagnostics, logger } = this.ctx;
 
-    if (!allowInWindow(this.window, ERROR_STORM_MAX_PER_WINDOW, diagnostics, "console records")) {
+    if (
+      !allowInWindow(
+        this.window,
+        this.ctx.config.capturePolicy.consolePerWindow,
+        diagnostics,
+        "console records",
+        this.ctx.config.capturePolicy.windowMs,
+      )
+    ) {
       return;
     }
 

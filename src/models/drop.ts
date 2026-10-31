@@ -20,6 +20,7 @@ import type { LogRecord } from "./log-record";
  *   `storage: "none"`.
  */
 export type LossReason =
+  | "security_context"
   | "buffer_full"
   | "expired"
   | "over_capacity"

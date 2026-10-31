@@ -5,13 +5,10 @@
 // Each stream has its own buffer and flush timer. Thus the exit flush can take each
 // record that is not yet at the transport.
 
-import {
-  ATTR_LOG_TYPE,
-  LOG_TYPE_METRIC,
-  LOG_TYPE_SPAN,
-  MAX_CONCURRENT_REQUESTS,
-  STORAGE_DEADLINE_MS,
-} from "../constants";
+import { ATTR_LOG_TYPE, LOG_TYPE_METRIC, LOG_TYPE_SPAN, STORAGE_DEADLINE_MS } from "../constants";
+import type { ResolvedConfig } from "../models/config";
+import type { LossReporter } from "../models/drop";
+import { estimateBytes } from "../utils/sanitize";
 import type { LogBatch } from "../models/batch";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
@@ -160,7 +157,7 @@ export class LogPipeline {
   /** Ceiling on the ERROR and FATAL records that bypass sampling. */
   private readonly ceiling = new ErrorCeiling();
 
-  /** Number of dispatches in flight. MAX_CONCURRENT_REQUESTS is the limit. */
+  /** Requests that have not completed. delivery.maxConcurrentRequests sets their limit. */
   private inFlight = 0;
 
   /** It is true when a pump is in the queue. One microtask then drains a burst. */
@@ -168,6 +165,95 @@ export class LogPipeline {
 
   /** True after destroy() stops the pipeline. */
   private stopped = false;
+  /** Encoded byte count of each record in the buffers or requests. */
+  private readonly held = new Map<LogRecord, number>();
+  /** Total encoded bytes of the held records. */
+  private heldBytes = 0;
+  /** True while the overflow storage operation has not completed. */
+  private persisting = false;
+
+  /**
+   * Removes completed or dropped records from the buffer counts.
+   * @param records Records to remove from the counts.
+   */
+  private release(records: readonly LogRecord[]): void {
+    for (const record of records) {
+      this.heldBytes -= this.held.get(record) ?? 0;
+      this.held.delete(record);
+    }
+  }
+
+  /**
+   * Removes records that have not reached the transport. A request already sent cannot be removed.
+   * @returns True if the method removed a batch or a buffered group.
+   */
+  private evict(): boolean {
+    const pending = this.queue.shift();
+    if (pending) {
+      this.open.delete(pending);
+      this.unconfirmed.delete(pending.batch.id);
+      this.release(pending.batch.records);
+      pending.resolve();
+      this.onLoss("buffer_full", pending.batch.records, [pending.batch.id]);
+      return true;
+    }
+    for (const stream of Object.values(this.streams)) {
+      const records = stream.take();
+      if (records.length) {
+        this.release(records);
+        this.onLoss("buffer_full", records);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Checks the buffer limits and applies the overflow rule.
+   * @param record New record to add.
+   * @returns True if the record can enter the live buffer.
+   */
+  private admit(record: LogRecord): boolean {
+    if (!this.policy) return true;
+    let bytes: number;
+    try {
+      bytes = estimateBytes(JSON.stringify(record));
+    } catch {
+      this.onLoss("unserializable", [record]);
+      return false;
+    }
+    const { maxPendingRecords, maxPendingBytes, overflow } = this.policy.buffering;
+    const full = (): boolean =>
+      Boolean(
+        (maxPendingRecords && this.held.size >= maxPendingRecords) ||
+        (maxPendingBytes && this.heldBytes + bytes > maxPendingBytes),
+      );
+    while (full() && overflow === "drop-oldest" && this.evict()) {
+      /* Remove complete groups until the new record fits or no group remains. */
+    }
+    if (full()) {
+      if (overflow === "persist" && !this.persisting) {
+        this.persisting = true;
+        const batch = this.toBatch([record]);
+        void this.diagnostics.guardAsync(
+          "storage.degraded",
+          "Could not persist an overflow record.",
+          async () => {
+            try {
+              await this.storage.save(batch);
+              this.retry.nudge();
+            } finally {
+              this.persisting = false;
+            }
+          },
+        );
+      } else this.onLoss("buffer_full", [record]);
+      return false;
+    }
+    this.held.set(record, bytes);
+    this.heldBytes += bytes;
+    return true;
+  }
 
   /**
    * @param transport HTTP transport for live batch delivery.
@@ -182,6 +268,9 @@ export class LogPipeline {
     private readonly retry: RetryEngine,
     private readonly diagnostics: Diagnostics,
     streamOptions: Record<StreamName, StreamOptions>,
+    private readonly routingContextId?: () => string | undefined,
+    private readonly policy?: ResolvedConfig,
+    private readonly onLoss: LossReporter = () => undefined,
   ) {
     const flush = (stream: RecordStream): void => {
       this.claim(stream);
@@ -204,7 +293,9 @@ export class LogPipeline {
     }
 
     record.observedTimeUnixNano = nowUnixNano();
-    this.route(record);
+    const queued = { ...record };
+    if (!this.admit(queued)) return;
+    this.route(queued);
   }
 
   /**
@@ -218,6 +309,8 @@ export class LogPipeline {
   drainForExit(): LogBatch[] {
     const inFlight = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
     this.unconfirmed.clear();
+    this.held.clear();
+    this.heldBytes = 0;
 
     return STREAM_ORDER.map((name) =>
       this.toBatch([
@@ -271,6 +364,8 @@ export class LogPipeline {
   /** Stops the flush timers and refuses further records. */
   destroy(): void {
     this.stopped = true;
+    this.held.clear();
+    this.heldBytes = 0;
     for (const name of STREAM_ORDER) {
       this.streams[name].stop();
     }
@@ -288,12 +383,21 @@ export class LogPipeline {
    * @param records Records taken from the buffers, in delivery order.
    * @returns New LogBatch, or null when the drain takes nothing.
    */
+  private toBatch(records: [LogRecord, ...LogRecord[]]): LogBatch;
+  private toBatch(records: LogRecord[]): LogBatch | null;
   private toBatch(records: LogRecord[]): LogBatch | null {
     if (records.length === 0) {
       return null;
     }
 
-    return { id: newId(this.diagnostics), records, createdAt: Date.now(), attempts: 0 };
+    return {
+      id: newId(this.diagnostics),
+      records,
+      createdAt: Date.now(),
+      attempts: 0,
+      routingContextId: this.routingContextId?.(),
+      persistenceNamespace: this.policy?.persistence.namespace,
+    };
   }
 
   /**
@@ -309,7 +413,14 @@ export class LogPipeline {
 
       // ERROR and FATAL records bypass sampling upstream. This ceiling is their only
       // limit.
-      if (!this.ceiling.allow(record)) {
+      if (
+        !this.ceiling.allow(
+          record,
+          this.policy?.capturePolicy.errorCeiling,
+          this.policy?.capturePolicy.windowMs,
+        )
+      ) {
+        this.release([record]);
         this.diagnostics.count("record.dropped_by_ceiling");
         return;
       }
@@ -368,7 +479,8 @@ export class LogPipeline {
 
   /** Starts queued dispatches up to the concurrency limit. */
   private pump(): void {
-    while (this.inFlight < MAX_CONCURRENT_REQUESTS) {
+    if (this.stopped) return;
+    while (this.inFlight < (this.policy?.delivery.maxConcurrentRequests ?? 2)) {
       const pending = this.queue.shift();
       if (!pending) {
         return;
@@ -396,6 +508,7 @@ export class LogPipeline {
         error,
       );
     } finally {
+      this.release(batch.records);
       this.inFlight--;
       this.open.delete(pending);
       pending.resolve();
@@ -435,6 +548,7 @@ export class LogPipeline {
           this.unconfirmed.delete(batch.id);
         });
       } catch (error) {
+        if (this.stopped) return;
         // Increment the attempt count before the store. At 0, the batch exceeds
         // STORAGE_LIMITS.maxAttempts by one. The attempt headers then report one too few.
         await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);

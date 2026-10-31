@@ -25,7 +25,7 @@ export interface Breadcrumb {
 /** Ring buffer of fixed size. It keeps recent breadcrumbs in time order. */
 export class BreadcrumbBuffer {
   /** Storage array of the ring buffer. */
-  private readonly buffer: (Breadcrumb | undefined)[];
+  private buffer: (Breadcrumb | undefined)[];
 
   /** Next write index in the circular buffer. */
   private pointer = 0;
@@ -37,14 +37,27 @@ export class BreadcrumbBuffer {
   private filled = false;
 
   /** Maximum number of breadcrumbs that the buffer keeps. */
-  private readonly capacity: number;
+  private capacity: number;
 
   /**
    * @param capacity Maximum number of breadcrumbs. A smaller value changes to the minimum size.
    */
   constructor(capacity: number) {
-    this.capacity = Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
+    this.capacity = capacity === 0 ? 0 : Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
     this.buffer = new Array<Breadcrumb | undefined>(this.capacity);
+  }
+
+  /**
+   * Changes the capacity and keeps the most recent breadcrumbs that fit.
+   * @param capacity New capacity. Set 0 to remove and disable stored breadcrumbs.
+   */
+  resize(capacity: number): void {
+    const recent = this.snapshot().slice(-capacity);
+    this.capacity = capacity;
+    this.buffer = new Array<Breadcrumb | undefined>(capacity);
+    this.pointer = 0;
+    this.filled = false;
+    if (capacity) for (const crumb of recent) this.push(crumb);
   }
 
   /**
@@ -52,6 +65,7 @@ export class BreadcrumbBuffer {
    * @param crumb Breadcrumb to add.
    */
   push(crumb: Breadcrumb): void {
+    if (this.capacity === 0) return;
     this.buffer[this.pointer] = crumb;
     this.pointer = (this.pointer + 1) % this.capacity;
     if (this.pointer === 0) {

@@ -104,7 +104,6 @@ const CAPTURE_FLAG_KEYS = [
   "fetch",
   "xhr",
   "httpMetrics",
-  "interactions",
   "navigation",
   "webVitals",
   "longFrames",
@@ -292,6 +291,31 @@ function resolveInteger(
   const expected = `an integer from ${String(min)} to ${String(max)}`;
   reportInvalid(diagnostics, key, expected, value, String(fallback));
   return fallback;
+}
+
+/**
+ * Checks the logger cache limit. An invalid value keeps the limit in force, including null.
+ * @param value Limit that the app supplied.
+ * @param previous Limit in force. Null permits a cache with no limit.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The valid limit, or the limit in force.
+ */
+function resolveCacheLimit(
+  value: unknown,
+  previous: number | null,
+  diagnostics: Diagnostics,
+): number | null {
+  if (value === undefined) return previous;
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  reportInvalid(
+    diagnostics,
+    "loggerCache.maxEntries",
+    "a nonnegative safe integer or null",
+    value,
+    String(previous),
+  );
+  return previous;
 }
 
 /**
@@ -785,6 +809,48 @@ function resolveBus(
   const given = input ?? {};
 
   return {
+    maxTrackedSources: resolveInteger(
+      "bus.maxTrackedSources",
+      given.maxTrackedSources,
+      [0, Number.MAX_SAFE_INTEGER],
+      base.maxTrackedSources,
+      diagnostics,
+    ),
+    sourcePolicy: resolveChoice(
+      "bus.sourcePolicy",
+      given.sourcePolicy,
+      ["registered", "trusted-origin"],
+      base.sourcePolicy,
+      diagnostics,
+    ),
+    validation: resolveChoice(
+      "bus.validation",
+      given.validation,
+      ["strict", "envelope"],
+      base.validation,
+      diagnostics,
+    ),
+    maxMessageBytes: resolveInteger(
+      "bus.maxMessageBytes",
+      given.maxMessageBytes,
+      [0, Number.MAX_SAFE_INTEGER],
+      base.maxMessageBytes,
+      diagnostics,
+    ),
+    maxRecordsPerMessage: resolveInteger(
+      "bus.maxRecordsPerMessage",
+      given.maxRecordsPerMessage,
+      [0, Number.MAX_SAFE_INTEGER],
+      base.maxRecordsPerMessage,
+      diagnostics,
+    ),
+    maxMessagesPerSecond: resolveInteger(
+      "bus.maxMessagesPerSecond",
+      given.maxMessagesPerSecond,
+      [0, Number.MAX_SAFE_INTEGER],
+      base.maxMessagesPerSecond,
+      diagnostics,
+    ),
     mode: resolveChoice("bus.mode", given.mode, BUS_MODE_VALUES, base.mode, diagnostics),
     // Compare origins, not URLs. If not, an entry with a path never matches event.origin.
     trustedOrigins: resolveList(
@@ -920,6 +986,7 @@ function resolveCapture(
   const capture: CaptureOptions = {
     ...base,
     ...given,
+    interactions: resolveInteractions(given.interactions, base.interactions, diagnostics),
     console: resolveCaptureConsole(given.console, base.console, diagnostics),
     longFrameThresholdMs: resolveNonNegative(
       "capture.longFrameThresholdMs",
@@ -959,6 +1026,67 @@ function resolveCapture(
   }
 
   return capture;
+}
+
+/**
+ * Checks the click settings. An invalid value does not turn on text or selector capture.
+ * @param value Settings that the app supplied.
+ * @param base Settings in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The valid settings, with invalid values replaced by the values in force.
+ */
+function resolveInteractions(
+  value: CaptureOptions["interactions"] | undefined,
+  base: CaptureOptions["interactions"],
+  diagnostics: Diagnostics,
+): CaptureOptions["interactions"] {
+  if (value === undefined) return base;
+  if (typeof value === "boolean") return value;
+  if (!isObject(value)) {
+    diagnostics.report(
+      "config.invalid",
+      "capture.interactions must be a boolean or an options object.",
+    );
+    return base;
+  }
+  const previous = typeof base === "object" ? base : {};
+  const ignore = value.ignoreSelector;
+  let ignoreSelector = ignore === undefined ? previous.ignoreSelector : ignore;
+  if (ignoreSelector !== undefined && ignoreSelector !== null) {
+    try {
+      if (typeof ignoreSelector !== "string") throw new Error("Invalid selector");
+      if (typeof document !== "undefined") document.createElement("div").matches(ignoreSelector);
+    } catch {
+      diagnostics.report(
+        "config.invalid",
+        "capture.interactions.ignoreSelector must be a valid CSS selector or null.",
+      );
+      ignoreSelector = previous.ignoreSelector;
+    }
+  }
+  return {
+    text: resolveBoolean(
+      "capture.interactions.text",
+      value.text,
+      previous.text ?? false,
+      diagnostics,
+    ),
+    selector: resolveBoolean(
+      "capture.interactions.selector",
+      value.selector,
+      previous.selector ?? false,
+      diagnostics,
+    ),
+    ignoreSelector:
+      typeof ignoreSelector === "string" || ignoreSelector === null ? ignoreSelector : undefined,
+    maxTextChars: resolveInteger(
+      "capture.interactions.maxTextChars",
+      value.maxTextChars,
+      [0, Number.MAX_SAFE_INTEGER],
+      previous.maxTextChars ?? 50,
+      diagnostics,
+    ),
+  };
 }
 
 /** Result of a signal endpoint that is off, for each key. */
@@ -1016,6 +1144,60 @@ function resolveSignalEndpoint(
 }
 
 /**
+ * Checks one policy section. An invalid value keeps the value in force.
+ * @param name Section name for diagnostic messages.
+ * @param input Settings that the app supplied.
+ * @param base Settings in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The valid section.
+ */
+function resolvePolicy<T extends object>(
+  name: string,
+  input: Partial<T> | undefined,
+  base: T,
+  diagnostics: Diagnostics,
+): T {
+  const next = { ...base };
+  for (const key of Object.keys(base) as (keyof T & string)[]) {
+    const value: unknown = input?.[key];
+    const fallback: unknown = base[key];
+    let resolved: unknown = fallback;
+    if (typeof fallback === "number") {
+      const min = ["maxConcurrentRequests", "batchesPerDrain", "requestTimeoutMs"].includes(key)
+        ? 1
+        : 0;
+      resolved = resolveInteger(
+        `${name}.${key}`,
+        value,
+        [
+          min,
+          key === "breadcrumbs"
+            ? 1_000_000
+            : key.endsWith("Ms")
+              ? 2_147_483_647
+              : Number.MAX_SAFE_INTEGER,
+        ],
+        fallback,
+        diagnostics,
+      );
+    } else if (typeof fallback === "boolean")
+      resolved = resolveBoolean(`${name}.${key}`, value, fallback, diagnostics);
+    else if (key === "overflow")
+      resolved = resolveChoice(
+        `${name}.${key}`,
+        value,
+        ["drop-oldest", "drop-newest", "persist"],
+        String(fallback),
+        diagnostics,
+      );
+    else if (value === undefined || typeof value === "string") resolved = value ?? fallback;
+    else reportInvalid(diagnostics, `${name}.${key}`, "a string", value, String(fallback));
+    Object.assign(next, { [key]: resolved });
+  }
+  return next;
+}
+
+/**
  * Resolves partial configuration inputs into a validated ResolvedConfig object.
  * @param input Partial consumer configuration options.
  * @param diagnostics Diagnostics reporter.
@@ -1032,6 +1214,45 @@ export function resolveConfig(
   const merged: ResolvedConfig = {
     ...base,
     ...input,
+    capturePolicy: resolvePolicy(
+      "capturePolicy",
+      input.capturePolicy,
+      base.capturePolicy,
+      diagnostics,
+    ),
+    metadata: resolvePolicy("metadata", input.metadata, base.metadata, diagnostics),
+    persistence: resolvePolicy("persistence", input.persistence, base.persistence, diagnostics),
+    diagnostics: resolvePolicy("diagnostics", input.diagnostics, base.diagnostics, diagnostics),
+    correlation: resolvePolicy("correlation", input.correlation, base.correlation, diagnostics),
+    metrics: resolvePolicy("metrics", input.metrics, base.metrics, diagnostics),
+    buffering: resolvePolicy("buffering", input.buffering, base.buffering, diagnostics),
+    delivery: resolvePolicy("delivery", input.delivery, base.delivery, diagnostics),
+
+    lockConfiguration: resolveBoolean(
+      "lockConfiguration",
+      input.lockConfiguration,
+      base.lockConfiguration,
+      diagnostics,
+    ),
+    loggerCache: {
+      maxEntries: resolveCacheLimit(
+        input.loggerCache?.maxEntries,
+        base.loggerCache.maxEntries,
+        diagnostics,
+      ),
+    },
+    securityContext: {
+      id:
+        typeof input.securityContext?.id === "string"
+          ? input.securityContext.id || base.securityContext.id
+          : base.securityContext.id,
+      isolation: resolveBoolean(
+        "securityContext.isolation",
+        input.securityContext?.isolation,
+        base.securityContext.isolation,
+        diagnostics,
+      ),
+    },
     // An unset environment variable gives undefined. Keep the current endpoint.
     endpoint: input.endpoint === undefined ? base.endpoint : input.endpoint,
     // A bad value reports config.invalid. The value in force stays. Without this check, a bad
@@ -1214,6 +1435,21 @@ export function resolveConfig(
     }
   }
 
+  if (merged.delivery.retryMaxDelayMs < merged.delivery.retryBaseDelayMs) {
+    diagnostics.report(
+      "config.invalid",
+      "delivery.retryMaxDelayMs must be at least retryBaseDelayMs.",
+    );
+    merged.delivery.retryBaseDelayMs = base.delivery.retryBaseDelayMs;
+    merged.delivery.retryMaxDelayMs = base.delivery.retryMaxDelayMs;
+  }
+  if (
+    merged.capture.urlTransform !== undefined &&
+    typeof merged.capture.urlTransform !== "function"
+  ) {
+    diagnostics.report("config.invalid", "capture.urlTransform must be a function.");
+    merged.capture.urlTransform = base.capture.urlTransform;
+  }
   reportUnknownKeys(input, diagnostics);
 
   return merged;

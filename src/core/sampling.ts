@@ -241,14 +241,20 @@ export class ErrorCeiling {
   /**
    * Checks a record against the limit. It counts only ERROR and FATAL records.
    * @param record Record about to enter a stream.
+   * @param limit Maximum records in one window. Set 0 for no limit.
+   * @param windowMs Rate limit window, in milliseconds.
    * @returns False when the window has no allowance left. The caller must drop the record.
    */
-  allow(record: LogRecord): boolean {
+  allow(
+    record: LogRecord,
+    limit = ERROR_CEILING_MAX_PER_WINDOW,
+    windowMs = ERROR_STORM_WINDOW_MS,
+  ): boolean {
     if (record.severityText !== "ERROR" && record.severityText !== "FATAL") {
       return true;
     }
 
     // Use a fixed window, not a sliding window. A quiet period adds no allowance.
-    return countInWindow(this.window, ERROR_CEILING_MAX_PER_WINDOW, ERROR_STORM_WINDOW_MS);
+    return limit === 0 || countInWindow(this.window, limit, windowMs);
   }
 }

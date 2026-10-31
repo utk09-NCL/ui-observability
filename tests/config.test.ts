@@ -1001,7 +1001,7 @@ describe("resolveConfig", () => {
         bus: { mode: "leader", openFinRole: "host", trustedOrigins: "https://a.example" },
       });
 
-      expect(config.bus).toEqual({ mode: "auto", trustedOrigins: [], openFinRole: "auto" });
+      expect(config.bus).toMatchObject({ mode: "auto", trustedOrigins: [], openFinRole: "auto" });
       expect(texts).toHaveLength(3);
       expect(texts[1]).toBe(
         'bus.trustedOrigins must be a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame. The value is "https://a.example". The library keeps the list in force.',
