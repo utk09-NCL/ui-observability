@@ -3,17 +3,10 @@
 // This module serializes span records as an OTLP/JSON ExportTraceServiceRequest. The transport
 // uses it for a batch of span records.
 
-import {
-  ATTR_LOG_TYPE,
-  CONTENT_TYPE_JSON,
-  SERIALIZER_NAME_OTLP,
-  SPAN_KEYS,
-  TELEMETRY_SDK_NAME,
-  TELEMETRY_SDK_VERSION,
-} from "../../constants";
+import { ATTR_LOG_TYPE, CONTENT_TYPE_JSON, SERIALIZER_NAME_OTLP, SPAN_KEYS } from "../../constants";
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
-import { groupByResource, toKeyValues } from "./otlp";
+import { groupByResource, groupByScope, toKeyValues } from "./otlp";
 
 /** OTLP SpanKind of each span kind of the library. */
 const SPAN_KIND = { internal: 1, client: 3 } as const;
@@ -78,12 +71,10 @@ export const otlpTracesSerializer: LogSerializer = {
   serialize(records: LogRecord[]): SerializedBatch {
     const resourceSpans = groupByResource(records).map((group) => ({
       resource: { attributes: toKeyValues(group.resource) },
-      scopeSpans: [
-        {
-          scope: { name: TELEMETRY_SDK_NAME, version: TELEMETRY_SDK_VERSION },
-          spans: group.records.map(spanOf),
-        },
-      ],
+      scopeSpans: groupByScope(group.records).map((scope) => ({
+        scope: { name: scope.name },
+        spans: scope.records.map(spanOf),
+      })),
     }));
 
     return {

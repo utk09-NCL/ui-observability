@@ -1073,6 +1073,19 @@ describe("resolveConfig", () => {
       ]);
     });
 
+    it("keeps a valid alwaysSampleFrom and reports an unknown level", () => {
+      expect(resolveLoose({ sampling: { alwaysSampleFrom: "WARN" } }).config.sampling).toEqual(
+        expect.objectContaining({ alwaysSampleFrom: "WARN" }),
+      );
+
+      const { config, texts } = resolveLoose({ sampling: { alwaysSampleFrom: "warning" } });
+
+      expect(config.sampling.alwaysSampleFrom).toBe("ERROR");
+      expect(texts).toEqual([
+        'sampling.alwaysSampleFrom must be a level name: "TRACE", "DEBUG", "INFO", "WARN", "ERROR" or "FATAL". The value is "warning". The library keeps "ERROR".',
+      ]);
+    });
+
     it("names a function and null in a message", () => {
       const { texts } = resolveLoose({ enabled: () => true, compression: null });
 

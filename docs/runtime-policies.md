@@ -23,6 +23,7 @@ By default, the SDK limits captured content, isolates delivery identities and li
 | `bus.maxRecordsPerMessage`             | `100`                         | Nonnegative safe integer. `0` disables the limit                                                                                   |
 | `bus.maxMessagesPerSecond`             | `100`                         | Applies to each physical source in a fixed one-second window. `0` disables the limit                                               |
 | `bus.maxTrackedSources`                | `256`                         | Capacity for named peers, for example OpenFin identities. Inactive entries expire after one second. `0` permits unbounded tracking |
+| `sampling.alwaysSampleFrom`            | `ERROR`                       | A lower level, for example `WARN`, also keeps the records of that level at each rate. `capturePolicy.errorCeiling` limits them     |
 
 An invalid tuning value reports `config.invalid`. The previous valid value stays. `configure()` applies cache, capture and bus budget changes until configuration is locked. The bus role and its links are set at startup. Register a frame before its application starts. Then its discovery handshake can succeed.
 
@@ -114,7 +115,7 @@ During rotation, the SDK drops logger calls, metric measurements and forwarded r
 
 Each batch keeps its delivery ID through persistence, splitting and retries. With isolation on, the active context does not send foreign batches or untagged legacy batches. They stay parked. Shared storage retention and capacity limits can still remove parked batches. A generated runtime-local ID does not resume the queues of a previous page. To resume after a reload, configure the correct stable context ID before the first log call. Never use one ID for two user or tenant authorization contexts. Do not put secrets or personal data in the ID.
 
-An auto-discovered forwarder uses the delivery identity of its owner. When it knows its owner, it welcomes its own children. It relays their records. It sends them the identity of its owner. A context that still waits for its own owner sends no temporary identity. Its children get the final identity when its role is known. The first identity that a forwarder takes keeps its startup records and the context of the app. When the owner later changes its identity, the forwarder clears its buffered records before it uses the new identity. It does this also before it is ready. `onDrop` reports the cleared records with `security_context`. A same-origin forwarder then uses the new session that its owner stores. Other forwarders start a new session. A frame with an explicit ID must match the owner. It does not use another identity without notice. The owner sends the new identity to registered frames, workers and OpenFin views. A same-origin direct child gets the new identity at its next message. The owner refuses that first old batch. Other tabs keep their own active context. The host must coordinate authentication changes in other applications and tabs. The SDK does not infer them from cookies.
+An auto-discovered forwarder uses the delivery identity of its owner. When it knows its owner, it welcomes its own children. It relays their records. It sends them the identity of its owner. A context that still waits for its own owner sends no temporary identity. Its children get the final identity when its role is known. The first identity that a forwarder takes keeps its startup records and the context of the app. When the owner later changes its identity, the forwarder clears its buffered records before it uses the new identity. It does this also before it is ready. `onDrop` reports the cleared records with `security_context`. A same-origin forwarder then uses the new session that its owner stores. Other forwarders start a new session. A frame with an explicit ID must match the owner. It does not use another identity without notice. The owner sends the new identity at once to its frames, workers and OpenFin views. This includes each same-origin frame on the direct link. A frame with an explicit ID that matches the new identity then clears `security.context_mismatch`. Other tabs keep their own active context. The host must coordinate authentication changes in other applications and tabs. The SDK does not infer them from cookies.
 
 With isolation on, `configure()` refuses a change to delivery settings or to the context ID. It reports `config.invalid` and keeps the values in force. The other settings in the same call apply. The SDK compares resolved values. Thus an unset `endpoint` value is not a change. A new `headers`, `transport` or `transportOnExit` function is a change. Keep their references stable. To permit delivery changes and cross-partition replay, disable isolation explicitly.
 
@@ -187,6 +188,7 @@ The snapshot contains these fields:
 - The `pending`, `inFlight`, `stored` and `lastSendAt` stats.
 - The lock and cache state.
 - The effective security and bus policies.
+- `storagePersistence`, the state of the request of `persistence.requestPersistent`.
 
 `owningSdkVersion` identifies a conflicting copy. Otherwise it is `null`. A forwarder usually has `senderReady: false`. An intentional console-only runtime can be `ready`. A version conflict reports `runtime.version_mismatch` in `issues`. A failed sender initialization reports `sender.unavailable`. An explicit forwarder and owner identity conflict reports `security.context_mismatch`.
 
@@ -203,7 +205,7 @@ Health does not start a second runtime. It does not wait for initialization to c
 
 ## Operational budgets
 
-These controls are application policy, not fixed SDK constants. A partial update keeps the current values. An invalid value reports `config.invalid`. The previous valid value stays. Numeric values must be safe nonnegative integers. Durations are in milliseconds. They cannot be more than the platform timer limit (2,147,483,647). Concurrency, request timeouts and drain sizes must be at least 1. Breadcrumb capacity is at most 1,000,000. A larger value gives an invalid array allocation.
+These controls are application policy, not fixed SDK constants. A partial update keeps the current values. An invalid value reports `config.invalid`. The previous valid value stays. Numeric values must be safe nonnegative integers. Durations are in milliseconds. They cannot be more than the platform timer limit (2,147,483,647). Concurrency, request timeouts and drain sizes must be at least 1. `delivery.priority` is `"low"`, `"auto"` or `"high"`. It sets the fetch priority of each batch request. With `"low"`, the requests of the app go first. The exit flush and a send from a hidden page use the browser default. Breadcrumb capacity is at most 1,000,000. A larger value gives an invalid array allocation.
 
 ```ts
 configure({
@@ -214,6 +216,7 @@ configure({
     retryMaxDelayMs: 60000,
     retryIdleDelayMs: 30000,
     batchesPerDrain: 20,
+    priority: "low",
   },
   buffering: {
     maxPendingRecords: 10000,
@@ -257,6 +260,8 @@ Metric cardinality has a limit for each collection interval. The SDK adds extra 
 
 The diagnostics fallback is off by default. When it is on, it prints a fixed message. It never prints the exception, its message or its stack. The SDK still counts the failure under `handler.threw`. An application that needs the exception details can catch errors in its own diagnostic handler.
 
+`diagnostics.records: true` also sends each reported diagnostic as a record. A list of codes, for example `["transport.http_error", "storage.quota_exceeded"]`, sends only those codes. The records have the namespace `uiobs.diagnostics` and the type `system`. A fault has the level `WARN`. A normal event, for example `bus.role_resolved`, has the level `INFO`. The `throttleMs` interval of each code applies. A diagnostic that occurs while the SDK builds a diagnostic record gives no record. The record never contains the caught exception.
+
 ### Persistence and deletion
 
 The namespace separates IndexedDB database names, localStorage keys, emergency queues and the retry lock names. Two applications on one origin then do not wait for each other. The empty default namespace keeps the previous storage location. A namespace change does not move old data. A stable security-context ID is still necessary to resume a context after a reload. IndexedDB schema version 12 adds a compound context and time index. The upgrade also adds it to a database that has batches. With isolation on, legacy untagged entries stay parked.
@@ -266,11 +271,13 @@ await clearPersistedLogs(); // Active security context in this application's nam
 await clearPersistedLogs("namespace"); // All contexts in this namespace, including parked data.
 ```
 
+Under storage pressure, a browser can delete the stored batches of a page. `persistence.requestPersistent: true` asks the browser to keep them. The SDK calls `navigator.storage.persist()` one time when it opens IndexedDB or localStorage storage. Firefox can show a permission prompt. Chrome decides without a prompt. `getHealth()` gives the state in `storagePersistence`. The values are `off`, `pending`, `granted`, `denied` and `unsupported`. The option takes effect at startup.
+
 Deletion removes the normal and emergency queues that are stored now. It also works in console-only mode. Pending and in-flight records can be stored after deletion. Use awaited context rotation to stop an identity. Deletion applies only to the configured namespace. It does not cancel application requests. With isolation off, contexts share their stored batches. Then `clearPersistedLogs()` and a `discard` rotation remove the stored batches of each context in the namespace, also of other open tabs. Applications that use the empty namespace share its retention and deletion scope.
 
 ### URL and resource-field policy
 
-`metadata.userAgent` and `metadata.openfin` control those resource fields. With `metadata.pageUrl: false`, the reserved `page.url` attribute is empty. The application controls the attributes and message strings that it supplies. They can also go through `redact`.
+`metadata.userAgent` and `metadata.openfin` control those resource fields. `metadata.clockOffset` controls `uiobs.clock_offset_ms` on logs and spans. With `metadata.pageUrl: false`, the reserved `page.url` attribute is empty. The application controls the attributes and message strings that it supplies. They can also go through `redact`.
 
 `capture.fullUrls` applies to page, HTTP, resource, navigation and long-frame URLs. The default removes credentials, query and fragment. A WebSocket URL never keeps its query or fragment, also with `fullUrls`. A browser cannot set a header on a socket. Thus its query often holds a token. For more control, use `capture.urlTransform`.
 

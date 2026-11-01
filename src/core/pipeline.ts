@@ -5,7 +5,13 @@
 // Each stream has its own buffer and flush timer. Thus the exit flush can take each
 // record that is not yet at the transport.
 
-import { ATTR_LOG_TYPE, LOG_TYPE_METRIC, LOG_TYPE_SPAN, STORAGE_DEADLINE_MS } from "../constants";
+import {
+  ATTR_CLOCK_OFFSET_MS,
+  ATTR_LOG_TYPE,
+  LOG_TYPE_METRIC,
+  LOG_TYPE_SPAN,
+  STORAGE_DEADLINE_MS,
+} from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import { estimateBytes } from "../utils/sanitize";
@@ -265,6 +271,10 @@ export class LogPipeline {
    * @param retry Retry engine for redelivering persisted batches.
    * @param diagnostics Diagnostics reporter.
    * @param streamOptions Batching policy per stream, from the batching config.
+   * @param routingContextId Gives the delivery context id of a new batch.
+   * @param policy Active configuration instance.
+   * @param onLoss Receives the records that the pipeline loses.
+   * @param clockOffset Gives the clock offset for a new log or span record, if known.
    */
   constructor(
     private readonly transport: BatchTransport,
@@ -275,6 +285,7 @@ export class LogPipeline {
     private readonly routingContextId?: () => string | undefined,
     private readonly policy?: ResolvedConfig,
     private readonly onLoss: LossReporter = () => undefined,
+    private readonly clockOffset: () => number | undefined = () => undefined,
   ) {
     const flush = (stream: RecordStream): void => {
       this.claim(stream);
@@ -413,20 +424,28 @@ export class LogPipeline {
    */
   private route(record: LogRecord): void {
     try {
-      const stream = this.streams[streamOf(record)];
+      const name = streamOf(record);
+      const stream = this.streams[name];
 
-      // ERROR and FATAL records bypass sampling upstream. This ceiling is their only
-      // limit.
+      // Records at or above alwaysSampleFrom bypass sampling upstream. This ceiling is their
+      // only limit.
       if (
         !this.ceiling.allow(
           record,
           this.policy?.capturePolicy.errorCeiling,
           this.policy?.capturePolicy.windowMs,
+          this.policy?.sampling.alwaysSampleFrom,
         )
       ) {
         this.release([record]);
         this.diagnostics.count("record.dropped_by_ceiling");
         return;
+      }
+
+      // A changing value on a metric point starts a new series. Only logs and spans get it.
+      const offset = this.clockOffset();
+      if (offset !== undefined && name !== "metrics") {
+        record.attributes = { ...record.attributes, [ATTR_CLOCK_OFFSET_MS]: offset };
       }
 
       stream.add(record);

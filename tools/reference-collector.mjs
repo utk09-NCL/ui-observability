@@ -133,7 +133,7 @@ function cors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Max-Age", "86400");
   // Without this, the browser hides Retry-After and the sampling rules from the library.
-  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling");
+  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling, date");
 }
 
 /**

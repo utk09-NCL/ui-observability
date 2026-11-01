@@ -4,6 +4,7 @@
 
 import type { DeliveryStats } from "./stats";
 import type { BusOptions, LoggerCacheOptions, SecurityContextOptions } from "./config";
+import type { StoragePersistence } from "./storage";
 
 /** State of this SDK copy. A configured console-only runtime can have the status "ready". */
 export interface ObservabilityHealth extends DeliveryStats {
@@ -25,6 +26,8 @@ export interface ObservabilityHealth extends DeliveryStats {
   loggerCache: LoggerCacheOptions & { size: number };
   /** Active delivery context id and isolation rule. */
   securityContext: SecurityContextOptions;
+  /** State of the request of `persistence.requestPersistent`. */
+  storagePersistence: StoragePersistence;
   /** Source, validation and capacity rules of the bus. */
   bus: Pick<
     BusOptions,

@@ -124,6 +124,55 @@ describe("Sender stats", () => {
   });
 });
 
+describe("Sender clock offset", () => {
+  /**
+   * Reads the clock offset attribute of the first record of one request.
+   * @param index Index of the request.
+   * @returns The offset in milliseconds, or undefined without the attribute.
+   */
+  const offsetOf = (index: number): number | undefined => {
+    const body: any = JSON.parse(fetchMock.mock.calls[index][1].body as string);
+    const pair = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.find(
+      (attribute: any) => attribute.key === "uiobs.clock_offset_ms",
+    );
+    return pair === undefined ? undefined : Number(pair.value.intValue);
+  };
+
+  /** Answers each request with a Date header one minute ahead of this clock. */
+  const answerAhead = (): void => {
+    fetchMock.mockImplementation(() => {
+      const date = new Date(Date.now() + 60_000).toUTCString();
+      return Promise.resolve(new Response(null, { status: 204, headers: { Date: date } }));
+    });
+  };
+
+  it("adds the offset of an accepted answer to the later records", async () => {
+    answerAhead();
+    const { sender } = await setup();
+
+    sender.push(record("first"));
+    await sender.flush();
+    sender.push(record("second"));
+    await sender.flush();
+
+    expect(offsetOf(0)).toBeUndefined();
+    // The Date header has whole seconds. The offset is correct to about one second.
+    expect(Math.abs(offsetOf(1)! - 60_000)).toBeLessThanOrEqual(1000);
+  });
+
+  it("adds no offset with metadata.clockOffset false", async () => {
+    answerAhead();
+    const { sender } = await setup({ metadata: { clockOffset: false } });
+
+    sender.push(record("first"));
+    await sender.flush();
+    sender.push(record("second"));
+    await sender.flush();
+
+    expect(offsetOf(1)).toBeUndefined();
+  });
+});
+
 describe("Sender shutdown", () => {
   it("sends the pending records with a normal request before the exit flush", async () => {
     const { sender } = await setup();

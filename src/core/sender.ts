@@ -5,15 +5,22 @@
 // The runtime imports this module dynamically only when the config sets an endpoint.
 // Console-only mode does not download this module.
 
+import { STORAGE_NAME_INDEXEDDB, STORAGE_NAME_LOCAL } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
-import { type GapReporter, type StorageAdapter, storageLimits } from "../models/storage";
+import {
+  type GapReporter,
+  type StorageAdapter,
+  type StoragePersistence,
+  storageLimits,
+} from "../models/storage";
 import { clearEmergencyContext, drainEmergencyQueue } from "../storage/emergency-queue";
 import { createStorage, storageName } from "../storage/factory";
 import { ContextStorage } from "../storage/context-storage";
+import { requestPersistence } from "../storage/persistence";
 import { withDeadline } from "../utils/deadline";
 import { ExitFlush } from "../transport/exit-flush";
 import { CustomTransport } from "../transport/custom-transport";
@@ -30,6 +37,8 @@ export interface SenderDeps {
   /** Memory store that this runtime keeps when the security context changes. */
   storage?: StorageAdapter;
   onStorage?: (storage: StorageAdapter) => void;
+  /** Receives the state of the request for persistent storage. */
+  onPersistence?: (state: StoragePersistence) => void;
   /** Active configuration instance. */
   config: ResolvedConfig;
   /** Diagnostics reporter. */
@@ -88,6 +97,16 @@ export class Sender {
         config.persistence.namespace,
       ));
     deps.onStorage?.(backing);
+
+    // Ask only for a store that outlives the page.
+    if (
+      config.persistence.requestPersistent &&
+      (backing.name === STORAGE_NAME_INDEXEDDB || backing.name === STORAGE_NAME_LOCAL)
+    ) {
+      deps.onPersistence?.("pending");
+      void requestPersistence(diagnostics).then(deps.onPersistence);
+    }
+
     const storage = new ContextStorage(
       backing,
       config.securityContext,
@@ -101,14 +120,20 @@ export class Sender {
       }
     };
 
+    // The clock offset of the last accepted answer. The pipeline adds it to new records.
+    let clockOffsetMs: number | undefined;
+    const onClock = (offsetMs: number): void => {
+      clockOffsetMs = offsetMs;
+    };
+
     // The stack keeps one transport for its life. The runtime refuses a later change.
     // The exit flush reads the last headers from the HTTP transport.
     const { onLoss } = deps;
     const http = config.transport
       ? undefined
-      : new HttpTransport(config, diagnostics, onSampling, onLoss);
+      : new HttpTransport(config, diagnostics, onSampling, onLoss, onClock);
     const transport: StatusTransport =
-      http ?? new CustomTransport(config, diagnostics, onSampling, onLoss);
+      http ?? new CustomTransport(config, diagnostics, onSampling, onLoss, onClock);
     const retry = new RetryEngine(storage, transport, diagnostics, config, undefined, onLoss);
     const { batching } = config;
     const pipeline = new LogPipeline(
@@ -128,6 +153,7 @@ export class Sender {
       () => config.securityContext.id || undefined,
       config,
       onLoss,
+      () => (config.metadata.clockOffset ? clockOffsetMs : undefined),
     );
 
     const exitFlush = new ExitFlush({

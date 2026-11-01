@@ -149,6 +149,24 @@ describe("CustomTransport", () => {
     expect(onSampling).toHaveBeenCalledWith(rules);
   });
 
+  it("gives the clock offset of the date in a 2xx answer", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T10:00:00.000Z"));
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const config = resolveConfig(
+      {
+        endpoint: null,
+        serviceName: "svc",
+        transport: answer({ status: 200, date: "Sun, 01 Nov 2026 09:59:58 GMT" }),
+      },
+      diagnostics,
+    );
+    const onClock = vi.fn();
+
+    await new CustomTransport(config, diagnostics, undefined, undefined, onClock).send(batch());
+
+    expect(onClock).toHaveBeenCalledWith(-1500);
+  });
+
   it("splits on 413 and passes the maxBytes hint", async () => {
     const { sut } = setup(answer({ status: 413, maxBytes: 4096 }));
 

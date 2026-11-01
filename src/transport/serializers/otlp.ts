@@ -1,13 +1,14 @@
 // src/transport/serializers/otlp.ts
 //
 // This module serializes log batches as OTLP/JSON log records. It groups the records by resource.
+// It gives each logger namespace its own instrumentation scope.
 // The OTLP metrics serializer uses its value encoding and its resource grouping.
 
 import {
+  ATTR_APP_NAMESPACE,
   CONTENT_TYPE_JSON,
   SERIALIZER_NAME_OTLP,
   TELEMETRY_SDK_NAME,
-  TELEMETRY_SDK_VERSION,
 } from "../../constants";
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
@@ -138,6 +139,39 @@ export function groupByResource(records: LogRecord[]): ResourceGroup[] {
   return [...groups.values()];
 }
 
+/** This interface holds the records of one instrumentation scope. */
+export interface ScopeGroup {
+  /** This field holds the scope name. It is the logger namespace. */
+  name: string;
+  /** This field holds the records of the scope. */
+  records: LogRecord[];
+}
+
+/**
+ * Groups records by their logger namespace. It keeps the record order in each group.
+ * A record without a namespace goes to the scope of the library.
+ * @param records Records of one resource.
+ * @returns One group for each namespace.
+ */
+export function groupByScope(records: LogRecord[]): ScopeGroup[] {
+  const groups = new Map<string, LogRecord[]>();
+
+  for (const record of records) {
+    const namespace: unknown = record.attributes[ATTR_APP_NAMESPACE];
+    const name = typeof namespace === "string" && namespace ? namespace : TELEMETRY_SDK_NAME;
+    const group = groups.get(name);
+
+    if (group) {
+      group.push(record);
+      continue;
+    }
+
+    groups.set(name, [record]);
+  }
+
+  return [...groups].map(([name, scoped]) => ({ name, records: scoped }));
+}
+
 /** This serializer writes log records as OTLP/JSON payloads. */
 export const otlpSerializer: LogSerializer = {
   /** This field holds the format name. */
@@ -152,23 +186,21 @@ export const otlpSerializer: LogSerializer = {
   serialize(records: LogRecord[]): SerializedBatch {
     const resourceLogs = groupByResource(records).map((group) => ({
       resource: { attributes: toKeyValues(group.resource) },
-      scopeLogs: [
-        {
-          scope: { name: TELEMETRY_SDK_NAME, version: TELEMETRY_SDK_VERSION },
-          logRecords: group.records.map((record) => ({
-            timeUnixNano: record.timeUnixNano,
-            // Use timeUnixNano when observedTimeUnixNano is not set.
-            observedTimeUnixNano: record.observedTimeUnixNano ?? record.timeUnixNano,
-            severityNumber: record.severityNumber,
-            severityText: record.severityText,
-            body: { stringValue: record.body },
-            traceId: record.traceId,
-            spanId: record.spanId,
-            flags: record.traceFlags,
-            attributes: toKeyValues(record.attributes),
-          })),
-        },
-      ],
+      scopeLogs: groupByScope(group.records).map((scope) => ({
+        scope: { name: scope.name },
+        logRecords: scope.records.map((record) => ({
+          timeUnixNano: record.timeUnixNano,
+          // Use timeUnixNano when observedTimeUnixNano is not set.
+          observedTimeUnixNano: record.observedTimeUnixNano ?? record.timeUnixNano,
+          severityNumber: record.severityNumber,
+          severityText: record.severityText,
+          body: { stringValue: record.body },
+          traceId: record.traceId,
+          spanId: record.spanId,
+          flags: record.traceFlags,
+          attributes: toKeyValues(record.attributes),
+        })),
+      })),
     }));
 
     return {

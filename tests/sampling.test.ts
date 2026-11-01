@@ -10,8 +10,9 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import { ErrorCeiling, sampleKey, shouldSample } from "../src/core/sampling";
+import { configure, createMemoryTransport, flush, getLogger } from "../src/index";
 import type { ObservabilityConfig } from "../src/models/config";
-import type { LogRecord } from "../src/models/log-record";
+import type { LogLevel, LogRecord } from "../src/models/log-record";
 
 const config = (sampling: ObservabilityConfig["sampling"] = {}) =>
   resolveConfig(
@@ -54,6 +55,24 @@ describe("shouldSample bypasses", () => {
   it("keeps a type on alwaysSampleTypes at rate zero", () => {
     const kept = record({ [ATTR_LOG_TYPE]: "action" });
     expect(shouldSample(kept, config({ defaultRate: 0 }))).toBe(true);
+  });
+
+  it("keeps each level at or above alwaysSampleFrom at rate zero", () => {
+    const fromWarn = config({ defaultRate: 0, alwaysSampleFrom: "WARN" });
+    // A forwarded record can hold a level name that the library does not know.
+    const level = (name: string): LogRecord => record({}, { severityText: name as LogLevel });
+
+    expect(shouldSample(level("WARN"), fromWarn)).toBe(true);
+    expect(shouldSample(level("FATAL"), fromWarn)).toBe(true);
+    expect(shouldSample(level("INFO"), fromWarn)).toBe(false);
+    expect(shouldSample(level("NOTICE"), fromWarn)).toBe(false);
+  });
+
+  it("samples an ERROR when alwaysSampleFrom is FATAL", () => {
+    const fromFatal = config({ defaultRate: 0, alwaysSampleFrom: "FATAL" });
+
+    expect(shouldSample(record({}, { severityText: "ERROR" }), fromFatal)).toBe(false);
+    expect(shouldSample(record({}, { severityText: "FATAL" }), fromFatal)).toBe(true);
   });
 
   it("keeps an aggregated metric point at rate zero", () => {
@@ -312,6 +331,19 @@ describe("ErrorCeiling", () => {
     expect(ceiling.allow(record({}, { severityText: "WARN" }))).toBe(true);
   });
 
+  it("counts each level at or above the alwaysSampleFrom level", () => {
+    const ceiling = new ErrorCeiling();
+    const warn = record({}, { severityText: "WARN" });
+
+    ceiling.allow(warn, 2, ERROR_STORM_WINDOW_MS, "WARN");
+    ceiling.allow(err(), 2, ERROR_STORM_WINDOW_MS, "WARN");
+
+    expect(ceiling.allow(warn, 2, ERROR_STORM_WINDOW_MS, "WARN")).toBe(false);
+    expect(ceiling.allow(record(), 2, ERROR_STORM_WINDOW_MS, "WARN")).toBe(true);
+    // With "FATAL", sampling governs an ERROR. The ceiling does not count it.
+    expect(ceiling.allow(err(), 2, ERROR_STORM_WINDOW_MS, "FATAL")).toBe(true);
+  });
+
   it("opens again once the window has passed", () => {
     vi.useFakeTimers();
     const ceiling = new ErrorCeiling();
@@ -354,5 +386,27 @@ describe("ErrorCeiling", () => {
       expect(ceiling.allow(err())).toBe(true);
     }
     expect(ceiling.allow(err())).toBe(false);
+  });
+});
+
+describe("alwaysSampleFrom in the runtime", () => {
+  it("delivers a WARN at rate zero and drops an INFO", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      storage: "memory",
+      identity: "memory",
+      bus: { mode: "off" },
+      transport: memory.transport,
+      sampling: { defaultRate: 0, alwaysSampleFrom: "WARN" },
+    });
+    const log = getLogger("app");
+
+    log.warn("kept");
+    log.info("dropped");
+    await flush();
+
+    expect(memory.records().map((r) => r.body)).toEqual(["kept"]);
   });
 });

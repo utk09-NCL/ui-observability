@@ -68,6 +68,30 @@ const headersOf = (fetchMock: any, index = 0): Headers =>
   initOf(fetchMock, index).headers as Headers;
 
 describe("HttpTransport", () => {
+  it("gives the clock offset of a 2xx answer with a valid Date header", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T10:00:00.000Z"));
+    const onClock = vi.fn();
+    const send = (date?: string) => {
+      answer(204, null, date === undefined ? {} : { Date: date });
+      return new HttpTransport(config(), diagnostics(), undefined, undefined, onClock).send(
+        batch(),
+      );
+    };
+
+    await send("Sun, 01 Nov 2026 10:00:05 GMT");
+    await send();
+    await send("not a date");
+
+    // The header has whole seconds. The offset adds half a second.
+    expect(onClock.mock.calls).toEqual([[5500]]);
+  });
+
+  it("accepts a batch with a Date header when it has no clock callback", async () => {
+    answer(204, null, { Date: "Sun, 01 Nov 2026 10:00:05 GMT" });
+
+    await expect(new HttpTransport(config(), diagnostics()).send(batch())).resolves.toBeUndefined();
+  });
+
   it("gives the sampling header of a 2xx answer to the sampling callback", async () => {
     answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
     const onSampling = vi.fn();
@@ -457,6 +481,21 @@ describe("HttpTransport", () => {
     expect(initOf(fetchMock, 0).keepalive).toBe(false);
     expect(initOf(fetchMock, 1).keepalive).toBe(true);
     expect(initOf(fetchMock, 2).keepalive).toBe(false);
+  });
+
+  it("sends with the configured fetch priority, and a hidden keepalive send with auto", async () => {
+    const fetchMock = answer(204);
+
+    await new HttpTransport(config(), diagnostics()).send(batch());
+    await new HttpTransport(config({ delivery: { priority: "high" } }), diagnostics()).send(
+      batch(),
+    );
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await new HttpTransport(config(), diagnostics()).send(batch());
+
+    expect(initOf(fetchMock, 0).priority).toBe("low");
+    expect(initOf(fetchMock, 1).priority).toBe("high");
+    expect(initOf(fetchMock, 2).priority).toBe("auto");
   });
 
   it("measures a gzip body by its bytes for keepalive", async () => {

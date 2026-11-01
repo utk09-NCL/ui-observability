@@ -187,6 +187,12 @@ export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
  */
 export const ATTR_ATTRIBUTES_BYTES = "uiobs.attributes_bytes";
 
+/** Server time minus client time, in milliseconds, from the Date header of an accepted answer. */
+export const ATTR_CLOCK_OFFSET_MS = "uiobs.clock_offset_ms";
+
+/** Half the resolution of the HTTP Date header. It centers the error of the clock offset. */
+export const DATE_HEADER_HALF_STEP_MS = 500;
+
 /** Application name resource key. */
 export const RESOURCE_SERVICE_NAME = "service.name";
 
@@ -312,6 +318,9 @@ export const HEADER_ATTEMPT = "X-UiObs-Attempt";
 
 /** Response header that carries sampling rules from the ingest server. */
 export const HEADER_SAMPLING = "X-UiObs-Sampling";
+
+/** Response header that gives the server time. The server must expose it to CORS. */
+export const HEADER_DATE = "Date";
 
 /** Gzip encoding name. */
 export const ENCODING_GZIP = "gzip";
@@ -687,6 +696,9 @@ export const CAPTURE_NAMESPACE = "uiobs.capture";
 /** Default namespace for telemetry records emitted by storage subsystems. */
 export const STORAGE_NAMESPACE = "uiobs.storage";
 
+/** Namespace of the records that `diagnostics.records` gives. */
+export const DIAGNOSTICS_NAMESPACE = "uiobs.diagnostics";
+
 /** Measurement unit that the library uses when the call gives no unit. */
 export const DEFAULT_METRIC_UNIT = "count";
 
@@ -994,9 +1006,9 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     windowMs: 10000,
     errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
   },
-  metadata: { pageUrl: true, userAgent: true, openfin: true },
-  persistence: { namespace: "" },
-  diagnostics: { throttleMs: 1000, consoleFallback: false },
+  metadata: { pageUrl: true, userAgent: true, openfin: true, clockOffset: true },
+  persistence: { namespace: "", requestPersistent: false },
+  diagnostics: { throttleMs: 1000, consoleFallback: false, records: false },
   correlation: {
     sessionIdleMs: SESSION_IDLE_MS,
     sessionTouchMs: SESSION_TOUCH_MS,
@@ -1015,6 +1027,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     retryMaxDelayMs: RETRY_MAX_DELAY_MS,
     retryIdleDelayMs: RETRY_IDLE_DELAY_MS,
     batchesPerDrain: BATCHES_PER_DRAIN,
+    priority: "low",
   },
   lockConfiguration: false,
   loggerCache: { maxEntries: 256 },
@@ -1037,6 +1050,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     defaultRate: 1,
     rates: {},
     alwaysSampleTypes: ["action"],
+    alwaysSampleFrom: "ERROR",
     remote: false,
     remoteMaxRate: 1,
   },

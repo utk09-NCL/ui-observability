@@ -6,6 +6,12 @@
 import type { LogBatch } from "./batch";
 import type { RetentionOptions } from "./config";
 
+/**
+ * State of the request for persistent storage. "off" means no request. "pending" waits for the
+ * browser. "unsupported" means the browser has no `navigator.storage.persist()`.
+ */
+export type StoragePersistence = "off" | "pending" | "granted" | "denied" | "unsupported";
+
 /** Persistent batch storage interface. All methods must resolve and never throw. */
 export interface StorageAdapter {
   /** Adapter identifier name. */

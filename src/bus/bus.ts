@@ -79,6 +79,8 @@ export class Bus {
   private readonly rates = new WeakMap<object, { start: number; count: number }>();
   /** Message counts for each named source or link in the current rate window. */
   private readonly channelRates = new Map<string, { start: number; count: number }>();
+  /** Reply of each same-origin child on the direct link. A weak reply frees a navigated frame. */
+  private readonly directReplies = new Map<Window, WeakRef<Receive>>();
 
   /**
    * Checks if this source can receive a control message. A window can read a message
@@ -159,10 +161,47 @@ export class Bus {
     };
     this.postOver("children", message);
     this.postOver("worker", message);
+    this.postToDirectChildren(message);
     if (openFin) {
       this.postOver("openfin", message);
     }
   }
+
+  /**
+   * Sends a security context message to each same-origin child on the direct link.
+   * It drops a child that is closed, freed or no longer permitted.
+   * @param message Security context message.
+   */
+  private postToDirectChildren(message: BusMessage): void {
+    for (const [peer, ref] of this.directReplies) {
+      const reply = ref.deref();
+      if (!reply || peer.closed || !this.isRegistered(peer, location.origin)) {
+        this.directReplies.delete(peer);
+        continue;
+      }
+
+      this.diagnostics.guard("bus.send_failed", "The reply to a direct child failed.", () => {
+        reply(message, { link: "direct", origin: "same-origin", peer });
+      });
+    }
+  }
+
+  /**
+   * Keeps the reply of a direct child for the next context id. It drops each closed child.
+   * A removed frame then does not keep its document in memory.
+   * @param peer Window of the child.
+   * @param reply Reply callback of the child.
+   */
+  private keepDirectReply(peer: Window, reply: Receive): void {
+    for (const known of this.directReplies.keys()) {
+      if (known.closed) {
+        this.directReplies.delete(known);
+      }
+    }
+
+    this.directReplies.set(peer, new WeakRef(reply));
+  }
+
   /** Current bus role. The default is "sender". */
   private role: BusRole = "sender";
   /** Upstream forwarding link, or null when acting as sender. */
@@ -370,6 +409,11 @@ export class Bus {
       return;
     }
 
+    // A rotation sends the new id with this reply. The child then does not send a stale batch.
+    if (peer) {
+      this.keepDirectReply(peer, reply);
+    }
+
     // A direct link has no channel from the parent to the child. The parent answers here. The
     // forwarder rule in routeMessage() refuses a sampling question on a direct link.
     if (message.t === BUS_TYPE.samplingRequest) {
@@ -424,6 +468,7 @@ export class Bus {
   /** Closes all open links and clears internal state. */
   destroy(): void {
     this.sources.clear();
+    this.directReplies.clear();
     this.destroyed = true;
     clearInterval(this.rulesPoll);
     this.rulesPoll = undefined;

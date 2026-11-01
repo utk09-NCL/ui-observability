@@ -126,7 +126,7 @@ export class CustomTransport extends StatusTransport {
     const { status } = response;
 
     if (status >= HTTP_SUCCESS_MIN && status < HTTP_SUCCESS_END) {
-      this.accept(kind, response.sampling);
+      this.accept(kind, response.sampling, response.date);
       return;
     }
 

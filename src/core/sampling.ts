@@ -125,6 +125,16 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
 }
 
 /**
+ * Checks if a level is at or above a threshold level.
+ * @param level Level of the record. A forwarded record can hold any string.
+ * @param from Threshold level.
+ * @returns True for a known level that is not below the threshold.
+ */
+function atOrAbove(level: string, from: LogLevel): boolean {
+  return LEVEL_ORDER[level as LogLevel] >= LEVEL_ORDER[from];
+}
+
+/**
  * Decides if sampling keeps a key at a rate. One key always gives the same result.
  * @param key Journey ID or trace ID.
  * @param rate Sampling rate, 0..1.
@@ -170,13 +180,12 @@ export function shouldSampleInput(
   config: ResolvedConfig,
   remote: RemoteRules | null,
 ): boolean {
-  // Errors, fatal records and aggregated points bypass sampling filters. The runtime samples a
-  // span by its trace before it records the span.
+  // Records at or above alwaysSampleFrom and aggregated points bypass sampling filters. The
+  // runtime samples a span by its trace before it records the span.
   if (
     input.aggregated === true ||
     input.type === LOG_TYPE_SPAN ||
-    input.level === "ERROR" ||
-    input.level === "FATAL"
+    atOrAbove(input.level, config.sampling.alwaysSampleFrom)
   ) {
     return true;
   }
@@ -229,28 +238,30 @@ export function shouldSample(
 }
 
 /**
- * Sets a fixed-window limit on the ERROR and FATAL records that bypass sampling.
+ * Sets a fixed-window limit on the records that bypass sampling by their level.
  *
  * ErrorCapture already limits auto-captured errors. This class limits the remaining case.
  * An example is application code that calls logger.error in a render loop.
  */
 export class ErrorCeiling {
-  /** ERROR and FATAL records admitted in the current window. */
+  /** Records at or above the threshold level admitted in the current window. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
-   * Checks a record against the limit. It counts only ERROR and FATAL records.
+   * Checks a record against the limit. It counts only records at or above `from`.
    * @param record Record about to enter a stream.
    * @param limit Maximum records in one window. Set 0 for no limit.
    * @param windowMs Rate limit window, in milliseconds.
+   * @param from Lowest level that bypasses sampling.
    * @returns False when the window has no allowance left. The caller must drop the record.
    */
   allow(
     record: LogRecord,
     limit = ERROR_CEILING_MAX_PER_WINDOW,
     windowMs = ERROR_STORM_WINDOW_MS,
+    from: LogLevel = "ERROR",
   ): boolean {
-    if (record.severityText !== "ERROR" && record.severityText !== "FATAL") {
+    if (!atOrAbove(record.severityText, from)) {
       return true;
     }
 

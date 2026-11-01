@@ -8,6 +8,7 @@ import type { Receive, WorkerLike } from "../bus/links";
 import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
   CAPTURE_NAMESPACE,
+  DIAGNOSTICS_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
   METRIC_NAMESPACE,
   RUNTIME_GLOBAL_KEY,
@@ -35,7 +36,7 @@ import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
 import type { ObservabilityHealth } from "../models/health";
-import type { PruneResult, StorageAdapter } from "../models/storage";
+import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
 import { isObject } from "../utils/guards";
 import {
@@ -56,7 +57,12 @@ import { TraceEngine } from "../utils/tracing";
 import { type Breadcrumb, BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
-import { Diagnostics } from "./diagnostics";
+import {
+  type DiagnosticCode,
+  type DiagnosticEvent,
+  type DiagnosticHandler,
+  Diagnostics,
+} from "./diagnostics";
 import { DropReporter } from "./drops";
 import { HoldBuffer } from "./hold-buffer";
 import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
@@ -139,6 +145,15 @@ const DELIVERY_RESET = {
 /** Delivery settings that configure() cannot change while isolation is on. */
 const ROUTING_KEYS = Object.keys(DELIVERY_RESET) as (keyof typeof DELIVERY_RESET)[];
 
+/** Diagnostic codes that report a normal event, not a fault. Their records have the level INFO. */
+const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
+  "bus.role_resolved",
+  "config.reconfigured",
+  "security.rotated",
+  "journey.adopted",
+  "journey.expired",
+]);
+
 /**
  * Makes a text key of the capture section. A later configure() reinstalls the capture
  * modules only when the key changes. A reinstall unpatches and patches each host function.
@@ -211,6 +226,12 @@ export class ObservabilityRuntime {
   private rotation?: Promise<void>;
   /** Memory store kept for later context changes. */
   private memoryStorage?: StorageAdapter;
+  /** State of the request for persistent storage. getHealth() reports it. */
+  private storagePersistence: StoragePersistence = "off";
+  /** True while a diagnostic record goes out. A diagnostic during that time gives no record. */
+  private recordingDiagnostic = false;
+  /** Logger of the records that diagnostics.records gives. */
+  private readonly diagnosticLogger = new OneLogger(() => this, DIAGNOSTICS_NAMESPACE);
   /** True if the app supplied a context id at startup. */
   private explicitSecurityContext: boolean;
   /** True after this forwarder takes a context id from its owner. */
@@ -479,6 +500,51 @@ export class ObservabilityRuntime {
       this.diagnostics,
       this.config.metrics,
     );
+    // The record builder exists now. A diagnostic can become a record.
+    this.diagnostics.setHandler(this.diagnosticHandler());
+  }
+
+  /**
+   * Gives the handler of the diagnostics. With diagnostics.records, it also sends each event
+   * as a record.
+   * @returns The handler, or undefined without onDiagnostic and without diagnostic records.
+   */
+  private diagnosticHandler(): DiagnosticHandler | undefined {
+    if (this.config.diagnostics.records === false) {
+      return this.config.onDiagnostic;
+    }
+
+    return (event) => {
+      this.recordDiagnostic(event);
+      this.config.onDiagnostic?.(event);
+    };
+  }
+
+  /**
+   * Sends a diagnostic event as a record when diagnostics.records selects its code.
+   * A diagnostic during that send gives no record. That stops a loop.
+   * @param event Diagnostic event.
+   */
+  private recordDiagnostic(event: DiagnosticEvent): void {
+    const { records } = this.config.diagnostics;
+    const selected = records === true || (records !== false && records.includes(event.code));
+    if (!selected || this.recordingDiagnostic) {
+      return;
+    }
+
+    this.recordingDiagnostic = true;
+    try {
+      const write = NOTICE_CODES.has(event.code)
+        ? this.diagnosticLogger.info
+        : this.diagnosticLogger.warn;
+      write(event.message, {
+        "diagnostic.code": event.code,
+        "diagnostic.count": event.count,
+        "diagnostic.detail": event.detail,
+      });
+    } finally {
+      this.recordingDiagnostic = false;
+    }
   }
 
   /**
@@ -763,7 +829,7 @@ export class ObservabilityRuntime {
     this.keepStartupTunables(next);
     applyResolvedConfig(this.config, next);
     this.breadcrumbs.resize(this.config.capturePolicy.breadcrumbs);
-    this.diagnostics.setHandler(this.config.onDiagnostic);
+    this.diagnostics.setHandler(this.diagnosticHandler());
     this.diagnostics.setPolicy(
       this.config.diagnostics.throttleMs,
       this.config.diagnostics.consoleFallback,
@@ -1212,6 +1278,9 @@ export class ObservabilityRuntime {
             storage: this.memoryStorage,
             onStorage: (storage) => {
               if (storage.name === "memory") this.memoryStorage = storage;
+            },
+            onPersistence: (state) => {
+              this.storagePersistence = state;
             },
             config: this.config,
             diagnostics: this.diagnostics,
@@ -1931,6 +2000,7 @@ export class ObservabilityRuntime {
       configurationLocked: this.config.lockConfiguration,
       issues,
       securityContext: { ...this.config.securityContext },
+      storagePersistence: this.storagePersistence,
       bus: {
         sourcePolicy,
         validation,

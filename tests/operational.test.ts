@@ -53,7 +53,7 @@ it("validates choices, strings, booleans, backoff relationships and URL hooks", 
   const c = resolveConfig(
     {
       ...base,
-      delivery: { retryBaseDelayMs: 100, retryMaxDelayMs: 1 },
+      delivery: { retryBaseDelayMs: 100, retryMaxDelayMs: 1, priority: "urgent" },
       buffering: { overflow: "bad" },
       persistence: { namespace: 1 },
       metadata: { userAgent: "yes" },
@@ -62,6 +62,7 @@ it("validates choices, strings, booleans, backoff relationships and URL hooks", 
     d,
   );
   expect(c.delivery.retryBaseDelayMs).toBe(2000);
+  expect(c.delivery.priority).toBe("low");
   expect(c.buffering.overflow).toBe("drop-oldest");
   expect(c.persistence.namespace).toBe("");
   expect(c.metadata.userAgent).toBe(true);

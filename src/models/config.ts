@@ -6,7 +6,7 @@
 // `ResolvedConfig` does not use `Required<ObservabilityConfig>`. That type removes `?`
 // only at the top level. A nested field such as `sampling.defaultRate` can then hold undefined.
 
-import type { DiagnosticHandler } from "../core/diagnostics";
+import type { DiagnosticCode, DiagnosticHandler } from "../core/diagnostics";
 import type { DropSummary } from "./drop";
 import type { LogLevel, LogRecord } from "./log-record";
 import type { CapturePlugin } from "./plugin";
@@ -147,6 +147,12 @@ export interface SamplingOptions {
    * @default ["action"]
    */
   alwaysSampleTypes: string[];
+  /**
+   * Lowest level that the sampling rate never drops. `capturePolicy.errorCeiling` limits
+   * the records at this level and higher.
+   * @default "ERROR"
+   */
+  alwaysSampleFrom: LogLevel;
   /**
    * Read sampling rules from the `X-UiObs-Sampling` header of each accepted batch.
    * The rules stay in force for their `ttlMs`. Set it in each context of the page.
@@ -626,6 +632,8 @@ export interface TransportResponse {
    * The library reads it only with `sampling.remote`.
    */
   sampling?: unknown;
+  /** `Date` header of a 2xx answer. The library computes `uiobs.clock_offset_ms` from it. */
+  date?: string;
 }
 
 /**
@@ -675,6 +683,12 @@ export interface DeliveryPolicy {
    * @default 20
    */
   batchesPerDrain: number;
+  /**
+   * Fetch priority of each batch request. With "low", the requests of the app go first.
+   * The exit flush and a send from a hidden page use the browser default.
+   * @default "low"
+   */
+  priority: "low" | "auto" | "high";
 }
 
 /** Record and byte limits for the live delivery buffers. */
@@ -746,6 +760,12 @@ export interface DiagnosticsPolicy {
    * @default false
    */
   consoleFallback: boolean;
+  /**
+   * Also send each reported diagnostic as a record in the namespace `uiobs.diagnostics`.
+   * A list of codes sends only those codes. The interval of `throttleMs` applies.
+   * @default false
+   */
+  records: boolean | DiagnosticCode[];
 }
 
 /** Application storage settings. The runtime sets these values at startup. */
@@ -755,6 +775,12 @@ export interface PersistencePolicy {
    * @default ""
    */
   namespace: string;
+  /**
+   * Ask the browser to keep the stored batches under storage pressure. Firefox can show a
+   * permission prompt. `getHealth()` reports the answer. It takes effect at startup.
+   * @default false
+   */
+  requestPersistent: boolean;
 }
 
 /** Resource and page fields that the SDK records. */
@@ -774,6 +800,12 @@ export interface MetadataPolicy {
    * @default true
    */
   openfin: boolean;
+  /**
+   * Add `uiobs.clock_offset_ms` to each log and span record. The value comes from the `Date`
+   * header of the last accepted answer. The server must expose that header.
+   * @default true
+   */
+  clockOffset: boolean;
 }
 
 /** Capture capacity, duplicate checks and rate limits. */
@@ -819,7 +851,8 @@ export interface CapturePolicy {
    */
   windowMs: number;
   /**
-   * Maximum pipeline ERROR and FATAL records in one window. Set 0 for no limit.
+   * Maximum pipeline records at or above `sampling.alwaysSampleFrom` in one window.
+   * Set 0 for no limit.
    * @default 500
    */
   errorCeiling: number;

@@ -51,6 +51,30 @@ describe("otlpSerializer", () => {
     expect(counts.sort()).toEqual([1, 2]);
   });
 
+  it("gives each logger namespace its own scope, in the order of the records", () => {
+    const named = (namespace: unknown, body: string): LogRecord =>
+      record({ body, attributes: { "log.type": "event", "app.namespace": namespace } });
+
+    const payload = otlp([
+      named("blotter.grid", "one"),
+      named("orders", "two"),
+      named("blotter.grid", "three"),
+      named("", "four"),
+      named(42, "five"),
+    ]);
+
+    const scopes = payload.resourceLogs[0].scopeLogs.map((scope: any) => ({
+      scope: scope.scope,
+      bodies: scope.logRecords.map((r: any) => r.body.stringValue),
+    }));
+    expect(scopes).toEqual([
+      { scope: { name: "blotter.grid" }, bodies: ["one", "three"] },
+      { scope: { name: "orders" }, bodies: ["two"] },
+      // A record without a usable namespace goes to the scope of the library.
+      { scope: { name: "@utk09/ui-observability" }, bodies: ["four", "five"] },
+    ]);
+  });
+
   it("hoists the resource out of the records that carry it", () => {
     const payload = otlp([record()]);
 

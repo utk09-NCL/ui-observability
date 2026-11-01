@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - Unreleased
+
+### Added - v0.10.0
+
+- `sampling.alwaysSampleFrom` sets the lowest level that the sampling rate never drops. The default `"ERROR"` keeps the earlier behavior. `capturePolicy.errorCeiling` limits the records at this level and higher.
+- `delivery.priority` sets the fetch priority of each batch request. The default `"low"` lets the requests of the app go first. The exit flush and a send from a hidden page use the browser default.
+- `persistence.requestPersistent: true` asks the browser to keep the stored batches under storage pressure. It calls `navigator.storage.persist()` one time at startup. `getHealth()` reports the state in `storagePersistence`. The default is `false`, because Firefox can show a permission prompt.
+- Log and span records carry `uiobs.clock_offset_ms`, the server time minus the client time. It comes from the `Date` header of the last accepted answer. The server must expose `Date` to CORS. A custom transport returns it in `TransportResponse.date`. `metadata.clockOffset: false` turns it off.
+- `diagnostics.records: true`, or a list of codes, also sends each reported diagnostic as a record in the namespace `uiobs.diagnostics`. A fault has the level `WARN`. A normal event has the level `INFO`. A diagnostic during the build of a diagnostic record gives no record.
+- `docs/delivery-guarantees.md` describes duplicates, order, each loss with its `onDrop` reason, retention, the exit flush and rotation.
+
+### Changed - v0.10.0
+
+- OTLP logs and spans use the logger namespace as the instrumentation scope name, for example `blotter.grid`. A record without a namespace keeps the scope `@utk09/ui-observability`. The scope has no version. Metrics keep the library scope. Update each backend query that filters by scope name.
+
+### Fixed - v0.10.0
+
+- A rotation sends the new delivery identity at once to each same-origin frame on the direct link. The owner no longer refuses the first batch of that frame after the rotation.
+- A same-origin frame with an explicit `securityContext.id` clears `security.context_mismatch` in `getHealth()` when the owner rotates to that ID.
+
 ## [0.9.5] - 2026-11-01
 
 ### Added - v0.9.5

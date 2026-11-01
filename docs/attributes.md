@@ -4,6 +4,8 @@ This page lists each attribute that the library writes. Your own attributes come
 
 The OTLP serializer writes the resource attributes on the resource and the record attributes on the record. The ECS serializer moves some of them to ECS fields. See the `serializer` row in the README.
 
+In OTLP logs and spans, the instrumentation scope name is the logger namespace, for example `blotter.grid`. The scope has no version. A record without a namespace uses the scope `@utk09/ui-observability`. Metrics use the scope `@utk09/ui-observability` with the SDK version. The record keeps its `app.namespace` attribute.
+
 ## Resource Attributes
 
 Each record carries these attributes.
@@ -30,15 +32,16 @@ Each record also has `traceId`, `spanId` and `traceFlags` as record fields, not 
 
 The library sets these attributes on each record. They replace a caller attribute of the same name.
 
-| Attribute           | Type   | Value                                                                                                                                                   |
-| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `log.type`          | string | `log`, `system`, `action`, `event`, `metric` or `span`.                                                                                                 |
-| `log.seq`           | number | Sequence number in this context. It starts at 1. Metric points and spans take numbers too.                                                              |
-| `app.namespace`     | string | Logger namespace.                                                                                                                                       |
-| `page.url`          | string | Page URL. Without `capture.fullUrls`, it has no query and no fragment. `capture.urlTransform` replaces this rule. Empty with `metadata.pageUrl: false`. |
-| `journey.id`        | string | Id of the active journey. Only while a journey runs.                                                                                                    |
-| `journey.name`      | string | Name of the active journey.                                                                                                                             |
-| `journey.parent_id` | string | Id of the parent journey. Only with `startJourney(name, { parent: true })`.                                                                             |
+| Attribute               | Type   | Value                                                                                                                                                                                                                                                       |
+| ----------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `log.type`              | string | `log`, `system`, `action`, `event`, `metric` or `span`.                                                                                                                                                                                                     |
+| `log.seq`               | number | Sequence number in this context. It starts at 1. Metric points and spans take numbers too.                                                                                                                                                                  |
+| `app.namespace`         | string | Logger namespace.                                                                                                                                                                                                                                           |
+| `page.url`              | string | Page URL. Without `capture.fullUrls`, it has no query and no fragment. `capture.urlTransform` replaces this rule. Empty with `metadata.pageUrl: false`.                                                                                                     |
+| `journey.id`            | string | Id of the active journey. Only while a journey runs.                                                                                                                                                                                                        |
+| `journey.name`          | string | Name of the active journey.                                                                                                                                                                                                                                 |
+| `journey.parent_id`     | string | Id of the parent journey. Only with `startJourney(name, { parent: true })`.                                                                                                                                                                                 |
+| `uiobs.clock_offset_ms` | number | Server time minus client time, in milliseconds. It comes from the `Date` header of the last accepted answer. It is correct to about one second. Logs and spans only. With `metadata.clockOffset: false`, or before the first accepted answer, it is absent. |
 
 These attributes show a problem in the record:
 
@@ -100,6 +103,16 @@ With `tracesEndpoint`, the library writes span records. The OTLP traces serializ
 | `span.start_time_unix_nano` | string | Start time.                              |
 | `span.end_time_unix_nano`   | string | End time.                                |
 | `span.status`               | string | `error` or `unset`.                      |
+
+## Diagnostic Records
+
+With `diagnostics.records`, the library writes a record for each reported diagnostic. The namespace is `uiobs.diagnostics`. The body is the message of the diagnostic.
+
+| Attribute           | Type   | Value                                             |
+| ------------------- | ------ | ------------------------------------------------- |
+| `diagnostic.code`   | string | Diagnostic code, for example `transport.timeout`. |
+| `diagnostic.count`  | number | Number of reports of this code since startup.     |
+| `diagnostic.detail` | object | Detail of the diagnostic, if the code has detail. |
 
 ## Capture Attributes
 

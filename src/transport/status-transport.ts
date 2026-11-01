@@ -5,6 +5,7 @@
 // 408 and 5xx retry. Each other code drops the batch.
 
 import {
+  DATE_HEADER_HALF_STEP_MS,
   HTTP_FORBIDDEN,
   HTTP_PAYLOAD_TOO_LARGE,
   HTTP_REQUEST_TIMEOUT,
@@ -20,6 +21,19 @@ import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { TransportError } from "./errors";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
+
+/**
+ * Computes the clock offset from the Date header of an answer.
+ * @param date Value of the Date header. It has whole seconds.
+ * @returns Server time minus client time in milliseconds, or undefined for no valid date.
+ */
+function clockOffset(date: unknown): number | undefined {
+  const serverMs = typeof date === "string" ? Date.parse(date) : Number.NaN;
+
+  return Number.isNaN(serverMs)
+    ? undefined
+    : Math.round(serverMs + DATE_HEADER_HALF_STEP_MS - Date.now());
+}
 
 /** The two operations that the pipeline and the retry engine use. */
 export interface BatchTransport {
@@ -113,12 +127,14 @@ export abstract class StatusTransport implements BatchTransport {
    * @param diagnostics Diagnostics reporter.
    * @param onSampling Receives the sampling rules of an accepted batch, before validation.
    * @param onLoss Receives the records of a batch that the serializer cannot encode.
+   * @param onClock Receives the clock offset of an accepted batch, in milliseconds.
    */
   constructor(
     protected readonly config: ResolvedConfig,
     protected readonly diagnostics: Diagnostics,
     private readonly onSampling: (raw: unknown) => void = () => undefined,
     private readonly onLoss: LossReporter = () => undefined,
+    private readonly onClock: (offsetMs: number) => void = () => undefined,
   ) {}
 
   /**
@@ -171,14 +187,20 @@ export abstract class StatusTransport implements BatchTransport {
    * Records an accepted batch. It ends the server throttle of the endpoint of the batch.
    * @param kind Kind of the accepted batch.
    * @param sampling Sampling rules of the answer, as text or as an object.
+   * @param date Date header of the answer. It is null when the server does not expose it.
    */
-  protected accept(kind: BatchKind, sampling: unknown): void {
+  protected accept(kind: BatchKind, sampling: unknown, date: unknown): void {
     this.throttledUntil[kind] = 0;
     this.acceptedAt = Date.now();
 
     // Trust only the answer to a batch that the library sent. A null header means no rules.
     if (this.config.sampling.remote && sampling !== undefined && sampling !== null) {
       this.onSampling(sampling);
+    }
+
+    const offset = clockOffset(date);
+    if (offset !== undefined) {
+      this.onClock(offset);
     }
   }
 

@@ -120,12 +120,29 @@ type PolicySection =
   | "buffering"
   | "delivery";
 
+/**
+ * Reads one policy key that the generic checks cannot read, for example a list.
+ * @param key Full config key for the diagnostic message.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value to use.
+ */
+type CustomResolver = (
+  key: string,
+  value: unknown,
+  fallback: unknown,
+  diagnostics: Diagnostics,
+) => unknown;
+
 /** Rules of one policy section. Each number key must have a range. */
 interface PolicyRules<T> {
   /** Accepted range of each number key. */
   ranges: Record<NumberKeys<T>, Range>;
   /** Accepted values of each choice key. */
   choices?: Partial<Record<keyof T, readonly string[]>>;
+  /** Resolver of each key with another value type. */
+  custom?: Partial<Record<keyof T, CustomResolver>>;
 }
 
 /** Rules of each policy section. A new number key without a range does not compile. */
@@ -146,7 +163,10 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
   },
   metadata: { ranges: {} },
   persistence: { ranges: {} },
-  diagnostics: { ranges: { throttleMs: DURATION_RANGE } },
+  diagnostics: {
+    ranges: { throttleMs: DURATION_RANGE },
+    custom: { records: resolveDiagnosticRecords },
+  },
   correlation: {
     ranges: {
       sessionIdleMs: DURATION_RANGE,
@@ -174,6 +194,7 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       retryIdleDelayMs: DURATION_RANGE,
       batchesPerDrain: POSITIVE_RANGE,
     },
+    choices: { priority: ["low", "auto", "high"] },
   },
 };
 
@@ -204,6 +225,7 @@ const TARGET_LIST_EXPECTED =
 const ORIGIN_LIST_EXPECTED =
   'a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame';
 const STRING_LIST_EXPECTED = "a list of strings";
+const DIAGNOSTIC_RECORDS_EXPECTED = "true, false or a list of diagnostic codes";
 
 /** Function form of the headers option. */
 type HeadersFunction = () => Record<string, string> | Promise<Record<string, string>>;
@@ -580,6 +602,32 @@ function toPlugin(entry: unknown): CapturePlugin | undefined {
 }
 
 /**
+ * Reads diagnostics.records. A list keeps each string entry and reports each other entry.
+ * @param key Full config key.
+ * @param value Value that the consumer passed.
+ * @param fallback Value in force.
+ * @param diagnostics Diagnostics reporter.
+ * @returns True, false or the list of codes.
+ */
+function resolveDiagnosticRecords(
+  key: string,
+  value: unknown,
+  fallback: unknown,
+  diagnostics: Diagnostics,
+): unknown {
+  if (value === undefined || typeof value === "boolean") {
+    return value ?? fallback;
+  }
+
+  if (Array.isArray(value)) {
+    return resolveList(key, value, [], DIAGNOSTIC_RECORDS_EXPECTED, toStringEntry, diagnostics);
+  }
+
+  reportInvalid(diagnostics, key, DIAGNOSTIC_RECORDS_EXPECTED, value, "the value in force");
+  return fallback;
+}
+
+/**
  * Accepts a string entry.
  * @param entry List entry.
  * @returns The entry, or undefined.
@@ -869,6 +917,12 @@ function resolveSampling(
       base.alwaysSampleTypes,
       STRING_LIST_EXPECTED,
       toStringEntry,
+      diagnostics,
+    ),
+    alwaysSampleFrom: resolveLevel(
+      "sampling.alwaysSampleFrom",
+      given.alwaysSampleFrom,
+      base.alwaysSampleFrom,
       diagnostics,
     ),
     remote: resolveBoolean("sampling.remote", given.remote, base.remote, diagnostics),
@@ -1247,6 +1301,8 @@ interface PolicyLookup {
   ranges: Partial<Record<string, Range>>;
   /** Accepted values of each choice key. */
   choices?: Partial<Record<string, readonly string[]>>;
+  /** Resolver of each key with another value type. */
+  custom?: Partial<Record<string, CustomResolver>>;
 }
 
 /**
@@ -1271,8 +1327,11 @@ function resolvePolicy<T extends object>(
     const fallback: unknown = base[key];
     const range = rules.ranges[key];
     const choice = rules.choices?.[key];
+    const custom = rules.custom?.[key];
     let resolved: unknown = fallback;
-    if (typeof fallback === "number" && range) {
+    if (custom) {
+      resolved = custom(`${name}.${key}`, value, fallback, diagnostics);
+    } else if (typeof fallback === "number" && range) {
       resolved = resolveInteger(`${name}.${key}`, value, range, fallback, diagnostics);
     } else if (typeof fallback === "boolean") {
       resolved = resolveBoolean(`${name}.${key}`, value, fallback, diagnostics);

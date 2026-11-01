@@ -12,6 +12,7 @@ import {
   HEADER_BATCH_ID,
   HEADER_CONTENT_ENCODING,
   HEADER_CONTENT_TYPE,
+  HEADER_DATE,
   HEADER_RETRY_AFTER,
   HEADER_SAMPLING,
   HTTP_FORBIDDEN,
@@ -155,8 +156,9 @@ export class HttpTransport extends StatusTransport {
     }
 
     if (response.ok) {
-      // The server must list the header in Access-Control-Expose-Headers. If not, it is null.
-      this.accept(kind, response.headers.get(HEADER_SAMPLING));
+      // The server must list each header in Access-Control-Expose-Headers. If not, it is null.
+      const { headers } = response;
+      this.accept(kind, headers.get(HEADER_SAMPLING), headers.get(HEADER_DATE));
       return;
     }
 
@@ -316,6 +318,8 @@ export class HttpTransport extends StatusTransport {
           signal: controller.signal,
           cache: "no-store",
           keepalive,
+          // The OS can stop a hidden page soon. Do not delay its keepalive send.
+          priority: keepalive ? "auto" : config.delivery.priority,
         }),
       );
     } catch {

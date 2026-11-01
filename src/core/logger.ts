@@ -8,6 +8,7 @@ import {
   ATTR_SANITIZE_FAILED,
   CAPTURE_NAMESPACE,
   DEFAULT_METRIC_UNIT,
+  DIAGNOSTICS_NAMESPACE,
   METRIC_KEYS,
   STORAGE_NAMESPACE,
 } from "../constants";
@@ -20,7 +21,11 @@ import type { DropReason } from "./record";
 import type { ObservabilityRuntime } from "./runtime";
 
 /** Namespaces of the library. Their records have log.type "system". */
-const LIBRARY_NAMESPACES: readonly string[] = [CAPTURE_NAMESPACE, STORAGE_NAMESPACE];
+const LIBRARY_NAMESPACES: readonly string[] = [
+  CAPTURE_NAMESPACE,
+  STORAGE_NAMESPACE,
+  DIAGNOSTICS_NAMESPACE,
+];
 
 /** Configuration options for a scoped OneLogger instance. */
 export interface OneLoggerOptions {

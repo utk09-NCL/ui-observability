@@ -4,7 +4,7 @@ import { validMessage } from "../src/bus/validation";
 import { ContextStorage } from "../src/storage/context-storage";
 import { LocalStorageStorage } from "../src/storage/local-storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
-import { createChildrenLink } from "../src/bus/links";
+import { createChildrenLink, type Receive } from "../src/bus/links";
 import { BATCH_KEY_TIME_WIDTH, BATCH_STORAGE_KEY_PREFIX, SESSION_ID_KEY } from "../src/constants";
 import {
   clearEmergencyContext,
@@ -33,6 +33,7 @@ import { Bus } from "../src/bus/bus";
 import type { BusMessage, MessageSource } from "../src/models/bus";
 import type { LogRecord } from "../src/models/log-record";
 import type { LogBatch } from "../src/models/batch";
+import type { ResolvedConfig } from "../src/models/config";
 
 const record = (): LogRecord => ({
   timeUnixNano: "123",
@@ -1841,15 +1842,13 @@ describe("nested frames, carry timing and early encoding", () => {
       child,
     );
     expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["ui-observability.message.welcome"]);
-    // The role is final. The children link gets the final id, and a direct child gets it at its
-    // next message.
+    // The role is final. The children link and the direct child get the final id at once.
     bus["awaitingWelcome"] = null;
     bus["announce"]();
-    expect(children.post).toHaveBeenCalledWith({
-      t: "ui-observability.message.security-context",
-      from: "host",
-      id: "A",
-    });
+    const final = { t: "ui-observability.message.security-context", from: "host", id: "A" };
+    expect(children.post).toHaveBeenCalledWith(final);
+    expect(reply).toHaveBeenLastCalledWith(final, expect.objectContaining({ link: "direct" }));
+    // A child that still sends an old id gets the id again in the answer.
     bus.acceptDirect(
       {
         t: "ui-observability.message.records",
@@ -1862,6 +1861,7 @@ describe("nested frames, carry timing and early encoding", () => {
     );
     expect(reply.mock.calls.map(([m]) => m.t)).toEqual([
       "ui-observability.message.welcome",
+      "ui-observability.message.security-context",
       "ui-observability.message.security-context",
     ]);
     bus.destroy();
@@ -2005,5 +2005,162 @@ describe("configurable click action attribute and namespaced locks", () => {
       "ui-observability.emergency:orders%20app",
       "ui-observability.drain:orders%20app",
     ]);
+  });
+});
+
+/**
+ * Starts a child bus in this window. The owner bus acts as the runtime of a same-origin parent.
+ * @param owner Bus of the parent.
+ * @param config Resolved config of the child.
+ * @param onSecurityContext Handler of the child for an owner id.
+ * @returns The started child bus.
+ */
+async function startDirectChild(
+  owner: Bus,
+  config: ResolvedConfig,
+  onSecurityContext: (id: string) => boolean,
+): Promise<Bus> {
+  owner.registerFrame(window, { origin: location.origin });
+  const host = {
+    busAccept: (...args: Parameters<Bus["acceptDirect"]>) => {
+      owner.acceptDirect(...args);
+    },
+    busCanAccept: (source: Window, origin: string) => owner.isRegistered(source, origin),
+  };
+  vi.spyOn(window, "parent", "get").mockReturnValue({
+    [Symbol.for("ui-observability.runtime")]: host,
+  } as unknown as Window & typeof globalThis);
+  const child = new Bus(
+    config,
+    diag(),
+    { platform: "browser", isTopLevelDocument: false, isWorker: false, userAgent: "test" },
+    "child",
+    "tab",
+    {
+      onRecords: vi.fn(),
+      onJourney: vi.fn(),
+      onJourneyRequest: vi.fn(() => null),
+      onTabConflict: vi.fn(),
+      remote: { sampling: null },
+      onSecurityContext,
+    },
+    { timeoutMs: 50, maxAttempts: 1 },
+  );
+  await child.start();
+  return child;
+}
+
+describe("rotation reach on the direct link", () => {
+  it("clears the context mismatch of an explicit direct child when the owner rotates to its id", async () => {
+    configure({ ...base, securityContext: { id: "B" } });
+    await flush();
+    const runtime = rt();
+    const adopt = (await runtime["constructBus"]())!["handlers"].onSecurityContext!;
+    runtime.config.bus.mode = "auto";
+    const owner = makeBus();
+    const child = await startDirectChild(owner.bus, runtime.config, adopt);
+    expect((await getHealth()).issues).toContain("security.context_mismatch");
+
+    owner.config.securityContext.id = "B";
+    owner.bus.rotateContext();
+
+    expect((await getHealth()).issues).not.toContain("security.context_mismatch");
+    child.destroy();
+    owner.bus.destroy();
+  });
+
+  it("sends a rotated id to a direct child at once", async () => {
+    const owner = makeBus();
+    const config = resolveConfig({ ...base, bus: { mode: "auto" } }, diag());
+    const child = await startDirectChild(owner.bus, config, (id) => {
+      config.securityContext.id = id;
+      return true;
+    });
+    expect(config.securityContext.id).toBe("A");
+
+    owner.config.securityContext.id = "C";
+    owner.bus.rotateContext();
+
+    expect(config.securityContext.id).toBe("C");
+    // The child sends with the new id. The owner does not refuse this first batch.
+    child.sendRecords([record()]);
+    expect(owner.handlers.onRecords).toHaveBeenCalledTimes(1);
+    child.destroy();
+    owner.bus.destroy();
+  });
+
+  it("drops a direct child that is closed, freed or no longer registered", () => {
+    const { bus } = makeBus();
+    const [removed, closesLate, unregistered, freed, stays] = [{}, {}, {}, {}, {}] as Window[];
+    const unregister = bus.registerFrame(unregistered, { origin: location.origin });
+    for (const peer of [removed, closesLate, freed, stays]) {
+      bus.registerFrame(peer, { origin: location.origin });
+    }
+    const reply = vi.fn();
+    const hello = (peer: Window): void => {
+      bus.acceptDirect(
+        { t: "ui-observability.message.hello", from: "child", tabId: "tab" },
+        reply,
+        peer,
+      );
+    };
+    const close = (peer: Window): void => {
+      Object.defineProperty(peer, "closed", { value: true });
+    };
+    hello(removed);
+    hello(closesLate);
+    hello(unregistered);
+    hello(freed);
+
+    // A closed frame leaves the map when the next child speaks.
+    close(removed);
+    hello(stays);
+    expect(bus["directReplies"].has(removed)).toBe(false);
+
+    // The rotation drops the other children that cannot get the id.
+    close(closesLate);
+    unregister();
+    bus["directReplies"].set(freed, { deref: () => undefined } as WeakRef<Receive>);
+    reply.mockClear();
+    bus.rotateContext();
+
+    expect([...bus["directReplies"].keys()]).toEqual([stays]);
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith(
+      { t: "ui-observability.message.security-context", from: "host", id: "A" },
+      { link: "direct", origin: "same-origin", peer: stays },
+    );
+    bus.destroy();
+    expect(bus["directReplies"].size).toBe(0);
+  });
+
+  it("sends the id to the next direct child when one reply throws", () => {
+    const { bus } = makeBus();
+    const [broken, working] = [{}, {}] as Window[];
+    bus.registerFrame(broken, { origin: location.origin });
+    bus.registerFrame(working, { origin: location.origin });
+    // A records message with the current id gets no answer. Only the rotation calls the replies.
+    const records: BusMessage = {
+      t: "ui-observability.message.records",
+      from: "child",
+      records: [record()],
+      routingContextId: "A",
+    };
+    const fail = vi.fn(() => {
+      throw new Error("freed document");
+    });
+    const reply = vi.fn();
+    bus.acceptDirect(records, fail, broken);
+    bus.acceptDirect(records, reply, working);
+
+    bus.rotateContext();
+
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.security-context" }),
+      expect.objectContaining({ peer: working }),
+    );
+    expect(bus["diagnostics"].snapshot()["bus.send_failed"]).toBe(1);
+    bus.destroy();
   });
 });

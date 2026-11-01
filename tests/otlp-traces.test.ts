@@ -140,6 +140,20 @@ describe("otlpTracesSerializer", () => {
       status: { code: 0 },
     });
   });
+
+  it("gives each namespace of the span records its own scope", () => {
+    const payload = JSON.parse(
+      otlpTracesSerializer.serialize([
+        span({ "app.namespace": "uiobs.traces" }),
+        span({ "app.namespace": "orders" }),
+      ]).body,
+    ) as { resourceSpans: { scopeSpans: { scope: unknown }[] }[] };
+
+    expect(payload.resourceSpans[0].scopeSpans.map((scope) => scope.scope)).toEqual([
+      { name: "uiobs.traces" },
+      { name: "orders" },
+    ]);
+  });
 });
 
 describe("batchKind and endpointFor for spans", () => {

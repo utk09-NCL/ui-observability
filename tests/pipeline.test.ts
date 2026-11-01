@@ -99,6 +99,43 @@ describe("LogPipeline", () => {
     pipeline.destroy();
   });
 
+  it("adds the clock offset to a log and a span record but not to a metric point", async () => {
+    const send = vi.fn<Send>(() => Promise.resolve());
+    const clockOffset = vi.fn<() => number | undefined>(() => undefined);
+    const pipeline = new LogPipeline(
+      { send, throttledForMs: () => 0 },
+      new MemoryStorage(limits),
+      { nudge: vi.fn(), storeFailed: vi.fn() } as unknown as RetryEngine,
+      new Diagnostics(vi.fn(), 0),
+      DEFAULT_STREAMS,
+      undefined,
+      undefined,
+      undefined,
+      clockOffset,
+    );
+    const span = record({ body: "span", attributes: { "log.type": "span" } });
+
+    pipeline.push(record({ body: "before" }));
+    clockOffset.mockReturnValue(-1500);
+    pipeline.push(record({ body: "after" }));
+    pipeline.push(span);
+    pipeline.push(metric({ body: "metric" }));
+    await vi.advanceTimersByTimeAsync(PAST_METRIC_FLUSH_MS + LOG_FLUSH_MS);
+
+    const sent = send.mock.calls.flatMap(([batch]) => batch.records);
+    const offsets = sent.map((one) => [one.body, one.attributes["uiobs.clock_offset_ms"]]);
+    expect(Object.fromEntries(offsets)).toEqual({
+      before: undefined,
+      after: -1500,
+      span: -1500,
+      metric: undefined,
+    });
+    expect(sent).toHaveLength(4);
+    // The pipeline copies the attributes. The record of the caller keeps no offset.
+    expect(span.attributes).not.toHaveProperty("uiobs.clock_offset_ms");
+    pipeline.destroy();
+  });
+
   it("stamps every record with the time this context saw it", async () => {
     const { pipeline, send } = setup();
 

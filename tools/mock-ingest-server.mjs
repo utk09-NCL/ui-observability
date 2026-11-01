@@ -42,7 +42,7 @@ function cors(req, res) {
   // cross-origin response, so a 429 or 503 arrives with no delay attached and
   // the client backs off on its own schedule instead of the server's.
   // The client reads the sampling rules only if this list has the header.
-  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling");
+  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling, date");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
