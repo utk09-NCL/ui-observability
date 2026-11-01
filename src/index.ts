@@ -410,6 +410,8 @@ export function adoptJourney(token: string): boolean {
 /**
  * Connects a Web Worker or MessagePort to the document bus for record routing.
  * @param worker Target Worker or MessagePort instance.
+ * @param options Permissions of the worker. The default permission is "records".
+ * @returns Function that removes this registration.
  */
 export function registerWorker(worker: WorkerLike, options?: SourceOptions): () => void {
   return requireRuntime().registerWorker(worker, options);
@@ -468,9 +470,9 @@ export function getStats(): Promise<DeliveryStats> {
 }
 
 /**
- * Starts new correlation in this tab. Use rotateSecurityContext() at logout or a tenant change.
- * Ends the active journey and
- * starts a new trace. Other tabs read the new id at their next startup.
+ * Starts new correlation in this tab. It ends the active journey and starts a new trace. Other
+ * tabs read the new id at their next startup. Use rotateSecurityContext() at logout or at a
+ * tenant change.
  */
 export function newSession(): void {
   requireRuntime().newSession();

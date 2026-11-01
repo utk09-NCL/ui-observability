@@ -165,7 +165,7 @@ A frame registration binds the actual window and the exact expected origin. You 
 
 Permissions default to `['records']`. The other permissions are `journey:read`, `journey:write` and `sampling:read`. Incoming requests and outgoing control messages both obey these permissions. Handshakes and delivery-context updates need no permission. Only the established upstream owner can publish sampling and security-context messages. A child cannot get owner authority with a false message field.
 
-`sourcePolicy: 'trusted-origin'` turns on automatic child discovery. Then this document's origin and the `trustedOrigins` can send messages. Explicit registrations still apply their permissions and bind their exact origin. A registered origin needs no `trustedOrigins` entry. Strict validation checks the protocol union, forwarded record fields, known severities, timestamps, trace identifiers and finite numeric values. Relaxed `envelope` validation keeps the record-builder checks that the SDK needs to process records. The child link of a nested frame ignores the messages of its parent. The parent link receives them.
+`sourcePolicy: 'trusted-origin'` turns on automatic child discovery. Then this document's origin and the `trustedOrigins` can send messages. Explicit registrations still apply their permissions and bind their exact origin. A registered origin needs no `trustedOrigins` entry. Strict validation checks the protocol union, forwarded record fields, known severities, timestamps, trace identifiers and finite numeric values. Relaxed `envelope` validation keeps the record-builder checks that the SDK needs to process records. Each bus message carries the envelope tag `ui-observability/2`. Its type name starts with `ui-observability.message.`, for example `ui-observability.message.hello`. These names are a fixed protocol. Each frame must use the same values. The child link of a nested frame ignores the messages of its parent. The parent link receives them.
 
 Size and count limits split outgoing record batches. The bus drops a record that is too large by itself and counts `bus.rejected_message`. Rate limits apply before record processing. A change to a self-reported context ID does not reset the budget of a physical source. OpenFin stays scoped to its application UUID and provider role. The bus uses the physical identity that the OpenFin runtime supplies. Channels without this identity share one channel budget. These client controls do not replace ingest-server authentication or tenant authorization.
 
@@ -194,11 +194,11 @@ Health does not start a second runtime. It does not wait for initialization to c
 
 ## Upgrade checklist
 
-1. If you used the old automatic click details, turn on `text` or `selector`. Read selectors from `breadcrumb.data.selector`.
+1. If you used the old automatic click details, turn on `text` or `selector`. Read selectors from `breadcrumb.data.selector`. If your markup already names its controls, for example with `data-testid`, set `capture.interactions.actionAttribute`.
 2. Replace `newSession()` at logout with awaited rotation. Also replace `configure()` calls that change delivery. Or disable isolation explicitly.
 3. Supply a stable security-context ID if you need offline replay after a page reload. The default isolation policy parks legacy untagged batches. Disable isolation only if you intend to send them with the current credentials.
 4. Register child frames before they start. Grant journey and sampling permissions where necessary. Or select origin-based discovery explicitly.
-5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. A 0.9.5 owner drops the records of a frame on an earlier version, because they have no context ID.
+5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame on an earlier version and a 0.9.5 owner ignore each other.
 6. Set cache and bus budgets for the workload of the application. Then lock configuration if the shell owns it.
 
 ## Operational budgets

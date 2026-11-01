@@ -8,21 +8,21 @@ The OTLP serializer writes the resource attributes on the resource and the recor
 
 Each record carries these attributes.
 
-| Attribute                | Type   | Value                                                                                                                      |
-| ------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `service.name`           | string | `serviceName`. Without it, `unknown-service`.                                                                              |
-| `service.version`        | string | `serviceVersion`.                                                                                                          |
-| `deployment.environment` | string | `environment`.                                                                                                             |
-| `telemetry.sdk.name`     | string | The package name.                                                                                                          |
-| `telemetry.sdk.version`  | string | The package version.                                                                                                       |
-| `telemetry.sdk.language` | string | `webjs`.                                                                                                                   |
-| `host.platform`          | string | `browser`, `openfin`, `openfin_web`, `mobile_webview`, `ionic`, `web_worker`, `shared_worker`, `service_worker` or `node`. |
-| `session.id`             | string | Session id. All tabs of an origin share it. It changes after 30 minutes with no record, and at `newSession()`.             |
-| `tab.id`                 | string | Tab or window id. It stays across a reload.                                                                                |
-| `context.id`             | string | Id of one document, frame or worker. Each load makes a new id.                                                             |
-| `browser.user_agent`     | string | `navigator.userAgent`.                                                                                                     |
-| `openfin.uuid`           | string | OpenFin application uuid. Only in OpenFin.                                                                                 |
-| `openfin.name`           | string | OpenFin window or view name. Only in OpenFin.                                                                              |
+| Attribute                | Type   | Value                                                                                                                                                                                                                         |
+| ------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service.name`           | string | `serviceName`. Without it, `unknown-service`.                                                                                                                                                                                 |
+| `service.version`        | string | `serviceVersion`.                                                                                                                                                                                                             |
+| `deployment.environment` | string | `environment`.                                                                                                                                                                                                                |
+| `telemetry.sdk.name`     | string | The package name.                                                                                                                                                                                                             |
+| `telemetry.sdk.version`  | string | The package version.                                                                                                                                                                                                          |
+| `telemetry.sdk.language` | string | `webjs`.                                                                                                                                                                                                                      |
+| `host.platform`          | string | `browser`, `openfin`, `openfin_web`, `mobile_webview`, `ionic`, `web_worker`, `shared_worker`, `service_worker` or `node`.                                                                                                    |
+| `session.id`             | string | Session id. All tabs of an origin share it. It changes after `correlation.sessionIdleMs` (default 30 minutes) with no record, and at `newSession()`. A same-origin frame takes the new session of its owner after a rotation. |
+| `tab.id`                 | string | Tab or window id. It stays across a reload.                                                                                                                                                                                   |
+| `context.id`             | string | Id of one document, frame or worker. Each load makes a new id.                                                                                                                                                                |
+| `browser.user_agent`     | string | `navigator.userAgent`. Not present with `metadata.userAgent: false`.                                                                                                                                                          |
+| `openfin.uuid`           | string | OpenFin application uuid. Only in OpenFin. Not present with `metadata.openfin: false`.                                                                                                                                        |
+| `openfin.name`           | string | OpenFin window or view name. Only in OpenFin. Not present with `metadata.openfin: false`.                                                                                                                                     |
 
 Each record also has `traceId`, `spanId` and `traceFlags` as record fields, not as attributes.
 
@@ -30,15 +30,15 @@ Each record also has `traceId`, `spanId` and `traceFlags` as record fields, not 
 
 The library sets these attributes on each record. They replace a caller attribute of the same name.
 
-| Attribute           | Type   | Value                                                                                      |
-| ------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `log.type`          | string | `log`, `system`, `action`, `event`, `metric` or `span`.                                    |
-| `log.seq`           | number | Sequence number in this context. It starts at 1. Metric points and spans take numbers too. |
-| `app.namespace`     | string | Logger namespace.                                                                          |
-| `page.url`          | string | Page URL. Without `capture.fullUrls`, it has no query and no fragment.                     |
-| `journey.id`        | string | Id of the active journey. Only while a journey runs.                                       |
-| `journey.name`      | string | Name of the active journey.                                                                |
-| `journey.parent_id` | string | Id of the parent journey. Only with `startJourney(name, { parent: true })`.                |
+| Attribute           | Type   | Value                                                                                                                                                   |
+| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `log.type`          | string | `log`, `system`, `action`, `event`, `metric` or `span`.                                                                                                 |
+| `log.seq`           | number | Sequence number in this context. It starts at 1. Metric points and spans take numbers too.                                                              |
+| `app.namespace`     | string | Logger namespace.                                                                                                                                       |
+| `page.url`          | string | Page URL. Without `capture.fullUrls`, it has no query and no fragment. `capture.urlTransform` replaces this rule. Empty with `metadata.pageUrl: false`. |
+| `journey.id`        | string | Id of the active journey. Only while a journey runs.                                                                                                    |
+| `journey.name`      | string | Name of the active journey.                                                                                                                             |
+| `journey.parent_id` | string | Id of the parent journey. Only with `startJourney(name, { parent: true })`.                                                                             |
 
 These attributes show a problem in the record:
 
@@ -66,6 +66,8 @@ These attributes show a problem in the record:
 | `breadcrumbs`            | array  | Last events before the error. Each item has `t`, `category`, `message` and `data`.     |
 
 The breadcrumb categories are `log`, `action`, `event`, `click`, `navigation`, `http`, `console`, `frame` and `custom`.
+
+A `click` breadcrumb has the action name as its message. The name comes from the closest `data-observability-action` attribute, or from the attribute in `capture.interactions.actionAttribute`. Without a name, the message is `unknown-click`. `data.text` and `data.selector` are present only when `capture.interactions` turns them on.
 
 ## Metric Records
 
