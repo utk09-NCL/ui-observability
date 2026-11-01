@@ -125,16 +125,19 @@ const SENDER_SECTIONS = ["batching", "retention"] as const;
 /** Config sections that a later configure() cannot change. */
 type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 
+/** Delivery settings that a rotation resets when the update omits them. */
+const DELIVERY_RESET = {
+  endpoint: null,
+  metricsEndpoint: "",
+  tracesEndpoint: "",
+  headers: undefined,
+  credentials: "omit",
+  transport: undefined,
+  transportOnExit: undefined,
+} as const;
+
 /** Delivery settings that configure() cannot change while isolation is on. */
-const ROUTING_KEYS = [
-  "endpoint",
-  "metricsEndpoint",
-  "tracesEndpoint",
-  "headers",
-  "credentials",
-  "transport",
-  "transportOnExit",
-] as const;
+const ROUTING_KEYS = Object.keys(DELIVERY_RESET) as (keyof typeof DELIVERY_RESET)[];
 
 /**
  * Makes a text key of the capture section. A later configure() reinstalls the capture
@@ -209,7 +212,9 @@ export class ObservabilityRuntime {
   /** Memory store kept for later context changes. */
   private memoryStorage?: StorageAdapter;
   /** True if the app supplied a context id at startup. */
-  private readonly explicitSecurityContext: boolean;
+  private explicitSecurityContext: boolean;
+  /** True after this forwarder takes a context id from its owner. */
+  private ownerAdopted = false;
 
   /**
    * Checks if a security context change is in progress.
@@ -566,11 +571,6 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Receives direct messages from same-origin child frames.
-   * @param message Inbound bus message.
-   * @param reply Direct response callback.
-   */
-  /**
    * Checks the source policy before a direct child link opens.
    * @param source Child window.
    * @param origin Origin of the child window.
@@ -579,6 +579,12 @@ export class ObservabilityRuntime {
   readonly busCanAccept = (source: Window, origin: string): boolean =>
     this.bus?.isRegistered(source, origin) ?? false;
 
+  /**
+   * Receives direct messages from same-origin child frames.
+   * @param message Inbound bus message.
+   * @param reply Direct response callback.
+   * @param source Window of the child frame.
+   */
   readonly busAccept = (message: BusMessage, reply: Receive, source?: Window): void => {
     if (this.destroyed) {
       return;
@@ -735,7 +741,15 @@ export class ObservabilityRuntime {
       return;
     }
     const accepted = this.keepDestination(this.keepRouting(this.allowed(input)));
+    // The first configure() after an implicit start is the startup of the app. Its id is explicit.
+    if (!this.tunablesLocked && accepted.securityContext?.id) {
+      this.explicitSecurityContext = true;
+    }
     for (const key of ["correlation", "persistence"] as const) {
+      // The sender reads the namespace when it loads. Before that, the first configure() can set it.
+      if (key === "persistence" && !this.tunablesLocked && this.senderLoad === undefined) {
+        continue;
+      }
       if (
         accepted[key] &&
         !sameConfig({ ...this.config[key], ...accepted[key] }, this.config[key])
@@ -884,7 +898,7 @@ export class ObservabilityRuntime {
    */
   private keepSections(next: ResolvedConfig, sections: readonly StartupSection[]): void {
     for (const section of sections) {
-      if (JSON.stringify(next[section]) === JSON.stringify(this.config[section])) {
+      if (sameConfig(next[section], this.config[section])) {
         continue;
       }
 
@@ -1090,9 +1104,14 @@ export class ObservabilityRuntime {
             }
             this.contextMismatch = false;
             if (this.config.securityContext.id !== id) {
-              if (this.ready) {
-                this.bootBuffer.take();
-                this.pendingRecords.take();
+              // The first owner id keeps the startup records and the context of the app. Those
+              // records had no other identity. A later change retires them, also before ready.
+              if (this.ownerAdopted) {
+                this.drops.add("security_context", [
+                  ...this.bootBuffer.take(),
+                  ...this.pendingRecords.take(),
+                  ...this.forwardBuffer,
+                ]);
                 this.forwardBuffer = [];
                 this.context.clear();
                 this.breadcrumbs.clear();
@@ -1112,6 +1131,7 @@ export class ObservabilityRuntime {
               }
               this.config.securityContext.id = id;
             }
+            this.ownerAdopted = true;
             return true;
           },
           onRecords: (records) => {
@@ -1583,12 +1603,12 @@ export class ObservabilityRuntime {
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
-    if (this.rotating || this.destroyed) return;
+    if (this.destroyed) return;
     if (!Array.isArray(records)) {
       this.diagnostics.count("record.dropped_malformed");
       return;
     }
-
+    const accepted: LogRecord[] = [];
     for (const record of records) {
       if (!isLogRecord(record)) {
         this.diagnostics.count("record.dropped_malformed");
@@ -1602,8 +1622,19 @@ export class ObservabilityRuntime {
       // A child context without redact forwards raw records. The sender is the last gate.
       const redacted = this.builder.redactForwarded(record);
       if (redacted) {
-        this.deliver(redacted);
+        accepted.push(redacted);
       }
+    }
+
+    // Records that arrive while the context changes belong to neither identity. Report the loss
+    // after sampling and redact. onDrop must not get action names or journey ids that redact masks.
+    if (this.rotating) {
+      this.drops.add("security_context", accepted);
+      return;
+    }
+
+    for (const record of accepted) {
+      this.deliver(record);
     }
   }
 
@@ -1716,7 +1747,8 @@ export class ObservabilityRuntime {
     update: SecurityContextUpdate,
     options: SecurityContextRotationOptions = {},
   ): Promise<void> {
-    if (this.rotating)
+    // Check the promise, not the flag. "carry" clears the flag before it stores old batches again.
+    if (this.rotation)
       return Promise.reject(new Error("A security-context rotation is already running."));
     const pending = options.pending ?? "discard";
     const timeoutMs = options.timeoutMs ?? 5000;
@@ -1762,45 +1794,29 @@ export class ObservabilityRuntime {
     if (nextId === previous)
       throw new Error("A rotation requires a different security-context id.");
     // Check the new settings before the old sender stops. Invalid settings keep the old sender.
-    const delivery = {
-      endpoint: null,
-      metricsEndpoint: "",
-      tracesEndpoint: "",
-      headers: undefined,
-      credentials: "omit" as const,
-      transport: undefined,
-      transportOnExit: undefined,
-      ...update.delivery,
-    };
+    const delivery = { ...DELIVERY_RESET, ...update.delivery };
     const before = this.diagnostics.snapshot()["config.invalid"] ?? 0;
+    // The base has no old delivery values. An invalid new value cannot fall back to an old one.
     const next = resolveConfig(
       this.allowed({ ...delivery, securityContext: { id: nextId } }),
       this.diagnostics,
-      {
-        ...this.config,
-        ...delivery,
-        endpoint: null,
-        metricsEndpoint: "",
-        tracesEndpoint: "",
-        headers: undefined,
-        credentials: "omit",
-        transport: undefined,
-        transportOnExit: undefined,
-      },
+      { ...this.config, ...DELIVERY_RESET },
     );
     if ((this.diagnostics.snapshot()["config.invalid"] ?? 0) !== before)
       throw new Error("Invalid delivery settings for the next security context.");
+    // Copy the context now. A getter that throws then rejects before the old sender stops.
+    const context = update.context ? Object.fromEntries(Object.entries(update.context)) : undefined;
 
     // The base above has no endpoints. Remove the old endpoints from the ignore list here.
     // If they stay, network capture ignores calls to the old destination.
-    const retired = new Set<unknown>([
+    const oldUrls = new Set<unknown>([
       this.config.endpoint,
       this.config.metricsEndpoint,
       this.config.tracesEndpoint,
     ]);
-    const current = new Set<unknown>([next.endpoint, next.metricsEndpoint, next.tracesEndpoint]);
+    const newUrls = new Set<unknown>([next.endpoint, next.metricsEndpoint, next.tracesEndpoint]);
     next.capture.ignoreUrls = next.capture.ignoreUrls.filter(
-      (url) => !retired.has(url) || current.has(url),
+      (url) => !oldUrls.has(url) || newUrls.has(url),
     );
 
     this.closingContext = true;
@@ -1816,24 +1832,55 @@ export class ObservabilityRuntime {
     const old = this.sender;
     this.sender = undefined;
     this.senderLoad = undefined;
-    const oldRecords = (await old?.retire(pending, timeoutMs, previous)) ?? [];
+    const retired = (await old?.retire(pending, timeoutMs, previous)) ?? {
+      buffered: [],
+      stored: [],
+    };
     if (this.destroyed) return;
-    const records = [...held, ...oldRecords];
-    if (pending !== "retain" && pending !== "carry") this.drops.add("security_context", records);
+    const live = [...held, ...retired.buffered];
+    const stored = retired.stored.flatMap((batch) => batch.records);
+    if (pending !== "retain" && pending !== "carry") {
+      this.drops.add("security_context", [...live, ...stored]);
+    }
+    // Keep a lock change that the app made during the rotation.
+    next.lockConfiguration = this.config.lockConfiguration;
     // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
     applyResolvedConfig(this.config, next);
     this.remote.sampling = null;
     this.context.clear();
-    if (update.context) this.context.setMany(update.context);
+    if (context) this.context.setMany(context);
     this.breadcrumbs.clear();
     this.newSession();
     this.builder.invalidateResource();
     await this.syncSender();
     this.bus?.rotateContext();
-    if (pending === "carry") for (const record of records) this.route(record);
+    if (pending === "carry") {
+      // New calls go to the new sender while it stores the old batches again. A long carry then
+      // drops no logger call.
+      this.rotating = false;
+      await this.carry(live, retired.stored);
+    }
     this.diagnostics.report("security.rotated", "The runtime rotated its security context.", {
       pending,
     });
+  }
+
+  /**
+   * Moves the records of the old context into the new context.
+   * @param live Records that were in memory. They go through the live buffer.
+   * @param stored Batches that were stored. The new sender stores them again.
+   * @returns Promise that resolves when the stored batches are stored again.
+   */
+  private async carry(live: LogRecord[], stored: LogBatch[]): Promise<void> {
+    for (const record of live) {
+      this.route(record);
+    }
+
+    // The live buffer does not take the stored backlog. It would exceed the buffer budget.
+    // Without a new sender, the stored batches stay parked under the old id. Nothing is lost.
+    if (this.sender) {
+      await this.sender.adopt(stored, this.config.securityContext.id);
+    }
   }
 
   /**
@@ -1919,19 +1966,23 @@ export class ObservabilityRuntime {
       await this.sender.clearPersisted(scope, this.config.securityContext.id);
       return;
     }
-    const [{ createStorage }, { ContextStorage }, { storageLimits }, { clearEmergencyContext }] =
-      await Promise.all([
-        import("../storage/factory"),
-        import("../storage/context-storage"),
-        import("../models/storage"),
-        import("../storage/emergency-queue"),
-      ]);
+    const [
+      { createStorage, storageName },
+      { ContextStorage },
+      { storageLimits },
+      { clearEmergencyContext },
+    ] = await Promise.all([
+      import("../storage/factory"),
+      import("../storage/context-storage"),
+      import("../models/storage"),
+      import("../storage/emergency-queue"),
+    ]);
     const namespace = this.config.persistence.namespace;
     const backing =
       this.memoryStorage ??
       (await createStorage(
         this.config.storage,
-        namespace ? `UiObservability:${namespace}` : "UiObservability",
+        storageName(namespace),
         storageLimits(this.config.retention),
         this.diagnostics,
         undefined,

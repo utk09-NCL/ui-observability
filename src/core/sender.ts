@@ -5,14 +5,14 @@
 // The runtime imports this module dynamically only when the config sets an endpoint.
 // Console-only mode does not download this module.
 
-import { STORAGE_DB_NAME } from "../constants";
+import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
 import { type GapReporter, type StorageAdapter, storageLimits } from "../models/storage";
 import { clearEmergencyContext, drainEmergencyQueue } from "../storage/emergency-queue";
-import { createStorage } from "../storage/factory";
+import { createStorage, storageName } from "../storage/factory";
 import { ContextStorage } from "../storage/context-storage";
 import { withDeadline } from "../utils/deadline";
 import { ExitFlush } from "../transport/exit-flush";
@@ -46,6 +46,11 @@ export interface SenderDeps {
 
 /** Delivery stack for one sender runtime. */
 export class Sender {
+  /** True after retire(). A late emergency import then does not wake the retry engine. */
+  private retired = false;
+  /** Emergency queue import. retire() waits for it before it reads storage. */
+  private emergencyImport: Promise<void> = Promise.resolve();
+
   /**
    * @param storage Storage adapter for undelivered batches.
    * @param retry Retry engine for stored batches.
@@ -54,9 +59,6 @@ export class Sender {
    * @param diagnostics Diagnostics reporter.
    * @param transport Transport of the pipeline and the retry engine.
    */
-  private retired = false;
-  private emergencyImport: Promise<void> = Promise.resolve();
-
   private constructor(
     private readonly storage: ContextStorage,
     private readonly retry: RetryEngine,
@@ -79,9 +81,7 @@ export class Sender {
       deps.storage ??
       (await createStorage(
         config.storage,
-        config.persistence.namespace
-          ? `${STORAGE_DB_NAME}:${config.persistence.namespace}`
-          : STORAGE_DB_NAME,
+        storageName(config.persistence.namespace),
         storageLimits(config.retention),
         diagnostics,
         deps.onGap,
@@ -238,13 +238,13 @@ export class Sender {
    * @param policy Rule for the old records.
    * @param timeoutMs Maximum wait for a flush, in milliseconds.
    * @param contextId Identity of the old delivery context.
-   * @returns Records of the old context after the delivery attempt.
+   * @returns Records that were in memory, and the batches that were stored, after the delivery attempt.
    */
   async retire(
     policy: "discard" | "flush" | "retain" | "carry",
     timeoutMs: number,
     contextId: string,
-  ): Promise<LogRecord[]> {
+  ): Promise<{ buffered: LogRecord[]; stored: LogBatch[] }> {
     this.retired = true;
     this.exitFlush.uninstall();
     this.retry.stop();
@@ -268,7 +268,6 @@ export class Sender {
     this.pipeline.destroy();
     await this.emergencyImport;
     const stored = await this.storage.take(Number.MAX_SAFE_INTEGER);
-    const records = [...buffered, ...stored.flatMap((batch) => batch.records)];
     if (policy === "retain") {
       // Store the drained batches whole. One batch for each record fills retention.maxBatches.
       for (const batch of drained) {
@@ -279,10 +278,37 @@ export class Sender {
         });
       }
     }
-    await this.storage.retire(policy !== "retain");
-    if (policy !== "retain")
+    // "carry" keeps the stored batches until adopt() stores each one again under the new id.
+    // A tab that closes during the carry then parks the rest. It does not lose them.
+    const discard = policy === "discard" || policy === "flush";
+    await this.storage.retire(discard);
+    if (discard) {
       clearEmergencyContext(contextId, this.diagnostics, this.storage.namespace);
-    return records;
+    }
+    return { buffered, stored };
+  }
+
+  /**
+   * Stores batches of an earlier context under this context. Then the retry engine sends them.
+   * The live buffer does not take them. A large backlog would exceed its budget.
+   * @param batches Stored batches of the earlier context.
+   * @param contextId Identity of this delivery context.
+   * @returns Promise that resolves when the batches are stored.
+   */
+  async adopt(batches: readonly LogBatch[], contextId: string): Promise<void> {
+    for (const batch of batches) {
+      // The same id replaces the old copy. The attempts of the old destination do not count here.
+      await this.storage.save({
+        ...batch,
+        attempts: 0,
+        routingContextId: contextId,
+        persistenceNamespace: this.storage.namespace,
+      });
+    }
+
+    if (batches.length > 0) {
+      this.retry.nudge();
+    }
   }
 
   /**

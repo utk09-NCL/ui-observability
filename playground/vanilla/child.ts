@@ -53,6 +53,9 @@ configure({
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console at its own level.
   console: "DEBUG",
+  // The cross-origin copy on port 5174 must trust its parent origin. Without it, it refuses the
+  // welcome of the parent and sends its own records.
+  bus: { trustedOrigins: ["http://localhost:5173"] },
   onDiagnostic: (event) => {
     // bus.role_resolved carries the resolved role, which is the frame's readout.
     if (event.code === "bus.role_resolved" && typeof event.detail?.role === "string") {

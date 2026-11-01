@@ -489,12 +489,12 @@ IndexedDB holds undelivered batches with `storage: "auto"` or `"indexeddb"`.
 - **Server (Node):** On Node, for example during server-side rendering, the library runs console-only. It installs no capture, keeps the ids in memory, uses no storage and has no exit flush. If you set `endpoint`, `metricsEndpoint`, `tracesEndpoint` or `transport`, it reports `config.invalid` one time.
 - **One library version on a page:** If a copy of another version owns the page runtime, this copy runs console-only. It installs no capture and reports `runtime.version_mismatch`. Load one version of the library on the page.
 - **Emergency queue:** The emergency queue is best effort. With `storage: "memory"` or `"none"`, the exit flush does not use it. A batch that it cannot send is then lost, and `onDrop` reports `not_stored`. It writes to `localStorage` synchronously, because no other storage works while the page unloads. If the browser refuses the write, the library reports `storage.quota_exceeded`. The library then loses the batch.
-- **Configuration after startup:** A second `configure()` call merges accepted options into an unlocked live runtime. By default, delivery/identity changes use `rotateSecurityContext()`; `securityContext.isolation: false` restores ordinary mutable routing. The runtime refuses 5 changes and reports `config.invalid` for each:
+- **Configuration after startup:** A second `configure()` call merges accepted options into an unlocked live runtime. Isolation is on by default. Then `configure()` refuses changes to delivery settings and to the context ID. It keeps the values in force, reports `config.invalid` and applies the other settings. Use `rotateSecurityContext()` for these changes. `securityContext.isolation: false` restores ordinary mutable routing. The runtime also refuses these 5 changes and reports `config.invalid` for each:
   - A change to `storage`. The stored batches stay in the adapter that the runtime built at startup.
   - A change to `identity`. The ids exist from startup.
   - A change to `batching` or `retention` after the delivery stack loads. The stack reads them one time.
   - A change to `limits` or `journey.maxAgeMs` after the first `configure()`. The record builder and the journey engine read them one time.
-  - An `endpoint` change to `null` or `""` after the delivery stack loads. Without an endpoint, the stored batches would be lost. A change to another endpoint URL is accepted.
+  - An `endpoint` change to `null` or `""` after the delivery stack loads. Without an endpoint, the stored batches would be lost. With isolation off, a change to another endpoint URL is accepted.
 - **Deterministic sampling:** FNV-1a hashing applies one keep rate to a whole journey. An error and an explicit action are always kept.
 
 ---

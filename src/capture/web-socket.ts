@@ -51,7 +51,9 @@ function socketTarget(
   const parsed = new URL(url);
 
   return {
-    target: recordedUrl(url, config.capture.fullUrls, config.capture.urlTransform, diagnostics),
+    // Ignore fullUrls. A browser cannot set a header on a socket. Thus apps often put a token in
+    // the query. Only urlTransform can record more of the URL.
+    target: recordedUrl(url, false, config.capture.urlTransform, diagnostics),
     server: parsed.hostname,
   };
 }

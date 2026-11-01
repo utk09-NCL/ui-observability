@@ -31,7 +31,13 @@ export class MemoryStorage implements StorageAdapter {
    * @param batch Batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
-    this.batches.push(batch);
+    // A batch with a known id replaces the old copy in place, as IndexedDB put() does.
+    const index = this.batches.findIndex((stored) => stored.id === batch.id);
+    if (index >= 0) {
+      this.batches[index] = batch;
+    } else {
+      this.batches.push(batch);
+    }
     await this.prune();
   }
 

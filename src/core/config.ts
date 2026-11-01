@@ -96,6 +96,86 @@ const LIMIT_RANGES: Record<keyof LimitOptions, Range> = {
 /** Accepted range of journey.maxAgeMs. */
 const JOURNEY_AGE_RANGE: Range = [60_000, 24 * 60 * 60 * 1000];
 
+/** Range of a duration. The maximum is the largest delay that a browser timer accepts. */
+const DURATION_RANGE: Range = [0, 2_147_483_647];
+
+/** Range of a count. Zero turns the limit off. */
+const COUNT_RANGE: Range = [0, Number.MAX_SAFE_INTEGER];
+
+/** Range of a count that must be at least 1. */
+const POSITIVE_RANGE: Range = [1, Number.MAX_SAFE_INTEGER];
+
+/** Keys of a policy section that have number values. */
+type NumberKeys<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
+
+/** Policy sections that resolvePolicy() checks. */
+type PolicySection =
+  | "capturePolicy"
+  | "metadata"
+  | "persistence"
+  | "diagnostics"
+  | "correlation"
+  | "metrics"
+  | "buffering"
+  | "delivery";
+
+/** Rules of one policy section. Each number key must have a range. */
+interface PolicyRules<T> {
+  /** Accepted range of each number key. */
+  ranges: Record<NumberKeys<T>, Range>;
+  /** Accepted values of each choice key. */
+  choices?: Partial<Record<keyof T, readonly string[]>>;
+}
+
+/** Rules of each policy section. A new number key without a range does not compile. */
+const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
+  capturePolicy: {
+    ranges: {
+      // A larger capacity gives an invalid array allocation.
+      breadcrumbs: [0, 1_000_000],
+      errorDedupeMs: DURATION_RANGE,
+      maxErrorSignatures: COUNT_RANGE,
+      errorsPerWindow: COUNT_RANGE,
+      consolePerWindow: COUNT_RANGE,
+      longFramesPerWindow: COUNT_RANGE,
+      webSocketPerWindow: COUNT_RANGE,
+      windowMs: DURATION_RANGE,
+      errorCeiling: COUNT_RANGE,
+    },
+  },
+  metadata: { ranges: {} },
+  persistence: { ranges: {} },
+  diagnostics: { ranges: { throttleMs: DURATION_RANGE } },
+  correlation: {
+    ranges: {
+      sessionIdleMs: DURATION_RANGE,
+      sessionTouchMs: DURATION_RANGE,
+      traceMaxAgeMs: DURATION_RANGE,
+    },
+  },
+  metrics: {
+    ranges: {
+      maxSeries: COUNT_RANGE,
+      maxInstruments: COUNT_RANGE,
+      maxHistogramBoundaries: COUNT_RANGE,
+    },
+  },
+  buffering: {
+    ranges: { maxPendingRecords: COUNT_RANGE, maxPendingBytes: COUNT_RANGE },
+    choices: { overflow: ["drop-oldest", "drop-newest", "persist"] },
+  },
+  delivery: {
+    ranges: {
+      requestTimeoutMs: [1, DURATION_RANGE[1]],
+      maxConcurrentRequests: POSITIVE_RANGE,
+      retryBaseDelayMs: DURATION_RANGE,
+      retryMaxDelayMs: DURATION_RANGE,
+      retryIdleDelayMs: DURATION_RANGE,
+      batchesPerDrain: POSITIVE_RANGE,
+    },
+  },
+};
+
 /** Boolean keys of the capture section. */
 const CAPTURE_FLAG_KEYS = [
   "errors",
@@ -1143,11 +1223,20 @@ function resolveSignalEndpoint(
   return url;
 }
 
+/** Rules in the form that resolvePolicy() reads. POLICY_RULES holds the typed form. */
+interface PolicyLookup {
+  /** Accepted range of each number key. */
+  ranges: Partial<Record<string, Range>>;
+  /** Accepted values of each choice key. */
+  choices?: Partial<Record<string, readonly string[]>>;
+}
+
 /**
  * Checks one policy section. An invalid value keeps the value in force.
  * @param name Section name for diagnostic messages.
  * @param input Settings that the app supplied.
  * @param base Settings in force.
+ * @param rules Ranges and choices of the section.
  * @param diagnostics Diagnostics reporter.
  * @returns The valid section.
  */
@@ -1155,43 +1244,27 @@ function resolvePolicy<T extends object>(
   name: string,
   input: Partial<T> | undefined,
   base: T,
+  rules: PolicyLookup,
   diagnostics: Diagnostics,
 ): T {
   const next = { ...base };
   for (const key of Object.keys(base) as (keyof T & string)[]) {
     const value: unknown = input?.[key];
     const fallback: unknown = base[key];
+    const range = rules.ranges[key];
+    const choice = rules.choices?.[key];
     let resolved: unknown = fallback;
-    if (typeof fallback === "number") {
-      const min = ["maxConcurrentRequests", "batchesPerDrain", "requestTimeoutMs"].includes(key)
-        ? 1
-        : 0;
-      resolved = resolveInteger(
-        `${name}.${key}`,
-        value,
-        [
-          min,
-          key === "breadcrumbs"
-            ? 1_000_000
-            : key.endsWith("Ms")
-              ? 2_147_483_647
-              : Number.MAX_SAFE_INTEGER,
-        ],
-        fallback,
-        diagnostics,
-      );
-    } else if (typeof fallback === "boolean")
+    if (typeof fallback === "number" && range) {
+      resolved = resolveInteger(`${name}.${key}`, value, range, fallback, diagnostics);
+    } else if (typeof fallback === "boolean") {
       resolved = resolveBoolean(`${name}.${key}`, value, fallback, diagnostics);
-    else if (key === "overflow")
-      resolved = resolveChoice(
-        `${name}.${key}`,
-        value,
-        ["drop-oldest", "drop-newest", "persist"],
-        String(fallback),
-        diagnostics,
-      );
-    else if (value === undefined || typeof value === "string") resolved = value ?? fallback;
-    else reportInvalid(diagnostics, `${name}.${key}`, "a string", value, String(fallback));
+    } else if (choice) {
+      resolved = resolveChoice(`${name}.${key}`, value, choice, String(fallback), diagnostics);
+    } else if (value === undefined || typeof value === "string") {
+      resolved = value ?? fallback;
+    } else {
+      reportInvalid(diagnostics, `${name}.${key}`, "a string", value, String(fallback));
+    }
     Object.assign(next, { [key]: resolved });
   }
   return next;
@@ -1211,22 +1284,17 @@ export function resolveConfig(
 ): ResolvedConfig {
   const base = previous ?? DEFAULT_CONFIG;
 
+  // Check each policy section with its own rules. The key order of POLICY_RULES sets the report order.
+  const policies = Object.fromEntries(
+    (Object.keys(POLICY_RULES) as PolicySection[]).map((key) => [
+      key,
+      resolvePolicy(key, input[key], base[key], POLICY_RULES[key], diagnostics),
+    ]),
+  ) as Pick<ResolvedConfig, PolicySection>;
   const merged: ResolvedConfig = {
     ...base,
     ...input,
-    capturePolicy: resolvePolicy(
-      "capturePolicy",
-      input.capturePolicy,
-      base.capturePolicy,
-      diagnostics,
-    ),
-    metadata: resolvePolicy("metadata", input.metadata, base.metadata, diagnostics),
-    persistence: resolvePolicy("persistence", input.persistence, base.persistence, diagnostics),
-    diagnostics: resolvePolicy("diagnostics", input.diagnostics, base.diagnostics, diagnostics),
-    correlation: resolvePolicy("correlation", input.correlation, base.correlation, diagnostics),
-    metrics: resolvePolicy("metrics", input.metrics, base.metrics, diagnostics),
-    buffering: resolvePolicy("buffering", input.buffering, base.buffering, diagnostics),
-    delivery: resolvePolicy("delivery", input.delivery, base.delivery, diagnostics),
+    ...policies,
 
     lockConfiguration: resolveBoolean(
       "lockConfiguration",

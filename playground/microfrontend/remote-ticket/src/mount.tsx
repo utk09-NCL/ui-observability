@@ -13,6 +13,7 @@ const log = getLogger("ticket.form");
 function Ticket(): ReactElement {
   return (
     <button
+      data-observability-action="submit-order"
       onClick={() => {
         log.logAction("ORDER_SUBMIT", { orderId: "ORD-3003" });
       }}

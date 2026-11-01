@@ -50,6 +50,8 @@ export interface MessageSource {
   link: LinkKind;
   /** `event.origin` for `parent` and `children`. Other links use `"same-origin"` or `"openfin"`. */
   origin: string;
+  /** Sends an answer to this source only. A link that cannot address one source omits it. */
+  reply?: (message: BusMessage) => void;
 }
 
 /** Discriminated union of control and telemetry payload messages. */

@@ -21,8 +21,7 @@ export interface StormWindow {
 export function countInWindow(window: StormWindow, limit: number, windowMs: number): boolean {
   const now = Date.now();
 
-  // Guard against a clock that moves back. The window then never ends.
-  if (now < window.start || now - window.start > windowMs) {
+  if (windowEnded(window, windowMs, now)) {
     window.start = now;
     window.count = 0;
   }
@@ -30,4 +29,16 @@ export function countInWindow(window: StormWindow, limit: number, windowMs: numb
   window.count++;
 
   return window.count <= limit;
+}
+
+/**
+ * Tells if a fixed window has ended. The bus uses the same rule to expire its source entries.
+ * @param window Window state.
+ * @param windowMs Length of the window, in milliseconds.
+ * @param now Current epoch time, in milliseconds.
+ * @returns True after the window length, or when the clock moved back. Without the second
+ * check, a clock that moves back keeps the window open.
+ */
+export function windowEnded(window: StormWindow, windowMs: number, now: number): boolean {
+  return now < window.start || now - window.start > windowMs;
 }

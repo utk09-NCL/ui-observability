@@ -5,6 +5,7 @@ import { WEBSOCKET_MAX_PER_WINDOW } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { OneLogger } from "../src/core/logger";
+import type { CaptureOptions } from "../src/models/config";
 import type { MetricAttributes } from "../src/models/metric";
 import type { PluginContext } from "../src/models/plugin";
 import { runAsLibraryRequest } from "../src/utils/library-request";
@@ -58,9 +59,10 @@ function close(socket: FakeSocket, code: number, wasClean: boolean): void {
 /**
  * Builds a capture with spy tools, and installs it.
  * @param ignoreUrls URL patterns that the capture does not record.
+ * @param capture Other capture settings.
  * @returns The capture, its spies and its diagnostic events.
  */
-function setup(ignoreUrls: string[] = []) {
+function setup(ignoreUrls: string[] = [], capture: Partial<CaptureOptions> = {}) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -76,14 +78,14 @@ function setup(ignoreUrls: string[] = []) {
     ownRequest: vi.fn(),
   } as unknown as PluginContext;
   const config = resolveConfig(
-    { endpoint: null, serviceName: "svc", capture: { ignoreUrls } },
+    { endpoint: null, serviceName: "svc", capture: { ignoreUrls, ...capture } },
     new Diagnostics(),
   );
-  const capture = new WebSocketCapture(diagnostics, config);
+  const plugin = new WebSocketCapture(diagnostics, config);
 
-  capture.install(ctx);
+  plugin.install(ctx);
 
-  return { capture, ctx, logEvent, warn, add, events, diagnostics };
+  return { capture: plugin, ctx, logEvent, warn, add, events, diagnostics };
 }
 
 beforeEach(() => {
@@ -113,6 +115,21 @@ describe("WebSocketCapture", () => {
     ]);
     expect(warn).toHaveBeenCalledWith("websocket.error", TARGET);
     capture.uninstall();
+  });
+
+  it("removes the socket query also with fullUrls, and uses urlTransform when it is set", () => {
+    const full = setup([], { fullUrls: true });
+    open().dispatchEvent(new Event("open"));
+    expect(full.logEvent).toHaveBeenCalledWith("websocket.open", TARGET);
+    full.capture.uninstall();
+
+    const transformed = setup([], { urlTransform: () => "wss://feed.example/[route]" });
+    open().dispatchEvent(new Event("open"));
+    expect(transformed.logEvent).toHaveBeenCalledWith("websocket.open", {
+      ...TARGET,
+      "url.full": "wss://feed.example/[route]",
+    });
+    transformed.capture.uninstall();
   });
 
   it("counts the messages by direction and server, and never reads the content", () => {

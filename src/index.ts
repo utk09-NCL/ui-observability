@@ -146,13 +146,15 @@ function trimLoggerCache(): number | null {
   const limit = (ObservabilityRuntime.current() ?? ObservabilityRuntime.stopped())?.config
     .loggerCache.maxEntries;
   const max = limit === undefined ? 256 : limit;
-  if (max !== null)
-    while (loggers.size > max) {
-      for (const key of loggers.keys()) {
-        loggers.delete(key);
+  if (max !== null) {
+    // A Map keeps insertion order. The first keys are the least recently used loggers.
+    for (const key of loggers.keys()) {
+      if (loggers.size <= max) {
         break;
       }
+      loggers.delete(key);
     }
+  }
   return max;
 }
 

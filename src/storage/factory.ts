@@ -5,6 +5,7 @@
 // frames.
 
 import {
+  STORAGE_DB_NAME,
   STORAGE_NAME_INDEXEDDB,
   STORAGE_NAME_MEMORY,
   STORAGE_NAME_NONE,
@@ -15,6 +16,15 @@ import type { StorageStrategy } from "../models/config";
 import type { GapReporter, StorageAdapter, StorageLimits } from "../models/storage";
 import { LocalStorageStorage } from "./local-storage";
 import { MemoryStorage } from "./memory-storage";
+
+/**
+ * Gives the database name of one application namespace. The sender and the deletion use one rule.
+ * @param namespace Application namespace. An empty value keeps the name before namespaces.
+ * @returns Name of the IndexedDB database.
+ */
+export function storageName(namespace: string): string {
+  return namespace ? `${STORAGE_DB_NAME}:${namespace}` : STORAGE_DB_NAME;
+}
 
 /**
  * Builds the adapter that keeps nothing. The factory returns it for the "none" strategy. Each

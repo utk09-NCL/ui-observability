@@ -126,9 +126,10 @@ export class InteractionCapture implements Capture {
     const ignore =
       options.ignoreSelector === undefined ? "[data-observability-ignore]" : options.ignoreSelector;
     if (ignore && target.closest(ignore)) return;
-    const action = target
-      .closest("[data-observability-action]")
-      ?.getAttribute("data-observability-action");
+    // An absent or empty attribute gives "". The message is then "unknown-click".
+    const action =
+      target.closest("[data-observability-action]")?.getAttribute("data-observability-action") ??
+      "";
     const data: Record<string, unknown> = {};
     if (options.selector) data.selector = describeElement(target);
     if (options.text)
@@ -137,10 +138,7 @@ export class InteractionCapture implements Capture {
     this.ctx.breadcrumbs.push({
       t: Date.now(),
       category: "click",
-      message: (action === "" ? "unknown-click" : (action ?? "unknown-click")).slice(
-        0,
-        this.ctx.config.limits.maxBodyChars,
-      ),
+      message: (action || "unknown-click").slice(0, this.ctx.config.limits.maxBodyChars),
       data: Object.keys(data).length > 0 ? data : undefined,
     });
   };

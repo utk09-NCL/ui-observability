@@ -188,6 +188,8 @@ describe("security context delivery", () => {
       expect(rt().breadcrumbs.snapshot()).toEqual([]);
       getLogger("orders").info("B record");
       await flush();
+      // Carried stored batches wait in storage under the new id. The retry engine sends them.
+      await rt()["sender"]!["retry"]["drain"]();
       const bodies = b.mock.calls.flatMap(([r]) => r.records.map((r) => r.body));
       expect(bodies).toContain("B record");
       expect(bodies.includes("A record")).toBe(pending === "carry");

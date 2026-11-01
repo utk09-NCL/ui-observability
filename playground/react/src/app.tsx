@@ -18,6 +18,7 @@ function OrderTicket(): ReactElement {
 
   return (
     <button
+      data-observability-action="submit-order"
       onClick={() => {
         log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
         ordersSubmitted.add(1, { venue: "LSE" });
@@ -50,6 +51,7 @@ export function App(): ReactElement {
       <h1>ui-observability, React example</h1>
       {mounted && <OrderTicket />}
       <button
+        data-observability-action="toggle-ticket"
         onClick={() => {
           setMounted((v) => !v);
         }}
@@ -57,6 +59,7 @@ export function App(): ReactElement {
         toggle the ticket
       </button>
       <button
+        data-observability-action="break-render"
         onClick={() => {
           setExplode(true);
         }}
@@ -64,6 +67,7 @@ export function App(): ReactElement {
         break a render
       </button>
       <button
+        data-observability-action="price-quotes"
         onClick={() => {
           // 20 values give one histogram point at the next interval, not 20 records.
           for (let i = 0; i < 20; i++) {
@@ -74,6 +78,7 @@ export function App(): ReactElement {
         price 20 quotes
       </button>
       <button
+        data-observability-action="fetch-missing"
         onClick={() => {
           // Fetch capture records http.client.request.duration with status 404.
           void fetch("http://localhost:8787/missing");

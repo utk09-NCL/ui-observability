@@ -18,6 +18,7 @@ import {
   getLogger,
   registerFrame,
   rotateSecurityContext,
+  setConfigurationLocked,
   shutdown,
   createMemoryTransport,
   registerWorker,
@@ -396,7 +397,7 @@ describe("bus capability and delivery boundaries", () => {
   });
 
   it("supports direct permitted queries, rejects forged authority and stale context records", () => {
-    const { bus, handlers, receive } = create();
+    const { bus, handlers } = create();
     const peer = {} as Window;
     bus.registerFrame(peer, {
       origin: location.origin,
@@ -418,15 +419,12 @@ describe("bus capability and delivery boundaries", () => {
       "security-context",
     ]);
     expect(handlers.onRecords).not.toHaveBeenCalled();
-    receive(
-      { t: "sampling", from: "child", to: "host", rules: {} },
-      { link: "direct", origin: location.origin, peer },
-    );
-    receive(
-      { t: "security-context", from: "child", id: "evil" },
-      { link: "direct", origin: location.origin, peer },
-    );
+    // A direct child cannot publish owner control messages. Nothing answers them.
+    reply.mockClear();
+    bus.acceptDirect({ t: "sampling", from: "child", to: "host", rules: {} }, reply, peer);
+    bus.acceptDirect({ t: "security-context", from: "child", id: "evil" }, reply, peer);
     expect(handlers.onSecurityContext).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
     bus.destroy();
   });
 
@@ -555,11 +553,16 @@ describe("delivery cancellation and owner adoption", () => {
     runtime.context.set("user", "old");
     addBreadcrumb("old");
     counter("old").add(1);
+    // The first owner id keeps the context of the app. Those records had no other identity.
     expect(adopt("owner-A")).toBe(true);
     expect(runtime.config.securityContext.id).toBe("owner-A");
+    expect(runtime.context.getAll()).toEqual({ user: "old" });
+    // A later owner id is a rotation. It clears the context of the old identity.
+    expect(adopt("owner-B")).toBe(true);
+    expect(runtime.config.securityContext.id).toBe("owner-B");
     expect(runtime.context.getAll()).toEqual({});
     expect(runtime.breadcrumbs.snapshot()).toEqual([]);
-    expect(adopt("owner-A")).toBe(true);
+    expect(adopt("owner-B")).toBe(true);
     bus["role"] = "forwarder";
     expect((await getHealth()).mode).toBe("forwarder");
     await expect(rotateSecurityContext({ delivery: {} })).rejects.toThrow("upstream owner");
@@ -1258,14 +1261,552 @@ describe("rotation reach, frame registration and partial storage reads", () => {
       SESSION_ID_KEY,
       JSON.stringify({ id: "owner-session", lastSeenAt: Date.now() }),
     );
+    // The first owner id does not reset the session.
     adopt("owner-A");
+    adopt("owner-B");
     expect(runtime.identity.sessionId).toBe("owner-session");
     // The stored session is the current session. The owner did not store a new one.
-    adopt("owner-B");
+    adopt("owner-C");
     const minted = runtime.identity.sessionId;
     expect(minted).not.toBe("owner-session");
     localStorage.removeItem(SESSION_ID_KEY);
-    adopt("owner-C");
+    adopt("owner-D");
     expect(runtime.identity.sessionId).not.toBe(minted);
+  });
+});
+
+/**
+ * Builds an owner bus with the default policies and context id "A".
+ * @returns The bus, its config and its handlers.
+ */
+function makeBus() {
+  const config = resolveConfig(
+    { ...base, bus: { mode: "sender" }, securityContext: { id: "A" } },
+    diag(),
+  );
+  const handlers = {
+    onRecords: vi.fn(),
+    onJourney: vi.fn(),
+    onJourneyRequest: vi.fn(() => null),
+    onTabConflict: vi.fn(),
+    remote: { sampling: null },
+    onSecurityContext: vi.fn((id: string) => {
+      config.securityContext.id = id;
+      return true;
+    }),
+  };
+  const bus = new Bus(
+    config,
+    diag(),
+    { platform: "browser", isTopLevelDocument: true, isWorker: false, userAgent: "test" },
+    "host",
+    "tab",
+    handlers,
+  );
+  return { bus, config, handlers };
+}
+
+describe("direct link, owner adoption and answer routing", () => {
+  it("connects a same-origin child through the direct link under the default source policy", async () => {
+    const owner = makeBus();
+    owner.bus.registerFrame(window, { origin: location.origin });
+    const host = {
+      busAccept: (...args: Parameters<Bus["acceptDirect"]>) => {
+        owner.bus.acceptDirect(...args);
+      },
+      busCanAccept: (source: Window, origin: string) => owner.bus.isRegistered(source, origin),
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue({
+      [Symbol.for("ui-observability.runtime")]: host,
+    } as unknown as Window & typeof globalThis);
+    const childConfig = resolveConfig(
+      { ...base, bus: { mode: "auto" }, securityContext: { id: "child" } },
+      diag(),
+    );
+    const onSecurityContext = vi.fn((id: string) => {
+      childConfig.securityContext.id = id;
+      return true;
+    });
+    const child = new Bus(
+      childConfig,
+      diag(),
+      { platform: "browser", isTopLevelDocument: false, isWorker: false, userAgent: "test" },
+      "child",
+      "tab",
+      {
+        onRecords: vi.fn(),
+        onJourney: vi.fn(),
+        onJourneyRequest: vi.fn(() => null),
+        onTabConflict: vi.fn(),
+        remote: { sampling: null },
+        onSecurityContext,
+      },
+      { timeoutMs: 50, maxAttempts: 1 },
+    );
+    expect(await child.start()).toBe("forwarder");
+    expect(onSecurityContext).toHaveBeenCalledWith("A");
+    child.sendRecords([record()]);
+    expect(owner.handlers.onRecords).toHaveBeenCalledTimes(1);
+    child.destroy();
+    owner.bus.destroy();
+  });
+
+  it("sends an owner id that a forwarder takes from a welcome to its own children", () => {
+    const { bus } = makeBus();
+    const post = vi.fn();
+    bus["links"].push({ kind: "children", post, close: vi.fn() });
+    bus["role"] = "forwarder";
+    bus["upstream"] = { kind: "parent", post: vi.fn(), close: vi.fn() };
+    const settle = vi.fn();
+    bus["awaitingWelcome"] = { link: "parent", settle };
+    bus["receive"](
+      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "T" },
+      { link: "parent", origin: location.origin, peer: {} },
+    );
+    expect(settle).toHaveBeenCalledWith(true);
+    expect(post).toHaveBeenCalledWith({ t: "security-context", from: "host", id: "T" });
+    bus.destroy();
+  });
+
+  it("answers a hello only to the child that sent it", async () => {
+    const { envelope: wrap } = await import("../src/models/bus");
+    const { bus } = makeBus();
+    const a = document.createElement("iframe");
+    const b = document.createElement("iframe");
+    document.body.append(a, b);
+    bus.registerFrame(a, { origin: location.origin });
+    bus.registerFrame(b, { origin: location.origin });
+    const postA = vi.spyOn(a.contentWindow!, "postMessage");
+    const postB = vi.spyOn(b.contentWindow!, "postMessage");
+    const hello = (from: string, source: Window): void => {
+      dispatchEvent(
+        new MessageEvent("message", {
+          data: wrap({ t: "hello", from, tabId: "tab" }),
+          source,
+          origin: location.origin,
+        }),
+      );
+    };
+    hello("b", b.contentWindow!);
+    hello("a", a.contentWindow!);
+    expect(postB).toHaveBeenCalledTimes(1);
+    expect(postA).toHaveBeenCalledTimes(1);
+    expect(postA.mock.calls[0][0]).toMatchObject({ m: { t: "welcome", to: "a" } });
+    bus.destroy();
+  });
+
+  it("starts a new rate window when the clock moves back", () => {
+    const { bus, config, handlers } = makeBus();
+    config.bus.maxMessagesPerSecond = 1;
+    const peer = {} as Window;
+    bus.registerFrame(peer, { origin: location.origin });
+    const m: BusMessage = {
+      t: "records",
+      from: "peer",
+      records: [record()],
+      routingContextId: "A",
+    };
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    bus.acceptDirect(m, vi.fn(), peer);
+    bus["receive"](m, { link: "openfin", origin: "openfin", peer: "view" });
+    clock.mockReturnValue(now - 3_600_000);
+    bus.acceptDirect(m, vi.fn(), peer);
+    bus["receive"](m, { link: "openfin", origin: "openfin", peer: "view" });
+    expect(handlers.onRecords).toHaveBeenCalledTimes(4);
+    bus.destroy();
+  });
+
+  it("binds a registered origin under the trusted-origin policy", () => {
+    const { bus, config } = makeBus();
+    config.bus.sourcePolicy = "trusted-origin";
+    const popup = {} as Window;
+    bus.registerFrame(popup, { origin: "https://partner.example" });
+    expect(bus.isRegistered(popup, "https://partner.example")).toBe(true);
+    expect(bus.isRegistered(popup, location.origin)).toBe(false);
+    bus.destroy();
+  });
+});
+
+describe("rotation delivery limits and early configuration", () => {
+  it("reads all stored IndexedDB batches with isolation off", async () => {
+    const { IndexedDbStorage } = await import("../src/storage/indexeddb-storage");
+    const store = new IndexedDbStorage(
+      "unbounded-take",
+      { maxBatches: 5, maxAgeMs: 60000, maxAttempts: 5 },
+      diag(),
+    );
+    await store.save(batch("A"));
+    const takeOldest = store["db"].takeOldest.bind(store["db"]);
+    // A browser refuses a getAll() count above 2^32 - 1. fake-indexeddb does not, so emulate it.
+    vi.spyOn(store["db"], "takeOldest").mockImplementation((limit: number) =>
+      limit > 0xffffffff
+        ? Promise.reject(new TypeError("The count is outside the unsigned long range."))
+        : takeOldest(limit),
+    );
+    const storage = new ContextStorage(store, { id: "B", isolation: false });
+    expect((await storage.take(Number.MAX_SAFE_INTEGER)).map((b) => b.id)).toEqual(["A"]);
+    await store.close();
+  });
+
+  it("carries a stored backlog larger than the buffer budget through storage", async () => {
+    const send = createMemoryTransport();
+    send.respondWith(503);
+    const onDrop = vi.fn();
+    configure({ ...base, transport: send.transport, securityContext: { id: "A" }, onDrop });
+    await flush();
+    for (let i = 0; i < 5; i++) {
+      getLogger("backlog").info(`stored ${String(i)}`);
+    }
+    await flush();
+    expect((await getHealth()).stored).toBeGreaterThan(0);
+    configure({ buffering: { maxPendingRecords: 2 } });
+    send.clear();
+    send.respondWith(204);
+    await rotateSecurityContext(
+      { id: "B", delivery: { transport: send.transport } },
+      { pending: "carry" },
+    );
+    await rt()["sender"]!["retry"]["drain"]();
+    await flush();
+    expect(onDrop).not.toHaveBeenCalledWith(expect.objectContaining({ reason: "buffer_full" }));
+    expect(send.records().filter((r) => r.body.startsWith("stored"))).toHaveLength(5);
+    expect(send.batches().every((b) => b.routingContextId === "B")).toBe(true);
+    // No stored batch to carry, then no new sender to take the stored batches.
+    await rotateSecurityContext(
+      { id: "C", delivery: { transport: send.transport } },
+      { pending: "carry" },
+    );
+    send.respondWith(503);
+    getLogger("backlog").info("stored in C");
+    await flush();
+    getLogger("backlog").info("buffered in C");
+    onDrop.mockClear();
+    // A context without a sender cannot take the stored batch. It stays parked under C.
+    await rotateSecurityContext({ id: "D", delivery: {} }, { pending: "carry" });
+    const parked = await rt()["memoryStorage"]!.take(10);
+    expect(parked.map((b) => [b.routingContextId, b.records[0].body])).toEqual([
+      ["C", "stored in C"],
+    ]);
+    await flush();
+    expect(onDrop).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "security_context" }),
+    );
+  });
+
+  it("drops a new record when each held record is in flight", async () => {
+    let release!: (response: { status: number }) => void;
+    const hang = vi.fn(
+      () =>
+        new Promise<{ status: number }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const onDrop = vi.fn();
+    configure({ ...base, transport: hang, onDrop, buffering: { maxPendingRecords: 1 } });
+    await flush();
+    getLogger("orders").info("in flight");
+    void flush();
+    await vi.waitFor(() => {
+      expect(hang).toHaveBeenCalled();
+    });
+    // The record in flight cannot be removed. The new record has no space.
+    getLogger("orders").info("refused");
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "buffer_full", records: 1 }),
+      );
+    });
+    // Complete the request. Shutdown then does not wait for the request timeout.
+    release({ status: 204 });
+  });
+
+  it("retires startup records when the owner changes its id before startup completes", async () => {
+    const { JourneyEngine } = await import("../src/core/journey");
+    let release!: () => void;
+    vi.spyOn(JourneyEngine.prototype, "bootstrap").mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const onDrop = vi.fn();
+    configure({ ...base, onDrop });
+    const runtime = rt();
+    const adopt = (await runtime["constructBus"]())!["handlers"].onSecurityContext!;
+    getLogger("boot").info("startup record");
+    adopt("owner-A");
+    expect(runtime["bootBuffer"].length).toBe(1);
+    const session = runtime.identity.sessionId;
+    adopt("owner-B");
+    expect(runtime["bootBuffer"].length).toBe(0);
+    expect(runtime.identity.sessionId).not.toBe(session);
+    release();
+    await flush();
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "security_context", records: 1 }),
+    );
+  });
+
+  it("treats an id from the first configure after an implicit start as explicit", async () => {
+    getLogger("early").info("before configure");
+    configure({ ...base, securityContext: { id: "explicit" } });
+    await flush();
+    const bus = (await rt()["constructBus"]())!;
+    expect(bus["handlers"].onSecurityContext!("owner")).toBe(false);
+    expect((await getHealth()).issues).toContain("security.context_mismatch");
+  });
+
+  it("accepts a persistence namespace in the first configure after an implicit start", () => {
+    getLogger("early").info("before configure");
+    configure({ ...base, persistence: { namespace: "orders" } });
+    expect(rt().config.persistence.namespace).toBe("orders");
+  });
+
+  it("keeps a lock change that the app makes during a rotation", async () => {
+    const hang = vi.fn(() => new Promise<{ status: number }>(() => undefined));
+    configure({ ...base, transport: hang, securityContext: { id: "A" } });
+    getLogger("orders").info("old");
+    void flush();
+    await vi.waitFor(() => {
+      expect(hang).toHaveBeenCalled();
+    });
+    const rotating = rotateSecurityContext(
+      { id: "B", delivery: { transport: createMemoryTransport().transport } },
+      { pending: "flush", timeoutMs: 50 },
+    );
+    // Wait until the rotation reads its next settings and waits for the old flush.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    setConfigurationLocked(true);
+    await rotating;
+    expect(rt().config.lockConfiguration).toBe(true);
+  });
+
+  it("drops only a record that is larger than the byte budget", async () => {
+    const send = createMemoryTransport();
+    const onDrop = vi.fn();
+    configure({ ...base, transport: send.transport, onDrop, buffering: { maxPendingBytes: 3000 } });
+    await flush();
+    getLogger("orders").info("small");
+    getLogger("orders").info("x".repeat(5000));
+    await flush();
+    expect(send.records().map((r) => r.body)).toContain("small");
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "buffer_full", records: 1 }),
+    );
+  });
+
+  it("rejects a rotation with a context getter that throws and keeps the old sender", async () => {
+    const send = createMemoryTransport();
+    configure({ ...base, transport: send.transport, securityContext: { id: "A" } });
+    await flush();
+    const context = Object.defineProperty({}, "user", {
+      enumerable: true,
+      get(): never {
+        throw new Error("getter failed");
+      },
+    });
+    await expect(
+      rotateSecurityContext({ id: "B", delivery: { transport: send.transport }, context }),
+    ).rejects.toThrow("getter failed");
+    expect(rt().config.securityContext.id).toBe("A");
+    getLogger("orders").info("still A");
+    await flush();
+    expect(send.records().map((r) => r.body)).toContain("still A");
+  });
+
+  it("reports forwarded records that arrive during a rotation", async () => {
+    const onDrop = vi.fn();
+    configure({
+      ...base,
+      transport: createMemoryTransport().transport,
+      securityContext: { id: "A" },
+      onDrop,
+      // The sender masks forwarded action names. onDrop must report the masked name only.
+      redact: (r) => ({ ...r, body: "[masked]" }),
+    });
+    await flush();
+    const action = { ...record(), body: "SECRET_ACTION", attributes: { "log.type": "action" } };
+    const rotating = rotateSecurityContext({ id: "B", delivery: {} });
+    rt()["ingestForwarded"]([action, { malformed: true }]);
+    await rotating;
+    await flush();
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "security_context", records: 1, actions: ["[masked]"] }),
+    );
+    // A late bus message after shutdown changes nothing and reports nothing.
+    const runtime = rt();
+    await shutdown();
+    onDrop.mockClear();
+    runtime["ingestForwarded"]([record()]);
+    await Promise.resolve();
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+});
+
+describe("refused owner identity", () => {
+  it("keeps the physical owner after a refused welcome and accepts its later matching id", () => {
+    const { bus, handlers, config } = makeBus();
+    // This frame has the explicit id "A". It refuses each other owner id.
+    handlers.onSecurityContext.mockImplementation((id: string) => id === config.securityContext.id);
+    bus["role"] = "forwarder";
+    bus["upstream"] = { kind: "parent", post: vi.fn(), close: vi.fn() };
+    const settle = vi.fn();
+    bus["awaitingWelcome"] = { link: "parent", settle };
+    const source: MessageSource = { link: "parent", origin: location.origin, peer: {} };
+    bus["receive"](
+      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "Y" },
+      source,
+    );
+    expect(settle).not.toHaveBeenCalled();
+    expect(bus["ownerId"]).toBe("owner");
+    // The owner rotates to the id of this frame. The frame takes the update from that owner only.
+    bus["receive"]({ t: "security-context", from: "owner", id: "A" }, source);
+    expect(handlers.onSecurityContext).toHaveBeenLastCalledWith("A");
+    handlers.onSecurityContext.mockClear();
+    bus["receive"]({ t: "security-context", from: "other", id: "A" }, source);
+    expect(handlers.onSecurityContext).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+});
+
+describe("nested frames, carry timing and early encoding", () => {
+  it("welcomes the children of a forwarder that knows its owner and relays their records", () => {
+    const { bus } = makeBus();
+    const upstream = { kind: "direct" as const, post: vi.fn(), close: vi.fn() };
+    bus["role"] = "forwarder";
+    bus["upstream"] = upstream;
+    const child = {} as Window;
+    bus.registerFrame(child, { origin: location.origin });
+    const reply = vi.fn();
+    // Without a known owner, the forwarder does not own its children yet.
+    bus.acceptDirect({ t: "hello", from: "grandchild", tabId: "tab" }, reply, child);
+    expect(reply).not.toHaveBeenCalled();
+    bus["ownerId"] = "owner";
+    bus.acceptDirect({ t: "hello", from: "grandchild", tabId: "tab" }, reply, child);
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "welcome", to: "grandchild", routingContextId: "A" }),
+      expect.objectContaining({ link: "direct" }),
+    );
+    bus.acceptDirect(
+      { t: "records", from: "grandchild", records: [record()], routingContextId: "A" },
+      reply,
+      child,
+    );
+    expect(upstream.post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
+    bus.destroy();
+  });
+
+  it("sends no temporary id while it waits for its own owner, then sends the final id", () => {
+    const { bus } = makeBus();
+    const children = { kind: "children" as const, post: vi.fn(), close: vi.fn() };
+    bus["links"].push(children);
+    bus["awaitingWelcome"] = { link: "parent", settle: vi.fn() };
+    const child = {} as Window;
+    bus.registerFrame(child, { origin: location.origin });
+    const reply = vi.fn();
+    bus.acceptDirect({ t: "hello", from: "child", tabId: "tab" }, reply, child);
+    expect(reply.mock.calls[0][0]).toMatchObject({ t: "welcome", routingContextId: undefined });
+    bus.acceptDirect(
+      { t: "records", from: "child", records: [record()], routingContextId: "child" },
+      reply,
+      child,
+    );
+    expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["welcome"]);
+    // The role is final. The children link gets the final id, and a direct child gets it at its
+    // next message.
+    bus["awaitingWelcome"] = null;
+    bus["announce"]();
+    expect(children.post).toHaveBeenCalledWith({ t: "security-context", from: "host", id: "A" });
+    bus.acceptDirect(
+      { t: "records", from: "child", records: [record()], routingContextId: "child" },
+      reply,
+      child,
+    );
+    expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["welcome", "security-context"]);
+    bus.destroy();
+  });
+
+  it("reports a registered frame that speaks from another origin", async () => {
+    const { envelope: wrap } = await import("../src/models/bus");
+    const { bus, config } = makeBus();
+    config.bus.sourcePolicy = "trusted-origin";
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    bus.registerFrame(frame, { origin: "https://wrong.example" });
+    dispatchEvent(
+      new MessageEvent("message", {
+        data: wrap({ t: "hello", from: "frame", tabId: "tab" }),
+        source: frame.contentWindow,
+        origin: location.origin,
+      }),
+    );
+    expect(bus["diagnostics"].snapshot()["bus.untrusted_origin"]).toBe(1);
+    bus.destroy();
+  });
+
+  it("delivers logger calls while carry stores old batches again, without duplicates", async () => {
+    const { Sender } = await import("../src/core/sender");
+    const send = createMemoryTransport();
+    send.respondWith(503);
+    configure({ ...base, transport: send.transport, securityContext: { id: "A" } });
+    await flush();
+    getLogger("carry").info("stored in A");
+    await flush();
+    const adopt = Sender.prototype.adopt;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(Sender.prototype, "adopt").mockImplementation(async function (
+      this: SenderInstance,
+      ...args
+    ) {
+      await gate;
+      return adopt.apply(this, args);
+    });
+    const carrying = rotateSecurityContext(
+      { id: "B", delivery: { transport: send.transport } },
+      { pending: "carry" },
+    );
+    await vi.waitFor(() => {
+      expect(Sender.prototype.adopt).toHaveBeenCalled();
+    });
+    getLogger("carry").info("during carry");
+    await expect(rotateSecurityContext({ id: "C", delivery: {} })).rejects.toThrow(
+      "already running",
+    );
+    release();
+    await carrying;
+    // The same batch id replaced the old copy. The new destination starts with no attempts.
+    const stored = await rt()["memoryStorage"]!.take(10);
+    expect(stored.map((b) => [b.routingContextId, b.attempts])).toEqual([["B", 0]]);
+    expect(rt().diagnostics.snapshot()["record.dropped_during_rotation"]).toBeUndefined();
+    send.respondWith(204);
+    await flush();
+    await rt()["sender"]!["retry"]["drain"]();
+    expect(send.records().map((r) => r.body)).toEqual(
+      expect.arrayContaining(["during carry", "stored in A"]),
+    );
+  });
+
+  it("drops only an unencodable record when the byte budget is off", async () => {
+    const send = createMemoryTransport();
+    const onDrop = vi.fn();
+    configure({
+      ...base,
+      transport: send.transport,
+      onDrop,
+      buffering: { maxPendingBytes: 0 },
+    });
+    await flush();
+    const resource: Record<string, unknown> = {};
+    resource.self = resource;
+    rt()["sender"]!["pipeline"].push({ ...record(), body: "circular", resource });
+    getLogger("orders").info("kept");
+    await flush();
+    expect(send.records().map((r) => r.body)).toContain("kept");
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "unserializable", records: 1 }),
+    );
   });
 });

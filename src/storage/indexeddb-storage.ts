@@ -134,7 +134,8 @@ export class IndexedDbStorage implements StorageAdapter {
     const batches = await this.diagnostics.guardAsync(
       "storage.degraded",
       "The library could not read the stored batches.",
-      () => this.db.takeOldest(limit),
+      // getAll() takes an unsigned 32-bit count. A larger count throws. Then the read gives nothing.
+      () => this.db.takeOldest(Math.min(limit, 0xffffffff)),
     );
     return batches ?? [];
   }

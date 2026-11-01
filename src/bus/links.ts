@@ -286,6 +286,33 @@ export function createChildrenLink(
   // A child that navigates must not get the ids of its previous origin.
   const sources = new Map<MessageEventSource, string>();
 
+  /**
+   * Posts one message to one child. It removes a child that is closed or no longer permitted.
+   * @param source Child window.
+   * @param origin Last known origin of the child.
+   * @param message Message to send.
+   */
+  const send = (source: MessageEventSource, origin: string, message: BusMessage): void => {
+    if (authorize && !authorize(source, origin)) {
+      sources.delete(source);
+      return;
+    }
+    if (mayPost && !mayPost(message, source)) {
+      return;
+    }
+    const target = source as Window;
+    // Evicts closed child windows to prevent memory leaks.
+    if (target.closed) {
+      sources.delete(source);
+      return;
+    }
+    diagnostics.guard("bus.send_failed", "The postMessage call to a child frame failed.", () => {
+      // Targets the last known origin of the child. The browser drops the
+      // message if the child navigated to a different origin.
+      target.postMessage(envelope(message), origin);
+    });
+  };
+
   const onMessage = (event: MessageEvent): void => {
     const message = unwrap(event.data);
     if (!message) {
@@ -304,10 +331,21 @@ export function createChildrenLink(
     }
 
     if (authorize && !authorize(event.source, event.origin)) return;
-    if (event.source) {
-      sources.set(event.source, event.origin);
+    const { source, origin } = event;
+    if (source) {
+      sources.set(source, origin);
     }
-    receive(message, { link: "children", origin: event.origin, peer: event.source ?? undefined });
+    // Answer only the asking child. A broadcast lets one child use up the budget of each sibling.
+    receive(message, {
+      link: "children",
+      origin,
+      peer: source ?? undefined,
+      reply: source
+        ? (answer) => {
+            send(source, origin, answer);
+          }
+        : undefined,
+    });
   };
   addEventListener("message", onMessage);
 
@@ -315,26 +353,7 @@ export function createChildrenLink(
     kind: "children",
     post(message) {
       for (const [source, origin] of sources) {
-        if (authorize && !authorize(source, origin)) {
-          sources.delete(source);
-          continue;
-        }
-        if (mayPost && !mayPost(message, source)) continue;
-        const target = source as Window;
-        // Evicts closed child windows to prevent memory leaks.
-        if (target.closed) {
-          sources.delete(source);
-          continue;
-        }
-        diagnostics.guard(
-          "bus.send_failed",
-          "The postMessage call to a child frame failed.",
-          () => {
-            // Targets the last known origin of the child. The browser drops the
-            // message if the child navigated to a different origin.
-            target.postMessage(envelope(message), origin);
-          },
-        );
+        send(source, origin, message);
       }
     },
     close() {

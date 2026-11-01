@@ -63,27 +63,23 @@ async function importAll(
 
   for (const key of keysWithPrefix(prefix, diagnostics)) {
     // Read and remove the key in one synchronous step, before the async save. A second window
-    // that imports at the same time cannot take the same batch.
-    const raw = diagnostics.guard(
+    // that imports at the same time cannot take the same batch. Parse each entry one time.
+    // A batch of another context stays in the queue.
+    const batch = diagnostics.guard(
       "storage.unavailable",
       "The library could not read the emergency queue.",
-      () => {
+      (): LogBatch | null => {
         const value = localStorage.getItem(key);
-        if (value) {
-          const batch = readBatch(value, diagnostics);
-          if (batch && !accepts(batch)) return null;
+        const parsed = value ? readBatch(value, diagnostics) : null;
+        if (parsed && !accepts(parsed)) {
+          return null;
         }
         localStorage.removeItem(key);
-        return value;
+        return parsed;
       },
     );
 
-    if (!raw) {
-      continue;
-    }
-
-    const batch = readBatch(raw, diagnostics);
-    if (batch === null) {
+    if (!batch) {
       continue;
     }
 

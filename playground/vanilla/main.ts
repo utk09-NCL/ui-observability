@@ -6,10 +6,12 @@
 import {
   configure,
   endJourney,
+  flush,
   getDiagnosticCounters,
   getJourneyToken,
   getLogger,
   getQueueDepth,
+  registerFrame,
   startJourney,
   startTrace,
 } from "../../src/index";
@@ -71,9 +73,8 @@ const on = (id: string, fn: () => void): void => {
 };
 
 // Storage, transport, retry, the pipeline, the bus, the exit flush and every
-// capture module are built by this one call. The runtime registers itself for
-// same-origin children synchronously, before it starts anything asynchronous,
-// so a child frame that boots first still finds a direct link to it.
+// capture module are built by this one call. The child frames load later, after
+// their registration. See the registration block below.
 configure({
   endpoint: INGEST_ENDPOINT,
   serviceName: "playground",
@@ -84,8 +85,6 @@ configure({
   console: "DEBUG",
   // Reads sampling rules from the X-UiObs-Sampling header of the mock server.
   sampling: { remote: true },
-  // Origins allowed to transmit records over the window bus.
-  bus: { trustedOrigins: [location.origin, "http://localhost:5174"] },
   capture: {
     errors: true,
     rejections: true,
@@ -106,6 +105,24 @@ configure({
   onDiagnostic: (event) => {
     note(event.code, event.message);
   },
+});
+
+// By default, the bus accepts records only from a registered frame. Register each frame with its
+// exact origin. The child starts journeys and reads journeys and remote sampling, so grant those.
+const frames = [...document.querySelectorAll<HTMLIFrameElement>("iframe[data-src]")];
+for (const frame of frames) {
+  registerFrame(frame, {
+    origin: new URL(frame.dataset.src ?? "", location.href).origin,
+    permissions: ["records", "journey:read", "journey:write", "sampling:read"],
+  });
+}
+
+// Load the frames after startup. Then the registrations are active. A frame that starts earlier
+// gets no owner and sends its own records.
+void flush().then(() => {
+  for (const frame of frames) {
+    frame.src = frame.dataset.src ?? "";
+  }
 });
 
 /** Namespaced logger for records this harness emits by hand. */

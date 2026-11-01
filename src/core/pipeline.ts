@@ -215,6 +215,9 @@ export class LogPipeline {
    */
   private admit(record: LogRecord): boolean {
     if (!this.policy) return true;
+    const { maxPendingRecords, maxPendingBytes, overflow } = this.policy.buffering;
+    // Encode each record, also without a byte budget. A record that JSON cannot encode is dropped
+    // here alone. If not, the transport drops its whole batch.
     let bytes: number;
     try {
       bytes = estimateBytes(JSON.stringify(record));
@@ -222,13 +225,14 @@ export class LogPipeline {
       this.onLoss("unserializable", [record]);
       return false;
     }
-    const { maxPendingRecords, maxPendingBytes, overflow } = this.policy.buffering;
     const full = (): boolean =>
       Boolean(
         (maxPendingRecords && this.held.size >= maxPendingRecords) ||
         (maxPendingBytes && this.heldBytes + bytes > maxPendingBytes),
       );
-    while (full() && overflow === "drop-oldest" && this.evict()) {
+    // A record larger than the byte budget never fits. Do not remove other records for it.
+    const fits = !maxPendingBytes || bytes <= maxPendingBytes;
+    while (fits && full() && overflow === "drop-oldest" && this.evict()) {
       /* Remove complete groups until the new record fits or no group remains. */
     }
     if (full()) {
