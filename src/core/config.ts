@@ -13,8 +13,11 @@ import {
   CONFIG_SECTIONS,
   CONSOLE_DEFAULT_LEVEL,
   CONSOLE_DEFAULT_STYLES,
+  DEAD_CLICK_MS,
   DEFAULT_CONFIG,
   LEVEL_ORDER,
+  RAGE_CLICK_COUNT,
+  RAGE_CLICK_WINDOW_MS,
   SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
@@ -106,6 +109,9 @@ const COUNT_RANGE: Range = [0, Number.MAX_SAFE_INTEGER];
 /** Range of a count that must be at least 1. */
 const POSITIVE_RANGE: Range = [1, Number.MAX_SAFE_INTEGER];
 
+/** Range of the waits of rage click and dead click detection. */
+const CLICK_WAIT_RANGE: Range = [100, 10_000];
+
 /** Keys of a policy section that have number values. */
 type NumberKeys<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
 
@@ -118,7 +124,8 @@ type PolicySection =
   | "correlation"
   | "metrics"
   | "buffering"
-  | "delivery";
+  | "delivery"
+  | "debugBuffer";
 
 /**
  * Reads one policy key that the generic checks cannot read, for example a list.
@@ -196,6 +203,7 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
     },
     choices: { priority: ["low", "auto", "high"] },
   },
+  debugBuffer: { ranges: { maxRecords: [1, 10_000], maxAgeMs: DURATION_RANGE } },
 };
 
 /** Boolean keys of the capture section. */
@@ -211,6 +219,8 @@ const CAPTURE_FLAG_KEYS = [
   "longFrames",
   "fullUrls",
   "webSocket",
+  "uncleanExit",
+  "userTiming",
 ] as const;
 
 /** Origin of a sandboxed frame without allow-same-origin. */
@@ -1137,6 +1147,14 @@ function resolveCapture(
       toPattern,
       diagnostics,
     ),
+    userTimingInclude: resolveList(
+      "capture.userTimingInclude",
+      given.userTimingInclude,
+      base.userTimingInclude,
+      PATTERN_LIST_EXPECTED,
+      toPattern,
+      diagnostics,
+    ),
     // A string target is an origin. A substring test also matches a query value or a longer host.
     propagateTraceHeaderTo: resolveList(
       "capture.propagateTraceHeaderTo",
@@ -1236,6 +1254,39 @@ function resolveInteractions(
       value.maxTextChars,
       [0, Number.MAX_SAFE_INTEGER],
       previous.maxTextChars ?? 50,
+      diagnostics,
+    ),
+    rageClicks: resolveBoolean(
+      "capture.interactions.rageClicks",
+      value.rageClicks,
+      previous.rageClicks ?? false,
+      diagnostics,
+    ),
+    rageClickCount: resolveInteger(
+      "capture.interactions.rageClickCount",
+      value.rageClickCount,
+      [2, 20],
+      previous.rageClickCount ?? RAGE_CLICK_COUNT,
+      diagnostics,
+    ),
+    rageClickWindowMs: resolveInteger(
+      "capture.interactions.rageClickWindowMs",
+      value.rageClickWindowMs,
+      CLICK_WAIT_RANGE,
+      previous.rageClickWindowMs ?? RAGE_CLICK_WINDOW_MS,
+      diagnostics,
+    ),
+    deadClicks: resolveBoolean(
+      "capture.interactions.deadClicks",
+      value.deadClicks,
+      previous.deadClicks ?? false,
+      diagnostics,
+    ),
+    deadClickMs: resolveInteger(
+      "capture.interactions.deadClickMs",
+      value.deadClickMs,
+      CLICK_WAIT_RANGE,
+      previous.deadClickMs ?? DEAD_CLICK_MS,
       diagnostics,
     ),
   };

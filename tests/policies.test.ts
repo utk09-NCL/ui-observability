@@ -212,6 +212,8 @@ describe("policy validation", () => {
     { capture: { interactions: { ignoreSelector: 1 } } },
     { capture: { interactions: { actionAttribute: 1 } } },
     { capture: { interactions: { actionAttribute: "data action" } } },
+    { capture: { interactions: { rageClicks: "yes", rageClickCount: 1, rageClickWindowMs: 50 } } },
+    { capture: { interactions: { deadClicks: 1, deadClickMs: 20_000 } } },
     { loggerCache: { maxEntries: -1 } },
     { loggerCache: { maxEntries: Infinity } },
     { bus: { sourcePolicy: "all", validation: "off", maxMessageBytes: -1, maxTrackedSources: -1 } },

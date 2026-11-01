@@ -56,6 +56,8 @@ const freshOnce = (): CaptureOnce => ({
   webVitals: false,
   navigationTiming: false,
   longFrames: false,
+  uncleanExit: false,
+  userTiming: false,
 });
 
 /**
@@ -83,6 +85,7 @@ function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
     once,
     recordMetric: vi.fn(),
     recordSpan: vi.fn(),
+    sessionId: () => "session",
   };
   events.length = 0;
 

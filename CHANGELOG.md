@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file. The format 
 - Log and span records carry `uiobs.clock_offset_ms`, the server time minus the client time. It comes from the `Date` header of the last accepted answer. The server must expose `Date` to CORS. A custom transport returns it in `TransportResponse.date`. `metadata.clockOffset: false` turns it off.
 - `diagnostics.records: true`, or a list of codes, also sends each reported diagnostic as a record in the namespace `uiobs.diagnostics`. A fault has the level `WARN`. A normal event has the level `INFO`. A diagnostic during the build of a diagnostic record gives no record.
 - `docs/delivery-guarantees.md` describes duplicates, order, each loss with its `onDrop` reason, retention, the exit flush and rotation.
+- `debugBuffer: { enabled: true }` keeps the records that `minLevel` or sampling drops. An ERROR or FATAL record of this context sends them first, with `uiobs.debug_buffer: true`. The privacy hooks run at the time of the log call. `maxRecords` (default 200) and `maxAgeMs` (default 60000) limit the buffer.
+- `capture.interactions.rageClicks` records `ui.rage_click` when one element gets 3 clicks in 1 second. `capture.interactions.deadClicks` records `ui.dead_click` when a click on a control gives no DOM change, no navigation and no scroll in 1 second. Each event has the action name only. `rageClickCount`, `rageClickWindowMs` and `deadClickMs` set the thresholds.
+- `capture.uncleanExit` finds a page of the tab that stopped without a clean close, for example after a crash. The next page logs WARN `ui.unclean_exit` with the previous session id, the last-seen time, the last visibility and `exit.discarded`. It keeps one `sessionStorage` key.
+- `capture.userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration` with `user_timing.name`. Each `performance.mark()` adds a breadcrumb. `capture.userTimingInclude` keeps only the names that match.
+- `collectDebugBundle()` returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the page URL, the breadcrumbs after the privacy hooks, the debug buffer and a config summary without headers or URL queries. The app decides where to send it.
 
 ### Changed - v0.10.0
 

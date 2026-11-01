@@ -7,6 +7,8 @@ import type { Bus } from "../bus/bus";
 import type { Receive, WorkerLike } from "../bus/links";
 import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
+  ATTR_BREADCRUMBS,
+  ATTR_PAGE_URL,
   CAPTURE_NAMESPACE,
   DIAGNOSTICS_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
@@ -35,7 +37,7 @@ import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
-import type { ObservabilityHealth } from "../models/health";
+import type { DebugBundle, ObservabilityHealth } from "../models/health";
 import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
 import { isObject } from "../utils/guards";
@@ -57,6 +59,7 @@ import { TraceEngine } from "../utils/tracing";
 import { type Breadcrumb, BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
+import { DebugBuffer } from "./debug-buffer";
 import {
   type DiagnosticCode,
   type DiagnosticEvent,
@@ -88,6 +91,10 @@ const CAPTURE_LOADERS = {
   longFrames: async (): Promise<CaptureClass> =>
     (await import("../capture/long-frames")).LongFrameCapture,
   console: async (): Promise<CaptureClass> => (await import("../capture/console")).ConsoleCapture,
+  uncleanExit: async (): Promise<CaptureClass> =>
+    (await import("../capture/unclean-exit")).UncleanExitCapture,
+  userTiming: async (): Promise<CaptureClass> =>
+    (await import("../capture/user-timing")).UserTimingCapture,
 };
 
 /** Name of one capture module. */
@@ -232,6 +239,8 @@ export class ObservabilityRuntime {
   private recordingDiagnostic = false;
   /** Logger of the records that diagnostics.records gives. */
   private readonly diagnosticLogger = new OneLogger(() => this, DIAGNOSTICS_NAMESPACE);
+  /** Records that minLevel or sampling dropped. An error of this context sends them first. */
+  private readonly debugBuffer = new DebugBuffer(() => this.config.debugBuffer);
   /** True if the app supplied a context id at startup. */
   private explicitSecurityContext: boolean;
   /** True after this forwarder takes a context id from its owner. */
@@ -353,6 +362,8 @@ export class ObservabilityRuntime {
     webVitals: false,
     navigationTiming: false,
     longFrames: false,
+    uncleanExit: false,
+    userTiming: false,
   };
 
   /** Queue buffering records created before bus role resolution. */
@@ -490,6 +501,7 @@ export class ObservabilityRuntime {
       sequence: this.sequence,
       identity: this.identity,
       platform: this.platform,
+      debug: this.debugBuffer,
     });
 
     this.meter = new Meter(
@@ -1351,6 +1363,12 @@ export class ObservabilityRuntime {
     if (consoleOn) {
       names.push("console");
     }
+    if (settings.uncleanExit) {
+      names.push("uncleanExit");
+    }
+    if (settings.userTiming) {
+      names.push("userTiming");
+    }
 
     const [classes, WebSocketCapture] = await Promise.all([
       Promise.all(names.map((name) => this.loadCapture(name))),
@@ -1379,6 +1397,7 @@ export class ObservabilityRuntime {
       recordSpan: (span) => {
         this.recordSpan(span);
       },
+      sessionId: () => this.identity.sessionId,
     };
 
     for (const CaptureModule of classes) {
@@ -1584,12 +1603,17 @@ export class ObservabilityRuntime {
 
     this.sessionTouch.touch(this.identity.sessionId);
 
-    if (!this.ready) {
-      this.bootBuffer.push(record);
-      return;
-    }
+    // An error first sends the records that minLevel or sampling dropped before it.
+    const error = record.severityText === "ERROR" || record.severityText === "FATAL";
+    const records = error ? [...this.debugBuffer.drain(), record] : [record];
 
-    this.route(record);
+    for (const one of records) {
+      if (this.ready) {
+        this.route(one);
+      } else {
+        this.bootBuffer.push(one);
+      }
+    }
   }
 
   /**
@@ -1800,6 +1824,7 @@ export class ObservabilityRuntime {
     this.journey.end();
     // A shared machine: the next user must not see the trail of the previous user.
     this.breadcrumbs.clear();
+    this.debugBuffer.clear();
 
     (this.identity as { sessionId: string }).sessionId = sessionId;
     this.sessionTouch.restart(sessionId);
@@ -1950,6 +1975,41 @@ export class ObservabilityRuntime {
     if (this.sender) {
       await this.sender.adopt(stored, this.config.securityContext.id);
     }
+  }
+
+  /**
+   * Collects the state of this runtime for a support ticket. The app decides where to send it.
+   * @param health Health snapshot from the facade, with the logger cache counts.
+   * @returns Promise that resolves to the JSON-safe bundle.
+   */
+  async debugBundle(health: ObservabilityHealth): Promise<DebugBundle> {
+    const { configSummary } = await import("./debug-bundle");
+    // Build the breadcrumbs as a record. The privacy hooks then run, as in an error record.
+    const { record } = this.builder.build(
+      {
+        level: "INFO",
+        type: "system",
+        body: "debug bundle",
+        namespace: DIAGNOSTICS_NAMESPACE,
+        payload: { [ATTR_BREADCRUMBS]: this.breadcrumbs.snapshot() },
+      },
+      true,
+    );
+    const attributes = record?.attributes ?? {};
+    const crumbs = attributes[ATTR_BREADCRUMBS];
+    const pageUrl = attributes[ATTR_PAGE_URL];
+
+    return {
+      createdAt: new Date().toISOString(),
+      sdkVersion: this.sdkVersion,
+      health,
+      diagnostics: this.diagnostics.snapshot(),
+      resource: record?.resource ?? {},
+      pageUrl: typeof pageUrl === "string" ? pageUrl : "",
+      breadcrumbs: Array.isArray(crumbs) ? crumbs : [],
+      debugBuffer: this.debugBuffer.snapshot(),
+      config: configSummary(this.config, this.limits, this.diagnostics),
+    };
   }
 
   /**

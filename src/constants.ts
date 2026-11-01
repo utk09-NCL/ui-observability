@@ -34,6 +34,12 @@ export const SESSION_ID_KEY = "ui-observability.session";
 /** `sessionStorage` key for the tab id. */
 export const TAB_ID_KEY = "ui-observability.tab";
 
+/** sessionStorage key of the marker of a page that is alive. A clean close removes it. */
+export const ALIVE_KEY = "ui-observability.alive";
+
+/** Interval of the updates of the alive marker, in milliseconds. */
+export const ALIVE_UPDATE_MS = 30_000;
+
 /** Session idle timeout, in milliseconds. */
 export const SESSION_IDLE_MS = 30 * 60 * 1000;
 
@@ -189,6 +195,9 @@ export const ATTR_ATTRIBUTES_BYTES = "uiobs.attributes_bytes";
 
 /** Server time minus client time, in milliseconds, from the Date header of an accepted answer. */
 export const ATTR_CLOCK_OFFSET_MS = "uiobs.clock_offset_ms";
+
+/** Marks a record that the debug buffer kept until an error. */
+export const ATTR_DEBUG_BUFFER = "uiobs.debug_buffer";
 
 /** Half the resolution of the HTTP Date header. It centers the error of the clock offset. */
 export const DATE_HEADER_HALF_STEP_MS = 500;
@@ -663,6 +672,19 @@ export const CLICK_TEXT_MAX_CHARS = 50;
 /** Attribute that names a click action when the app sets no other attribute. */
 export const ACTION_ATTRIBUTE_DEFAULT = "data-observability-action";
 
+/** Clicks on one element that make a rage click, by default. */
+export const RAGE_CLICK_COUNT = 3;
+
+/** Time in which the clicks of a rage click occur, in milliseconds, by default. */
+export const RAGE_CLICK_WINDOW_MS = 1000;
+
+/** Wait for a visible response to a click before it counts as a dead click, in milliseconds. */
+export const DEAD_CLICK_MS = 1000;
+
+/** Controls whose click must give a visible response. Only these get a dead click check. */
+export const DEAD_CLICK_CONTROLS =
+  'a, button, summary, input[type="button"], input[type="submit"], input[type="reset"], [role="button"], [role="link"], [role="menuitem"], [role="tab"]';
+
 /** Maximum character length retained from an aria-label attribute in generated selectors. */
 export const ARIA_LABEL_MAX_CHARS = 40;
 
@@ -1007,6 +1029,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
   },
   metadata: { pageUrl: true, userAgent: true, openfin: true, clockOffset: true },
+  debugBuffer: { enabled: false, maxRecords: 200, maxAgeMs: 60_000 },
   persistence: { namespace: "", requestPersistent: false },
   diagnostics: { throttleMs: 1000, consoleFallback: false, records: false },
   correlation: {
@@ -1091,6 +1114,9 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     ignoreUrls: [],
     propagateTraceHeaderTo: [],
     webSocket: false,
+    uncleanExit: false,
+    userTiming: false,
+    userTimingInclude: [],
     plugins: [],
   },
   console: { level: null, styles: CONSOLE_DEFAULT_STYLES },

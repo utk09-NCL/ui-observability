@@ -388,8 +388,9 @@ export class OneLogger {
     }
 
     // minLevel limits what the library sends. The console level limits what it prints.
-    // minLevel does not apply to an action or a metric.
-    if (!runtime.builder.isEnabled(level, this.namespace, type)) {
+    // minLevel does not apply to an action or a metric. The debug buffer keeps a record below it.
+    const keepsDropped = runtime.config.enabled && runtime.config.debugBuffer.enabled;
+    if (!keepsDropped && !runtime.builder.isEnabled(level, this.namespace, type)) {
       if (this.mirrors(runtime, level)) {
         this.print(runtime, level, body, payload, undefined, null);
       }

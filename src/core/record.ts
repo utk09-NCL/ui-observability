@@ -55,6 +55,7 @@ import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/saniti
 import type { Sequence } from "../utils/sequence";
 import type { TraceContext, TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
+import type { DebugBuffer } from "./debug-buffer";
 import type { Diagnostics } from "./diagnostics";
 import type { JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
@@ -88,6 +89,8 @@ export interface RecordBuilderDeps {
   platform: PlatformMetadata;
   /** Slot of the sampling rules from the ingest server. */
   remote: RemoteSlot;
+  /** Keeps the records that minLevel or sampling drops, for the next error. */
+  debug?: DebugBuffer;
 }
 
 /** Size limits for each record. The builder applies them after sanitize and after redact. */
@@ -221,6 +224,23 @@ export class RecordBuilder {
   }
 
   /**
+   * Keeps a record that minLevel or sampling dropped, when the debug buffer is on. The privacy
+   * hooks run now. An error record of this context sends the kept record later.
+   * @param input Input of the dropped record.
+   */
+  private keepForDebug(input: BuildInput): void {
+    const { config, debug } = this.deps;
+    if (!debug || !config.enabled || !config.debugBuffer.enabled) {
+      return;
+    }
+
+    const { record } = this.build(input, true);
+    if (record) {
+      debug.push(record);
+    }
+  }
+
+  /**
    * Builds a structured LogRecord from the input. It sanitizes attributes and applies size limits.
    * @param input Logger call input parameters.
    * @param forConsole True to skip delivery sampling and level checks. Privacy hooks still run.
@@ -231,6 +251,7 @@ export class RecordBuilder {
 
     if (!forConsole && !this.isEnabled(input.level, input.namespace, input.type)) {
       diagnostics.count("record.dropped_by_level");
+      this.keepForDebug(input);
       return { record: null, dropped: "level" };
     }
 
@@ -253,6 +274,7 @@ export class RecordBuilder {
     );
     if (!forConsole && !sampled) {
       diagnostics.count("record.dropped_by_sampling");
+      this.keepForDebug(input);
       return { record: null, dropped: "sampling" };
     }
 

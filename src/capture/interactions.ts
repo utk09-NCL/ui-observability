@@ -1,13 +1,19 @@
 // src/capture/interactions.ts
 //
-// Captures clicks and in-page navigations as breadcrumbs and trace boundaries.
+// Captures clicks and in-page navigations as breadcrumbs and trace boundaries. It also finds
+// rage clicks and dead clicks.
 
 import {
   ACTION_ATTRIBUTE_DEFAULT,
   ARIA_LABEL_MAX_CHARS,
   CLICK_TEXT_MAX_CHARS,
+  DEAD_CLICK_CONTROLS,
+  DEAD_CLICK_MS,
+  RAGE_CLICK_COUNT,
+  RAGE_CLICK_WINDOW_MS,
   SELECTOR_MAX_CLASSES,
 } from "../constants";
+import type { InteractionOptions } from "../models/config";
 import { patch } from "../utils/patch";
 import { recordedUrl } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
@@ -78,6 +84,12 @@ export class InteractionCapture implements Capture {
   /** Tracked URL prior to the latest navigation event. */
   private lastUrl = "";
 
+  /** Element of the current click burst, and the times of its clicks. */
+  private burst: { target: Element | null; times: number[] } = { target: null, times: [] };
+
+  /** Stops the dead click check that runs now. */
+  private stopDeadCheck: (() => void) | undefined;
+
   /**
    * @param ctx Capture context containing configuration, diagnostics, logger, breadcrumbs, and tracing.
    */
@@ -119,6 +131,9 @@ export class InteractionCapture implements Capture {
     for (const restore of this.restores.splice(0)) {
       restore();
     }
+
+    this.stopDeadCheck?.();
+    this.burst = { target: null, times: [] };
   }
 
   /** Rotates trace context and records a click breadcrumb. */
@@ -134,6 +149,7 @@ export class InteractionCapture implements Capture {
     // An absent or empty attribute gives "". The message is then "unknown-click".
     const attribute = options.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;
     const action = target.closest(`[${attribute}]`)?.getAttribute(attribute) ?? "";
+    const message = (action || "unknown-click").slice(0, this.ctx.config.limits.maxBodyChars);
     const data: Record<string, unknown> = {};
     if (options.selector) data.selector = describeElement(target);
     if (options.text)
@@ -142,10 +158,79 @@ export class InteractionCapture implements Capture {
     this.ctx.breadcrumbs.push({
       t: Date.now(),
       category: "click",
-      message: (action || "unknown-click").slice(0, this.ctx.config.limits.maxBodyChars),
+      message,
       data: Object.keys(data).length > 0 ? data : undefined,
     });
+
+    if (options.rageClicks) {
+      this.countRage(target, message, options);
+    }
+    if (options.deadClicks && target.closest(`${DEAD_CLICK_CONTROLS}, [${attribute}]`)) {
+      this.watchDead(message, options);
+    }
   };
+
+  /**
+   * Counts the clicks on one element. It records `ui.rage_click` one time in each burst.
+   * @param target Clicked element.
+   * @param action Action name of the click.
+   * @param options Interaction options.
+   */
+  private countRage(target: Element, action: string, options: InteractionOptions): void {
+    const now = Date.now();
+    const windowMs = options.rageClickWindowMs ?? RAGE_CLICK_WINDOW_MS;
+    const count = options.rageClickCount ?? RAGE_CLICK_COUNT;
+    const times =
+      this.burst.target === target ? this.burst.times.filter((t) => now - t < windowMs) : [];
+    times.push(now);
+    this.burst = { target, times };
+
+    // More clicks in the same burst give no second event.
+    if (times.length === count) {
+      this.ctx.logger.logEvent("ui.rage_click", { "click.action": action, "click.count": count });
+    }
+  }
+
+  /**
+   * Watches the page after a click on a control. With no DOM change, no navigation and no scroll
+   * in `deadClickMs`, it records `ui.dead_click`. One check runs at a time.
+   * @param action Action name of the click.
+   * @param options Interaction options.
+   */
+  private watchDead(action: string, options: InteractionOptions): void {
+    if (this.stopDeadCheck || typeof MutationObserver === "undefined") {
+      return;
+    }
+
+    const href = location.href;
+    let responded = false;
+    const respond = (): void => {
+      responded = true;
+    };
+    const observer = new MutationObserver(respond);
+    observer.observe(document, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+    addEventListener("scroll", respond, { capture: true, passive: true });
+
+    const stop = (): void => {
+      // stop reads timer, which the code declares after stop. stop runs only after that line.
+      clearTimeout(timer);
+      observer.disconnect();
+      removeEventListener("scroll", respond, true);
+      this.stopDeadCheck = undefined;
+    };
+    const timer = setTimeout(() => {
+      stop();
+      if (!responded && location.href === href && this.ctx.isActive?.() !== false) {
+        this.ctx.logger.logEvent("ui.dead_click", { "click.action": action });
+      }
+    }, options.deadClickMs ?? DEAD_CLICK_MS);
+    this.stopDeadCheck = stop;
+  }
 
   /** On a URL change, rotates the trace context. It also records a breadcrumb and an event. */
   private readonly onNavigate = (): void => {

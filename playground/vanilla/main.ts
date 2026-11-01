@@ -91,7 +91,8 @@ configure({
     resourceErrors: true,
     fetch: true,
     xhr: true,
-    interactions: true,
+    // Records ui.rage_click and ui.dead_click with the action name only.
+    interactions: { rageClicks: true, deadClicks: true },
     navigation: true,
     webVitals: true,
     // Literal specifier resolved by the bundler. The library's default loader
@@ -101,6 +102,11 @@ configure({
     longFrames: true,
     // Records console.error and console.warn. console.info gives a breadcrumb.
     console: ["error", "warn", "info"],
+    // Reports WARN ui.unclean_exit after a crash of the previous page of this tab.
+    uncleanExit: true,
+    // Records performance.measure() calls whose names start with "playground.".
+    userTiming: true,
+    userTimingInclude: [/^playground\./],
   },
   onDiagnostic: (event) => {
     note(event.code, event.message);
@@ -202,6 +208,16 @@ on("long-frame", () => {
   while (performance.now() < end) {
     // Wait.
   }
+});
+
+on("measure", () => {
+  // The user timing capture puts the measure into ui.user_timing.duration.
+  performance.mark("playground.work.start");
+  const end = performance.now() + 20;
+  while (performance.now() < end) {
+    // Wait.
+  }
+  performance.measure("playground.work", "playground.work.start");
 });
 
 on("console-error", () => {

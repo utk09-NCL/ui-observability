@@ -55,7 +55,7 @@ A `413` answer makes the library split the batch. Each half gets a new batch ID.
 
 Some records never reach delivery by design. `onDrop` does not report them. The diagnostic codes in `getDiagnosticCounters()` show these cases:
 
-- A record below `minLevel`, or outside the sample.
+- A record below `minLevel`, or outside the sample. With `debugBuffer`, the next error of the context sends the recent ones.
 - A record that a processor or `redact` drops.
 - A record above the error ceiling, `capturePolicy.errorCeiling`.
 - A capture event above its rate limit.

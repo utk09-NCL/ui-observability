@@ -300,6 +300,7 @@ See [runtime policies, operational budgets and migration](docs/runtime-policies.
 | `getStats()`                 | Returns `{ pending, inFlight, stored, lastSendAt }`. `pending` counts the records in the buffers. `inFlight` counts the records in requests. `stored` counts the batches in storage. `lastSendAt` is the epoch time in ms of the last batch that the server accepted, or null. A forwarder reports only its own buffers. |
 | `getDiagnosticCounters()`    | Returns the count of each diagnostic code.                                                                                                                                                                                                                                                                               |
 | `getHealth()`                | Returns the state of this SDK copy. It has the SDK version, the status, the delivery role and counts, the lock and cache state, the issue codes and the policies.                                                                                                                                                        |
+| `collectDebugBundle()`       | Returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary. The summary has no headers and no URL query. The privacy hooks process the breadcrumbs. Your app decides where to send it.                            |
 | `clearPersistedLogs(scope?)` | Removes the stored records of the active context. With `"namespace"`, it removes the stored records of each context in the persistence namespace.                                                                                                                                                                        |
 
 ---
@@ -361,6 +362,7 @@ No key is required. Set `endpoint` to send records. A value of the wrong type or
 | `loggerCache.maxEntries`                                                                               | `256`                                                          | LRU limit of cached loggers. `0` turns the cache off. `null` sets no limit.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `delivery`                                                                                             | See policies                                                   | Request timeout, request concurrency, retry delays, batches in one retry pass and fetch priority (`"low"` by default).                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `buffering`                                                                                            | 10,000 records, 16 MiB, `"drop-oldest"`                        | Limits of the live buffers, and the overflow rule.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `debugBuffer`                                                                                          | `{ enabled: false, maxRecords: 200, maxAgeMs: 60000 }`         | Keeps the records that `minLevel` or sampling drops. An ERROR or FATAL record of this context sends them first, with `uiobs.debug_buffer: true`.                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `metrics`                                                                                              | See policies                                                   | Limits of instrument names, attribute sets and histogram boundaries.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `correlation`                                                                                          | See policies                                                   | Session idle time, session write interval and trace age. Fixed at startup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `capturePolicy`                                                                                        | See policies                                                   | Breadcrumb capacity, error duplicate check, capture rate limits and the error ceiling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -390,7 +392,8 @@ capture: {
   xhr: false,            // XMLHttpRequest duration and status codes
   httpMetrics: true,     // http.client.request.duration histogram of fetch and xhr requests, in seconds.
                          // Attributes: http.request.method, http.response.status_code, server.address, error.type
-  interactions: false,   // Click action names. The object form sets actionAttribute, text and selector
+  interactions: false,   // Click action names. The object form sets actionAttribute, text, selector,
+                         // rageClicks and deadClicks
   navigation: false,     // Single-page navigation URL changes
   webVitals: false,      // Core Web Vitals (LCP, CLS, INP, FCP, TTFB)
   longFrames: false,     // Frames that freeze the page, as ui.long_frame.duration
@@ -401,9 +404,26 @@ capture: {
   ignoreUrls: [],        // URL patterns excluded from network capture
   propagateTraceHeaderTo: [], // Origins, or RegExp patterns, that receive traceparent
   webSocket: false,      // WebSocket open, close and error, and ui.websocket.messages
+  uncleanExit: false,    // WARN ui.unclean_exit when the previous page of the tab did not close cleanly
+  userTiming: false,     // performance.measure() as ui.user_timing.duration. A mark gives a breadcrumb
+  userTimingInclude: [], // Mark and measure names that userTiming records. Empty records each name
   plugins: [],           // Capture plugins of your app
 }
 ```
+
+`interactions: { rageClicks: true, deadClicks: true }` finds frustrated clicks. Each event has the action name only, in `click.action`.
+
+- A rage click is `rageClickCount` clicks (default 3) on one element in `rageClickWindowMs` (default 1000). It gives the event `ui.rage_click` with `click.count`. More clicks in the same burst give no second event.
+- A dead click is a click on a control that gives no DOM change, no navigation and no scroll in `deadClickMs` (default 1000). It gives the event `ui.dead_click`. A control is a button, a link, a `role="button"` element or an element with the action attribute.
+- A request alone is not a response. A page that changes its DOM all the time gives no dead click.
+
+`uncleanExit` finds a page of this tab that stopped without a clean close, for example after a crash. The top document keeps a marker in `sessionStorage`. A clean close removes it. The next page of the tab logs WARN `ui.unclean_exit`.
+
+- The attributes are `exit.session_id`, `exit.last_seen_ms`, `exit.visibility` and `exit.discarded`.
+- The marker updates every 30 seconds and at each visibility change. `exit.last_seen_ms` is correct to about 30 seconds.
+- A mobile OS can stop a hidden page with no close event. `exit.visibility: "hidden"` shows this case. `exit.discarded: true` shows a page that the browser discarded to free memory.
+
+`userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration`, in milliseconds, with the attribute `user_timing.name`. Each `performance.mark()` adds a breadcrumb. Frameworks create many marks and measures. Set `userTimingInclude`, for example `[/^app\./]`, to keep only the names of your app. `metrics.maxSeries` limits the number of names in one interval.
 
 `longFrames` records each frame at or above `longFrameThresholdMs` as the histogram `ui.long_frame.duration`. Each long frame also adds a breadcrumb. The next error record then shows the freeze before it.
 

@@ -10,7 +10,7 @@ import { ERROR_DEDUPE_MS } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
-import type { ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
+import type { CaptureOptions, ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
 import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { type SpanHooks, TraceEngine } from "../src/utils/tracing";
@@ -70,9 +70,16 @@ function ctx(
       breadcrumbs: new BreadcrumbBuffer(10),
       tracing: new TraceEngine(diagnostics, undefined, undefined, spans),
       // Fresh per context, as a new runtime gets a fresh set.
-      once: { webVitals: false, navigationTiming: false, longFrames: false },
+      once: {
+        webVitals: false,
+        navigationTiming: false,
+        longFrames: false,
+        uncleanExit: false,
+        userTiming: false,
+      },
       recordMetric,
       recordSpan,
+      sessionId: () => "session",
     },
   };
 }
@@ -1630,6 +1637,155 @@ describe("InteractionCapture", () => {
     expect(history.pushState).toBe(original);
     expect(logger.logEvent).not.toHaveBeenCalled();
     expect(c.breadcrumbs.snapshot()).toHaveLength(0);
+    capture.uninstall();
+  });
+});
+
+describe("InteractionCapture rage and dead clicks", () => {
+  /** Clicks an element with an event that bubbles. */
+  const click = (element: Element): void => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  };
+
+  /**
+   * Installs the capture on a page with two controls and one plain element.
+   * @param interactions Interaction options. They skip the config checks.
+   * @returns The capture, its context, the spy logger and the elements.
+   */
+  const page = (interactions: CaptureOptions["interactions"]) => {
+    vi.useFakeTimers();
+    const { ctx: c, logger } = ctx();
+    c.config.capture.interactions = interactions;
+    const capture = new InteractionCapture(c);
+    capture.install();
+    document.body.innerHTML = `
+      <button data-observability-action="buy">Buy</button>
+      <span role="button" data-observability-action="sell">Sell</span>
+      <div id="plain">Text</div>`;
+    const [buy, sell, plain] = ["button", "span", "#plain"].map((one) =>
+      document.querySelector(one)!,
+    );
+    return { capture, c, logger, buy, sell, plain };
+  };
+
+  /** Gives the payloads of each event with the name. */
+  const events = (logger: SpyLogger, name: string) =>
+    logger.logEvent.mock.calls.filter(([event]) => event === name).map(([, payload]) => payload);
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fills the default thresholds in the config checks", () => {
+    const { ctx: c } = ctx({ interactions: { rageClicks: true } });
+
+    expect(c.config.capture.interactions).toMatchObject({
+      rageClicks: true,
+      rageClickCount: 3,
+      rageClickWindowMs: 1000,
+      deadClicks: false,
+      deadClickMs: 1000,
+    });
+  });
+
+  it("records one rage click for each burst of clicks on one element", () => {
+    const { capture, logger, buy, sell } = page({ rageClicks: true });
+
+    click(buy);
+    click(buy);
+    click(sell);
+    click(buy);
+    click(buy);
+    // The click on another element started a new count.
+    expect(events(logger, "ui.rage_click")).toEqual([]);
+
+    click(buy);
+    click(buy);
+    expect(events(logger, "ui.rage_click")).toEqual([{ "click.action": "buy", "click.count": 3 }]);
+
+    // Clicks after the window start a new burst.
+    vi.advanceTimersByTime(1000);
+    click(buy);
+    click(buy);
+    expect(events(logger, "ui.rage_click")).toHaveLength(1);
+    capture.uninstall();
+  });
+
+  it("uses the configured rage click count and window", () => {
+    const { capture, logger, buy } = page({
+      rageClicks: true,
+      rageClickCount: 2,
+      rageClickWindowMs: 200,
+    });
+
+    click(buy);
+    vi.advanceTimersByTime(200);
+    click(buy);
+    expect(events(logger, "ui.rage_click")).toEqual([]);
+
+    click(buy);
+    expect(events(logger, "ui.rage_click")).toEqual([{ "click.action": "buy", "click.count": 2 }]);
+    capture.uninstall();
+  });
+
+  it("records a dead click on a control that gives no response", async () => {
+    const { capture, logger, buy, plain } = page({ deadClicks: true });
+
+    click(plain);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(events(logger, "ui.dead_click")).toEqual([]);
+
+    click(buy);
+    // A second click while the check runs starts no second check.
+    click(buy);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(events(logger, "ui.dead_click")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    capture.uninstall();
+  });
+
+  it("records no dead click after a DOM change, a scroll or a navigation", async () => {
+    const { capture, logger, buy, sell } = page({ deadClicks: true, deadClickMs: 500 });
+    const original = location.href;
+
+    buy.addEventListener("click", () => {
+      document.body.append(document.createElement("p"));
+    });
+    click(buy);
+    await vi.advanceTimersByTimeAsync(500);
+
+    click(sell);
+    sell.dispatchEvent(new Event("scroll"));
+    await vi.advanceTimersByTimeAsync(500);
+
+    click(sell);
+    history.replaceState(null, "", "/moved");
+    await vi.advanceTimersByTimeAsync(500);
+    history.replaceState(null, "", original);
+
+    expect(events(logger, "ui.dead_click")).toEqual([]);
+    capture.uninstall();
+  });
+
+  it("records no dead click after uninstall, while inactive or without MutationObserver", async () => {
+    const { capture, c, logger, buy } = page({ deadClicks: true });
+
+    click(buy);
+    capture.uninstall();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    capture.install();
+    click(buy);
+    c.isActive = () => false;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    c.isActive = undefined;
+    vi.stubGlobal("MutationObserver", undefined);
+    click(buy);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(events(logger, "ui.dead_click")).toEqual([]);
     capture.uninstall();
   });
 });

@@ -44,6 +44,13 @@
     <button type="button" id="console-error" data-observability-action="console-error">
       console.error from app code
     </button>
+    <button type="button" id="measure" data-observability-action="measure">
+      performance.measure
+    </button>
+    <!-- No handler. One click gives ui.dead_click. Three fast clicks give ui.rage_click. -->
+    <button type="button" id="dead" data-observability-action="dead">
+      a button that does nothing
+    </button>
 
     <h2>Durability</h2>
     <button type="button" id="burst" data-observability-action="burst">250 logs in a burst</button>

@@ -12,6 +12,8 @@ By default, the SDK limits captured content, isolates delivery identities and li
 | `capture.interactions.ignoreSelector`  | `[data-observability-ignore]` | Custom CSS selector, or `null` to include every region                                                                             |
 | `capture.interactions.actionAttribute` | `data-observability-action`   | Another attribute name, for example `data-testid`. Use letters, digits, hyphens and underscores                                    |
 | `capture.interactions.maxTextChars`    | `50`                          | Any nonnegative safe integer. `0` captures no text characters                                                                      |
+| `capture.interactions.rageClicks`      | `false`                       | `true` records `ui.rage_click` with the action name only. `rageClickCount` (3) and `rageClickWindowMs` (1000) set the burst        |
+| `capture.interactions.deadClicks`      | `false`                       | `true` records `ui.dead_click` with the action name only. `deadClickMs` (1000) sets the wait for a response                        |
 | `redact`, `processors`                 | Unset / empty                 | Application functions that rewrite or drop records                                                                                 |
 | `securityContext.id`                   | Generated for this runtime    | Supply an opaque stable ID to replay its queues after reload                                                                       |
 | `securityContext.isolation`            | `true`                        | `false` permits cross-context replay and ordinary routing reconfiguration                                                          |
@@ -261,6 +263,22 @@ Metric cardinality has a limit for each collection interval. The SDK adds extra 
 The diagnostics fallback is off by default. When it is on, it prints a fixed message. It never prints the exception, its message or its stack. The SDK still counts the failure under `handler.threw`. An application that needs the exception details can catch errors in its own diagnostic handler.
 
 `diagnostics.records: true` also sends each reported diagnostic as a record. A list of codes, for example `["transport.http_error", "storage.quota_exceeded"]`, sends only those codes. The records have the namespace `uiobs.diagnostics` and the type `system`. A fault has the level `WARN`. A normal event, for example `bus.role_resolved`, has the level `INFO`. The `throttleMs` interval of each code applies. A diagnostic that occurs while the SDK builds a diagnostic record gives no record. The record never contains the caught exception.
+
+### Debug buffer
+
+`debugBuffer.enabled: true` keeps the records that `minLevel` or sampling drops. When this context sends an ERROR or FATAL record, it first sends the kept records. Each kept record has `uiobs.debug_buffer: true`. Then the buffer is empty.
+
+The SDK builds each kept record at the time of the log call. The record has the time, trace and context of that call. The processors and `redact` run at once. A record that they drop is not kept. Each logger call below `minLevel` then costs a full record build. `debugBuffer.maxRecords` limits the memory, and `debugBuffer.maxAgeMs` drops old records at the time of the error. A new session and a rotation empty the buffer. Each frame and worker keeps its own buffer.
+
+### Debug bundle
+
+`collectDebugBundle()` collects the state of the library for a support ticket. It returns a JSON-safe object. The SDK does not send it. Your app decides where to send it.
+
+- It has the SDK version, the health, the diagnostic counters, the resource attributes and the page URL.
+- It has the breadcrumbs. The processors and `redact` process them, as in an error record.
+- It has the records of the debug buffer. The privacy hooks processed them at the time of the log call.
+- It has a summary of the config. The summary has no `headers`. Each URL has no user info, query or fragment. A function shows only its name.
+- It does not have the values of `setContext()` or `contextProvider`.
 
 ### Persistence and deletion
 

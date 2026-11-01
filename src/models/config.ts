@@ -380,6 +380,33 @@ export interface InteractionOptions {
    * @default "data-observability-action"
    */
   actionAttribute?: string;
+  /**
+   * Record the event `ui.rage_click` when one element gets `rageClickCount` clicks in
+   * `rageClickWindowMs`. The event has the action name only.
+   * @default false
+   */
+  rageClicks?: boolean;
+  /**
+   * Clicks that make a rage click. The range is 2 to 20.
+   * @default 3
+   */
+  rageClickCount?: number;
+  /**
+   * Time in which the clicks of a rage click occur, in milliseconds. The range is 100 to 10000.
+   * @default 1000
+   */
+  rageClickWindowMs?: number;
+  /**
+   * Record the event `ui.dead_click` when a click on a control gives no DOM change, no navigation
+   * and no scroll in `deadClickMs`. The event has the action name only.
+   * @default false
+   */
+  deadClicks?: boolean;
+  /**
+   * Wait for a visible response to a click, in milliseconds. The range is 100 to 10000.
+   * @default 1000
+   */
+  deadClickMs?: number;
 }
 
 /** Cache settings. A logger that the app holds stays valid after removal from the cache. */
@@ -540,6 +567,24 @@ export interface CaptureOptions {
    * @default false
    */
   webSocket: boolean;
+  /**
+   * Report a page of this tab that stopped without a clean close, for example after a crash.
+   * The next page of the tab logs WARN `ui.unclean_exit`. It writes one sessionStorage key.
+   * @default false
+   */
+  uncleanExit: boolean;
+  /**
+   * Record each `performance.measure()` of the app in the histogram `ui.user_timing.duration`,
+   * in milliseconds, with `user_timing.name`. Each `performance.mark()` adds a breadcrumb.
+   * @default false
+   */
+  userTiming: boolean;
+  /**
+   * Names of the marks and measures that userTiming records, as strings and RegExp patterns.
+   * A string matches a part of the name. An empty list records each name.
+   * @default []
+   */
+  userTimingInclude: (string | RegExp)[];
   /**
    * Capture modules from the app. A new list replaces the list in force.
    * @default []
@@ -858,6 +903,26 @@ export interface CapturePolicy {
   errorCeiling: number;
 }
 
+/** Records that minLevel or sampling drops, kept for the next error. */
+export interface DebugBufferPolicy {
+  /**
+   * Keep the records that minLevel or sampling drops. An ERROR or FATAL record of this context
+   * sends them first, with `uiobs.debug_buffer: true`.
+   * @default false
+   */
+  enabled: boolean;
+  /**
+   * Maximum kept records. The oldest record leaves first. The range is 1 to 10000.
+   * @default 200
+   */
+  maxRecords: number;
+  /**
+   * Maximum age of a kept record when the error occurs, in milliseconds. Set 0 for no age limit.
+   * @default 60000
+   */
+  maxAgeMs: number;
+}
+
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
   /** Capture capacity and rate limits. */
@@ -876,6 +941,8 @@ export interface ObservabilityConfig {
   buffering?: Partial<BufferingPolicy>;
   /** Request timing and delivery capacity. */
   delivery?: Partial<DeliveryPolicy>;
+  /** Records that minLevel or sampling drops, kept for the next error. */
+  debugBuffer?: Partial<DebugBufferPolicy>;
   /**
    * Refuse changes through configure(). Call setConfigurationLocked(false) to permit changes again.
    * @default false
@@ -1101,6 +1168,8 @@ export interface ResolvedConfig {
   buffering: BufferingPolicy;
   /** Request timing and delivery capacity. */
   delivery: DeliveryPolicy;
+  /** Records that minLevel or sampling drops, kept for the next error. */
+  debugBuffer: DebugBufferPolicy;
   /** True if configure() must refuse changes to the active settings. */
   lockConfiguration: boolean;
   /** Capacity of the logger cache. */

@@ -49,9 +49,16 @@ function setup(value: unknown = true) {
     logger,
     breadcrumbs,
     tracing: new TraceEngine(diagnostics),
-    once: { webVitals: false, navigationTiming: false, longFrames: false },
+    once: {
+      webVitals: false,
+      navigationTiming: false,
+      longFrames: false,
+      uncleanExit: false,
+      userTiming: false,
+    },
     recordMetric: vi.fn(),
     recordSpan: vi.fn(),
+    sessionId: () => "session",
   };
   ctx.config.capture.console = value as CaptureOptions["console"];
 

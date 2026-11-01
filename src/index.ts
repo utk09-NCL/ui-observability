@@ -10,7 +10,7 @@ import { makeCounter, makeHistogram } from "./core/meter";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
 import type { SecurityContextUpdate, SecurityContextRotationOptions } from "./models/config";
-import type { ObservabilityHealth } from "./models/health";
+import type { DebugBundle, ObservabilityHealth } from "./models/health";
 import type { FrameOptions, SourceOptions } from "./models/bus";
 export type { FrameOptions, SourceOptions, BusPermission } from "./models/bus";
 import type { MetricType } from "./models/log-record";
@@ -44,7 +44,7 @@ export type {
   TransportRequest,
   TransportResponse,
 } from "./models/config";
-export type { ObservabilityHealth } from "./models/health";
+export type { DebugBundle, ObservabilityHealth } from "./models/health";
 export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { DropSummary, LossReason } from "./models/drop";
@@ -136,6 +136,18 @@ export async function getHealth(): Promise<ObservabilityHealth> {
     ...(await runtime.health()),
     loggerCache: { ...runtime.config.loggerCache, size: loggers.size },
   };
+}
+
+/**
+ * Collects the state of the library for a support ticket. The bundle has the health, the
+ * diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary.
+ * The summary has no headers and no endpoint query. The privacy hooks process the breadcrumbs.
+ * The app decides where to send the bundle.
+ * @returns Promise that resolves to a JSON-safe bundle.
+ */
+export async function collectDebugBundle(): Promise<DebugBundle> {
+  const health = await getHealth();
+  return requireRuntime().debugBundle(health);
 }
 
 /**

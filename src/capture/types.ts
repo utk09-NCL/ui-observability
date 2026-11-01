@@ -74,6 +74,10 @@ export interface CaptureOnce {
   navigationTiming: boolean;
   /** True after the first long frame install. Only that install reads buffered frames. */
   longFrames: boolean;
+  /** True after the library reads the alive marker of the previous page. */
+  uncleanExit: boolean;
+  /** True after the first user timing install. Only that install reads buffered entries. */
+  userTiming: boolean;
 }
 
 /** Shared runtime dependencies provided to auto-capture instances. */
@@ -96,6 +100,8 @@ export interface CaptureContext {
   recordMetric: (def: InstrumentDef, value: number, attributes?: MetricAttributes) => void;
   /** Records a span. The runtime drops it when spans are off. */
   recordSpan: (span: SpanData) => void;
+  /** Gives the session id in force. */
+  sessionId: () => string;
 }
 
 /** Lifecycle interface for browser instrumentation modules. */
