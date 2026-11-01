@@ -431,7 +431,7 @@ describe("bus source policies", () => {
         }),
       );
     const records: BusMessage = {
-      t: "records",
+      t: "ui-observability.message.records",
       from: "child",
       records: [record()],
       routingContextId: "A",
@@ -453,7 +453,7 @@ describe("bus source policies", () => {
     const detach = bus.registerFrame(peer, { origin: location.origin });
     const source: MessageSource = { link: "direct", origin: "same-origin", peer };
     const records: BusMessage = {
-      t: "records",
+      t: "ui-observability.message.records",
       from: "child",
       records: [record()],
       routingContextId: "A",
@@ -488,7 +488,7 @@ describe("bus source policies", () => {
       },
     });
     deliver(
-      { t: "records", from: "child", records: [{} as LogRecord] },
+      { t: "ui-observability.message.records", from: "child", records: [{} as LogRecord] },
       { link: "children", origin: location.origin },
     );
     expect(onRecords).toHaveBeenCalledTimes(1);

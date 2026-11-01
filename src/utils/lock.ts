@@ -56,3 +56,14 @@ export function withDrainLock<T>(
       ),
   );
 }
+
+/**
+ * Gives the lock name of one application namespace. Two namespaces on one origin then do not wait for each other.
+ * Without it, the retry pass of one application skips while the other holds the lock.
+ * @param name Base lock name.
+ * @param namespace Application storage namespace. An empty value keeps the base name.
+ * @returns Lock name for this namespace.
+ */
+export function lockName(name: string, namespace: string): string {
+  return namespace ? `${name}:${encodeURIComponent(namespace)}` : name;
+}

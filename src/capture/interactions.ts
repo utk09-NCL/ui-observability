@@ -2,7 +2,12 @@
 //
 // Captures clicks and in-page navigations as breadcrumbs and trace boundaries.
 
-import { ARIA_LABEL_MAX_CHARS, CLICK_TEXT_MAX_CHARS, SELECTOR_MAX_CLASSES } from "../constants";
+import {
+  ACTION_ATTRIBUTE_DEFAULT,
+  ARIA_LABEL_MAX_CHARS,
+  CLICK_TEXT_MAX_CHARS,
+  SELECTOR_MAX_CLASSES,
+} from "../constants";
 import { patch } from "../utils/patch";
 import { recordedUrl } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
@@ -127,9 +132,8 @@ export class InteractionCapture implements Capture {
       options.ignoreSelector === undefined ? "[data-observability-ignore]" : options.ignoreSelector;
     if (ignore && target.closest(ignore)) return;
     // An absent or empty attribute gives "". The message is then "unknown-click".
-    const action =
-      target.closest("[data-observability-action]")?.getAttribute("data-observability-action") ??
-      "";
+    const attribute = options.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;
+    const action = target.closest(`[${attribute}]`)?.getAttribute(attribute) ?? "";
     const data: Record<string, unknown> = {};
     if (options.selector) data.selector = describeElement(target);
     if (options.text)

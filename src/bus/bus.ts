@@ -6,6 +6,7 @@ import {
   BUS_CHANNEL_NAME,
   BUS_HANDSHAKE_TIMEOUT_MS,
   BUS_MAX_HANDSHAKE_ATTEMPTS,
+  BUS_TYPE,
   REMOTE_SAMPLING_POLL_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -89,9 +90,9 @@ export class Bus {
   private mayPost(message: BusMessage, peer: object): boolean {
     const permissions = this.sources.get(peer)?.permissions;
     if (!permissions) return this.config.bus.sourcePolicy === "trusted-origin";
-    if (message.t === "journey") return permissions.includes("journey:read");
-    if (message.t === "journey?") return permissions.includes("journey:write");
-    if (message.t === "sampling") return permissions.includes("sampling:read");
+    if (message.t === BUS_TYPE.journey) return permissions.includes("journey:read");
+    if (message.t === BUS_TYPE.journeyRequest) return permissions.includes("journey:write");
+    if (message.t === BUS_TYPE.sampling) return permissions.includes("sampling:read");
     return true;
   }
 
@@ -152,7 +153,7 @@ export class Bus {
    */
   private passContext(openFin: boolean): void {
     const message: BusMessage = {
-      t: "security-context",
+      t: BUS_TYPE.securityContext,
       from: this.contextId,
       id: this.config.securityContext.id,
     };
@@ -313,7 +314,7 @@ export class Bus {
     const size = (value: unknown): number =>
       maxMessageBytes ? encoder.encode(JSON.stringify(value)).length : 0;
     const message = (chunk: LogRecord[]): BusMessage => ({
-      t: "records",
+      t: BUS_TYPE.records,
       from: this.contextId,
       records: chunk,
       routingContextId: this.config.securityContext.id || undefined,
@@ -371,18 +372,18 @@ export class Bus {
 
     // A direct link has no channel from the parent to the child. The parent answers here. The
     // forwarder rule in routeMessage() refuses a sampling question on a direct link.
-    if (message.t === "sampling?") {
+    if (message.t === BUS_TYPE.samplingRequest) {
       reply(this.rulesAnswer(message.from), plain);
       return;
     }
     // A context that waits for its own owner has no final id. It sends no id.
     if (
-      message.t === "records" &&
+      message.t === BUS_TYPE.records &&
       !this.awaitingWelcome &&
       message.routingContextId !== this.config.securityContext.id
     ) {
       reply(
-        { t: "security-context", from: this.contextId, id: this.config.securityContext.id },
+        { t: BUS_TYPE.securityContext, from: this.contextId, id: this.config.securityContext.id },
         plain,
       );
     }
@@ -417,7 +418,7 @@ export class Bus {
    * @param journey Active journey or null if ended.
    */
   broadcastJourney(journey: Journey | null): void {
-    this.postJourney({ t: "journey", from: this.contextId, journey });
+    this.postJourney({ t: BUS_TYPE.journey, from: this.contextId, journey });
   }
 
   /** Closes all open links and clears internal state. */
@@ -557,7 +558,7 @@ export class Bus {
       return false;
     }
     if (
-      message.t === "records" &&
+      message.t === BUS_TYPE.records &&
       bus.maxRecordsPerMessage &&
       message.records.length > bus.maxRecordsPerMessage
     ) {
@@ -566,13 +567,13 @@ export class Bus {
 
     if (registration) {
       const permission =
-        message.t === "records"
+        message.t === BUS_TYPE.records
           ? "records"
-          : message.t === "journey"
+          : message.t === BUS_TYPE.journey
             ? "journey:write"
-            : message.t === "journey?"
+            : message.t === BUS_TYPE.journeyRequest
               ? "journey:read"
-              : message.t === "sampling?"
+              : message.t === BUS_TYPE.samplingRequest
                 ? "sampling:read"
                 : undefined;
       if (permission && !registration.permissions?.includes(permission)) {
@@ -581,7 +582,7 @@ export class Bus {
     }
 
     // Only an upstream owner can publish these control messages.
-    if (child && (message.t === "sampling" || message.t === "security-context")) {
+    if (child && (message.t === BUS_TYPE.sampling || message.t === BUS_TYPE.securityContext)) {
       return false;
     }
 
@@ -589,7 +590,7 @@ export class Bus {
     return !(
       bus.sourcePolicy === "registered" &&
       source.link === "broadcast" &&
-      message.t === "records"
+      message.t === BUS_TYPE.records
     );
   }
 
@@ -604,12 +605,12 @@ export class Bus {
     }
 
     switch (message.t) {
-      case "hello":
+      case BUS_TYPE.hello:
         if (this.canOwn(source.link)) {
           // A context that waits for its own owner has only a temporary id. Send no id then.
           // announce() sends the final id when the role is known.
           this.answer(source, {
-            t: "welcome",
+            t: BUS_TYPE.welcome,
             from: this.contextId,
             to: message.from,
             tabId: this.tabId,
@@ -620,7 +621,7 @@ export class Bus {
         }
         break;
 
-      case "welcome":
+      case BUS_TYPE.welcome:
         if (message.to !== this.contextId) {
           break;
         }
@@ -646,7 +647,7 @@ export class Bus {
         }
         break;
 
-      case "records":
+      case BUS_TYPE.records:
         if (
           this.config.securityContext.isolation &&
           this.config.securityContext.id &&
@@ -663,7 +664,7 @@ export class Bus {
         }
         break;
 
-      case "security-context":
+      case BUS_TYPE.securityContext:
         if (
           source.link === this.upstream?.kind &&
           this.ownerId === message.from &&
@@ -673,18 +674,18 @@ export class Bus {
         }
         break;
 
-      case "journey":
+      case BUS_TYPE.journey:
         if (this.acceptsJourney(message, source)) {
           this.applyJourney(message.journey);
         }
         break;
 
-      case "journey?": {
+      case BUS_TYPE.journeyRequest: {
         const current = this.handlers.onJourneyRequest();
         // Address the answer. On a shared link, each other context ignores it.
         if (current && this.journeyLink(source.link)) {
           this.answer(source, {
-            t: "journey",
+            t: BUS_TYPE.journey,
             from: this.contextId,
             to: message.from,
             journey: current,
@@ -693,7 +694,7 @@ export class Bus {
         break;
       }
 
-      case "sampling?":
+      case BUS_TYPE.samplingRequest:
         // A forwarder answers only its own children. A sibling on its upstream link asks too.
         // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
         if (
@@ -703,13 +704,13 @@ export class Bus {
         }
         break;
 
-      case "sampling":
+      case BUS_TYPE.sampling:
         if (this.acceptsRules(message.to, source)) {
           this.applyRules(message.rules);
         }
         break;
 
-      case "tab":
+      case BUS_TYPE.tab:
         // A collision applies only to two different contexts on the broadcast channel.
         // The id comparison selects one context of the pair.
         // Without it, both contexts report the conflict and rename.
@@ -896,20 +897,20 @@ export class Bus {
         finish(false);
       }, this.handshakeOptions.timeoutMs);
       unrefTimer(timer);
-      candidate.post({ t: "hello", from: this.contextId, tabId: this.tabId });
+      candidate.post({ t: BUS_TYPE.hello, from: this.contextId, tabId: this.tabId });
     });
   }
 
   /** Broadcasts tab claim and queries existing journey state. */
   private announce(): void {
     this.postOver("broadcast", {
-      t: "tab",
+      t: BUS_TYPE.tab,
       from: this.contextId,
       tabId: this.tabId,
     });
     if (this.upstream && this.ownerId === null)
-      this.upstream.post({ t: "hello", from: this.contextId, tabId: this.tabId });
-    this.postJourney({ t: "journey?", from: this.contextId });
+      this.upstream.post({ t: BUS_TYPE.hello, from: this.contextId, tabId: this.tabId });
+    this.postJourney({ t: BUS_TYPE.journeyRequest, from: this.contextId });
     this.pollRules();
     // The role is final now. A child welcomed during the handshake got no id. Send it the final id.
     this.passContext(false);
@@ -952,7 +953,7 @@ export class Bus {
    * In "tab" scope, only the owner of a forwarder is an accepted sender.
    */
   private acceptsJourney(
-    message: Extract<BusMessage, { t: "journey" }>,
+    message: Extract<BusMessage, { t: typeof BUS_TYPE.journey }>,
     source: MessageSource,
   ): boolean {
     if (!this.journeyLink(source.link)) {
@@ -1015,7 +1016,7 @@ export class Bus {
   private rulesAnswer(to: string): BusMessage {
     const rules = this.handlers.remote.sampling?.wire() ?? null;
 
-    return { t: "sampling", from: this.contextId, to, rules };
+    return { t: BUS_TYPE.sampling, from: this.contextId, to, rules };
   }
 
   /**
@@ -1080,7 +1081,7 @@ export class Bus {
     // Read the config at each poll. A later configure() can turn remote sampling on or off.
     const ask = (): void => {
       if (this.config.sampling.remote) {
-        upstream.post({ t: "sampling?", from: this.contextId });
+        upstream.post({ t: BUS_TYPE.samplingRequest, from: this.contextId });
       }
     };
 

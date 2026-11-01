@@ -15,7 +15,7 @@ import { isLogBatch, type LogBatch } from "../models/batch";
 import type { LossReporter } from "../models/drop";
 import type { StorageAdapter } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
-import { withDrainLock } from "../utils/lock";
+import { lockName, withDrainLock } from "../utils/lock";
 import { batchKey, keysWithPrefix } from "./keys";
 
 /**
@@ -166,7 +166,7 @@ export async function drainEmergencyQueue(
   namespace = "",
 ): Promise<number> {
   const moved = await withDrainLock(
-    EMERGENCY_LOCK_NAME,
+    lockName(EMERGENCY_LOCK_NAME, namespace),
     diagnostics,
     () => importAll(storage, diagnostics, accepts, emergencyPrefix(namespace)),
     { skipIfBusy: false },

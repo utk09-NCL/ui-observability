@@ -582,7 +582,24 @@ export const LOG_TYPE_SPAN: LogType = "span";
 // ----------------------------------
 
 /** Protocol identifier for bus envelopes. The bus drops an envelope with a different version. */
-export const BUS_PROTOCOL = "ui-observability/1";
+export const BUS_PROTOCOL = "ui-observability/2";
+
+/**
+ * Type tag of each bus message. Every frame must use the same values. The prefix makes a message
+ * easy to identify in a postMessage log. The envelope tag BUS_PROTOCOL still separates the bus
+ * from other traffic.
+ */
+export const BUS_TYPE = {
+  hello: "ui-observability.message.hello",
+  welcome: "ui-observability.message.welcome",
+  records: "ui-observability.message.records",
+  securityContext: "ui-observability.message.security-context",
+  journey: "ui-observability.message.journey",
+  journeyRequest: "ui-observability.message.journey-request",
+  sampling: "ui-observability.message.sampling",
+  samplingRequest: "ui-observability.message.sampling-request",
+  tab: "ui-observability.message.tab",
+} as const;
 
 /** Global window property key used to locate a same-origin runtime instance. */
 export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
@@ -633,6 +650,9 @@ export const MAX_TRACKED_ERROR_SIGNATURES = 200;
 
 /** Maximum character length retained from clicked element text in breadcrumbs. */
 export const CLICK_TEXT_MAX_CHARS = 50;
+
+/** Attribute that names a click action when the app sets no other attribute. */
+export const ACTION_ATTRIBUTE_DEFAULT = "data-observability-action";
 
 /** Maximum character length retained from an aria-label attribute in generated selectors. */
 export const ARIA_LABEL_MAX_CHARS = 40;
@@ -916,8 +936,11 @@ export const BUS_MAX_BOOT_BUFFER_ACTIONS = 2000;
 /** Max different values in each list of an onDrop summary. */
 export const DROP_SUMMARY_MAX_ITEMS = 20;
 
-/** Max characters of an untrusted message type in a diagnostic detail. The sender sets the text. */
-export const BUS_TYPE_DETAIL_MAX_CHARS = 32;
+/**
+ * Max characters of an untrusted message type in a diagnostic detail. The sender sets the text.
+ * The longest BUS_TYPE value has 41 characters. Each valid type then fits.
+ */
+export const BUS_TYPE_DETAIL_MAX_CHARS = 48;
 
 // ----------------------------------
 // Capture

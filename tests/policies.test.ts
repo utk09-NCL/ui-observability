@@ -66,19 +66,19 @@ const rt = (): ObservabilityRuntime => ObservabilityRuntime.current()!;
 
 describe("strict wire schema", () => {
   it.each([
-    { t: "hello", tabId: "tab" },
-    { t: "tab", tabId: "tab" },
-    { t: "welcome", to: "child", tabId: "tab" },
-    { t: "welcome", to: "child", tabId: "tab", routingContextId: "A" },
-    { t: "journey?" },
-    { t: "sampling?" },
-    { t: "journey", journey: null },
-    { t: "journey", to: "child", journey: {} },
-    { t: "sampling", to: "child", rules: null },
-    { t: "security-context", id: "B" },
-    { t: "records", records: [record()] },
+    { t: "ui-observability.message.hello", tabId: "tab" },
+    { t: "ui-observability.message.tab", tabId: "tab" },
+    { t: "ui-observability.message.welcome", to: "child", tabId: "tab" },
+    { t: "ui-observability.message.welcome", to: "child", tabId: "tab", routingContextId: "A" },
+    { t: "ui-observability.message.journey-request" },
+    { t: "ui-observability.message.sampling-request" },
+    { t: "ui-observability.message.journey", journey: null },
+    { t: "ui-observability.message.journey", to: "child", journey: {} },
+    { t: "ui-observability.message.sampling", to: "child", rules: null },
+    { t: "ui-observability.message.security-context", id: "B" },
+    { t: "ui-observability.message.records", records: [record()] },
     {
-      t: "records",
+      t: "ui-observability.message.records",
       records: [
         {
           ...record(),
@@ -97,22 +97,22 @@ describe("strict wire schema", () => {
     null,
     1,
     {},
-    { from: "", t: "hello" },
-    { from: 1, t: "hello" },
+    { from: "", t: "ui-observability.message.hello" },
+    { from: 1, t: "ui-observability.message.hello" },
     { from: "peer", t: 1 },
-    { t: "hello" },
+    { t: "ui-observability.message.hello" },
     { t: "unknown" },
-    { t: "welcome", to: 1, tabId: "tab" },
-    { t: "welcome", to: "child" },
-    { t: "welcome", to: "child", tabId: "tab", routingContextId: 1 },
-    { t: "journey", to: 1, journey: null },
-    { t: "journey" },
-    { t: "sampling", to: "child" },
-    { t: "sampling", to: 1, rules: {} },
-    { t: "security-context", id: "" },
-    { t: "security-context", id: 1 },
-    { t: "records", records: {} },
-    { t: "records", records: [], routingContextId: 1 },
+    { t: "ui-observability.message.welcome", to: 1, tabId: "tab" },
+    { t: "ui-observability.message.welcome", to: "child" },
+    { t: "ui-observability.message.welcome", to: "child", tabId: "tab", routingContextId: 1 },
+    { t: "ui-observability.message.journey", to: 1, journey: null },
+    { t: "ui-observability.message.journey" },
+    { t: "ui-observability.message.sampling", to: "child" },
+    { t: "ui-observability.message.sampling", to: 1, rules: {} },
+    { t: "ui-observability.message.security-context", id: "" },
+    { t: "ui-observability.message.security-context", id: 1 },
+    { t: "ui-observability.message.records", records: {} },
+    { t: "ui-observability.message.records", records: [], routingContextId: 1 },
   ])("rejects malformed protocol input %#", (message) => {
     const candidate =
       typeof message === "object" && message ? { from: "peer", ...message } : message;
@@ -136,7 +136,9 @@ describe("strict wire schema", () => {
     { severityNumber: 100 },
   ])("rejects malformed forwarded record %#", (over) => {
     const r = Object.keys(over).length ? { ...record(), ...over } : null;
-    expect(validMessage({ t: "records", from: "peer", records: [r] })).toBe(false);
+    expect(
+      validMessage({ t: "ui-observability.message.records", from: "peer", records: [r] }),
+    ).toBe(false);
   });
 });
 
@@ -207,6 +209,8 @@ describe("policy validation", () => {
     { capture: { interactions: { text: "yes", selector: 1, maxTextChars: -1 } } },
     { capture: { interactions: { ignoreSelector: "[" } } },
     { capture: { interactions: { ignoreSelector: 1 } } },
+    { capture: { interactions: { actionAttribute: 1 } } },
+    { capture: { interactions: { actionAttribute: "data action" } } },
     { loggerCache: { maxEntries: -1 } },
     { loggerCache: { maxEntries: Infinity } },
     { bus: { sourcePolicy: "all", validation: "off", maxMessageBytes: -1, maxTrackedSources: -1 } },
@@ -404,25 +408,46 @@ describe("bus capability and delivery boundaries", () => {
       permissions: ["records", "journey:read", "journey:write", "sampling:read"],
     });
     const reply = vi.fn();
-    bus.acceptDirect({ t: "hello", from: "child", tabId: "tab" }, reply, peer);
-    bus.acceptDirect({ t: "journey?", from: "child" }, reply, peer);
-    bus.acceptDirect({ t: "sampling?", from: "child" }, reply, peer);
     bus.acceptDirect(
-      { t: "records", from: "child", records: [record()], routingContextId: "old" },
+      { t: "ui-observability.message.hello", from: "child", tabId: "tab" },
+      reply,
+      peer,
+    );
+    bus.acceptDirect({ t: "ui-observability.message.journey-request", from: "child" }, reply, peer);
+    bus.acceptDirect(
+      { t: "ui-observability.message.sampling-request", from: "child" },
+      reply,
+      peer,
+    );
+    bus.acceptDirect(
+      {
+        t: "ui-observability.message.records",
+        from: "child",
+        records: [record()],
+        routingContextId: "old",
+      },
       reply,
       peer,
     );
     expect(reply.mock.calls.map(([m]) => m.t)).toEqual([
-      "welcome",
-      "journey",
-      "sampling",
-      "security-context",
+      "ui-observability.message.welcome",
+      "ui-observability.message.journey",
+      "ui-observability.message.sampling",
+      "ui-observability.message.security-context",
     ]);
     expect(handlers.onRecords).not.toHaveBeenCalled();
     // A direct child cannot publish owner control messages. Nothing answers them.
     reply.mockClear();
-    bus.acceptDirect({ t: "sampling", from: "child", to: "host", rules: {} }, reply, peer);
-    bus.acceptDirect({ t: "security-context", from: "child", id: "evil" }, reply, peer);
+    bus.acceptDirect(
+      { t: "ui-observability.message.sampling", from: "child", to: "host", rules: {} },
+      reply,
+      peer,
+    );
+    bus.acceptDirect(
+      { t: "ui-observability.message.security-context", from: "child", id: "evil" },
+      reply,
+      peer,
+    );
     expect(handlers.onSecurityContext).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
     bus.destroy();
@@ -446,7 +471,7 @@ describe("bus capability and delivery boundaries", () => {
   it("checks physical source budgets, finite fields and broadcast data-plane permission", () => {
     const { bus, config, handlers, receive } = create();
     const m: BusMessage = {
-      t: "records",
+      t: "ui-observability.message.records",
       from: "peer",
       routingContextId: "A",
       records: [record()],
@@ -740,29 +765,33 @@ describe("registered bus control traffic", () => {
     });
     const link = bus["links"].at(-1)!;
     bus.broadcastJourney(null);
-    link.post({ t: "journey?", from: "host" });
+    link.post({ t: "ui-observability.message.journey-request", from: "host" });
     bus["receive"](
-      { t: "journey?", from: "child" },
+      { t: "ui-observability.message.journey-request", from: "child" },
       { link: "worker", origin: "same-origin", peer: worker },
     );
     bus["receive"](
-      { t: "sampling?", from: "child" },
+      { t: "ui-observability.message.sampling-request", from: "child" },
       { link: "worker", origin: "same-origin", peer: worker },
     );
     bus["receive"](
-      { t: "journey", from: "child", journey: null },
+      { t: "ui-observability.message.journey", from: "child", journey: null },
       { link: "worker", origin: "same-origin", peer: worker },
     );
-    expect(worker.postMessage.mock.calls.map(([e]) => e.m.t)).toContain("sampling");
+    expect(worker.postMessage.mock.calls.map(([e]) => e.m.t)).toContain(
+      "ui-observability.message.sampling",
+    );
     expect(h.onJourneyRequest).toHaveBeenCalled();
     const n = worker.postMessage.mock.calls.length;
     detach();
-    link.post({ t: "journey", from: "host", journey: null });
+    link.post({ t: "ui-observability.message.journey", from: "host", journey: null });
     expect(worker.postMessage).toHaveBeenCalledTimes(n);
     const second = bus.attachWorker(worker, { permissions: [] });
     bus.broadcastJourney(null);
-    bus["links"].at(-1)!.post({ t: "journey?", from: "host" });
-    bus["links"].at(-1)!.post({ t: "sampling", from: "host", to: "child", rules: null });
+    bus["links"].at(-1)!.post({ t: "ui-observability.message.journey-request", from: "host" });
+    bus["links"]
+      .at(-1)!
+      .post({ t: "ui-observability.message.sampling", from: "host", to: "child", rules: null });
     bus.destroy();
     second();
     detach();
@@ -778,49 +807,84 @@ describe("registered bus control traffic", () => {
     bus["awaitingWelcome"] = { link: "parent", settle };
     h.onSecurityContext.mockReturnValueOnce(false);
     receive(
-      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "A" },
+      {
+        t: "ui-observability.message.welcome",
+        from: "owner",
+        to: "host",
+        tabId: "tab",
+        routingContextId: "A",
+      },
       source,
     );
     expect(settle).not.toHaveBeenCalled();
     receive(
-      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "A" },
+      {
+        t: "ui-observability.message.welcome",
+        from: "owner",
+        to: "host",
+        tabId: "tab",
+        routingContextId: "A",
+      },
       source,
     );
     expect(settle).toHaveBeenCalledWith(true);
-    receive({ t: "security-context", from: "owner", id: "B" }, source);
+    receive({ t: "ui-observability.message.security-context", from: "owner", id: "B" }, source);
     h.onSecurityContext.mockReturnValueOnce(false);
-    receive({ t: "security-context", from: "owner", id: "C" }, source);
+    receive({ t: "ui-observability.message.security-context", from: "owner", id: "C" }, source);
     const count = h.onSecurityContext.mock.calls.length;
-    receive({ t: "security-context", from: "owner", id: "D" }, { ...source, peer: {} });
-    receive({ t: "security-context", from: "forged", id: "D" }, source);
+    receive(
+      { t: "ui-observability.message.security-context", from: "owner", id: "D" },
+      { ...source, peer: {} },
+    );
+    receive({ t: "ui-observability.message.security-context", from: "forged", id: "D" }, source);
     expect(h.onSecurityContext).toHaveBeenCalledTimes(count);
     const child = {} as Window;
     bus.registerFrame(child, { origin: location.origin });
-    bus.acceptDirect({ t: "hello", from: "host", tabId: "tab" }, vi.fn(), child);
     bus.acceptDirect(
-      { t: "records", from: "child", records: [record()], routingContextId: "A" },
+      { t: "ui-observability.message.hello", from: "host", tabId: "tab" },
       vi.fn(),
       child,
     );
-    expect(bus["upstream"].post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
-    receive({ t: "sampling", from: "owner", to: "host", rules: null }, { ...source, peer: {} });
+    bus.acceptDirect(
+      {
+        t: "ui-observability.message.records",
+        from: "child",
+        records: [record()],
+        routingContextId: "A",
+      },
+      vi.fn(),
+      child,
+    );
+    expect(bus["upstream"].post).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+    );
+    receive(
+      { t: "ui-observability.message.sampling", from: "owner", to: "host", rules: null },
+      { ...source, peer: {} },
+    );
     // A configured forwarder uses announce(). It has no pending handshake promise.
     bus["awaitingWelcome"] = null;
     bus["ownerId"] = null;
     receive(
-      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "A" },
+      {
+        t: "ui-observability.message.welcome",
+        from: "owner",
+        to: "host",
+        tabId: "tab",
+        routingContextId: "A",
+      },
       source,
     );
-    receive({ t: "journey", from: "owner", journey: null }, source);
+    receive({ t: "ui-observability.message.journey", from: "owner", journey: null }, source);
     expect(h.onJourney).toHaveBeenCalledWith(null);
     bus.destroy();
   });
 
   it("drops unregistered direct traffic and non-finite data, and expires named-source budgets", () => {
     const { bus, config, h, receive } = create();
-    bus.acceptDirect({ t: "hello", from: "child", tabId: "tab" }, vi.fn());
+    bus.acceptDirect({ t: "ui-observability.message.hello", from: "child", tabId: "tab" }, vi.fn());
     const m: BusMessage = {
-      t: "records",
+      t: "ui-observability.message.records",
       from: "peer",
       records: [record()],
       routingContextId: "A",
@@ -851,13 +915,15 @@ describe("policy edge cases", () => {
     const post = vi.spyOn(iframe.contentWindow!, "postMessage");
     dispatchEvent(
       new MessageEvent("message", {
-        data: envelope({ t: "hello", from: "frame", tabId: "tab" }),
+        data: envelope({ t: "ui-observability.message.hello", from: "frame", tabId: "tab" }),
         source: iframe.contentWindow,
         origin: location.origin,
       }),
     );
     expect(post).toHaveBeenCalledWith(
-      expect.objectContaining({ m: expect.objectContaining({ t: "welcome" }) }),
+      expect.objectContaining({
+        m: expect.objectContaining({ t: "ui-observability.message.welcome" }),
+      }),
       location.origin,
     );
     post.mockClear();
@@ -888,8 +954,12 @@ describe("policy edge cases", () => {
     });
     const receive = vi.fn();
     const link = createOpenFinLink("topic", "app", receive, diag());
-    listener(envelope({ t: "hello", from: "peer", tabId: "tab" }), "app");
-    listener(envelope({ t: "hello", from: "peer", tabId: "tab" }), "app", "view");
+    listener(envelope({ t: "ui-observability.message.hello", from: "peer", tabId: "tab" }), "app");
+    listener(
+      envelope({ t: "ui-observability.message.hello", from: "peer", tabId: "tab" }),
+      "app",
+      "view",
+    );
     expect(receive.mock.calls[1][1].peer).toBe("app:view");
     link!.close();
   });
@@ -1084,7 +1154,11 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     bus["links"].push({ kind: "openfin", post, close: vi.fn() });
     config.securityContext.id = "B";
     bus.rotateContext();
-    expect(post).toHaveBeenCalledWith({ t: "security-context", from: "host", id: "B" });
+    expect(post).toHaveBeenCalledWith({
+      t: "ui-observability.message.security-context",
+      from: "host",
+      id: "B",
+    });
     // A view that forwards does not send on the OpenFin link.
     post.mockClear();
     bus["role"] = "forwarder";
@@ -1098,7 +1172,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     view.bus["ownerId"] = "provider";
     view.bus["ownerPeer"] = "app:provider";
     view.bus["receive"](
-      { t: "security-context", from: "provider", id: "B" },
+      { t: "ui-observability.message.security-context", from: "provider", id: "B" },
       { link: "openfin", origin: "openfin", peer: "app:provider" },
     );
     expect(view.handlers.onSecurityContext).toHaveBeenCalledWith("B");
@@ -1133,7 +1207,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     );
     const receive = vi.fn();
     const link = createChildrenLink(receive, [], diag())!;
-    const hello = wrap({ t: "hello", from: "peer", tabId: "tab" });
+    const hello = wrap({ t: "ui-observability.message.hello", from: "peer", tabId: "tab" });
     dispatchEvent(
       new MessageEvent("message", {
         data: hello,
@@ -1159,7 +1233,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     bus["upstream"] = { kind: "parent", post, close: vi.fn() };
     const two = new TextEncoder().encode(
       JSON.stringify({
-        t: "records",
+        t: "ui-observability.message.records",
         from: "host",
         records: [record(), record()],
         routingContextId: "A",
@@ -1360,11 +1434,21 @@ describe("direct link, owner adoption and answer routing", () => {
     const settle = vi.fn();
     bus["awaitingWelcome"] = { link: "parent", settle };
     bus["receive"](
-      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "T" },
+      {
+        t: "ui-observability.message.welcome",
+        from: "owner",
+        to: "host",
+        tabId: "tab",
+        routingContextId: "T",
+      },
       { link: "parent", origin: location.origin, peer: {} },
     );
     expect(settle).toHaveBeenCalledWith(true);
-    expect(post).toHaveBeenCalledWith({ t: "security-context", from: "host", id: "T" });
+    expect(post).toHaveBeenCalledWith({
+      t: "ui-observability.message.security-context",
+      from: "host",
+      id: "T",
+    });
     bus.destroy();
   });
 
@@ -1381,7 +1465,7 @@ describe("direct link, owner adoption and answer routing", () => {
     const hello = (from: string, source: Window): void => {
       dispatchEvent(
         new MessageEvent("message", {
-          data: wrap({ t: "hello", from, tabId: "tab" }),
+          data: wrap({ t: "ui-observability.message.hello", from, tabId: "tab" }),
           source,
           origin: location.origin,
         }),
@@ -1391,7 +1475,9 @@ describe("direct link, owner adoption and answer routing", () => {
     hello("a", a.contentWindow!);
     expect(postB).toHaveBeenCalledTimes(1);
     expect(postA).toHaveBeenCalledTimes(1);
-    expect(postA.mock.calls[0][0]).toMatchObject({ m: { t: "welcome", to: "a" } });
+    expect(postA.mock.calls[0][0]).toMatchObject({
+      m: { t: "ui-observability.message.welcome", to: "a" },
+    });
     bus.destroy();
   });
 
@@ -1401,7 +1487,7 @@ describe("direct link, owner adoption and answer routing", () => {
     const peer = {} as Window;
     bus.registerFrame(peer, { origin: location.origin });
     const m: BusMessage = {
-      t: "records",
+      t: "ui-observability.message.records",
       from: "peer",
       records: [record()],
       routingContextId: "A",
@@ -1654,16 +1740,28 @@ describe("refused owner identity", () => {
     bus["awaitingWelcome"] = { link: "parent", settle };
     const source: MessageSource = { link: "parent", origin: location.origin, peer: {} };
     bus["receive"](
-      { t: "welcome", from: "owner", to: "host", tabId: "tab", routingContextId: "Y" },
+      {
+        t: "ui-observability.message.welcome",
+        from: "owner",
+        to: "host",
+        tabId: "tab",
+        routingContextId: "Y",
+      },
       source,
     );
     expect(settle).not.toHaveBeenCalled();
     expect(bus["ownerId"]).toBe("owner");
     // The owner rotates to the id of this frame. The frame takes the update from that owner only.
-    bus["receive"]({ t: "security-context", from: "owner", id: "A" }, source);
+    bus["receive"](
+      { t: "ui-observability.message.security-context", from: "owner", id: "A" },
+      source,
+    );
     expect(handlers.onSecurityContext).toHaveBeenLastCalledWith("A");
     handlers.onSecurityContext.mockClear();
-    bus["receive"]({ t: "security-context", from: "other", id: "A" }, source);
+    bus["receive"](
+      { t: "ui-observability.message.security-context", from: "other", id: "A" },
+      source,
+    );
     expect(handlers.onSecurityContext).not.toHaveBeenCalled();
     bus.destroy();
   });
@@ -1679,20 +1777,39 @@ describe("nested frames, carry timing and early encoding", () => {
     bus.registerFrame(child, { origin: location.origin });
     const reply = vi.fn();
     // Without a known owner, the forwarder does not own its children yet.
-    bus.acceptDirect({ t: "hello", from: "grandchild", tabId: "tab" }, reply, child);
-    expect(reply).not.toHaveBeenCalled();
-    bus["ownerId"] = "owner";
-    bus.acceptDirect({ t: "hello", from: "grandchild", tabId: "tab" }, reply, child);
-    expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({ t: "welcome", to: "grandchild", routingContextId: "A" }),
-      expect.objectContaining({ link: "direct" }),
-    );
     bus.acceptDirect(
-      { t: "records", from: "grandchild", records: [record()], routingContextId: "A" },
+      { t: "ui-observability.message.hello", from: "grandchild", tabId: "tab" },
       reply,
       child,
     );
-    expect(upstream.post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
+    expect(reply).not.toHaveBeenCalled();
+    bus["ownerId"] = "owner";
+    bus.acceptDirect(
+      { t: "ui-observability.message.hello", from: "grandchild", tabId: "tab" },
+      reply,
+      child,
+    );
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        t: "ui-observability.message.welcome",
+        to: "grandchild",
+        routingContextId: "A",
+      }),
+      expect.objectContaining({ link: "direct" }),
+    );
+    bus.acceptDirect(
+      {
+        t: "ui-observability.message.records",
+        from: "grandchild",
+        records: [record()],
+        routingContextId: "A",
+      },
+      reply,
+      child,
+    );
+    expect(upstream.post).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+    );
     bus.destroy();
   });
 
@@ -1704,25 +1821,49 @@ describe("nested frames, carry timing and early encoding", () => {
     const child = {} as Window;
     bus.registerFrame(child, { origin: location.origin });
     const reply = vi.fn();
-    bus.acceptDirect({ t: "hello", from: "child", tabId: "tab" }, reply, child);
-    expect(reply.mock.calls[0][0]).toMatchObject({ t: "welcome", routingContextId: undefined });
     bus.acceptDirect(
-      { t: "records", from: "child", records: [record()], routingContextId: "child" },
+      { t: "ui-observability.message.hello", from: "child", tabId: "tab" },
       reply,
       child,
     );
-    expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["welcome"]);
+    expect(reply.mock.calls[0][0]).toMatchObject({
+      t: "ui-observability.message.welcome",
+      routingContextId: undefined,
+    });
+    bus.acceptDirect(
+      {
+        t: "ui-observability.message.records",
+        from: "child",
+        records: [record()],
+        routingContextId: "child",
+      },
+      reply,
+      child,
+    );
+    expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["ui-observability.message.welcome"]);
     // The role is final. The children link gets the final id, and a direct child gets it at its
     // next message.
     bus["awaitingWelcome"] = null;
     bus["announce"]();
-    expect(children.post).toHaveBeenCalledWith({ t: "security-context", from: "host", id: "A" });
+    expect(children.post).toHaveBeenCalledWith({
+      t: "ui-observability.message.security-context",
+      from: "host",
+      id: "A",
+    });
     bus.acceptDirect(
-      { t: "records", from: "child", records: [record()], routingContextId: "child" },
+      {
+        t: "ui-observability.message.records",
+        from: "child",
+        records: [record()],
+        routingContextId: "child",
+      },
       reply,
       child,
     );
-    expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["welcome", "security-context"]);
+    expect(reply.mock.calls.map(([m]) => m.t)).toEqual([
+      "ui-observability.message.welcome",
+      "ui-observability.message.security-context",
+    ]);
     bus.destroy();
   });
 
@@ -1735,7 +1876,7 @@ describe("nested frames, carry timing and early encoding", () => {
     bus.registerFrame(frame, { origin: "https://wrong.example" });
     dispatchEvent(
       new MessageEvent("message", {
-        data: wrap({ t: "hello", from: "frame", tabId: "tab" }),
+        data: wrap({ t: "ui-observability.message.hello", from: "frame", tabId: "tab" }),
         source: frame.contentWindow,
         origin: location.origin,
       }),
@@ -1808,5 +1949,61 @@ describe("nested frames, carry timing and early encoding", () => {
     expect(onDrop).toHaveBeenCalledWith(
       expect.objectContaining({ reason: "unserializable", records: 1 }),
     );
+  });
+});
+
+describe("configurable click action attribute and namespaced locks", () => {
+  it("names a click by a configured action attribute and keeps it on an invalid change", async () => {
+    const { InteractionCapture } = await import("../src/capture/interactions");
+    configure({
+      ...base,
+      capture: {
+        errors: false,
+        rejections: false,
+        interactions: { actionAttribute: "data-testid" },
+      },
+    });
+    const runtime = rt();
+    const capture = new InteractionCapture({
+      config: runtime.config,
+      diagnostics: diag(),
+      breadcrumbs: runtime.breadcrumbs,
+      tracing: runtime.tracing,
+    } as never);
+    capture.install();
+    document.body.innerHTML =
+      '<button data-testid="submit-order" data-observability-action="other"><span>Submit</span></button>';
+    document.querySelector("span")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(runtime.breadcrumbs.snapshot().at(-1)).toMatchObject({
+      category: "click",
+      message: "submit-order",
+    });
+    configure({ capture: { interactions: { actionAttribute: "data test" } } });
+    expect(runtime.config.capture.interactions).toMatchObject({ actionAttribute: "data-testid" });
+    capture.uninstall();
+  });
+
+  it("names the retry and emergency locks by the persistence namespace", async () => {
+    const { lockName } = await import("../src/utils/lock");
+    const { RetryEngine } = await import("../src/transport/retry-engine");
+    expect(lockName("ui-observability.drain", "")).toBe("ui-observability.drain");
+    const request = vi.fn(
+      (_name: string, _options: unknown, callback: (lock: object) => Promise<unknown>) =>
+        callback({}),
+    );
+    vi.stubGlobal("navigator", { locks: { request } });
+    await drainEmergencyQueue(memory(), diag(), () => true, "orders app");
+    const retry = new RetryEngine(
+      memory(),
+      { send: vi.fn(), throttledForMs: () => 0 },
+      diag(),
+      resolveConfig({ ...base, persistence: { namespace: "orders app" } }, diag()),
+    );
+    await retry["drain"]();
+    retry.stop();
+    expect(request.mock.calls.map(([name]) => name)).toEqual([
+      "ui-observability.emergency:orders%20app",
+      "ui-observability.drain:orders%20app",
+    ]);
   });
 });

@@ -16,16 +16,17 @@ All notable changes to this project will be documented in this file. The format 
 - `buffering` sets live record and encoded-byte limits. Its overflow rule removes old records, drops new records or tries storage. A record larger than the byte limit is dropped alone. The storage rule permits only one overflow write at a time.
 - `metrics` sets limits for instrument names, attribute sets and histogram boundaries. `correlation` sets session and trace timing. Correlation settings take effect at startup.
 - `capturePolicy` sets breadcrumb capacity, error duplicate checks, capture rate limits and the pipeline error ceiling. `diagnostics` sets the report interval and the console fallback rule.
-- `persistence.namespace` separates application batch stores and emergency queues. It takes effect at startup. `clearPersistedLogs()` removes the stored records of the active context. `clearPersistedLogs("namespace")` removes the stored records of all contexts in that namespace. Pending requests can store records again after removal.
+- `persistence.namespace` separates application batch stores, emergency queues and retry lock names. It takes effect at startup. `clearPersistedLogs()` removes the stored records of the active context. `clearPersistedLogs("namespace")` removes the stored records of all contexts in that namespace. Pending requests can store records again after removal.
 - `metadata` controls page URL, user agent and OpenFin resource fields. `capture.urlTransform` replaces the default URL formatting rule. It receives the original URL. Null, an invalid result or an exception gives an empty URL. An exception reports `capture.record_failed`.
 - Custom transport requests include `signal` and `routingContextId`. A custom transport must check the signal to cancel its own work when the old context stops.
 
 ### Changed - v0.9.5
 
-- Enabled click capture records a stable `data-observability-action` value, or `"unknown-click"`, by default. It does not record text or selectors. The object form of `capture.interactions` can enable those details. Selectors are in `breadcrumb.data.selector`. `ignoreSelector: null` permits capture in all regions.
+- Enabled click capture records a stable `data-observability-action` value, or `"unknown-click"`, by default. `capture.interactions.actionAttribute` selects another attribute, for example `data-testid`. It does not record text or selectors. The object form of `capture.interactions` can enable those details. Selectors are in `breadcrumb.data.selector`. `ignoreSelector: null` permits capture in all regions.
 - Delivery is isolated by context by default. Replay after a page reload requires an explicit stable `securityContext.id`. Batches from other contexts and old batches without an id stay stored. Storage retention and capacity limits still apply to them. Set `securityContext.isolation: false` to permit cross-context replay and ordinary delivery reconfiguration.
 - With isolation enabled, changes to delivery settings or identity use `rotateSecurityContext()` instead of `configure()`. `configure()` keeps the delivery settings in force, reports `config.invalid` and applies its other settings. Delivery fields not supplied during rotation reset to their defaults. Old credentials and signal endpoints are not retained. Calls logged during rotation are dropped and counted.
 - Child-frame forwarding requires registration by default, including the same-origin direct path. Select `bus.sourcePolicy: "trusted-origin"` to permit automatic source discovery by origin. Message validation defaults to `"strict"`.
+- Bus messages use the envelope tag `ui-observability/2` and longer type names, for example `ui-observability.message.hello`. A frame on an earlier version ignores them. Load the same library version in each frame.
 - The owner sends a new delivery identity to registered frames, workers and OpenFin views. A forwarder that knows its owner welcomes its own children. It relays their records. It sends them the identity of its owner. The first identity that a forwarder takes keeps its startup records. When the owner identity later changes, a forwarder clears its buffered records, also before startup completes. `onDrop` reports them with `security_context`.
 - Live delivery buffers default to 10,000 records and 16 MiB of encoded JSON, with `"drop-oldest"` overflow. Metric instrument names default to a limit of 1,000 per collection interval. Extra instrument names are dropped and counted. Set the corresponding limit to 0 for no limit.
 - `capturePolicy.breadcrumbs: 0` disables breadcrumb storage. Before, a zero capacity kept one breadcrumb.
@@ -43,6 +44,7 @@ All notable changes to this project will be documented in this file. The format 
 - Retained memory queues survive context rotation. A slow save that completes after a discard removes its old batch. A rejected rotation no longer causes a later shutdown to reject.
 - Incoming and outgoing bus controls check source permissions. Changing a self-reported context id does not reset the physical source's rate budget.
 - The owner answers a hello, a journey question or a sampling question only to the child that asked. Before, each known child frame received each answer.
+- The cross-origin playground server sets the library version value. Before, its child frame stopped with a `ReferenceError` at load.
 - Lint rejects empty named imports and continues to permit imports that run a module for its side effects.
 
 ## [0.9.4] - 2026-10-31

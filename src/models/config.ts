@@ -368,6 +368,12 @@ export interface InteractionOptions {
    * @default 50
    */
   maxTextChars?: number;
+  /**
+   * Attribute that names the click action, for example "data-testid". The closest element with
+   * the attribute gives the breadcrumb message. Use letters, digits, hyphens and underscores.
+   * @default "data-observability-action"
+   */
+  actionAttribute?: string;
 }
 
 /** Cache settings. A logger that the app holds stays valid after removal from the cache. */

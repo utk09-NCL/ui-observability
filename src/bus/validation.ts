@@ -4,7 +4,7 @@
 
 import type { BusMessage } from "../models/bus";
 import { isLogLevel, isLogRecord } from "../models/log-record";
-import { SEVERITY_NUMBER } from "../constants";
+import { BUS_TYPE, SEVERITY_NUMBER } from "../constants";
 
 /**
  * Checks the fields required by each bus message type. unwrap() checks the envelope only.
@@ -17,25 +17,25 @@ export function validMessage(value: unknown): value is BusMessage {
   if (typeof m.from !== "string" || !m.from || typeof m.t !== "string") return false;
   const text = (key: string): boolean => typeof m[key] === "string";
   switch (m.t) {
-    case "hello":
-    case "tab":
+    case BUS_TYPE.hello:
+    case BUS_TYPE.tab:
       return text("tabId");
-    case "welcome":
+    case BUS_TYPE.welcome:
       return (
         text("to") &&
         text("tabId") &&
         (m.routingContextId === undefined || text("routingContextId"))
       );
-    case "journey?":
-    case "sampling?":
+    case BUS_TYPE.journeyRequest:
+    case BUS_TYPE.samplingRequest:
       return true;
-    case "security-context":
+    case BUS_TYPE.securityContext:
       return text("id") && m.id !== "";
-    case "journey":
+    case BUS_TYPE.journey:
       return (m.to === undefined || text("to")) && "journey" in m;
-    case "sampling":
+    case BUS_TYPE.sampling:
       return text("to") && "rules" in m;
-    case "records":
+    case BUS_TYPE.records:
       return (
         Array.isArray(m.records) &&
         (m.routingContextId === undefined || text("routingContextId")) &&

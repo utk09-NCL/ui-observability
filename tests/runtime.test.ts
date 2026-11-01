@@ -688,14 +688,14 @@ describe("runtime lifecycle", () => {
     const accept = vi.spyOn(bus(), "acceptDirect");
     const held = runtime();
 
-    held.busAccept({ t: "journey?", from: "child" }, vi.fn());
+    held.busAccept({ t: "ui-observability.message.journey-request", from: "child" }, vi.fn());
     await settle();
     expect(accept).toHaveBeenCalledTimes(1);
 
     // A message queued before shutdown must not reach the destroyed bus.
-    held.busAccept({ t: "journey?", from: "child" }, vi.fn());
+    held.busAccept({ t: "ui-observability.message.journey-request", from: "child" }, vi.fn());
     await shutdown();
-    held.busAccept({ t: "journey?", from: "child" }, vi.fn());
+    held.busAccept({ t: "ui-observability.message.journey-request", from: "child" }, vi.fn());
     await settle();
     expect(accept).toHaveBeenCalledTimes(1);
   });
@@ -739,7 +739,10 @@ describe("runtime lifecycle", () => {
     await ready();
     const applyRemote = vi.spyOn(runtime().journey, "applyRemote");
 
-    runtime().busAccept({ t: "journey", from: "child", journey: null }, vi.fn());
+    runtime().busAccept(
+      { t: "ui-observability.message.journey", from: "child", journey: null },
+      vi.fn(),
+    );
     await settle();
 
     expect(applyRemote).toHaveBeenCalledWith(null);
@@ -751,7 +754,7 @@ describe("runtime lifecycle", () => {
 
     runtime().busAccept(
       {
-        t: "records",
+        t: "ui-observability.message.records",
         from: "child",
         records: [forwardedRecord("routed through bus") as unknown as LogRecord],
       },
@@ -769,13 +772,16 @@ describe("runtime lifecycle", () => {
     const receive = (
       bus() as unknown as {
         receive: (
-          message: { t: "tab"; from: string; tabId: string },
+          message: { t: "ui-observability.message.tab"; from: string; tabId: string },
           source: { link: "broadcast"; origin: string },
         ) => void;
       }
     ).receive;
 
-    receive({ t: "tab", from: "", tabId: before }, { link: "broadcast", origin: "same-origin" });
+    receive(
+      { t: "ui-observability.message.tab", from: "", tabId: before },
+      { link: "broadcast", origin: "same-origin" },
+    );
 
     expect(runtime().identity.tabId).not.toBe(before);
   });
@@ -1349,7 +1355,7 @@ describe("bus loading", () => {
 
     runtime().busAccept(
       {
-        t: "records",
+        t: "ui-observability.message.records",
         from: "child",
         records: [forwardedRecord("from a child") as unknown as LogRecord],
       },
@@ -1401,7 +1407,7 @@ describe("bus loading", () => {
     configure(base);
     await ready();
 
-    runtime().busAccept({ t: "journey?", from: "child" }, vi.fn());
+    runtime().busAccept({ t: "ui-observability.message.journey-request", from: "child" }, vi.fn());
     await settle();
 
     expect(accept).not.toHaveBeenCalled();

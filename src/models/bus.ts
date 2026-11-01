@@ -2,7 +2,7 @@
 //
 // Protocol types, message definitions, and envelope encoding for bus messages between realms.
 
-import { BUS_PROTOCOL } from "../constants";
+import { BUS_PROTOCOL, type BUS_TYPE } from "../constants";
 import type { LogRecord } from "./log-record";
 
 /** Permissions of one child window or worker. The handshake needs no separate permission. */
@@ -57,34 +57,40 @@ export interface MessageSource {
 /** Discriminated union of control and telemetry payload messages. */
 export type BusMessage =
   /** Handshake discovery announcement from a starting forwarder. */
-  | { t: "hello"; from: string; tabId: string }
+  | { t: typeof BUS_TYPE.hello; from: string; tabId: string }
   /**
    * Handshake response from an upstream owner. The `to` field holds the address.
    * A welcome on InterApplicationBus goes to every subscriber. Without an address,
    * each waiting view accepts the welcome as its own.
    */
-  | { t: "welcome"; from: string; to: string; tabId: string; routingContextId?: string }
+  | {
+      t: typeof BUS_TYPE.welcome;
+      from: string;
+      to: string;
+      tabId: string;
+      routingContextId?: string;
+    }
   /** Telemetry log records forwarded to an upstream sender. */
-  | { t: "records"; from: string; records: LogRecord[]; routingContextId?: string }
+  | { t: typeof BUS_TYPE.records; from: string; records: LogRecord[]; routingContextId?: string }
   /** Delivery context update. Only the owner from the handshake can send it to its children. */
-  | { t: "security-context"; from: string; id: string }
+  | { t: typeof BUS_TYPE.securityContext; from: string; id: string }
   /**
    * Journey update, or the answer to a journey question. An answer holds the address of the
    * context that asked in `to`. The payload comes from another realm. The receiver parses it.
    */
-  | { t: "journey"; from: string; to?: string; journey: unknown }
+  | { t: typeof BUS_TYPE.journey; from: string; to?: string; journey: unknown }
   /** Query requesting active journey state from connected peers. */
-  | { t: "journey?"; from: string }
+  | { t: typeof BUS_TYPE.journeyRequest; from: string }
   /** Tab identifier claim broadcast to detect collisions across windows. */
-  | { t: "tab"; from: string; tabId: string }
+  | { t: typeof BUS_TYPE.tab; from: string; tabId: string }
   /** Request of a forwarder for the remote sampling rules in force. */
-  | { t: "sampling?"; from: string }
+  | { t: typeof BUS_TYPE.samplingRequest; from: string }
   /**
    * Remote sampling rules in the shape of the header, with the remaining TTL. The `to` field
    * holds the address of the forwarder that asked. The receiver validates `rules` again.
    * Null rules end the copy of the forwarder.
    */
-  | { t: "sampling"; from: string; to: string; rules: unknown };
+  | { t: typeof BUS_TYPE.sampling; from: string; to: string; rules: unknown };
 
 /** Transport envelope wrapping bus messages with a protocol version tag. */
 export interface BusEnvelope {

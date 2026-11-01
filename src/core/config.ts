@@ -8,6 +8,7 @@
 // No function in this file throws to the caller.
 
 import {
+  ACTION_ATTRIBUTE_DEFAULT,
   BEACON_LIMIT_BYTES,
   CONFIG_SECTIONS,
   CONSOLE_DEFAULT_LEVEL,
@@ -1144,7 +1145,24 @@ function resolveInteractions(
       ignoreSelector = previous.ignoreSelector;
     }
   }
+  // The name goes into a CSS attribute selector. Letters, digits, hyphens and underscores need no
+  // escape. Another name keeps the attribute in force.
+  let actionAttribute = previous.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;
+  if (value.actionAttribute !== undefined) {
+    if (typeof value.actionAttribute === "string" && /^[a-z][\w-]*$/i.test(value.actionAttribute)) {
+      actionAttribute = value.actionAttribute;
+    } else {
+      reportInvalid(
+        diagnostics,
+        "capture.interactions.actionAttribute",
+        "an attribute name of letters, digits, hyphens and underscores",
+        value.actionAttribute,
+        `"${actionAttribute}"`,
+      );
+    }
+  }
   return {
+    actionAttribute,
     text: resolveBoolean(
       "capture.interactions.text",
       value.text,

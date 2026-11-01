@@ -4,24 +4,25 @@ By default, the SDK limits captured content, isolates delivery identities and li
 
 ## Defaults and overrides
 
-| Option                                | Default                       | Override                                                                                                                           |
-| ------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `capture.interactions`                | `false`                       | `true`, or an options object, enables click breadcrumbs                                                                            |
-| `capture.interactions.text`           | `false`                       | `true` captures `textContent`                                                                                                      |
-| `capture.interactions.selector`       | `false`                       | `true` captures test IDs, IDs, ARIA labels or tag/classes                                                                          |
-| `capture.interactions.ignoreSelector` | `[data-observability-ignore]` | Custom CSS selector, or `null` to include every region                                                                             |
-| `capture.interactions.maxTextChars`   | `50`                          | Any nonnegative safe integer. `0` captures no text characters                                                                      |
-| `redact`, `processors`                | Unset / empty                 | Application functions that rewrite or drop records                                                                                 |
-| `securityContext.id`                  | Generated for this runtime    | Supply an opaque stable ID to replay its queues after reload                                                                       |
-| `securityContext.isolation`           | `true`                        | `false` permits cross-context replay and ordinary routing reconfiguration                                                          |
-| `lockConfiguration`                   | `false`                       | `true` rejects nonidentical `configure()` calls                                                                                    |
-| `loggerCache.maxEntries`              | `256`                         | Nonnegative safe integer. `0` disables caching. `null` permits unbounded caching                                                   |
-| `bus.sourcePolicy`                    | `registered`                  | `trusted-origin` restores automatic child discovery by origin                                                                      |
-| `bus.validation`                      | `strict`                      | `envelope` relaxes message/record schema checks at the bus boundary                                                                |
-| `bus.maxMessageBytes`                 | `262144`                      | Nonnegative safe integer. `0` disables the limit                                                                                   |
-| `bus.maxRecordsPerMessage`            | `100`                         | Nonnegative safe integer. `0` disables the limit                                                                                   |
-| `bus.maxMessagesPerSecond`            | `100`                         | Applies to each physical source in a fixed one-second window. `0` disables the limit                                               |
-| `bus.maxTrackedSources`               | `256`                         | Capacity for named peers, for example OpenFin identities. Inactive entries expire after one second. `0` permits unbounded tracking |
+| Option                                 | Default                       | Override                                                                                                                           |
+| -------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `capture.interactions`                 | `false`                       | `true`, or an options object, enables click breadcrumbs                                                                            |
+| `capture.interactions.text`            | `false`                       | `true` captures `textContent`                                                                                                      |
+| `capture.interactions.selector`        | `false`                       | `true` captures test IDs, IDs, ARIA labels or tag/classes                                                                          |
+| `capture.interactions.ignoreSelector`  | `[data-observability-ignore]` | Custom CSS selector, or `null` to include every region                                                                             |
+| `capture.interactions.actionAttribute` | `data-observability-action`   | Another attribute name, for example `data-testid`. Use letters, digits, hyphens and underscores                                    |
+| `capture.interactions.maxTextChars`    | `50`                          | Any nonnegative safe integer. `0` captures no text characters                                                                      |
+| `redact`, `processors`                 | Unset / empty                 | Application functions that rewrite or drop records                                                                                 |
+| `securityContext.id`                   | Generated for this runtime    | Supply an opaque stable ID to replay its queues after reload                                                                       |
+| `securityContext.isolation`            | `true`                        | `false` permits cross-context replay and ordinary routing reconfiguration                                                          |
+| `lockConfiguration`                    | `false`                       | `true` rejects nonidentical `configure()` calls                                                                                    |
+| `loggerCache.maxEntries`               | `256`                         | Nonnegative safe integer. `0` disables caching. `null` permits unbounded caching                                                   |
+| `bus.sourcePolicy`                     | `registered`                  | `trusted-origin` restores automatic child discovery by origin                                                                      |
+| `bus.validation`                       | `strict`                      | `envelope` relaxes message/record schema checks at the bus boundary                                                                |
+| `bus.maxMessageBytes`                  | `262144`                      | Nonnegative safe integer. `0` disables the limit                                                                                   |
+| `bus.maxRecordsPerMessage`             | `100`                         | Nonnegative safe integer. `0` disables the limit                                                                                   |
+| `bus.maxMessagesPerSecond`             | `100`                         | Applies to each physical source in a fixed one-second window. `0` disables the limit                                               |
+| `bus.maxTrackedSources`                | `256`                         | Capacity for named peers, for example OpenFin identities. Inactive entries expire after one second. `0` permits unbounded tracking |
 
 An invalid tuning value reports `config.invalid`. The previous valid value stays. `configure()` applies cache, capture and bus budget changes until configuration is locked. The bus role and its links are set at startup. Register a frame before its application starts. Then its discovery handshake can succeed.
 
@@ -40,7 +41,7 @@ configure({
 <div data-observability-ignore>Account information</div>
 ```
 
-A nested or SVG click uses the closest action attribute. The breadcrumb message is `submit-order`, or `unknown-click` when no action is present. The default reads no click text or descriptive DOM attributes. An ignored ancestor excludes its descendants. A click in an ignored region does not rotate the interaction trace. The SDK skips a target that is not an element. The application supplies action IDs. Use stable names, not client data.
+A nested or SVG click uses the closest action attribute. `capture.interactions.actionAttribute` selects another attribute, for example `data-testid`, if your markup already names its controls. The breadcrumb message is `submit-order`, or `unknown-click` when no action is present. The default reads no click text or descriptive DOM attributes. An ignored ancestor excludes its descendants. A click in an ignored region does not rotate the interaction trace. The SDK skips a target that is not an element. The application supplies action IDs. Use stable names, not client data.
 
 For an internal application that needs more detail on purpose:
 
@@ -258,7 +259,7 @@ The diagnostics fallback is off by default. When it is on, it prints a fixed mes
 
 ### Persistence and deletion
 
-The namespace separates IndexedDB database names, localStorage keys and emergency queues. The empty default namespace keeps the previous storage location. A namespace change does not move old data. A stable security-context ID is still necessary to resume a context after a reload. IndexedDB schema version 12 adds a compound context and time index. The upgrade also adds it to a database that has batches. With isolation on, legacy untagged entries stay parked.
+The namespace separates IndexedDB database names, localStorage keys, emergency queues and the retry lock names. Two applications on one origin then do not wait for each other. The empty default namespace keeps the previous storage location. A namespace change does not move old data. A stable security-context ID is still necessary to resume a context after a reload. IndexedDB schema version 12 adds a compound context and time index. The upgrade also adds it to a database that has batches. With isolation on, legacy untagged entries stay parked.
 
 ```ts
 await clearPersistedLogs(); // Active security context in this application's namespace.

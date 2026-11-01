@@ -131,7 +131,11 @@ const crossOriginParent = () =>
 
 describe("models/bus: envelope and unwrap", () => {
   it("wraps a message in the protocol envelope", () => {
-    const message: BusMessage = { t: "hello", from: "ctx-1", tabId: "tab-1" };
+    const message: BusMessage = {
+      t: "ui-observability.message.hello",
+      from: "ctx-1",
+      tabId: "tab-1",
+    };
     expect(envelope(message)).toEqual({ p: BUS_PROTOCOL, m: message });
   });
 
@@ -149,7 +153,7 @@ describe("models/bus: envelope and unwrap", () => {
     expect(
       unwrap({
         p: "some-other-protocol",
-        m: { t: "hello", from: "x", tabId: "t" },
+        m: { t: "ui-observability.message.hello", from: "x", tabId: "t" },
       }),
     ).toBeNull();
   });
@@ -165,7 +169,11 @@ describe("models/bus: envelope and unwrap", () => {
   });
 
   it("accepts a well-formed envelope and returns the message", () => {
-    const message: BusMessage = { t: "hello", from: "ctx-1", tabId: "tab-1" };
+    const message: BusMessage = {
+      t: "ui-observability.message.hello",
+      from: "ctx-1",
+      tabId: "tab-1",
+    };
     expect(unwrap(envelope(message))).toEqual(message);
   });
 });
@@ -212,16 +220,16 @@ describe("createDirectLink", () => {
     const link = createDirectLink(receive, diag());
     expect(link).not.toBeNull();
 
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(busAccept).toHaveBeenCalledWith(
-      expect.objectContaining({ t: "hello" }),
+      expect.objectContaining({ t: "ui-observability.message.hello" }),
       receive,
       window,
     );
 
     link?.close();
     busAccept.mockClear();
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(busAccept).not.toHaveBeenCalled();
   });
 
@@ -236,7 +244,7 @@ describe("createDirectLink", () => {
 
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const link = createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0));
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
   });
@@ -267,7 +275,11 @@ describe("createParentLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "parent-ctx", tabId: "tab-9" }),
+          data: envelope({
+            t: "ui-observability.message.hello",
+            from: "parent-ctx",
+            tabId: "tab-9",
+          }),
         }),
         { source, origin },
       ),
@@ -341,7 +353,7 @@ describe("createParentLink", () => {
     });
 
     const link = createParentLink(vi.fn<Receive>(), [PARENT], diag());
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
 
     expect(postMessage).toHaveBeenCalledWith(expect.anything(), PARENT);
     link?.close();
@@ -363,7 +375,7 @@ describe("createParentLink", () => {
 
     postFrom(fakeParent, PARENT);
     expect(receive).toHaveBeenCalledWith(
-      { t: "hello", from: "parent-ctx", tabId: "tab-9" },
+      { t: "ui-observability.message.hello", from: "parent-ctx", tabId: "tab-9" },
       { link: "parent", origin: PARENT, peer: fakeParent },
     );
 
@@ -391,7 +403,7 @@ describe("createParentLink", () => {
       expect.objectContaining({
         message:
           "The bus ignored a message from https://evil.example. If you own this origin, add it to bus.trustedOrigins.",
-        detail: { origin: "https://evil.example", type: "hello" },
+        detail: { origin: "https://evil.example", type: "ui-observability.message.hello" },
       }),
     );
     expect(handler).toHaveBeenCalledWith(
@@ -419,7 +431,7 @@ describe("createParentLink", () => {
       expect.objectContaining({
         message:
           "The bus ignored a message from https://evil.example. If you own this origin, add it to bus.trustedOrigins.",
-        detail: { origin: "https://evil.example", type: type.slice(0, 32) },
+        detail: { origin: "https://evil.example", type: type.slice(0, 48) },
       }),
     );
     link?.close();
@@ -445,16 +457,16 @@ describe("createParentLink", () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const link = createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0));
 
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(postMessage).toHaveBeenCalledWith(
-      envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
       PARENT,
     );
 
     postMessage.mockImplementationOnce(() => {
       throw new Error("blocked");
     });
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
     link?.close();
   });
@@ -492,7 +504,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: "https://evil.example",
@@ -504,7 +516,7 @@ describe("createChildrenLink", () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "bus.untrusted_origin",
-        detail: { origin: "https://evil.example", type: "hello" },
+        detail: { origin: "https://evil.example", type: "ui-observability.message.hello" },
       }),
     );
     link?.close();
@@ -517,7 +529,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "records", from: "child", records: [] }),
+          data: envelope({ t: "ui-observability.message.records", from: "child", records: [] }),
         }),
         { origin: "null" },
       ),
@@ -541,7 +553,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "records", from: "child", records: [] }),
+          data: envelope({ t: "ui-observability.message.records", from: "child", records: [] }),
         }),
         { origin: "null" },
       ),
@@ -551,7 +563,7 @@ describe("createChildrenLink", () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "bus.untrusted_origin",
-        detail: { origin: "null", type: "records" },
+        detail: { origin: "null", type: "ui-observability.message.records" },
       }),
     );
     link?.close();
@@ -564,7 +576,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "a", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "a", tabId: "t" }),
         }),
         {
           origin: window.location.origin,
@@ -574,7 +586,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "b", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "b", tabId: "t" }),
         }),
         {
           origin: "https://trusted.example",
@@ -593,7 +605,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: window.location.origin,
@@ -601,15 +613,15 @@ describe("createChildrenLink", () => {
         },
       ),
     );
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
     expect(child.postMessage).toHaveBeenCalledWith(
-      envelope({ t: "journey?", from: "ctx-1" }),
+      envelope({ t: "ui-observability.message.journey-request", from: "ctx-1" }),
       window.location.origin,
     );
 
     child.closed = true;
     child.postMessage.mockClear();
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
     expect(child.postMessage).not.toHaveBeenCalled();
 
     link?.close();
@@ -622,7 +634,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: "https://trusted.example",
@@ -630,10 +642,10 @@ describe("createChildrenLink", () => {
         },
       ),
     );
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
 
     expect(child.postMessage).toHaveBeenCalledWith(
-      envelope({ t: "journey?", from: "ctx-1" }),
+      envelope({ t: "ui-observability.message.journey-request", from: "ctx-1" }),
       "https://trusted.example",
     );
     link?.close();
@@ -646,7 +658,7 @@ describe("createChildrenLink", () => {
       dispatchEvent(
         Object.assign(
           new MessageEvent("message", {
-            data: envelope({ t: "hello", from: "child", tabId: "t" }),
+            data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
           }),
           { origin, source: child },
         ),
@@ -655,11 +667,11 @@ describe("createChildrenLink", () => {
 
     hello("https://trusted.example");
     hello(window.location.origin);
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
 
     expect(child.postMessage).toHaveBeenCalledOnce();
     expect(child.postMessage).toHaveBeenCalledWith(
-      envelope({ t: "journey?", from: "ctx-1" }),
+      envelope({ t: "ui-observability.message.journey-request", from: "ctx-1" }),
       window.location.origin,
     );
     link?.close();
@@ -672,7 +684,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: window.location.origin,
@@ -697,7 +709,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: window.location.origin,
@@ -705,7 +717,7 @@ describe("createChildrenLink", () => {
         },
       ),
     );
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
   });
@@ -716,7 +728,7 @@ describe("createChildrenLink", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "hello", from: "child", tabId: "t" }),
+          data: envelope({ t: "ui-observability.message.hello", from: "child", tabId: "t" }),
         }),
         {
           origin: window.location.origin,
@@ -726,7 +738,7 @@ describe("createChildrenLink", () => {
     );
 
     link?.close();
-    link?.post({ t: "journey?", from: "ctx-1" });
+    link?.post({ t: "ui-observability.message.journey-request", from: "ctx-1" });
 
     expect(child.postMessage).not.toHaveBeenCalled();
   });
@@ -759,10 +771,10 @@ describe("createBroadcastLink", () => {
     channel.onmessage?.({ data: { not: "ours" } } as MessageEvent);
     expect(receive).not.toHaveBeenCalled();
 
-    const message = envelope({ t: "hello", from: "peer", tabId: "t" });
+    const message = envelope({ t: "ui-observability.message.hello", from: "peer", tabId: "t" });
     channel.onmessage?.({ data: message } as MessageEvent);
     expect(receive).toHaveBeenCalledWith(
-      { t: "hello", from: "peer", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "peer", tabId: "t" },
       { link: "broadcast", origin: "same-origin" },
     );
   });
@@ -774,15 +786,15 @@ describe("createBroadcastLink", () => {
     const link = createBroadcastLink("ch", vi.fn<Receive>(), new Diagnostics(handler, 0));
     const channel = FakeBroadcastChannel.instances[0];
 
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(channel.postMessage).toHaveBeenCalledWith(
-      envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
     );
 
     channel.postMessage.mockImplementationOnce(() => {
       throw new Error("channel closed");
     });
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
 
     link?.close();
@@ -833,10 +845,10 @@ describe("createOpenFinLink", () => {
     listener({ not: "ours" });
     expect(receive).not.toHaveBeenCalled();
 
-    const message = envelope({ t: "hello", from: "peer", tabId: "t" });
+    const message = envelope({ t: "ui-observability.message.hello", from: "peer", tabId: "t" });
     listener(message);
     expect(receive).toHaveBeenCalledWith(
-      { t: "hello", from: "peer", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "peer", tabId: "t" },
       { link: "openfin", origin: "openfin" },
     );
   });
@@ -860,16 +872,16 @@ describe("createOpenFinLink", () => {
     vi.stubGlobal("fin", { InterApplicationBus: iab });
     const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), new Diagnostics(handler, 0));
 
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     await vi.waitFor(() => {
       expect(iab.publish).toHaveBeenCalledWith(
         "topic.app-1",
-        envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
+        envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
       );
     });
 
     iab.publish.mockImplementationOnce(() => Promise.reject(new Error("iab is gone")));
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     await vi.waitFor(() => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
     });
@@ -901,11 +913,11 @@ describe("createOwnerLink", () => {
 
     dispatchEvent(
       new MessageEvent("message", {
-        data: envelope({ t: "hello", from: "owner", tabId: "t" }),
+        data: envelope({ t: "ui-observability.message.hello", from: "owner", tabId: "t" }),
       }),
     );
     expect(receive).toHaveBeenCalledWith(
-      { t: "hello", from: "owner", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "owner", tabId: "t" },
       { link: "owner", origin: "same-origin" },
     );
   });
@@ -924,13 +936,15 @@ describe("createOwnerLink", () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const link = createOwnerLink(vi.fn<Receive>(), new Diagnostics(handler, 0));
 
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
-    expect(post).toHaveBeenCalledWith(envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }));
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+    expect(post).toHaveBeenCalledWith(
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
+    );
 
     post.mockImplementationOnce(() => {
       throw new Error("owner is gone");
     });
-    link?.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
 
     expect(() => link?.close()).not.toThrow();
@@ -966,11 +980,11 @@ describe("createWorkerLink", () => {
 
     listener(
       new MessageEvent("message", {
-        data: envelope({ t: "hello", from: "doc", tabId: "t" }),
+        data: envelope({ t: "ui-observability.message.hello", from: "doc", tabId: "t" }),
       }),
     );
     expect(receive).toHaveBeenCalledWith(
-      { t: "hello", from: "doc", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "doc", tabId: "t" },
       { link: "worker", origin: "same-origin", peer: w },
     );
   });
@@ -989,15 +1003,15 @@ describe("createWorkerLink", () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const link = createWorkerLink(w, vi.fn<Receive>(), new Diagnostics(handler, 0));
 
-    link.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(w.postMessage).toHaveBeenCalledWith(
-      envelope({ t: "hello", from: "ctx-1", tabId: "tab-1" }),
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
     );
 
     w.postMessage.mockImplementationOnce(() => {
       throw new Error("worker is gone");
     });
-    link.post({ t: "hello", from: "ctx-1", tabId: "tab-1" });
+    link.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
   });
 
@@ -1065,7 +1079,7 @@ describe("Bus role resolution: off, sender, forwarder", () => {
 
     deliver(
       bus,
-      { t: "records", from: "child", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "child", records: oneRecord() },
       { link: "children", origin: "https://app.example" },
     );
     expect(h.onRecords).not.toHaveBeenCalled();
@@ -1117,7 +1131,7 @@ describe("Bus role resolution: auto mode", () => {
     expect(role).toBe("forwarder");
     bus.sendRecords(oneRecord());
     expect(busAccept).toHaveBeenCalledWith(
-      expect.objectContaining({ t: "records" }),
+      expect.objectContaining({ t: "ui-observability.message.records" }),
       expect.any(Function),
       window,
     );
@@ -1145,10 +1159,10 @@ describe("Bus role resolution: auto mode", () => {
       "postMessage",
       vi.fn((data: unknown) => {
         const message = unwrap(data);
-        if (message?.t === "hello") {
+        if (message?.t === "ui-observability.message.hello") {
           deliver(
             bus,
-            { t: "welcome", from: "owner", to: "ctx-1", tabId: "t" },
+            { t: "ui-observability.message.welcome", from: "owner", to: "ctx-1", tabId: "t" },
             { link: "owner", origin: "same-origin" },
           );
         }
@@ -1195,7 +1209,7 @@ describe("Bus role resolution: auto mode", () => {
       }),
     );
     const hellos = iab.publish.mock.calls.filter(
-      ([, message]) => (message as BusEnvelope).m.t === "hello",
+      ([, message]) => (message as BusEnvelope).m.t === "ui-observability.message.hello",
     );
     expect(hellos).toHaveLength(2);
     bus.destroy();
@@ -1244,12 +1258,17 @@ describe("Bus handshake", () => {
     const { bus } = make({ timeoutMs: 1000 });
     const upstream = fakeLink("openfin");
     upstream.post.mockImplementation((message: BusMessage) => {
-      if (message.t !== "hello") {
+      if (message.t !== "ui-observability.message.hello") {
         return;
       }
       deliver(
         bus,
-        { t: "welcome", from: "provider", to: message.from, tabId: "tab-9" },
+        {
+          t: "ui-observability.message.welcome",
+          from: "provider",
+          to: message.from,
+          tabId: "tab-9",
+        },
         { link: "openfin", origin: "openfin" },
       );
     });
@@ -1268,7 +1287,12 @@ describe("Bus handshake", () => {
     upstream.post.mockImplementation(() => {
       deliver(
         bus,
-        { t: "welcome", from: "provider", to: "another-view", tabId: "tab-9" },
+        {
+          t: "ui-observability.message.welcome",
+          from: "provider",
+          to: "another-view",
+          tabId: "tab-9",
+        },
         { link: "openfin", origin: "openfin" },
       );
     });
@@ -1287,7 +1311,7 @@ describe("Bus handshake", () => {
     upstream.post.mockImplementation(() => {
       deliver(
         bus,
-        { t: "welcome", from: "provider", to: "ctx-1", tabId: "t" },
+        { t: "ui-observability.message.welcome", from: "provider", to: "ctx-1", tabId: "t" },
         { link: "openfin", origin: "openfin" },
       );
     });
@@ -1325,7 +1349,7 @@ describe("Bus receive: hello and tab", () => {
     const { bus, handlers: h } = make();
     deliver(
       bus,
-      { t: "records", from: "ctx-1", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "ctx-1", records: oneRecord() },
       { link: "broadcast", origin: "same-origin" },
     );
     expect(h.onRecords).not.toHaveBeenCalled();
@@ -1350,8 +1374,8 @@ describe("Bus receive: hello and tab", () => {
       Object.assign(
         new MessageEvent("message", {
           data: {
-            p: "ui-observability/1",
-            m: { t: "records", from: "evil", records: [{}] },
+            p: "ui-observability/2",
+            m: { t: "ui-observability.message.records", from: "evil", records: [{}] },
           },
         }),
         { origin: "https://evil.example" },
@@ -1375,17 +1399,17 @@ describe("Bus receive: hello and tab", () => {
 
     deliver(
       bus,
-      { t: "hello", from: "frame", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "frame", tabId: "t" },
       { link: "children", origin: "https://app.example" },
     );
     deliver(
       bus,
-      { t: "hello", from: "peer-tab", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "peer-tab", tabId: "t" },
       { link: "broadcast", origin: "same-origin" },
     );
 
     expect(children.post).toHaveBeenCalledWith(
-      expect.objectContaining({ t: "welcome", to: "frame" }),
+      expect.objectContaining({ t: "ui-observability.message.welcome", to: "frame" }),
     );
     // A peer tab is not ours to own. Answering it is how two tabs end up
     // forwarding to each other.
@@ -1401,7 +1425,7 @@ describe("Bus receive: hello and tab", () => {
 
     deliver(
       bus,
-      { t: "hello", from: "child", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "child", tabId: "t" },
       { link: "children", origin: "https://app.example" },
     );
     expect(link.post).not.toHaveBeenCalled();
@@ -1420,17 +1444,19 @@ describe("Bus receive: hello and tab", () => {
 
     deliver(
       notProvider.bus,
-      { t: "hello", from: "view", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "view", tabId: "t" },
       { link: "openfin", origin: "openfin" },
     );
     expect(link1.post).not.toHaveBeenCalled();
 
     deliver(
       provider.bus,
-      { t: "hello", from: "view", tabId: "t" },
+      { t: "ui-observability.message.hello", from: "view", tabId: "t" },
       { link: "openfin", origin: "openfin" },
     );
-    expect(link2.post).toHaveBeenCalledWith(expect.objectContaining({ t: "welcome", to: "view" }));
+    expect(link2.post).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.welcome", to: "view" }),
+    );
   });
 
   it("resolves a duplicated tab id deterministically, so only one side regenerates", async () => {
@@ -1445,8 +1471,16 @@ describe("Bus receive: hello and tab", () => {
     };
     // ctx-zzz sees a claim from ctx-aaa for the same tab id and yields,
     // because "ctx-zzz" > "ctx-aaa".
-    deliver(b.bus, { t: "tab", from: "ctx-aaa", tabId: "tab-1" }, fromAnotherTab);
-    deliver(a.bus, { t: "tab", from: "ctx-zzz", tabId: "tab-1" }, fromAnotherTab);
+    deliver(
+      b.bus,
+      { t: "ui-observability.message.tab", from: "ctx-aaa", tabId: "tab-1" },
+      fromAnotherTab,
+    );
+    deliver(
+      a.bus,
+      { t: "ui-observability.message.tab", from: "ctx-zzz", tabId: "tab-1" },
+      fromAnotherTab,
+    );
 
     expect(b.handlers.onTabConflict).toHaveBeenCalled();
     expect(a.handlers.onTabConflict).not.toHaveBeenCalled();
@@ -1460,7 +1494,7 @@ describe("Bus receive: hello and tab", () => {
 
     deliver(
       bus,
-      { t: "tab", from: "ctx-zzz", tabId: "tab-1" },
+      { t: "ui-observability.message.tab", from: "ctx-zzz", tabId: "tab-1" },
       { link: "children", origin: "https://app.example" },
     );
 
@@ -1472,7 +1506,7 @@ describe("Bus receive: hello and tab", () => {
     const { bus, handlers: h } = make({}, {}, "ctx-zzz");
     deliver(
       bus,
-      { t: "tab", from: "ctx-aaa", tabId: "some-other-tab" },
+      { t: "ui-observability.message.tab", from: "ctx-aaa", tabId: "some-other-tab" },
       { link: "broadcast", origin: "same-origin" },
     );
     expect(h.onTabConflict).not.toHaveBeenCalled();
@@ -1485,7 +1519,7 @@ describe("Bus receive: welcome, records and journey", () => {
     expect(() =>
       deliver(
         bus,
-        { t: "welcome", from: "peer", to: "ctx-1", tabId: "t" },
+        { t: "ui-observability.message.welcome", from: "peer", to: "ctx-1", tabId: "t" },
         { link: "broadcast", origin: "same-origin" },
       ),
     ).not.toThrow();
@@ -1496,7 +1530,7 @@ describe("Bus receive: welcome, records and journey", () => {
     const records = oneRecord();
     deliver(
       bus,
-      { t: "records", from: "child", records },
+      { t: "ui-observability.message.records", from: "child", records },
       { link: "children", origin: "https://app.example" },
     );
     expect(h.onRecords).toHaveBeenCalledWith(records);
@@ -1515,12 +1549,14 @@ describe("Bus receive: welcome, records and journey", () => {
 
     deliver(
       bus,
-      { t: "records", from: "grandchild", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "grandchild", records: oneRecord() },
       { link: "children", origin: "https://app.example" },
     );
 
     expect(h.onRecords).not.toHaveBeenCalled();
-    expect(upstream.post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
+    expect(upstream.post).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+    );
     bus.destroy();
   });
 
@@ -1530,7 +1566,7 @@ describe("Bus receive: welcome, records and journey", () => {
 
     deliver(
       bus,
-      { t: "records", from: "child", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "child", records: oneRecord() },
       { link: "children", origin: "https://app.example" },
     );
     expect(h.onRecords).not.toHaveBeenCalled();
@@ -1547,12 +1583,14 @@ describe("Bus receive: welcome, records and journey", () => {
 
     deliver(
       bus,
-      { t: "records", from: "grandchild", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "grandchild", records: oneRecord() },
       { link: "direct", origin: "same-origin" },
     );
 
     expect(h.onRecords).not.toHaveBeenCalled();
-    expect(upstream.post).toHaveBeenCalledWith(expect.objectContaining({ t: "records" }));
+    expect(upstream.post).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+    );
   });
 
   it("does not echo records back to the link they arrived from as an upstream", () => {
@@ -1564,7 +1602,7 @@ describe("Bus receive: welcome, records and journey", () => {
 
     deliver(
       bus,
-      { t: "records", from: "peer", records: oneRecord() },
+      { t: "ui-observability.message.records", from: "peer", records: oneRecord() },
       { link: "parent", origin: "same-origin" },
     );
 
@@ -1579,14 +1617,14 @@ describe("Bus receive: welcome, records and journey", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "peer", journey: j },
+      { t: "ui-observability.message.journey", from: "peer", journey: j },
       { link: "broadcast", origin: "same-origin" },
     );
     expect(h.onJourney).toHaveBeenCalledWith(expect.objectContaining({ id: j.id }));
 
     deliver(
       bus,
-      { t: "journey", from: "peer", journey: null },
+      { t: "ui-observability.message.journey", from: "peer", journey: null },
       { link: "broadcast", origin: "same-origin" },
     );
     expect(h.onJourney).toHaveBeenCalledWith(null);
@@ -1600,7 +1638,7 @@ describe("Bus receive: welcome, records and journey", () => {
     h.onJourneyRequest.mockReturnValueOnce(null);
     deliver(
       bus,
-      { t: "journey?", from: "child" },
+      { t: "ui-observability.message.journey-request", from: "child" },
       { link: "children", origin: "https://app.example" },
     );
     expect(link.post).not.toHaveBeenCalled();
@@ -1609,11 +1647,11 @@ describe("Bus receive: welcome, records and journey", () => {
     h.onJourneyRequest.mockReturnValueOnce(j);
     deliver(
       bus,
-      { t: "journey?", from: "child" },
+      { t: "ui-observability.message.journey-request", from: "child" },
       { link: "children", origin: "https://app.example" },
     );
     expect(link.post).toHaveBeenCalledWith({
-      t: "journey",
+      t: "ui-observability.message.journey",
       from: "ctx-1",
       to: "child",
       journey: j,
@@ -1871,7 +1909,7 @@ describe("Bus destroy and allLinks", () => {
     dispatchEvent(
       Object.assign(
         new MessageEvent("message", {
-          data: envelope({ t: "records", from: "child", records: [] }),
+          data: envelope({ t: "ui-observability.message.records", from: "child", records: [] }),
         }),
         {
           origin: window.location.origin,
@@ -1892,16 +1930,16 @@ describe("Bus public methods", () => {
   it("ignores its own message in acceptDirect", () => {
     const { bus } = make();
     const reply = vi.fn<Receive>();
-    bus.acceptDirect({ t: "hello", from: "ctx-1", tabId: "t" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "t" }, reply);
     expect(reply).not.toHaveBeenCalled();
   });
 
   it("answers a hello directly when it can own the channel", () => {
     const { bus } = make();
     const reply = vi.fn<Receive>();
-    bus.acceptDirect({ t: "hello", from: "child", tabId: "t" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.hello", from: "child", tabId: "t" }, reply);
     expect(reply).toHaveBeenCalledWith(
-      { t: "welcome", from: "ctx-1", to: "child", tabId: "tab-1" },
+      { t: "ui-observability.message.welcome", from: "ctx-1", to: "child", tabId: "tab-1" },
       { link: "direct", origin: "same-origin" },
     );
   });
@@ -1910,7 +1948,7 @@ describe("Bus public methods", () => {
     const { bus } = make();
     (bus as unknown as { role: string }).role = "forwarder";
     const reply = vi.fn<Receive>();
-    bus.acceptDirect({ t: "hello", from: "child", tabId: "t" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.hello", from: "child", tabId: "t" }, reply);
     expect(reply).not.toHaveBeenCalled();
   });
 
@@ -1919,14 +1957,14 @@ describe("Bus public methods", () => {
     const reply = vi.fn<Receive>();
 
     h.onJourneyRequest.mockReturnValueOnce(null);
-    bus.acceptDirect({ t: "journey?", from: "child" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.journey-request", from: "child" }, reply);
     expect(reply).not.toHaveBeenCalled();
 
     const j = fakeJourney();
     h.onJourneyRequest.mockReturnValueOnce(j);
-    bus.acceptDirect({ t: "journey?", from: "child" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.journey-request", from: "child" }, reply);
     expect(reply).toHaveBeenCalledWith(
-      { t: "journey", from: "ctx-1", to: "child", journey: j },
+      { t: "ui-observability.message.journey", from: "ctx-1", to: "child", journey: j },
       { link: "direct", origin: "same-origin" },
     );
   });
@@ -1937,7 +1975,7 @@ describe("Bus public methods", () => {
     const reply = vi.fn<Receive>();
 
     h.onJourneyRequest.mockReturnValueOnce(fakeJourney());
-    bus.acceptDirect({ t: "journey?", from: "child" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.journey-request", from: "child" }, reply);
 
     expect(reply).not.toHaveBeenCalled();
   });
@@ -1945,7 +1983,10 @@ describe("Bus public methods", () => {
   it("falls through to the general handler for any other direct message", () => {
     const { bus, handlers: h } = make();
     const records = oneRecord();
-    bus.acceptDirect({ t: "records", from: "child", records }, vi.fn<Receive>());
+    bus.acceptDirect(
+      { t: "ui-observability.message.records", from: "child", records },
+      vi.fn<Receive>(),
+    );
     expect(h.onRecords).toHaveBeenCalledWith(records);
   });
 
@@ -1962,7 +2003,7 @@ describe("Bus public methods", () => {
     const records = oneRecord();
     listener(
       new MessageEvent("message", {
-        data: envelope({ t: "records", from: "worker-1", records }),
+        data: envelope({ t: "ui-observability.message.records", from: "worker-1", records }),
       }),
     );
 
@@ -1975,7 +2016,7 @@ describe("Bus public methods", () => {
     const children = fakeLink("children");
     (bus as unknown as { links: Link[] }).links.push(broadcast, children);
     const j = fakeJourney();
-    const message = { t: "journey", from: "ctx-1", journey: j };
+    const message = { t: "ui-observability.message.journey", from: "ctx-1", journey: j };
 
     bus.broadcastJourney(j);
     expect(children.post).toHaveBeenCalledWith(message);
@@ -2017,7 +2058,7 @@ describe("Bus journey scope", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "child", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "child", journey: fakeJourney() },
       {
         link: "children",
         origin: "https://app.example",
@@ -2025,7 +2066,7 @@ describe("Bus journey scope", () => {
     );
     deliver(
       bus,
-      { t: "journey", from: "tab-2", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "tab-2", journey: fakeJourney() },
       {
         link: "broadcast",
         origin: "same-origin",
@@ -2039,11 +2080,23 @@ describe("Bus journey scope", () => {
     const { bus, handlers: h } = forwarderOf("owner-ctx");
     const j = fakeJourney();
 
-    deliver(bus, { t: "journey", from: "sibling", journey: fakeJourney({ id: "j2" }) }, fromParent);
-    deliver(bus, { t: "journey", from: "owner-ctx", journey: j }, fromParent);
     deliver(
       bus,
-      { t: "journey", from: "owner-ctx", journey: j },
+      {
+        t: "ui-observability.message.journey",
+        from: "sibling",
+        journey: fakeJourney({ id: "j2" }),
+      },
+      fromParent,
+    );
+    deliver(
+      bus,
+      { t: "ui-observability.message.journey", from: "owner-ctx", journey: j },
+      fromParent,
+    );
+    deliver(
+      bus,
+      { t: "ui-observability.message.journey", from: "owner-ctx", journey: j },
       {
         link: "children",
         origin: "https://app.example",
@@ -2057,7 +2110,11 @@ describe("Bus journey scope", () => {
   it("tab: a forwarder with no handshake adopts each journey on its upstream link", () => {
     const { bus, handlers: h } = forwarderOf(null);
 
-    deliver(bus, { t: "journey", from: "parent-ctx", journey: fakeJourney() }, fromParent);
+    deliver(
+      bus,
+      { t: "ui-observability.message.journey", from: "parent-ctx", journey: fakeJourney() },
+      fromParent,
+    );
 
     expect(h.onJourney).toHaveBeenCalledTimes(1);
   });
@@ -2067,7 +2124,11 @@ describe("Bus journey scope", () => {
     const state = internals(bus);
     state.awaitingWelcome = { link: "parent", settle: vi.fn() };
 
-    deliver(bus, { t: "welcome", from: "owner-ctx", to: "ctx-1", tabId: "t" }, fromParent);
+    deliver(
+      bus,
+      { t: "ui-observability.message.welcome", from: "owner-ctx", to: "ctx-1", tabId: "t" },
+      fromParent,
+    );
     expect(state.ownerId).toBe("owner-ctx");
 
     bus.destroy();
@@ -2079,12 +2140,22 @@ describe("Bus journey scope", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "owner-ctx", to: "ctx-9", journey: fakeJourney() },
+      {
+        t: "ui-observability.message.journey",
+        from: "owner-ctx",
+        to: "ctx-9",
+        journey: fakeJourney(),
+      },
       fromParent,
     );
     deliver(
       bus,
-      { t: "journey", from: "owner-ctx", to: "ctx-1", journey: fakeJourney() },
+      {
+        t: "ui-observability.message.journey",
+        from: "owner-ctx",
+        to: "ctx-1",
+        journey: fakeJourney(),
+      },
       fromParent,
     );
 
@@ -2094,7 +2165,11 @@ describe("Bus journey scope", () => {
   it("drops a journey whose payload is not a journey, and reports it", () => {
     const { bus, handlers: h, diagnostics } = forwarderOf("owner-ctx");
 
-    deliver(bus, { t: "journey", from: "owner-ctx", journey: { id: 1 } }, fromParent);
+    deliver(
+      bus,
+      { t: "ui-observability.message.journey", from: "owner-ctx", journey: { id: 1 } },
+      fromParent,
+    );
 
     expect(h.onJourney).not.toHaveBeenCalled();
     expect(diagnostics.snapshot()["record.dropped_malformed"]).toBe(1);
@@ -2106,7 +2181,7 @@ describe("Bus journey scope", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "child", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "child", journey: fakeJourney() },
       {
         link: "children",
         origin: "https://app.example",
@@ -2114,7 +2189,7 @@ describe("Bus journey scope", () => {
     );
     deliver(
       bus,
-      { t: "journey", from: "tab-2", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "tab-2", journey: fakeJourney() },
       {
         link: "broadcast",
         origin: "same-origin",
@@ -2129,7 +2204,7 @@ describe("Bus journey scope", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "view-2", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "view-2", journey: fakeJourney() },
       {
         link: "openfin",
         origin: "openfin",
@@ -2145,7 +2220,7 @@ describe("Bus journey scope", () => {
 
     deliver(
       bus,
-      { t: "journey", from: "view-a", journey: fakeJourney() },
+      { t: "ui-observability.message.journey", from: "view-a", journey: fakeJourney() },
       { link: "broadcast", origin: "same-origin" },
     );
 
@@ -2159,10 +2234,14 @@ describe("Bus journey scope", () => {
     (bus as unknown as { links: Link[] }).links.push(children);
     h.onJourneyRequest.mockReturnValue(fakeJourney());
 
-    deliver(bus, { t: "journey", from: "parent-ctx", journey: fakeJourney() }, fromParent);
     deliver(
       bus,
-      { t: "journey?", from: "child" },
+      { t: "ui-observability.message.journey", from: "parent-ctx", journey: fakeJourney() },
+      fromParent,
+    );
+    deliver(
+      bus,
+      { t: "ui-observability.message.journey-request", from: "child" },
       {
         link: "children",
         origin: "https://app.example",
@@ -2206,14 +2285,14 @@ describe("Bus remote sampling", () => {
     const reply = vi.fn<Receive>();
     const direct = { link: "direct", origin: "same-origin" };
 
-    bus.acceptDirect({ t: "sampling?", from: "child" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.sampling-request", from: "child" }, reply);
     h.remote.sampling = stub();
-    bus.acceptDirect({ t: "sampling?", from: "child" }, reply);
+    bus.acceptDirect({ t: "ui-observability.message.sampling-request", from: "child" }, reply);
 
     // A null answer ends the copy of the forwarder. A revocation then reaches it.
     expect(reply.mock.calls).toEqual([
-      [{ t: "sampling", from: "ctx-1", to: "child", rules: null }, direct],
-      [{ t: "sampling", from: "ctx-1", to: "child", rules: wire }, direct],
+      [{ t: "ui-observability.message.sampling", from: "ctx-1", to: "child", rules: null }, direct],
+      [{ t: "ui-observability.message.sampling", from: "ctx-1", to: "child", rules: wire }, direct],
     ]);
   });
 
@@ -2223,10 +2302,14 @@ describe("Bus remote sampling", () => {
     (bus as unknown as { links: Link[] }).links.push(link);
 
     h.remote.sampling = stub();
-    deliver(bus, { t: "sampling?", from: "child" }, { link: "children", origin: location.origin });
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling-request", from: "child" },
+      { link: "children", origin: location.origin },
+    );
 
     expect(link.post).toHaveBeenCalledWith({
-      t: "sampling",
+      t: "ui-observability.message.sampling",
       from: "ctx-1",
       to: "child",
       rules: wire,
@@ -2238,7 +2321,11 @@ describe("Bus remote sampling", () => {
     const link = fakeLink("broadcast");
     (bus as unknown as { links: Link[] }).links.push(link);
 
-    deliver(bus, { t: "sampling?", from: "tab-2" }, { link: "broadcast", origin: "same-origin" });
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling-request", from: "tab-2" },
+      { link: "broadcast", origin: "same-origin" },
+    );
 
     expect(link.post).not.toHaveBeenCalled();
   });
@@ -2248,13 +2335,21 @@ describe("Bus remote sampling", () => {
     const worker = fakeLink("worker");
     (bus as unknown as { links: Link[] }).links.push(worker);
 
-    deliver(bus, { t: "sampling?", from: "sibling" }, { link: "openfin", origin: "openfin" });
-    deliver(bus, { t: "sampling?", from: "child" }, { link: "worker", origin: "same-origin" });
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling-request", from: "sibling" },
+      { link: "openfin", origin: "openfin" },
+    );
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling-request", from: "child" },
+      { link: "worker", origin: "same-origin" },
+    );
 
     // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
     expect(upstream.post).not.toHaveBeenCalled();
     expect(worker.post).toHaveBeenCalledWith({
-      t: "sampling",
+      t: "ui-observability.message.sampling",
       from: "ctx-1",
       to: "child",
       rules: null,
@@ -2264,7 +2359,11 @@ describe("Bus remote sampling", () => {
   it("applies rules from the upstream link that name this context", () => {
     const { bus, handlers: h } = forwarder();
 
-    deliver(bus, { t: "sampling", from: "owner", to: "ctx-1", rules: wire }, parent());
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
+      parent(),
+    );
 
     expect(h.remote.sampling?.current()).toEqual({ rates: { grid: 1 } });
   });
@@ -2274,7 +2373,7 @@ describe("Bus remote sampling", () => {
 
     deliver(
       bus,
-      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
       { link: "owner", origin: "same-origin" },
     );
 
@@ -2283,7 +2382,12 @@ describe("Bus remote sampling", () => {
 
   it("ends its copy of the rules when the upstream has none", () => {
     const { bus, handlers: h, config } = forwarder();
-    const none = { t: "sampling", from: "owner", to: "ctx-1", rules: null } as const;
+    const none = {
+      t: "ui-observability.message.sampling",
+      from: "owner",
+      to: "ctx-1",
+      rules: null,
+    } as const;
 
     deliver(bus, none, parent());
     expect(h.remote.sampling).toBeNull();
@@ -2299,7 +2403,7 @@ describe("Bus remote sampling", () => {
 
     deliver(
       bus,
-      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
       { link: "parent", origin: "https://shell.example" },
     );
 
@@ -2312,7 +2416,7 @@ describe("Bus remote sampling", () => {
     // A hostile page can embed the app. It must not lower minLevel and read the DEBUG records.
     deliver(
       bus,
-      { t: "sampling", from: "owner", to: "ctx-1", rules: wire },
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
       { link: "parent", origin: "https://evil.example" },
     );
 
@@ -2325,12 +2429,20 @@ describe("Bus remote sampling", () => {
 
     deliver(
       bus,
-      { t: "sampling", from: "peer", to: "ctx-1", rules: wire },
+      { t: "ui-observability.message.sampling", from: "peer", to: "ctx-1", rules: wire },
       { link: "broadcast", origin: "same-origin" },
     );
-    deliver(bus, { t: "sampling", from: "owner", to: "ctx-2", rules: wire }, parent());
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-2", rules: wire },
+      parent(),
+    );
     (bus as unknown as { role: string }).role = "sender";
-    deliver(bus, { t: "sampling", from: "owner", to: "ctx-1", rules: wire }, parent());
+    deliver(
+      bus,
+      { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
+      parent(),
+    );
 
     expect(h.remote.sampling).toBeNull();
   });
@@ -2340,7 +2452,12 @@ describe("Bus remote sampling", () => {
 
     deliver(
       bus,
-      { t: "sampling", from: "owner", to: "ctx-1", rules: { v: 1, ttlMs: -1 } },
+      {
+        t: "ui-observability.message.sampling",
+        from: "owner",
+        to: "ctx-1",
+        rules: { v: 1, ttlMs: -1 },
+      },
       parent(),
     );
 
@@ -2352,7 +2469,7 @@ describe("Bus remote sampling", () => {
     vi.useFakeTimers();
     const { bus, upstream, config } = forwarder();
     const poll = () => (bus as unknown as { pollRules: () => void }).pollRules();
-    const ask = { t: "sampling?", from: "ctx-1" };
+    const ask = { t: "ui-observability.message.sampling-request", from: "ctx-1" };
 
     poll();
     config.sampling.remote = false;

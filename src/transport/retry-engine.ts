@@ -11,7 +11,7 @@ import type { BatchKind, ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import { type StorageAdapter, storageLimits } from "../models/storage";
 import { withDeadline } from "../utils/deadline";
-import { withDrainLock } from "../utils/lock";
+import { lockName, withDrainLock } from "../utils/lock";
 import { isOnline } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
 import { TransportError } from "./errors";
@@ -187,7 +187,8 @@ export class RetryEngine {
     this.draining = true;
 
     try {
-      const ran = await withDrainLock(DRAIN_LOCK_NAME, this.diagnostics, () => this.drainLocked());
+      const lock = lockName(DRAIN_LOCK_NAME, this.config.persistence.namespace);
+      const ran = await withDrainLock(lock, this.diagnostics, () => this.drainLocked());
 
       // The value is undefined when another window holds the lock. Without this reschedule,
       // one lost lock race stops all drains in this window.
