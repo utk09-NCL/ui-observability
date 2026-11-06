@@ -97,13 +97,15 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 
 With `tracesEndpoint`, the library writes span records. The OTLP traces serializer reads these fields. They do not become OTLP attributes.
 
-| Attribute                   | Type   | Value                                    |
-| --------------------------- | ------ | ---------------------------------------- |
-| `span.kind`                 | string | `internal` or `client`.                  |
-| `span.parent_id`            | string | Parent span id, or `""` for a root span. |
-| `span.start_time_unix_nano` | string | Start time.                              |
-| `span.end_time_unix_nano`   | string | End time.                                |
-| `span.status`               | string | `error` or `unset`.                      |
+| Attribute                   | Type   | Value                                                                        |
+| --------------------------- | ------ | ---------------------------------------------------------------------------- |
+| `span.kind`                 | string | `internal` or `client`.                                                      |
+| `span.parent_id`            | string | Parent span id, or `""` for a root span.                                     |
+| `span.start_time_unix_nano` | string | Start time.                                                                  |
+| `span.end_time_unix_nano`   | string | End time.                                                                    |
+| `span.link.trace_id`        | string | Server trace id from a valid Server-Timing traceparent entry.                |
+| `span.link.span_id`         | string | Server span id. The serializer writes an OTLP link when both link ids exist. |
+| `span.status`               | string | `error` or `unset`.                                                          |
 
 ## Diagnostic Records
 
@@ -117,19 +119,23 @@ With `diagnostics.records`, the library writes a record for each reported diagno
 
 ## Capture Attributes
 
-| Capture          | Record                                                             | Attributes                                                                                              |
-| ---------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `fetch`, `xhr`   | `GET <url>` (DEBUG), `returned <status>` (WARN), `failed` (ERROR)  | `http.request.method`, `url.full`, `http.response.status_code` (number), `http.duration_ms` (number)    |
-| `httpMetrics`    | Histogram `http.client.request.duration`, in seconds               | `http.request.method`, `server.address`, `http.response.status_code` (number), `error.type`             |
-| Client span      | Span named by the HTTP method                                      | `http.request.method`, `url.full`, `server.address`, `http.response.status_code` (number), `error.type` |
-| `resourceErrors` | `resource failed to load` (WARN)                                   | `error.type` (`resource`), `resource.tag`, `resource.url`                                               |
-| `navigation`     | Event `NAVIGATION`                                                 | `page.url.previous`                                                                                     |
-| `interactions`   | Events `ui.rage_click` and `ui.dead_click`                         | `click.action`, `click.count` (number, rage click only)                                                 |
-| `uncleanExit`    | `ui.unclean_exit` (WARN)                                           | `exit.session_id`, `exit.last_seen_ms` (number), `exit.visibility`, `exit.discarded` (boolean)          |
-| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`                                                                                      |
-| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type`                                                         |
-| `longFrames`     | Histogram `ui.long_frame.duration`, in ms                          | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`               |
-| `console`        | The console message (ERROR or WARN)                                | `console.method`, `console.args` (array)                                                                |
-| `webSocket`      | Events `websocket.open`, `websocket.close`, WARN `websocket.error` | `url.full`, `server.address`, `websocket.close.code` (number), `websocket.close.clean` (boolean)        |
-| `webSocket`      | Counter `ui.websocket.messages`                                    | `network.io.direction` (`transmit` or `receive`), `server.address`                                      |
-| Storage gap      | `stored records were dropped before delivery` (WARN)               | `gap.batches` (number), `gap.records` (number), `gap.reason`                                            |
+| Capture          | Record                                                             | Attributes                                                                                                                                   |
+| ---------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`, `xhr`   | `GET <url>` (DEBUG), `returned <status>` (WARN), `failed` (ERROR)  | `http.request.method`, `url.full`, `http.response.status_code` (number), `http.duration_ms` (number)                                         |
+| `httpMetrics`    | Histogram `http.client.request.duration`, in seconds               | `http.request.method`, `server.address`, `http.response.status_code` (number), `error.type`                                                  |
+| Client span      | Span named by the HTTP method                                      | `http.request.method`, `url.full`, `server.address`, `http.response.status_code` (number), `error.type`                                      |
+| `resourceErrors` | `resource failed to load` (WARN)                                   | `error.type` (`resource`), `resource.tag`, `resource.url`                                                                                    |
+| `navigation`     | Event `NAVIGATION`                                                 | `page.url.previous`                                                                                                                          |
+| `interactions`   | Events `ui.rage_click` and `ui.dead_click`                         | `click.action`, `click.count` (number, rage click only)                                                                                      |
+| `uncleanExit`    | `ui.unclean_exit` (WARN)                                           | `exit.session_id`, `exit.last_seen_ms` (number), `exit.visibility`, `exit.discarded` (boolean)                                               |
+| `serverTiming`   | Additional fields on fetch and XHR records                         | `server.timing`, a list of `name`, `duration` and `description`. A valid traceparent adds an OTLP span link.                                 |
+| `reports`        | WARN `ui.report`                                                   | `report.type`, `report.url`, optional `report.id`, `report.source`, `report.line`, `report.column`, `report.directive`, `report.blocked_url` |
+| `resourceTiming` | Histogram `ui.resource.duration`, in ms. Event `ui.resource.slow`  | `resource.initiator_type`, `server.address`. Slow events also have `resource.duration_ms` and `url.full`.                                    |
+| `lifecycle`      | Event `ui.lifecycle`                                               | `lifecycle.state`, `lifecycle.previous_state`, `lifecycle.duration_ms`                                                                       |
+| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`                                                                                                                           |
+| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type`                                                                                              |
+| `longFrames`     | Histogram `ui.long_frame.duration`, in ms                          | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`                                                    |
+| `console`        | The console message (ERROR or WARN)                                | `console.method`, `console.args` (array)                                                                                                     |
+| `webSocket`      | Events `websocket.open`, `websocket.close`, WARN `websocket.error` | `url.full`, `server.address`, `websocket.close.code` (number), `websocket.close.clean` (boolean)                                             |
+| `webSocket`      | Counter `ui.websocket.messages`                                    | `network.io.direction` (`transmit` or `receive`), `server.address`                                                                           |
+| Storage gap      | `stored records were dropped before delivery` (WARN)               | `gap.batches` (number), `gap.records` (number), `gap.reason`                                                                                 |

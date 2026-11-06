@@ -10,7 +10,15 @@
     <h1>ui-observability playground</h1>
     <p>Watch the terminal running <code>tools/mock-ingest-server.mjs</code>.</p>
 
+    <p>
+      <a href="/playground/vanilla/index.html?worker=1">Use worker transport</a>
+      <a href="/playground/vanilla/index.html">Use main-thread transport</a>
+    </p>
     <h2>Manual</h2>
+    <label><input type="checkbox" id="payload-defer" /> Defer payload builds</label>
+    <button type="button" id="payload-mutation" data-observability-action="payload-mutation">
+      log a payload, then change it
+    </button>
     <button type="button" id="info" data-observability-action="info">info</button>
     <button type="button" id="action" data-observability-action="action">logAction</button>
     <button type="button" id="metric" data-observability-action="metric">logMetric</button>
@@ -28,6 +36,19 @@
     </button>
 
     <h2>Auto-capture</h2>
+    <p>
+      <label><input type="checkbox" id="capture-serverTiming" /> Server timing</label>
+      <label><input type="checkbox" id="capture-reports" /> Browser reports</label>
+      <label><input type="checkbox" id="capture-resourceTiming" /> Resource timing</label>
+      <label><input type="checkbox" id="capture-lifecycle" /> Lifecycle events</label>
+      <label><input type="checkbox" id="capture-remote" /> Permit remote capture switches</label>
+    </p>
+    <button type="button" id="server-timing" data-observability-action="server-timing">
+      fetch server timing entries
+    </button>
+    <button type="button" id="remote-captures" data-observability-action="remote-captures">
+      send capture rules for 10 seconds
+    </button>
     <button type="button" id="throw" data-observability-action="throw">
       throw an uncaught error
     </button>

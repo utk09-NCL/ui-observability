@@ -18,6 +18,7 @@ import type { DeliveryStats } from "./models/stats";
 import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./models/metric";
 
 export { OneLogger };
+export { serveTransportWorker } from "./transport/worker-entry";
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
 export type { Journey, ObservabilityConfig, OneLoggerOptions };
 export type {
@@ -32,6 +33,8 @@ export type {
   BusOptions,
   CaptureOptions,
   InteractionOptions,
+  ResourceTimingOptions,
+  RemoteCaptureFlag,
   LoggerCacheOptions,
   SecurityContextOptions,
   SecurityContextUpdate,
@@ -97,6 +100,7 @@ export function clearPersistedLogs(scope: "context" | "namespace" = "context"): 
 
 /**
  * Initializes or reconfigures the observability runtime instance.
+ * `payloadMode: "defer"` builds logger records in idle time. The debug buffer keeps immediate builds.
  * @param config Consumer configuration options.
  */
 export function configure(config: Partial<ObservabilityConfig>): void {
@@ -456,7 +460,7 @@ export function getTraceHeaders(): Record<string, string> {
 }
 
 /**
- * Flushes all pending log batches across pipeline streams.
+ * Builds deferred calls and flushes pending batches across pipeline streams.
  * @returns Promise that resolves after the pipeline processes the queued batches.
  */
 export function flush(): Promise<void> {

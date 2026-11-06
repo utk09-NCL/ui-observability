@@ -3,6 +3,7 @@
 // Control: curl -X POST "http://localhost:8787/__control?status=429&retryAfter=5"
 //          curl -X POST "http://localhost:8787/__control?status=200"
 
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
 
@@ -36,14 +37,17 @@ function cors(req, res) {
   }
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt",
+    "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt, traceparent",
   );
   // Without this the browser hides Retry-After from the client on every
   // cross-origin response, so a 429 or 503 arrives with no delay attached and
   // the client backs off on its own schedule instead of the server's.
   // The client reads the sampling rules only if this list has the header.
-  res.setHeader("Access-Control-Expose-Headers", "retry-after, x-uiobs-sampling, date");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "retry-after, x-uiobs-sampling, date, server-timing",
+  );
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -136,6 +140,17 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  if (url.pathname === "/__timing") {
+    res.setHeader("Timing-Allow-Origin", "*");
+    const parent = `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`;
+    res.setHeader(
+      "Server-Timing",
+      `cache;dur=4;desc="local cache", app;dur=12, traceparent;desc="${parent}"`,
+    );
+    res.writeHead(204).end();
+    return;
+  }
 
   if (url.pathname === "/__control") {
     forcedStatus = Number(url.searchParams.get("status") || 0);

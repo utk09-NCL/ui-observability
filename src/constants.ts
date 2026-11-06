@@ -766,11 +766,74 @@ export const SPAN_KEYS = {
   start: "span.start_time_unix_nano",
   end: "span.end_time_unix_nano",
   status: "span.status",
+  linkTraceId: "span.link.trace_id",
+  linkSpanId: "span.link.span_id",
 } as const;
 
 // ----------------------------------
 // Configuration
 // ----------------------------------
+
+/** Protocol of the private transport worker channel. */
+export const TRANSPORT_WORKER_PROTOCOL = "ui-observability.transport/1";
+
+/** Type tags of the private transport worker messages. */
+export const TRANSPORT_WORKER_TYPE = {
+  connect: "connect",
+  ready: "ready",
+  send: "send",
+  result: "result",
+  cancel: "cancel",
+} as const;
+
+/** Refusal of the worker entry. A constant keeps the protocol code out of the main chunk. */
+export const TRANSPORT_WORKER_REFUSAL = {
+  p: TRANSPORT_WORKER_PROTOCOL,
+  v: TELEMETRY_SDK_VERSION,
+  t: TRANSPORT_WORKER_TYPE.ready,
+  ok: false,
+} as const;
+
+/** Maximum requests in one transport worker. */
+export const TRANSPORT_WORKER_MAX_JOBS = 64;
+
+/** Maximum wait for idle time before the deferred logger builds its records. */
+export const DEFER_IDLE_TIMEOUT_MS = 1000;
+
+/** Maximum pending payload references of one runtime. A full queue builds its records first. */
+export const DEFER_QUEUE_LIMIT = 1000;
+
+/** Default minimum duration of a slow resource event, in milliseconds. */
+export const RESOURCE_SLOW_MS = 1000;
+
+/** Response header with server duration entries. */
+export const SERVER_TIMING_HEADER = "Server-Timing";
+
+/** Maximum Server-Timing header length and entry count. */
+export const SERVER_TIMING_MAX_CHARS = 4096;
+export const SERVER_TIMING_MAX_ENTRIES = 32;
+
+/** Capture switches that a remote rule can change. Privacy controls stay local. */
+export const REMOTE_CAPTURE_FLAGS = [
+  "errors",
+  "rejections",
+  "resourceErrors",
+  "fetch",
+  "xhr",
+  "httpMetrics",
+  "navigation",
+  "webVitals",
+  "longFrames",
+  "interactions",
+  "console",
+  "webSocket",
+  "uncleanExit",
+  "userTiming",
+  "serverTiming",
+  "reports",
+  "resourceTiming",
+  "lifecycle",
+] as const;
 
 /** Default `service.name` when a consumer sets none. */
 export const UNKNOWN_SERVICE_NAME = "unknown-service";
@@ -816,6 +879,7 @@ export const UNDEFAULTED_CONFIG_KEYS = [
   "otelLoader",
   "transport",
   "transportOnExit",
+  "transportWorker",
 ] as const;
 
 /**
@@ -1025,6 +1089,9 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     consolePerWindow: 20,
     longFramesPerWindow: 20,
     webSocketPerWindow: 20,
+    reportsPerWindow: 20,
+    resourcesPerWindow: 100,
+    lifecyclePerWindow: 20,
     windowMs: 10000,
     errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
   },
@@ -1062,6 +1129,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   serviceVersion: "",
   environment: "",
   enabled: true,
+  payloadMode: "copy",
   minLevel: "INFO",
   minLevels: {},
   processors: [],
@@ -1116,6 +1184,11 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     webSocket: false,
     uncleanExit: false,
     userTiming: false,
+    remoteToggles: [],
+    serverTiming: false,
+    reports: false,
+    resourceTiming: false,
+    lifecycle: false,
     userTimingInclude: [],
     plugins: [],
   },

@@ -6,6 +6,17 @@ By default, the SDK limits captured content, isolates delivery identities and li
 
 | Option                                 | Default                       | Override                                                                                                                           |
 | -------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `transportWorker`                      | Unset                         | Creates a dedicated worker for built-in encoding, compression and HTTP sends. The app supplies a fresh worker for each call.       |
+| `payloadMode`                          | `copy`                        | `defer` keeps raw payload references until an idle build. The debug buffer always builds at the call.                              |
+| `capture.remoteToggles`                | `[]`                          | Permits remote changes to the named capture switches for the sampling TTL. Privacy controls stay local.                            |
+| `capture.serverTiming`                 | `false`                       | Adds at most 32 Server-Timing response entries from at most 4096 header characters.                                                |
+| `capture.reports`                      | `false`                       | Records fixed report fields. URLs have no credentials, query or fragment. Text and code samples stay out.                          |
+| `capture.resourceTiming`               | `false`                       | Records resource duration histograms by initiator type and host. Skips ingest and ignored URLs.                                    |
+| `capture.resourceTiming.slowMs`        | `1000`                        | Minimum duration of a slow resource event, in milliseconds. Set `0` for no slow events.                                            |
+| `capture.lifecycle`                    | `false`                       | Records page states with the duration of the previous state.                                                                       |
+| `capturePolicy.reportsPerWindow`       | `20`                          | Maximum browser reports in each window. Set `0` for no limit.                                                                      |
+| `capturePolicy.resourcesPerWindow`     | `100`                         | Maximum resource entries in each window. Set `0` for no limit.                                                                     |
+| `capturePolicy.lifecyclePerWindow`     | `20`                          | Maximum lifecycle events in each window. Set `0` for no limit.                                                                     |
 | `capture.interactions`                 | `false`                       | `true`, or an options object, enables click breadcrumbs                                                                            |
 | `capture.interactions.text`            | `false`                       | `true` captures `textContent`                                                                                                      |
 | `capture.interactions.selector`        | `false`                       | `true` captures test IDs, IDs, ARIA labels or tag/classes                                                                          |
@@ -102,7 +113,7 @@ await rotateSecurityContext(
 );
 ```
 
-`delivery` replaces the endpoint, the metrics and traces endpoints, the headers, the cookie credentials, the custom transport and the exit transport together. An omitted field resets. The endpoint becomes `null`. The signal endpoints become empty. The SDK removes the headers and the transports. Credentials become `omit`. Other runtime settings stay. Invalid delivery settings reject before the active sender stops. Endpoint URLs must be absolute, as with `configure()`. The rotation also removes the old endpoints from `capture.ignoreUrls`.
+`delivery` replaces the endpoint, the metrics and traces endpoints, the headers, the cookie credentials, the custom transport, the exit transport and the worker factory together. An omitted field resets. The endpoint becomes `null`. The signal endpoints become empty. The SDK removes the headers and the transports. Credentials become `omit`. Other runtime settings stay. Invalid delivery settings reject before the active sender stops. Endpoint URLs must be absolute, as with `configure()`. The rotation also removes the old endpoints from `capture.ignoreUrls`.
 
 | `pending` policy    | Behavior                                                                                                                                                                                                                                                                                                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -119,7 +130,7 @@ Each batch keeps its delivery ID through persistence, splitting and retries. Wit
 
 An auto-discovered forwarder uses the delivery identity of its owner. When it knows its owner, it welcomes its own children. It relays their records. It sends them the identity of its owner. A context that still waits for its own owner sends no temporary identity. Its children get the final identity when its role is known. The first identity that a forwarder takes keeps its startup records and the context of the app. When the owner later changes its identity, the forwarder clears its buffered records before it uses the new identity. It does this also before it is ready. `onDrop` reports the cleared records with `security_context`. A same-origin forwarder then uses the new session that its owner stores. Other forwarders start a new session. A frame with an explicit ID must match the owner. It does not use another identity without notice. The owner sends the new identity at once to its frames, workers and OpenFin views. This includes each same-origin frame on the direct link. A frame with an explicit ID that matches the new identity then clears `security.context_mismatch`. Other tabs keep their own active context. The host must coordinate authentication changes in other applications and tabs. The SDK does not infer them from cookies.
 
-With isolation on, `configure()` refuses a change to delivery settings or to the context ID. It reports `config.invalid` and keeps the values in force. The other settings in the same call apply. The SDK compares resolved values. Thus an unset `endpoint` value is not a change. A new `headers`, `transport` or `transportOnExit` function is a change. Keep their references stable. To permit delivery changes and cross-partition replay, disable isolation explicitly.
+With isolation on, `configure()` refuses a change to delivery settings or to the context ID. It reports `config.invalid` and keeps the values in force. The other settings in the same call apply. The SDK compares resolved values. Thus an unset `endpoint` value is not a change. A new `headers`, `transport`, `transportOnExit` or `transportWorker` function is a change. Keep their references stable. To permit delivery changes and cross-partition replay, disable isolation explicitly.
 
 ```ts
 configure({ securityContext: { isolation: false } });
@@ -246,6 +257,9 @@ configure({
     consolePerWindow: 20,
     longFramesPerWindow: 20,
     webSocketPerWindow: 20,
+    reportsPerWindow: 20,
+    resourcesPerWindow: 100,
+    lifecyclePerWindow: 20,
     windowMs: 10000,
     errorCeiling: 500,
   },
@@ -313,3 +327,31 @@ configure({
 The callback receives the original URL. It replaces the default URL rule. If it returns `null` or a value that is not a string, the SDK records an empty URL. If it throws, the SDK records an empty URL and reports `capture.record_failed`. The callback does not change the actual network target. It does not change the full URL for ignore and trace-propagation matching. A callback can return the complete original URL on purpose. Keep the callback reference stable when configuration is locked. A new callback reinstalls captures where necessary.
 
 With isolation on, WebSocket lifecycle events and message counters stay with the context that opened the socket. After rotation, the SDK ignores events from old sockets. With isolation disabled, those sockets continue to record under the active context. The SDK does not close application sockets.
+
+### Temporary capture switches
+
+`sampling.remote: true` permits trusted sampling answers to carry boolean capture switches. Only names in `capture.remoteToggles` apply. The default list is empty. The SDK keeps the local config intact. Each remote update replaces the previous update. A timer restores local capture settings at TTL expiry. A rotation or remote sampling disable also restores them.
+
+The server cannot change privacy controls, capture options, plugins, ignored URLs or trace propagation targets. Enabling a configured capture keeps its local object or list options. Each forwarder validates the rules and applies its own allowlist. Its sampling permission and upstream authority checks stay in force.
+
+`capture.reports` always strips report URL queries, fragments and credentials. It does not apply `fullUrls` or `urlTransform` to those URLs. Other resource URLs keep the ordinary URL policy. Server-Timing descriptions come from the response server. Use the privacy hooks to remove data that the server puts in them.
+
+### Deferred record builds
+
+`payloadMode: "defer"` moves payload reads, processors and redaction to idle time. Each call keeps its timestamp, trace, journey and a shallow copy of ambient context. The payload, error reason, scoped context and `contextProvider` values reflect build time. The default `"copy"` builds at the call.
+
+Each runtime holds at most 1000 pending calls. A lower positive `buffering.maxPendingRecords` lowers this cap. A zero record budget keeps the 1000-call cap. The cap applies before records exist. A full queue builds its pending calls before it takes another reference. A hook cannot add more calls to a full draining queue. Those calls increment `record.dropped_by_ceiling`.
+
+Idle callbacks respect the remaining idle time. After 1000 ms, a callback can build one record without idle time. A timer supports a browser without the idle API. Explicit flush, shutdown, page exit, reconfiguration and identity changes drain the pending calls. A stopped runtime releases the references that a hook adds during shutdown.
+
+Delivery stats and byte budgets count built records. The deferred queue has a separate count cap. `onDrop` still reports only records that the library builds. `debugBuffer.enabled` keeps immediate builds and privacy hooks, regardless of `payloadMode`.
+
+### Transport workers
+
+`transportWorker` is a delivery setting. The app supplies a factory for a fresh dedicated worker. That worker calls `serveTransportWorker()`. The library terminates the worker when its sender stops. A custom transport takes precedence. A custom serializer uses the main HTTP path.
+
+Record construction, processors, redaction, queue accounting, retry and storage stay on the main thread. Header functions also stay there. Built-in OTLP and ECS encoding, gzip and HTTP delivery run in the worker. Hidden-page keepalive sends and exit sends stay on the main thread. Both paths share the header cache.
+
+Each connection uses a private transferred port and the exact SDK version. The worker accepts one connection. It limits active jobs to 64. The main request deadline covers all steps. Worker startup failures or channel failures during a send select HTTP fallback for that sender. Timeouts and network failures use the normal retry policy.
+
+Set the factory before the delivery stack loads. `configure()` cannot add or remove it after that point, also with isolation off. With isolation off, a new factory closes the old channel before the next worker request. Use `rotateSecurityContext()` for normal delivery changes. An omitted factory in the new delivery settings resets to the main HTTP path.

@@ -18,6 +18,15 @@ All notable changes to this project will be documented in this file. The format 
 - `capture.userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration` with `user_timing.name`. Each `performance.mark()` adds a breadcrumb. `capture.userTimingInclude` keeps only the names that match.
 - `collectDebugBundle()` returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the page URL, the breadcrumbs after the privacy hooks, the debug buffer and a config summary without headers or URL queries. The app decides where to send it.
 
+- Remote sampling answers can carry temporary capture switches. Only the names in `capture.remoteToggles` apply. The default list is empty. Privacy controls stay local.
+- `capture.serverTiming` adds response duration entries to fetch and XHR records. A valid traceparent entry links the client span to the server span.
+- `capture.reports` records deprecations, interventions and CSP reports as WARN `ui.report`. It omits message text and code samples. Report URLs have no credentials, query or fragment.
+- `capture.resourceTiming` records `ui.resource.duration` by initiator type and host. Its `slowMs` setting also records slow resources. The capture skips ingest endpoints and ignored URLs.
+- `capture.lifecycle` records visible, hidden, frozen, resumed and restored states. Each event has the time in the previous state. A capture reinstall keeps the state and its start time.
+- `capturePolicy.reportsPerWindow`, `resourcesPerWindow` and `lifecyclePerWindow` give each new capture a separate rate limit.
+- `payloadMode: "defer"` keeps payload references and builds records in idle time. The default `"copy"` builds at the call. Deferred calls keep their timestamp, trace, journey and ambient context keys. Flush, shutdown, page exit and identity changes drain pending calls. The debug buffer keeps immediate builds and privacy hooks.
+- `transportWorker` creates a dedicated HTTP transport worker. The worker calls `serveTransportWorker()`. Built-in encoding, gzip and HTTP sends run there. Header functions, retry, storage and exit sends stay on the main thread. A private port checks the exact SDK version. Worker startup or channel failures use HTTP fallback. A worker that does not connect before the request deadline is a startup failure. A worker module that does not load also selects HTTP. An offline failure uses no stored attempt.
+
 ### Changed - v0.10.0
 
 - OTLP logs and spans use the logger namespace as the instrumentation scope name, for example `blotter.grid`. A record without a namespace keeps the scope `@utk09/ui-observability`. The scope has no version. Metrics keep the library scope. Update each backend query that filters by scope name.

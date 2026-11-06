@@ -2368,6 +2368,28 @@ describe("Bus remote sampling", () => {
     expect(h.remote.sampling?.current()).toEqual({ rates: { grid: 1 } });
   });
 
+  it("accepts capture switches only from the upstream owner", () => {
+    const { bus, handlers: h } = forwarder();
+    const changed = vi.fn();
+    h.remote.changed = changed;
+    const rules = { ...wire, capture: { fetch: true, lifecycle: false } };
+    const message = {
+      t: "ui-observability.message.sampling",
+      from: "owner",
+      to: "ctx-1",
+      rules,
+    } as const;
+
+    deliver(bus, message, { link: "children", origin: location.origin });
+    expect(h.remote.sampling).toBeNull();
+    expect(changed).not.toHaveBeenCalled();
+
+    deliver(bus, message, parent());
+    expect(h.remote.sampling?.current()?.capture).toEqual(rules.capture);
+    expect(changed).toHaveBeenCalledOnce();
+    bus.destroy();
+  });
+
   it("applies rules from the owner link of a worker", () => {
     const { bus, handlers: h } = forwarder("owner");
 

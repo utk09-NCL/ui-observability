@@ -6,6 +6,7 @@
 // `ResolvedConfig` does not use `Required<ObservabilityConfig>`. That type removes `?`
 // only at the top level. A nested field such as `sampling.defaultRate` can then hold undefined.
 
+import type { REMOTE_CAPTURE_FLAGS } from "../constants";
 import type { DiagnosticCode, DiagnosticHandler } from "../core/diagnostics";
 import type { DropSummary } from "./drop";
 import type { LogLevel, LogRecord } from "./log-record";
@@ -352,6 +353,15 @@ export interface LimitOptions {
 /** Console method that the console capture can wrap. */
 export type CapturedConsoleMethod = "error" | "warn" | "info" | "log";
 
+/** Resource timing settings. An object turns on capture. */
+export interface ResourceTimingOptions {
+  /** Minimum duration of a ui.resource.slow event, in milliseconds. Set 0 for no slow events. @default 1000 */
+  slowMs?: number;
+}
+
+/** Capture switch that a remote rule can change. */
+export type RemoteCaptureFlag = (typeof REMOTE_CAPTURE_FLAGS)[number];
+
 /** Click settings. An object turns on capture. With true, capture uses the defaults below. */
 export interface InteractionOptions {
   /**
@@ -441,6 +451,7 @@ export type DeliveryOptions = Pick<
   | "credentials"
   | "transport"
   | "transportOnExit"
+  | "transportWorker"
 >;
 
 /** New security context. A delivery field that is not supplied resets to its default. */
@@ -585,6 +596,31 @@ export interface CaptureOptions {
    * @default []
    */
   userTimingInclude: (string | RegExp)[];
+  /**
+   * Capture switches that remote sampling rules can change for their TTL. Privacy controls stay local.
+   * @default []
+   */
+  remoteToggles: RemoteCaptureFlag[];
+  /**
+   * Add response Server-Timing entries to fetch and XHR records. Link a traceparent entry to the client span.
+   * @default false
+   */
+  serverTiming: boolean;
+  /**
+   * Record deprecation, intervention and CSP reports as WARN ui.report. Report URLs have no query or fragment.
+   * @default false
+   */
+  reports: boolean;
+  /**
+   * Record resource durations in the histogram ui.resource.duration, by initiator type and host.
+   * @default false
+   */
+  resourceTiming: boolean | ResourceTimingOptions;
+  /**
+   * Record visible, hidden, frozen, resumed and restored states with the time in the previous state.
+   * @default false
+   */
+  lifecycle: boolean;
   /**
    * Capture modules from the app. A new list replaces the list in force.
    * @default []
@@ -890,6 +926,12 @@ export interface CapturePolicy {
    * @default 20
    */
   webSocketPerWindow: number;
+  /** Maximum reports in one window. Set 0 for no limit. @default 20 */
+  reportsPerWindow: number;
+  /** Maximum resource entries in one window. Set 0 for no limit. @default 100 */
+  resourcesPerWindow: number;
+  /** Maximum lifecycle events in one window. Set 0 for no limit. @default 20 */
+  lifecyclePerWindow: number;
   /**
    * Rate limit window, in milliseconds. Set 0 to reset the window for each event.
    * @default 10000
@@ -1001,6 +1043,11 @@ export interface ObservabilityConfig {
    */
   enabled?: boolean;
   /**
+   * Copy payloads at the call, or keep their references until idle time. The debug buffer always builds at the call.
+   * @default "copy"
+   */
+  payloadMode?: "copy" | "defer";
+  /**
    * Minimum level that the library logs.
    * @default "INFO"
    */
@@ -1100,6 +1147,11 @@ export interface ObservabilityConfig {
    * @see {@link ExitTransport}
    */
   transportOnExit?: ExitTransport;
+  /**
+   * Creates a dedicated worker for encoding, compression and HTTP sends. The worker calls serveTransportWorker().
+   * Headers functions, retries, storage and exit sends stay on the main thread. A custom transport takes precedence.
+   */
+  transportWorker?: () => Worker;
 
   /**
    * Loads the `@opentelemetry/api` module. Example: `() => import("@opentelemetry/api")`.
@@ -1190,6 +1242,8 @@ export interface ResolvedConfig {
   environment: string;
   /** Master switch. With false, each log call does nothing. */
   enabled: boolean;
+  /** Time at which logger calls read their payloads. */
+  payloadMode: "copy" | "defer";
   /** Minimum level that the library logs. */
   minLevel: LogLevel;
   /** Minimum level for each namespace prefix. */
@@ -1249,6 +1303,8 @@ export interface ResolvedConfig {
   transport?: Transport;
   /** Sends the last batch while the page closes, for a custom transport. */
   transportOnExit?: ExitTransport;
+  /** Creates the dedicated HTTP transport worker. */
+  transportWorker?: ObservabilityConfig["transportWorker"];
   /** Supplies the `@opentelemetry/api` module in place of importing it. */
   otelLoader?: OtelLoader;
   /** Gives attributes for each record that the library builds. */

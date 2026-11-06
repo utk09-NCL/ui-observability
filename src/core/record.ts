@@ -57,7 +57,7 @@ import type { TraceContext, TraceEngine } from "../utils/tracing";
 import type { ContextStore } from "./context";
 import type { DebugBuffer } from "./debug-buffer";
 import type { Diagnostics } from "./diagnostics";
-import type { JourneyEngine } from "./journey";
+import type { Journey, JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
 import { levelFor, shouldSampleInput } from "./sampling";
 
@@ -127,6 +127,15 @@ export interface BuildResult {
   dropped?: DropReason;
 }
 
+/** Metadata captured before a deferred logger call reads its payload. */
+export interface RecordSnapshot {
+  timeUnixNano: string;
+  trace: TraceContext;
+  journey: Journey | null;
+  context: Record<string, unknown>;
+  url: string;
+}
+
 /** Input parameters for constructing a single log record. */
 export interface BuildInput {
   /** Severity level of the log entry. */
@@ -150,6 +159,8 @@ export interface BuildInput {
   aggregated?: boolean;
   /** Trace IDs of a span. Without them, the builder reads the active trace. */
   trace?: TraceContext;
+  /** Metadata of the call before the deferred build. */
+  snapshot?: RecordSnapshot;
 }
 
 /** Keys of the fields that the library builds for a metric point or a span. */
@@ -255,8 +266,8 @@ export class RecordBuilder {
       return { record: null, dropped: "level" };
     }
 
-    const traceCtx = input.trace ?? tracing.resolve();
-    const activeJourney = journey.current();
+    const traceCtx = input.trace ?? input.snapshot?.trace ?? tracing.resolve();
+    const activeJourney = input.snapshot ? input.snapshot.journey : journey.current();
 
     // Sample delivery records before the attribute walk. A record for the console or a
     // breadcrumb skips this check. The privacy hooks process that record, but do not send it.
@@ -280,7 +291,7 @@ export class RecordBuilder {
 
     const seq = sequence.next();
     // The query and fragment can contain tokens and user input. The path groups records.
-    const url = currentUrl(diagnostics);
+    const url = input.snapshot?.url ?? currentUrl(diagnostics);
     const pageUrl = config.metadata.pageUrl
       ? recordedUrl(url, config.capture.fullUrls, config.capture.urlTransform, diagnostics)
       : "";
@@ -288,7 +299,11 @@ export class RecordBuilder {
     let attributes: Record<string, unknown>;
     let bytes = 0;
     try {
-      const fromContext = sanitizeWithSize(this.deps.context.getAll(), limits, diagnostics);
+      const fromContext = sanitizeWithSize(
+        input.snapshot?.context ?? this.deps.context.getAll(),
+        limits,
+        diagnostics,
+      );
       const fromProvider = sanitizeWithSize(this.provided(), limits, diagnostics);
       const fromScope = sanitizeWithSize(input.scoped ?? {}, limits, diagnostics);
       const fromPayload = sanitizeWithSize(input.payload ?? {}, limits, diagnostics);
@@ -335,7 +350,7 @@ export class RecordBuilder {
     }
 
     let record: LogRecord = {
-      timeUnixNano: nowUnixNano(),
+      timeUnixNano: input.snapshot?.timeUnixNano ?? nowUnixNano(),
       traceId: traceCtx.traceId,
       spanId: traceCtx.spanId,
       traceFlags: traceCtx.traceFlags,

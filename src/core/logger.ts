@@ -12,12 +12,20 @@ import {
   METRIC_KEYS,
   STORAGE_NAMESPACE,
 } from "../constants";
-import type { LogLevel, LogRecord, LogType, MetricType } from "../models/log-record";
+import {
+  type LogLevel,
+  type LogRecord,
+  type LogType,
+  type MetricType,
+  nowUnixNano,
+} from "../models/log-record";
 import { ERROR_OWN_KEYS, isDataField, isErrorLike } from "../utils/error-like";
 import { isObject } from "../utils/guards";
 import { timeAsync, timeSync } from "../utils/timer";
 import type { Diagnostics } from "./diagnostics";
-import type { DropReason } from "./record";
+import type { DropReason, RecordSnapshot } from "./record";
+import { deferWrite } from "./deferred";
+import { currentUrl } from "../utils/platform";
 import type { ObservabilityRuntime } from "./runtime";
 
 /** Namespaces of the library. Their records have log.type "system". */
@@ -326,18 +334,20 @@ export class OneLogger {
       return;
     }
 
-    // Spread the caller attributes first. The metric fields then win over a key of the same name.
-    // The OTLP metrics serializer reads the caller keys. The context keys stay off the point.
-    const copied = copyPayload(attributes, this.bind().diagnostics);
-    const payload = {
-      ...copied,
-      "metric.name": name,
-      "metric.value": value,
-      "metric.unit": unit,
-      "metric.type": type,
-      [METRIC_KEYS.attributeKeys]: Object.keys(copied),
-    };
-    this.write("INFO", "metric", name, payload, true);
+    const runtime = this.bind();
+    this.submit(runtime, "INFO", "metric", (snapshot) => {
+      // Copy the caller attributes before adding metric fields. The metric fields must win.
+      const copied = copyPayload(attributes, runtime.diagnostics);
+      const payload = {
+        ...copied,
+        "metric.name": name,
+        "metric.value": value,
+        "metric.unit": unit,
+        "metric.type": type,
+        [METRIC_KEYS.attributeKeys]: Object.keys(copied),
+      };
+      this.writeNow(runtime, "INFO", "metric", name, payload, true, snapshot);
+    });
   };
 
   /**
@@ -369,36 +379,91 @@ export class OneLogger {
    * @param type Record classification.
    * @param body Primary message.
    * @param payload Optional contextual attributes.
-   * @param copied True when the payload is a copy that the library made. write() does not copy it.
    */
   private write(
     level: LogLevel,
     type: LogType,
     body: string,
     payload?: Record<string, unknown>,
-    copied = false,
   ): void {
     const runtime = this.bind();
+    this.submit(runtime, level, type, (snapshot) => {
+      this.writeNow(runtime, level, type, body, payload, false, snapshot);
+    });
+  }
 
-    // Guard against a write after shutdown. The write must do nothing on the stopped runtime.
-    if (runtime.isDestroyed()) return;
+  /** Runs a call at once or queues it without reading its payload. */
+  private submit(
+    runtime: ObservabilityRuntime,
+    level: LogLevel,
+    type: LogType,
+    work: (snapshot?: RecordSnapshot) => void,
+  ): void {
+    if (runtime.isDestroyed()) {
+      return;
+    }
     if (runtime.isRotating()) {
       runtime.diagnostics.count("record.dropped_during_rotation");
       return;
     }
 
+    if (
+      runtime.config.payloadMode === "defer" &&
+      runtime.config.enabled &&
+      !runtime.config.debugBuffer.enabled
+    ) {
+      if (
+        !runtime.builder.isEnabled(level, this.namespace, type) &&
+        !this.mirrors(runtime, level)
+      ) {
+        return;
+      }
+
+      const journey = runtime.journey.current();
+      const snapshot: RecordSnapshot = {
+        timeUnixNano: nowUnixNano(),
+        trace: runtime.tracing.resolve(),
+        journey: journey ? { ...journey } : null,
+        context: runtime.context.getAll(),
+        url: currentUrl(runtime.diagnostics),
+      };
+      deferWrite(
+        runtime,
+        () => {
+          work(snapshot);
+        },
+        runtime.diagnostics,
+        runtime.config.buffering.maxPendingRecords,
+      );
+      return;
+    }
+
+    work();
+  }
+
+  /** Builds a standard record from a call whose payload is now ready to read. */
+  private writeNow(
+    runtime: ObservabilityRuntime,
+    level: LogLevel,
+    type: LogType,
+    body: string,
+    payload: Record<string, unknown> | undefined,
+    copied: boolean,
+    snapshot?: RecordSnapshot,
+  ): void {
     // minLevel limits what the library sends. The console level limits what it prints.
     // minLevel does not apply to an action or a metric. The debug buffer keeps a record below it.
     const keepsDropped = runtime.config.enabled && runtime.config.debugBuffer.enabled;
     if (!keepsDropped && !runtime.builder.isEnabled(level, this.namespace, type)) {
       if (this.mirrors(runtime, level)) {
-        this.print(runtime, level, body, payload, undefined, null);
+        this.print(runtime, level, body, payload, undefined, null, undefined, snapshot);
       }
 
       return;
     }
 
     const input = {
+      snapshot,
       level,
       type,
       body,
@@ -418,12 +483,21 @@ export class OneLogger {
     const crumb = safe ? safe.body : dropped === "sampling" && !hooks ? body : undefined;
     if (keepsCrumb && crumb !== undefined) {
       runtime.breadcrumbs.push({
-        t: Date.now(),
+        t: snapshot ? Number(snapshot.timeUnixNano.slice(0, -6)) : Date.now(),
         category: type === "action" ? "action" : type === "event" ? "event" : "log",
         message: crumb,
       });
     }
-    this.print(runtime, level, body, payload, undefined, safe, protectedCrumb?.dropped ?? dropped);
+    this.print(
+      runtime,
+      level,
+      body,
+      payload,
+      undefined,
+      safe,
+      protectedCrumb?.dropped ?? dropped,
+      snapshot,
+    );
     runtime.emit(record);
   }
 
@@ -441,13 +515,20 @@ export class OneLogger {
     payload?: Record<string, unknown>,
   ): void {
     const runtime = this.bind();
+    this.submit(runtime, level, this.levelType, (snapshot) => {
+      this.writeErrorNow(runtime, level, message, error, payload, snapshot);
+    });
+  }
 
-    if (runtime.isDestroyed()) return;
-    if (runtime.isRotating()) {
-      runtime.diagnostics.count("record.dropped_during_rotation");
-      return;
-    }
-
+  /** Builds an error record after the deferred queue releases its payload. */
+  private writeErrorNow(
+    runtime: ObservabilityRuntime,
+    level: "ERROR" | "FATAL",
+    message: string,
+    error: unknown,
+    payload: Record<string, unknown> | undefined,
+    snapshot?: RecordSnapshot,
+  ): void {
     const ships = runtime.builder.isEnabled(level, this.namespace);
 
     if (!ships && !this.mirrors(runtime, level)) {
@@ -472,13 +553,14 @@ export class OneLogger {
       asError === undefined ? undefined : consoleError(reason, asError, runtime.diagnostics);
 
     if (!ships) {
-      this.print(runtime, level, message, attributes, shown, null);
+      this.print(runtime, level, message, attributes, shown, null, undefined, snapshot);
       return;
     }
 
     const data = asError ? errorData(reason, runtime.diagnostics) : undefined;
 
     const { record, dropped } = runtime.builder.build({
+      snapshot,
       level,
       type: this.levelType,
       body: message,
@@ -498,7 +580,7 @@ export class OneLogger {
       },
     });
 
-    this.print(runtime, level, message, attributes, shown, record, dropped);
+    this.print(runtime, level, message, attributes, shown, record, dropped, snapshot);
     runtime.emit(record);
   }
 
@@ -521,6 +603,7 @@ export class OneLogger {
     error: Error | undefined,
     record: LogRecord | null,
     dropped?: DropReason,
+    snapshot?: RecordSnapshot,
   ): void {
     if (!runtime.config.redact && runtime.config.processors.length === 0) {
       runtime.console.write(this.namespace, level, message, payload, error);
@@ -543,6 +626,7 @@ export class OneLogger {
     // a record again if a hook refused it. Do not send this record or add it as a breadcrumb.
     const clean = runtime.builder.build(
       {
+        snapshot,
         level,
         type: this.levelType,
         body: message,

@@ -78,6 +78,10 @@ export interface CaptureOnce {
   uncleanExit: boolean;
   /** True after the first user timing install. Only that install reads buffered entries. */
   userTiming: boolean;
+  /** True after the first resource timing install. Later installs exclude buffered entries. */
+  resourceTiming?: boolean;
+  /** Page state and its start time. A reinstall keeps them and logs no false transition. */
+  lifecycle?: { state: string; enteredAt: number };
 }
 
 /** Shared runtime dependencies provided to auto-capture instances. */

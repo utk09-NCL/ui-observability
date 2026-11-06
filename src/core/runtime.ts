@@ -10,6 +10,7 @@ import {
   ATTR_BREADCRUMBS,
   ATTR_PAGE_URL,
   CAPTURE_NAMESPACE,
+  REMOTE_CAPTURE_FLAGS,
   DIAGNOSTICS_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
   METRIC_NAMESPACE,
@@ -54,12 +55,14 @@ import {
 import { runAsLibraryRequest } from "../utils/library-request";
 import { detectPlatform, type PlatformMetadata } from "../utils/platform";
 import { sanitize, truncate } from "../utils/sanitize";
+import { unrefTimer } from "../utils/unref";
 import { Sequence } from "../utils/sequence";
 import { TraceEngine } from "../utils/tracing";
 import { type Breadcrumb, BreadcrumbBuffer } from "./breadcrumbs";
 import { applyResolvedConfig, resolveConfig } from "./config";
 import { ContextStore } from "./context";
 import { DebugBuffer } from "./debug-buffer";
+import { cancelDeferred, drainDeferred } from "./deferred";
 import {
   type DiagnosticCode,
   type DiagnosticEvent,
@@ -95,6 +98,11 @@ const CAPTURE_LOADERS = {
     (await import("../capture/unclean-exit")).UncleanExitCapture,
   userTiming: async (): Promise<CaptureClass> =>
     (await import("../capture/user-timing")).UserTimingCapture,
+  reports: async (): Promise<CaptureClass> => (await import("../capture/reports")).ReportCapture,
+  resourceTiming: async (): Promise<CaptureClass> =>
+    (await import("../capture/resource-timing")).ResourceTimingCapture,
+  lifecycle: async (): Promise<CaptureClass> =>
+    (await import("../capture/lifecycle")).LifecycleCapture,
 };
 
 /** Name of one capture module. */
@@ -147,6 +155,7 @@ const DELIVERY_RESET = {
   credentials: "omit",
   transport: undefined,
   transportOnExit: undefined,
+  transportWorker: undefined,
 } as const;
 
 /** Delivery settings that configure() cannot change while isolation is on. */
@@ -174,6 +183,7 @@ function captureKey(capture: CaptureOptions): string {
     webVitalsLoader: capture.webVitalsLoader !== undefined,
     ignoreUrls: capture.ignoreUrls.map(String),
     propagateTraceHeaderTo: capture.propagateTraceHeaderTo.map(String),
+    userTimingInclude: capture.userTimingInclude.map(String),
     plugins: capture.plugins.map(pluginId),
   });
 }
@@ -192,6 +202,7 @@ function consoleOnly(input: Partial<ObservabilityConfig>): Partial<Observability
     tracesEndpoint: "",
     transport: undefined,
     transportOnExit: undefined,
+    transportWorker: undefined,
     bus: { ...input.bus, mode: "off" },
   };
 }
@@ -206,7 +217,8 @@ function sends(input: Partial<ObservabilityConfig>): boolean {
     Boolean(input.endpoint) ||
     Boolean(input.metricsEndpoint) ||
     Boolean(input.tracesEndpoint) ||
-    input.transport !== undefined
+    input.transport !== undefined ||
+    input.transportWorker !== undefined
   );
 }
 
@@ -314,7 +326,18 @@ export class ObservabilityRuntime {
   readonly builder: RecordBuilder;
 
   /** Slot of the remote sampling rules. The sender or the bus fills it. */
-  private readonly remote: RemoteSlot = { sampling: null };
+  private readonly remote: RemoteSlot = {
+    sampling: null,
+    changed: () => {
+      this.refreshCaptures();
+    },
+  };
+
+  /** Timer that restores the local capture switches after the remote TTL. */
+  private remoteCaptureTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Settings of the current capture load or install. */
+  private installedCaptureKey = "";
 
   /** Console sink for local developer output. */
   readonly console: ConsoleSink;
@@ -415,6 +438,7 @@ export class ObservabilityRuntime {
    * the sender. Without this, the client spans of a frame or a view have no parent.
    */
   private readonly onPageHide = (): void => {
+    drainDeferred(this);
     if (this.role() !== "forwarder") {
       return;
     }
@@ -818,6 +842,7 @@ export class ObservabilityRuntime {
         );
       return;
     }
+    drainDeferred(this);
     const accepted = this.keepDestination(this.keepRouting(this.allowed(input)));
     // The first configure() after an implicit start is the startup of the app. Its id is explicit.
     if (!this.tunablesLocked && accepted.securityContext?.id) {
@@ -836,7 +861,6 @@ export class ObservabilityRuntime {
         Object.assign(accepted, { [key]: this.config[key] });
       }
     }
-    const capturesBefore = captureKey(this.config.capture);
     const next = resolveConfig(accepted, this.diagnostics, this.config);
     this.keepStartupTunables(next);
     applyResolvedConfig(this.config, next);
@@ -854,9 +878,7 @@ export class ObservabilityRuntime {
 
     // Reinstall only on a change. A reinstall unpatches and patches each host function.
     // A stale capture load stops at its generation check. A reinstall is safe at any time.
-    if (captureKey(this.config.capture) !== capturesBefore) {
-      void this.installCaptures();
-    }
+    this.refreshCaptures();
 
     if (this.roleResolved) {
       void this.syncSender();
@@ -888,7 +910,7 @@ export class ObservabilityRuntime {
       this.serverReported = true;
       this.diagnostics.report(
         "config.invalid",
-        "The library runs console-only on Node. It sends no record and installs no capture. It ignores endpoint, metricsEndpoint, tracesEndpoint and transport.",
+        "The library runs console-only on Node. It sends no record and installs no capture. It ignores endpoint, metricsEndpoint, tracesEndpoint, transport and transportWorker.",
       );
     }
 
@@ -1021,18 +1043,18 @@ export class ObservabilityRuntime {
     }
 
     let accepted = input;
-    const addsOrRemoves =
-      "transport" in input &&
-      (input.transport === undefined) !== (this.config.transport === undefined);
-
-    // The stack selects HTTP or the custom transport one time. It cannot change to the other.
-    if (addsOrRemoves) {
-      this.diagnostics.report(
-        "config.invalid",
-        "You cannot add or remove transport after the delivery stack loads. The transport in force stays.",
-      );
-      accepted = { ...accepted };
-      delete accepted.transport;
+    // The stack selects its transport one time. A rotation can select another transport.
+    for (const key of ["transport", "transportWorker"] as const) {
+      const addsOrRemoves =
+        key in input && (input[key] === undefined) !== (this.config[key] === undefined);
+      if (addsOrRemoves) {
+        this.diagnostics.report(
+          "config.invalid",
+          `You cannot add or remove ${key} after the delivery stack loads. The transport in force stays.`,
+        );
+        accepted = { ...accepted };
+        Reflect.deleteProperty(accepted, key);
+      }
     }
 
     const removesEndpoint = accepted.endpoint === null || accepted.endpoint === "";
@@ -1185,6 +1207,7 @@ export class ObservabilityRuntime {
               // The first owner id keeps the startup records and the context of the app. Those
               // records had no other identity. A later change retires them, also before ready.
               if (this.ownerAdopted) {
+                drainDeferred(this);
                 this.drops.add("security_context", [
                   ...this.bootBuffer.take(),
                   ...this.pendingRecords.take(),
@@ -1300,6 +1323,7 @@ export class ObservabilityRuntime {
             onLoss: this.reportLoss,
             remote: this.remote,
             beforeExit: () => {
+              drainDeferred(this);
               this.meter.collect();
               this.tracing.end();
             },
@@ -1329,6 +1353,44 @@ export class ObservabilityRuntime {
     }
   }
 
+  /** Refreshes temporary switches and restores local settings when their TTL ends. */
+  private refreshCaptures(): void {
+    clearTimeout(this.remoteCaptureTimer);
+    this.remoteCaptureTimer = undefined;
+    if (this.destroyed) {
+      return;
+    }
+
+    const wire = this.remote.sampling?.wire();
+    if (wire) {
+      this.remoteCaptureTimer = setTimeout(() => {
+        this.refreshCaptures();
+      }, wire.ttlMs);
+      unrefTimer(this.remoteCaptureTimer);
+    }
+
+    if (captureKey(this.effectiveCapture()) !== this.installedCaptureKey) {
+      void this.installCaptures();
+    }
+  }
+
+  /** Returns local capture settings with the permitted remote switches. */
+  private effectiveCapture(): CaptureOptions {
+    const settings = { ...this.config.capture };
+    const remote = this.remote.sampling?.current()?.capture;
+    for (const key of REMOTE_CAPTURE_FLAGS) {
+      const value = remote?.[key];
+      if (settings.remoteToggles.includes(key) && value !== undefined) {
+        if (value && typeof settings[key] === "object") {
+          continue;
+        }
+        settings[key] = value;
+      }
+    }
+
+    return settings;
+  }
+
   /** Loads, builds and installs the enabled capture modules. It never rejects. */
   private async installCaptures(): Promise<void> {
     // A console-only runtime next to another version patches nothing. The other version does.
@@ -1337,7 +1399,8 @@ export class ObservabilityRuntime {
     }
 
     const generation = ++this.captureGeneration;
-    const settings = this.config.capture;
+    const settings = this.effectiveCapture();
+    this.installedCaptureKey = captureKey(settings);
     const names: CaptureName[] = [];
 
     if (settings.errors || settings.rejections || settings.resourceErrors) {
@@ -1370,6 +1433,16 @@ export class ObservabilityRuntime {
       names.push("userTiming");
     }
 
+    if (settings.reports) {
+      names.push("reports");
+    }
+    if (settings.resourceTiming) {
+      names.push("resourceTiming");
+    }
+    if (settings.lifecycle) {
+      names.push("lifecycle");
+    }
+
     const [classes, WebSocketCapture] = await Promise.all([
       Promise.all(names.map((name) => this.loadCapture(name))),
       settings.webSocket ? this.loadWebSocket() : undefined,
@@ -1385,7 +1458,7 @@ export class ObservabilityRuntime {
 
     const ctx: CaptureContext = {
       isActive: () => !this.destroyed && !this.rotating,
-      config: this.config,
+      config: Object.assign(Object.create(this.config) as ResolvedConfig, { capture: settings }),
       diagnostics: this.diagnostics,
       breadcrumbs: this.breadcrumbs,
       tracing: this.tracing,
@@ -1407,7 +1480,7 @@ export class ObservabilityRuntime {
     }
 
     const plugins = WebSocketCapture
-      ? [...settings.plugins, new WebSocketCapture(this.diagnostics, this.config)]
+      ? [...settings.plugins, new WebSocketCapture(this.diagnostics, ctx.config)]
       : settings.plugins;
 
     for (const plugin of plugins) {
@@ -1558,9 +1631,13 @@ export class ObservabilityRuntime {
     }
 
     // The points of the open interval and the root span go out with the final flush.
+    drainDeferred(this);
     this.meter.collect();
     this.tracing.end();
     this.destroyed = true;
+    cancelDeferred(this);
+    clearTimeout(this.remoteCaptureTimer);
+    this.remoteCaptureTimer = undefined;
 
     if (!this.degraded) {
       removeEventListener("pagehide", this.onPageHide);
@@ -1810,6 +1887,7 @@ export class ObservabilityRuntime {
       return;
     }
 
+    drainDeferred(this);
     this.resetSession(newId(this.diagnostics));
   }
 
@@ -1857,6 +1935,7 @@ export class ObservabilityRuntime {
       return Promise.reject(new Error("Invalid security-context rotation options."));
     }
     if (this.destroyed) return Promise.reject(new Error("The runtime has stopped."));
+    drainDeferred(this);
     this.rotating = true;
     this.rotation = this.rotateContext(update, pending, timeoutMs).finally(() => {
       this.rotating = false;
@@ -1941,6 +2020,7 @@ export class ObservabilityRuntime {
     // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
     applyResolvedConfig(this.config, next);
     this.remote.sampling = null;
+    this.refreshCaptures();
     this.context.clear();
     if (context) this.context.setMany(context);
     this.breadcrumbs.clear();
@@ -2148,6 +2228,7 @@ export class ObservabilityRuntime {
    * @returns Promise that resolves when the library sends or hands off the queued records.
    */
   async flush(): Promise<void> {
+    drainDeferred(this);
     this.meter.collect();
 
     // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.

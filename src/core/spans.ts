@@ -38,6 +38,8 @@ export interface SpanData {
   error: boolean;
   /** Attributes of the span. */
   attributes: Record<string, unknown>;
+  /** Server span linked through a response traceparent entry. */
+  link?: { traceId: string; spanId: string };
 }
 
 /**
@@ -80,5 +82,11 @@ export function spanFields(span: SpanData): Record<string, unknown> {
     [SPAN_KEYS.start]: unixNano(span.startMs),
     [SPAN_KEYS.end]: unixNano(span.endMs),
     [SPAN_KEYS.status]: span.error ? "error" : "unset",
+    ...(span.link
+      ? {
+          [SPAN_KEYS.linkTraceId]: span.link.traceId,
+          [SPAN_KEYS.linkSpanId]: span.link.spanId,
+        }
+      : {}),
   };
 }

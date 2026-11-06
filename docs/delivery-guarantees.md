@@ -91,3 +91,19 @@ The exit flush is best effort.
 - `carry` moves them to the new identity.
 
 During a rotation, the library drops logger calls, metric measurements and forwarded records. A forwarder clears its buffered records when its owner changes identity. See [runtime policies](runtime-policies.md) for each rule.
+
+## Deferred calls
+
+With deferred logger calls, `log.seq` follows build order. `timeUnixNano` keeps the call time.
+
+With `payloadMode: "defer"`, the logger keeps payload references before it builds records. Explicit flush, shutdown and page exit build pending calls before delivery. Session and delivery identity changes drain the calls before they change identity. A forwarder builds its pending calls before it clears records of an old owner identity.
+
+The deferred queue has a count cap that is separate from the delivery buffers. A full queue builds its calls first. Extra calls from a hook at the cap remain unbuilt and increment `record.dropped_by_ceiling`. Delivery stats and `onDrop` apply after record construction.
+
+## Worker delivery
+
+A transport worker owns encoding, compression and HTTP sends for built-in serializers. The main runtime owns batching, record byte budgets, stored retries and the exit flush. A worker result has the same status meaning as an HTTP result. Header functions run on the main thread. Both paths share the cached result for exit sends.
+
+A worker failure can leave the result of an HTTP request unknown. HTTP fallback or a stored retry keeps the batch id. The ingest server must still deduplicate it. The main exit flush can also copy an unconfirmed worker batch. The ordinary duplicate rules apply to that copy.
+
+A delivery rotation cancels pending jobs and terminates the old worker before it applies new settings. Each job holds its own endpoint and resolved headers. A late result cannot apply to the next sender. A hidden page uses the main HTTP keepalive path. Shutdown flushes records before it terminates the worker.

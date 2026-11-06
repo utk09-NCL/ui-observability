@@ -129,11 +129,29 @@ export class Sender {
     // The stack keeps one transport for its life. The runtime refuses a later change.
     // The exit flush reads the last headers from the HTTP transport.
     const { onLoss } = deps;
-    const http = config.transport
-      ? undefined
-      : new HttpTransport(config, diagnostics, onSampling, onLoss, onClock);
+    const worker =
+      !config.transport && config.transportWorker
+        ? await diagnostics.guardAsync(
+            "transport.http_error",
+            "The transport worker module did not load. The library uses HTTP.",
+            async () =>
+              (await import("../transport/worker-transport")).createWorkerTransport(
+                config,
+                diagnostics,
+                onSampling,
+                onLoss,
+                onClock,
+              ),
+          )
+        : undefined;
+    const http =
+      config.transport !== undefined || worker !== undefined
+        ? undefined
+        : new HttpTransport(config, diagnostics, onSampling, onLoss, onClock);
     const transport: StatusTransport =
-      http ?? new CustomTransport(config, diagnostics, onSampling, onLoss, onClock);
+      worker?.transport ??
+      http ??
+      new CustomTransport(config, diagnostics, onSampling, onLoss, onClock);
     const retry = new RetryEngine(storage, transport, diagnostics, config, undefined, onLoss);
     const { batching } = config;
     const pipeline = new LogPipeline(
@@ -161,7 +179,7 @@ export class Sender {
       diagnostics,
       drainForExit: () => pipeline.drainForExit(),
       flushAlive: () => pipeline.flushPending(),
-      exitHeaders: () => http?.lastHeaders(),
+      exitHeaders: () => (worker ? worker.exitHeaders() : http?.lastHeaders()),
       onLoss,
       beforeExit: deps.beforeExit,
     });
@@ -254,6 +272,7 @@ export class Sender {
     this.exitFlush.flush("shutdown");
     this.exitFlush.uninstall();
     this.retry.stop();
+    this.transport.stop();
     this.pipeline.destroy();
 
     await this.storage.close();

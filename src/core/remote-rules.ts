@@ -6,6 +6,7 @@
 
 import {
   LEVEL_ORDER,
+  REMOTE_CAPTURE_FLAGS,
   REMOTE_SAMPLING_MAX_CHARS,
   REMOTE_SAMPLING_MAX_RATES,
   REMOTE_SAMPLING_MAX_TTL_MS,
@@ -159,6 +160,27 @@ function readRules(value: unknown): RemoteUpdate {
     rules.minLevels = readMinLevels(value.minLevels);
   }
 
+  if (value.capture !== undefined) {
+    const capture = value.capture;
+    if (!isObject(capture)) {
+      throw new RuleError("capture must be an object of capture switches.");
+    }
+
+    const entries = Object.entries(capture);
+    if (
+      !entries.every(
+        ([key, flag]) =>
+          REMOTE_CAPTURE_FLAGS.some((name) => name === key) && typeof flag === "boolean",
+      )
+    ) {
+      throw new RuleError(
+        "capture must contain boolean capture switches without privacy controls.",
+      );
+    }
+
+    rules.capture = Object.fromEntries(entries);
+  }
+
   return { rules, ttlMs };
 }
 
@@ -200,4 +222,5 @@ export function applyRemote(
   }
 
   slot.sampling?.apply(update);
+  slot.changed?.();
 }

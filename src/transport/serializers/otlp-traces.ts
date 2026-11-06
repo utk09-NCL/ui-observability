@@ -41,12 +41,19 @@ function spanOf(record: LogRecord): Record<string, unknown> {
     Object.entries(record.attributes).filter(([key]) => !FIELD_KEYS.has(key)),
   );
   const parent = stringOf(record, SPAN_KEYS.parentId);
+  const linkTraceId = stringOf(record, SPAN_KEYS.linkTraceId);
+  const linkSpanId = stringOf(record, SPAN_KEYS.linkSpanId);
 
   return {
     traceId: record.traceId,
     spanId: record.spanId,
     // A root span has no parent. Leave the field out.
     ...(parent ? { parentSpanId: parent } : {}),
+    ...(linkTraceId && linkSpanId
+      ? {
+          links: [{ traceId: linkTraceId, spanId: linkSpanId }],
+        }
+      : {}),
     name: record.body,
     kind: stringOf(record, SPAN_KEYS.kind) === "client" ? SPAN_KIND.client : SPAN_KIND.internal,
     startTimeUnixNano: stringOf(record, SPAN_KEYS.start) ?? record.timeUnixNano,

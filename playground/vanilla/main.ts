@@ -22,6 +22,12 @@ const MOCK_SERVER = "http://localhost:8787";
 /** Target HTTP endpoint for log ingest requests. */
 const INGEST_ENDPOINT = `${MOCK_SERVER}/v1/logs`;
 
+/** The page selects the transport before the delivery stack loads. */
+const workerEnabled = new URLSearchParams(location.search).get("worker") === "1";
+const transportWorker = workerEnabled
+  ? () => new Worker(new URL("./transport-worker.ts", import.meta.url), { type: "module" })
+  : undefined;
+
 /** Number of log records generated in a single test burst. */
 const BURST_SIZE = 250;
 
@@ -77,6 +83,8 @@ const on = (id: string, fn: () => void): void => {
 // their registration. See the registration block below.
 configure({
   endpoint: INGEST_ENDPOINT,
+  transportWorker,
+  tracesEndpoint: `${MOCK_SERVER}/v1/traces`,
   serviceName: "playground",
   serviceVersion: "0.0.0-dev",
   environment: "local",
@@ -91,6 +99,7 @@ configure({
     resourceErrors: true,
     fetch: true,
     xhr: true,
+    propagateTraceHeaderTo: [MOCK_SERVER],
     // Records ui.rage_click and ui.dead_click with the action name only.
     interactions: { rageClicks: true, deadClicks: true },
     navigation: true,
@@ -133,6 +142,57 @@ void flush().then(() => {
 
 /** Namespaced logger for records this harness emits by hand. */
 const log = getLogger("playground");
+
+for (const name of ["serverTiming", "reports", "resourceTiming", "lifecycle"] as const) {
+  const input = el(`#capture-${name}`) as HTMLInputElement;
+  input.addEventListener("change", () => {
+    configure({ capture: { [name]: input.checked } });
+  });
+}
+
+const remoteCaptures = el("#capture-remote") as HTMLInputElement;
+remoteCaptures.addEventListener("change", () => {
+  configure({
+    capture: { remoteToggles: remoteCaptures.checked ? ["serverTiming", "lifecycle"] : [] },
+  });
+});
+
+on("server-timing", () => {
+  void fetch(`${MOCK_SERVER}/__timing`)
+    .then(() => flush())
+    .catch((error: unknown) => {
+      note("playground.request_failed", toMessage(error));
+    });
+});
+
+on("remote-captures", () => {
+  const rules = JSON.stringify({
+    v: 1,
+    ttlMs: 10000,
+    capture: { serverTiming: true, lifecycle: true },
+  });
+  void fetch(`${MOCK_SERVER}/__sampling?rules=${encodeURIComponent(rules)}`, { method: "POST" })
+    .then(async () => {
+      log.info("Request remote capture rules");
+      await flush();
+      await fetch(`${MOCK_SERVER}/__sampling?rules=`, { method: "POST" });
+      note("playground.remote_captures", "The server enables permitted captures for 10 seconds.");
+    })
+    .catch((error: unknown) => {
+      note("playground.control_failed", toMessage(error));
+    });
+});
+
+const deferPayloads = el("#payload-defer") as HTMLInputElement;
+deferPayloads.addEventListener("change", () => {
+  configure({ payloadMode: deferPayloads.checked ? "defer" : "copy" });
+});
+
+on("payload-mutation", () => {
+  const payload = { status: "before" };
+  log.info("Payload mode sample", payload);
+  payload.status = "after";
+});
 
 on("info", () => {
   log.info("hello from the playground", { clicked: true });

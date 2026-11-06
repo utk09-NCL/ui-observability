@@ -2,6 +2,8 @@
 //
 // Instruments fetch and XMLHttpRequest to record network request outcomes and timing.
 
+import { SERVER_TIMING_HEADER } from "../constants";
+import { readServerTiming, xhrServerTiming } from "./server-timing";
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isErrorLike } from "../utils/error-like";
 import { isLibraryRequest, isTransportPending } from "../utils/library-request";
@@ -268,7 +270,13 @@ export class NetworkCapture implements Capture {
     let active = true;
     const prepare = (input: RequestInfo | URL, init: RequestInit | undefined) =>
       this.prepareFetch(input, init);
-    const record = (plan: FetchPlan, status: number, durationMs: number, error: unknown): void => {
+    const record = (
+      plan: FetchPlan,
+      status: number,
+      durationMs: number,
+      error: unknown,
+      readTiming?: () => string | null,
+    ): void => {
       this.record(
         plan.method,
         plan.url,
@@ -277,6 +285,7 @@ export class NetworkCapture implements Capture {
         error,
         plan.span,
         plan.routingContextId,
+        readTiming,
       );
     };
 
@@ -292,7 +301,9 @@ export class NetworkCapture implements Capture {
         const startedAt = performance.now();
         try {
           const response = await call(plan.input, plan.init);
-          record(plan, response.status, performance.now() - startedAt, undefined);
+          record(plan, response.status, performance.now() - startedAt, undefined, () =>
+            response.headers.get(SERVER_TIMING_HEADER),
+          );
           return response;
         } catch (error) {
           record(plan, 0, performance.now() - startedAt, error);
@@ -399,7 +410,12 @@ export class NetworkCapture implements Capture {
     const ctx = this.ctx;
     const ignored = (url: string): boolean => this.ignored(url);
     const propagates = (url: string): boolean => this.propagates(url);
-    const record = (meta: XhrMeta, status: number, durationMs: number): void => {
+    const record = (
+      meta: XhrMeta,
+      status: number,
+      durationMs: number,
+      readTiming: () => string | null,
+    ): void => {
       this.record(
         meta.method,
         meta.url,
@@ -408,6 +424,7 @@ export class NetworkCapture implements Capture {
         undefined,
         meta.span,
         meta.routingContextId,
+        readTiming,
       );
     };
 
@@ -453,7 +470,9 @@ export class NetworkCapture implements Capture {
                 this.addEventListener(
                   "loadend",
                   () => {
-                    record(meta, this.status, performance.now() - meta.startedAt);
+                    record(meta, this.status, performance.now() - meta.startedAt, () =>
+                      xhrServerTiming(this.getAllResponseHeaders()),
+                    );
                   },
                   { once: true },
                 );
@@ -493,14 +512,26 @@ export class NetworkCapture implements Capture {
     error: unknown,
     span?: ClientSpan,
     routingContextId?: string,
+    readTiming?: () => string | null,
   ): void {
     if (
       this.ctx.isActive?.() === false ||
       (this.ctx.config.securityContext.isolation &&
         routingContextId !== undefined &&
         routingContextId !== this.ctx.config.securityContext.id)
-    )
+    ) {
       return;
+    }
+
+    const timing =
+      this.ctx.config.capture.serverTiming && readTiming
+        ? this.ctx.diagnostics.guard(
+            "capture.record_failed",
+            "The library could not read the Server-Timing response header.",
+            () => readServerTiming(readTiming()),
+          )
+        : undefined;
+
     // Remove the query here, not at the call sites. ignoreUrls and propagateTraceHeaderTo
     // match on the full URL. Only the recorded URL loses the query string.
     const url = recordedUrl(
@@ -539,6 +570,7 @@ export class NetworkCapture implements Capture {
           const endMs = Date.now();
           this.ctx.recordSpan({
             ...span,
+            link: timing?.link,
             name: method,
             kind: "client",
             startMs: endMs - durationMs,
@@ -570,6 +602,7 @@ export class NetworkCapture implements Capture {
           "url.full": url,
           "http.response.status_code": status,
           "http.duration_ms": rounded,
+          ...(timing && timing.entries.length > 0 ? { "server.timing": timing.entries } : {}),
         };
 
         if (status === 0) {

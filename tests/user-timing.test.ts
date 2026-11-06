@@ -4,6 +4,7 @@ import { UserTimingCapture } from "../src/capture/user-timing";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
+import { ObservabilityRuntime } from "../src/core/runtime";
 import { configure, flush } from "../src/index";
 import type { CaptureOptions } from "../src/models/config";
 import { TraceEngine } from "../src/utils/tracing";
@@ -207,6 +208,33 @@ describe("capture.userTiming in the runtime", () => {
 
     await vi.waitFor(() => {
       expect(FakeObserver.created).toHaveLength(1);
+    });
+  });
+
+  it("applies a new userTimingInclude pattern from a later configure()", async () => {
+    support(USER_TIMING_TYPES);
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      bus: { mode: "off" },
+      capture: {
+        errors: false,
+        rejections: false,
+        userTiming: true,
+        userTimingInclude: [/^old\./],
+      },
+    });
+    await flush();
+    await vi.waitFor(() => {
+      expect(FakeObserver.created).toHaveLength(1);
+    });
+
+    configure({ capture: { userTimingInclude: [/^new\./] } });
+    await vi.waitFor(() => {
+      active().emit({ entryType: "mark", name: "new.mark" });
+      expect(ObservabilityRuntime.current()?.breadcrumbs.snapshot()).toContainEqual(
+        expect.objectContaining({ message: "new.mark" }),
+      );
     });
   });
 });

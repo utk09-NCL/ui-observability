@@ -28,6 +28,7 @@ import { isOnline } from "../utils/platform";
 import { estimateBytes } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
+import { lastHeaders, resetHeaders, resolveHeaders } from "./headers";
 import { parseRetryAfter, TransportError } from "./errors";
 import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
@@ -41,20 +42,6 @@ const CREDENTIAL_ADVICE =
 /** Body of one request. It is text or gzip bytes. */
 type RequestBody = string | Uint8Array<ArrayBuffer>;
 
-/** Headers that a headers() function gave, that function and the endpoint of the send. */
-interface CachedHeaders {
-  /** The headers() function that gave the headers. */
-  source: unknown;
-  /** The endpoint in force when headers() ran. */
-  endpoint: string | null;
-  /** The metricsEndpoint in force when headers() ran. */
-  metricsEndpoint: string;
-  /** The tracesEndpoint in force when headers() ran. */
-  tracesEndpoint: string;
-  /** The headers. */
-  headers: Record<string, string>;
-}
-
 /** This type reads document.visibilityState without global DOM type assertions. */
 interface DocumentGlobal {
   document?: { visibilityState?: string };
@@ -65,13 +52,6 @@ interface DocumentGlobal {
  * compression and classifies errors.
  */
 export class HttpTransport extends StatusTransport {
-  /**
-   * Headers that the headers() function gave last. The exit flush sends them only while that
-   * function and the two endpoints are in force. A tenant switch must not send the old token to
-   * the new endpoint.
-   */
-  private cachedHeaders: CachedHeaders | undefined;
-
   /**
    * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint. A traces batch goes to
    * tracesEndpoint. A batch without an endpoint goes nowhere.
@@ -103,24 +83,7 @@ export class HttpTransport extends StatusTransport {
    * @returns The static headers, the headers that the function in force gave last, or undefined.
    */
   lastHeaders(): Record<string, string> | undefined {
-    const { headers } = this.config;
-    if (!headers) {
-      return undefined;
-    }
-
-    if (typeof headers !== "function") {
-      return headers;
-    }
-
-    // The headers apply to each endpoint. A change of any endpoint can be a tenant switch.
-    const cached = this.cachedHeaders;
-    const current =
-      cached?.source === headers &&
-      cached.endpoint === this.config.endpoint &&
-      cached.metricsEndpoint === this.config.metricsEndpoint &&
-      cached.tracesEndpoint === this.config.tracesEndpoint;
-
-    return current ? cached.headers : undefined;
+    return lastHeaders(this, this.config);
   }
 
   /**
@@ -150,7 +113,7 @@ export class HttpTransport extends StatusTransport {
     // A token can expire between two calls of headers(). Send one time more with new
     // headers. A second 401 or 403 drops the batch.
     if (this.rejectsCredentials(response.status) && typeof this.config.headers === "function") {
-      this.cachedHeaders = undefined;
+      resetHeaders(this);
       response = await this.attempt(batch, endpoint, serialized, onKeepalive);
       this.assertContext(batch);
     }
@@ -373,32 +336,6 @@ export class HttpTransport extends StatusTransport {
    * @returns Promise that resolves to resolved header map.
    */
   private async resolveHeaders(): Promise<Record<string, string>> {
-    const { headers } = this.config;
-    if (!headers) {
-      return {};
-    }
-    if (typeof headers !== "function") {
-      return headers;
-    }
-
-    // Read the endpoints before the call. A configure() during the call then ends the cache.
-    const { endpoint, metricsEndpoint, tracesEndpoint } = this.config;
-    const resolved = await this.diagnostics.guardAsync(
-      "transport.http_error",
-      "The headers() function threw an error.",
-      () => Promise.resolve(headers()),
-    );
-
-    if (resolved) {
-      this.cachedHeaders = {
-        source: headers,
-        endpoint,
-        metricsEndpoint,
-        tracesEndpoint,
-        headers: resolved,
-      };
-    }
-
-    return resolved ?? {};
+    return resolveHeaders(this, this.config, this.diagnostics);
   }
 }

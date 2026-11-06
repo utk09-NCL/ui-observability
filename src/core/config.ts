@@ -16,6 +16,8 @@ import {
   DEAD_CLICK_MS,
   DEFAULT_CONFIG,
   LEVEL_ORDER,
+  REMOTE_CAPTURE_FLAGS,
+  RESOURCE_SLOW_MS,
   RAGE_CLICK_COUNT,
   RAGE_CLICK_WINDOW_MS,
   SAMPLING_RATE_FALLBACK,
@@ -164,6 +166,9 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       consolePerWindow: COUNT_RANGE,
       longFramesPerWindow: COUNT_RANGE,
       webSocketPerWindow: COUNT_RANGE,
+      reportsPerWindow: COUNT_RANGE,
+      resourcesPerWindow: COUNT_RANGE,
+      lifecyclePerWindow: COUNT_RANGE,
       windowMs: DURATION_RANGE,
       errorCeiling: COUNT_RANGE,
     },
@@ -221,6 +226,9 @@ const CAPTURE_FLAG_KEYS = [
   "webSocket",
   "uncleanExit",
   "userTiming",
+  "serverTiming",
+  "reports",
+  "lifecycle",
 ] as const;
 
 /** Origin of a sandboxed frame without allow-same-origin. */
@@ -1131,6 +1139,15 @@ function resolveCapture(
   const capture: CaptureOptions = {
     ...base,
     ...given,
+    remoteToggles: resolveList(
+      "capture.remoteToggles",
+      given.remoteToggles,
+      base.remoteToggles,
+      "a list of capture switch names without privacy controls",
+      (value) => REMOTE_CAPTURE_FLAGS.find((key) => key === value),
+      diagnostics,
+    ),
+    resourceTiming: resolveResourceTiming(given.resourceTiming, base.resourceTiming, diagnostics),
     interactions: resolveInteractions(given.interactions, base.interactions, diagnostics),
     console: resolveCaptureConsole(given.console, base.console, diagnostics),
     longFrameThresholdMs: resolveNonNegative(
@@ -1179,6 +1196,36 @@ function resolveCapture(
   }
 
   return capture;
+}
+
+/** Checks resource timing settings. An invalid value keeps the settings in force. */
+function resolveResourceTiming(
+  value: unknown,
+  base: CaptureOptions["resourceTiming"],
+  diagnostics: Diagnostics,
+): CaptureOptions["resourceTiming"] {
+  if (value === undefined) {
+    return base;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (!isObject(value)) {
+    diagnostics.report(
+      "config.invalid",
+      "capture.resourceTiming must be a boolean or an options object.",
+    );
+    return base;
+  }
+
+  return {
+    slowMs: resolveNonNegative(
+      "capture.resourceTiming.slowMs",
+      value.slowMs,
+      typeof base === "object" ? (base.slowMs ?? RESOURCE_SLOW_MS) : RESOURCE_SLOW_MS,
+      diagnostics,
+    ),
+  };
 }
 
 /**
@@ -1454,6 +1501,13 @@ export function resolveConfig(
     // A bad value reports config.invalid. The value in force stays. Without this check, a bad
     // minLevel drops each record with no message.
     enabled: resolveBoolean("enabled", input.enabled, base.enabled, diagnostics),
+    payloadMode: resolveChoice(
+      "payloadMode",
+      input.payloadMode,
+      ["copy", "defer"] as const,
+      base.payloadMode,
+      diagnostics,
+    ),
     minLevel: resolveLevel("minLevel", input.minLevel, base.minLevel, diagnostics),
     minLevels: resolveMinLevels(input.minLevels, base.minLevels, diagnostics),
     processors: resolveList(
@@ -1534,6 +1588,14 @@ export function resolveConfig(
       "contextProvider must be a function. The library ignores the value.",
     );
     merged.contextProvider = base.contextProvider;
+  }
+
+  if (merged.transportWorker !== undefined && typeof merged.transportWorker !== "function") {
+    diagnostics.report(
+      "config.invalid",
+      "transportWorker must be a function. The library keeps the value in force.",
+    );
+    merged.transportWorker = base.transportWorker;
   }
 
   if (merged.transportOnExit !== undefined && typeof merged.transportOnExit !== "function") {

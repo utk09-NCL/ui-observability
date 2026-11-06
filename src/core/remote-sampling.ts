@@ -5,7 +5,7 @@
 // Only the lazy chunks import this class. The main bundle imports the types.
 
 import { LEVEL_ORDER, REMOTE_SAMPLING_VERSION } from "../constants";
-import type { ResolvedConfig } from "../models/config";
+import type { RemoteCaptureFlag, ResolvedConfig } from "../models/config";
 import type { LogLevel } from "../models/log-record";
 import { levelFor, longestPrefix } from "./sampling";
 
@@ -15,6 +15,8 @@ export interface RemoteRules {
   defaultRate?: number;
   /** Rate for each namespace prefix. They apply over the config rates. */
   rates: Record<string, number>;
+  /** Temporary capture switches. Each context applies its own allowlist. */
+  capture?: Partial<Record<RemoteCaptureFlag, boolean>>;
   /** Lowest level that the library sends. It can only lower `minLevel`. */
   minLevel?: LogLevel;
   /** Lowest level for each namespace prefix. It can only lower the level of the config. */
@@ -41,6 +43,8 @@ export interface RemoteWire extends RemoteRules {
 export interface RemoteSlot {
   /** Overlay, or null before the first rules. */
   sampling: RemoteSampling | null;
+  /** Refreshes captures after a trusted rule update. */
+  changed?: () => void;
 }
 
 /** Remote sampling rules in force for this context. */
