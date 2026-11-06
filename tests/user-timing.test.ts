@@ -118,6 +118,32 @@ describe("UserTimingCapture", () => {
     expect(active().disconnected).toBe(true);
   });
 
+  it("gives a buffered mark the time of the mark", () => {
+    support(USER_TIMING_TYPES);
+    const { sut, ctx } = setup();
+    vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(1000);
+    sut.install();
+
+    active().emit({ ...mark("app.ready"), startTime: 250.4 });
+
+    expect(ctx.breadcrumbs.snapshot()).toMatchObject([{ t: 1250 }]);
+    sut.uninstall();
+  });
+
+  it("removes the query of a name without capture.fullUrls", () => {
+    support(USER_TIMING_TYPES);
+    const { sut, ctx } = setup();
+    sut.install();
+
+    active().emit(measure("GET https://api.example/x?token=K", 1), mark("/x?token=K#part"));
+
+    expect(ctx.recordMetric).toHaveBeenCalledWith(expect.anything(), 1, {
+      "user_timing.name": "GET https://api.example/x",
+    });
+    expect(ctx.breadcrumbs.snapshot()).toMatchObject([{ message: "/x" }]);
+    sut.uninstall();
+  });
+
   it("records only the names that userTimingInclude selects", () => {
     support(USER_TIMING_TYPES);
     const { sut, ctx } = setup({ userTimingInclude: [/^app\./, "checkout"] });

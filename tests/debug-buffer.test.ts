@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DebugBuffer } from "../src/core/debug-buffer";
+import { ObservabilityRuntime } from "../src/core/runtime";
 import { configure, createMemoryTransport, flush, getLogger, newSession } from "../src/index";
 import type { DebugBufferPolicy, ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
@@ -62,6 +63,65 @@ describe("DebugBuffer", () => {
 
     enabled = true;
     expect(buffer.drain()).toEqual([]);
+  });
+
+  it("gives no snapshot records while it is off or after maxAgeMs", () => {
+    vi.useFakeTimers();
+    let enabled = true;
+    const buffer = new DebugBuffer(() => ({ enabled, maxRecords: 3, maxAgeMs: 1000 }));
+
+    buffer.push(record("old"));
+    vi.advanceTimersByTime(1001);
+    buffer.push(record("new"));
+    expect(buffer.snapshot().map((one) => one.body)).toEqual(["new"]);
+
+    enabled = false;
+    expect(buffer.snapshot()).toEqual([]);
+    enabled = true;
+    expect(buffer.snapshot()).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("keeps a forwarded debug buffer record that sampling would drop", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      storage: "memory",
+      identity: "memory",
+      bus: { mode: "off" },
+      transport: memory.transport,
+      sampling: { defaultRate: 0 },
+    });
+    await flush();
+
+    const kept = record("kept");
+    kept.attributes["uiobs.debug_buffer"] = true;
+    ObservabilityRuntime.current()!["ingestForwarded"]([kept, record("plain")]);
+    await flush();
+
+    expect(memory.records().map((one) => one.body)).toEqual(["kept"]);
+  });
+
+  it("clears the kept records when the privacy hooks change", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      storage: "memory",
+      identity: "memory",
+      bus: { mode: "off" },
+      transport: memory.transport,
+      debugBuffer: { enabled: true },
+    });
+    const log = getLogger("app");
+
+    log.debug("raw");
+    configure({ redact: (one) => one });
+    log.error("failed", new Error("x"));
+    await flush();
+
+    expect(memory.records().map((one) => one.body)).toEqual(["failed"]);
   });
 
   it("gives the kept records without taking them", () => {

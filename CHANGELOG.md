@@ -6,18 +6,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added - v0.10.0
 
-- `sampling.alwaysSampleFrom` sets the lowest level that the sampling rate never drops. The default `"ERROR"` keeps the earlier behavior. `capturePolicy.errorCeiling` limits the records at this level and higher.
-- `delivery.priority` sets the fetch priority of each batch request. The default `"low"` lets the requests of the app go first. The exit flush and a send from a hidden page use the browser default.
+- `sampling.alwaysSampleFrom` sets the lowest level that the sampling rate never drops. The default `"ERROR"` keeps the earlier behavior. `capturePolicy.errorCeiling` limits the log records at this level and higher.
+- `delivery.priority` sets the fetch priority of each batch request. The default `"low"` lets the requests of the app go first. The exit flush and a keepalive send from a hidden page use the browser default.
 - `persistence.requestPersistent: true` asks the browser to keep the stored batches under storage pressure. It calls `navigator.storage.persist()` one time at startup. `getHealth()` reports the state in `storagePersistence`. The default is `false`, because Firefox can show a permission prompt.
 - Log and span records carry `uiobs.clock_offset_ms`, the server time minus the client time. It comes from the `Date` header of the last accepted answer. The server must expose `Date` to CORS. A custom transport returns it in `TransportResponse.date`. `metadata.clockOffset: false` turns it off.
-- `diagnostics.records: true`, or a list of codes, also sends each reported diagnostic as a record in the namespace `uiobs.diagnostics`. A fault has the level `WARN`. A normal event has the level `INFO`. A diagnostic during the build of a diagnostic record gives no record.
+- `diagnostics.records: true`, or a list of codes, also sends each reported diagnostic as a record in the namespace `uiobs.diagnostics`. A fault has the level `WARN`. A normal event has the level `INFO`. A diagnostic during the build of a diagnostic record gives no record. A diagnostic of the first `configure()` gives no record. In a record, the `url` and `endpoint` detail fields have no query and no fragment.
 - `docs/delivery-guarantees.md` describes duplicates, order, each loss with its `onDrop` reason, retention, the exit flush and rotation.
-- `debugBuffer: { enabled: true }` keeps the records that `minLevel` or sampling drops. An ERROR or FATAL record of this context sends them first, with `uiobs.debug_buffer: true`. The privacy hooks run at the time of the log call. `maxRecords` (default 200) and `maxAgeMs` (default 60000) limit the buffer.
-- `capture.interactions.rageClicks` records `ui.rage_click` when one element gets 3 clicks in 1 second. `capture.interactions.deadClicks` records `ui.dead_click` when a click on a control gives no DOM change, no navigation and no scroll in 1 second. Each event has the action name only. `rageClickCount`, `rageClickWindowMs` and `deadClickMs` set the thresholds.
-- `capture.uncleanExit` finds a page of the tab that stopped without a clean close, for example after a crash. The next page logs WARN `ui.unclean_exit` with the previous session id, the last-seen time, the last visibility and `exit.discarded`. It keeps one `sessionStorage` key.
-- `capture.userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration` with `user_timing.name`. Each `performance.mark()` adds a breadcrumb. `capture.userTimingInclude` keeps only the names that match.
-- `collectDebugBundle()` returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the page URL, the breadcrumbs after the privacy hooks, the debug buffer and a config summary without headers or URL queries. The app decides where to send it.
-
+- `debugBuffer: { enabled: true }` keeps the records that `minLevel` or sampling drops. An ERROR or FATAL record of this context sends them first, with `uiobs.debug_buffer: true`. The owner of a frame does not sample these records again. The privacy hooks run at the time of the log call. A later change of `redact` or `processors` clears the buffer. `maxRecords` (default 200) and `maxAgeMs` (default 60000) limit the buffer.
+- `capture.interactions.rageClicks` records one `ui.rage_click` for each burst of 3 clicks on one element in 1 second. `capture.interactions.deadClicks` records `ui.dead_click` when a click on a control gives no DOM change, no navigation and no scroll in 1 second. A click on a `target="_blank"` or `download` link gives no event. Each event names only the action. `ui.rage_click` also has the click count. `rageClickCount`, `rageClickWindowMs` and `deadClickMs` set the thresholds.
+- `capture.uncleanExit` finds a page of the tab that stopped without a clean close, for example after a crash. The next page logs WARN `ui.unclean_exit` with the previous session id, the last-seen time, the last visibility and `exit.discarded`. It keeps one `sessionStorage` key. A popup with an opener reports nothing. A duplicated tab can report a false exit. `identity: "memory"` turns the capture off.
+- `capture.userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration` with `user_timing.name`. Each `performance.mark()` adds a breadcrumb. `capture.userTimingInclude` keeps only the names that match. Names follow `capture.fullUrls`.
+- `collectDebugBundle()` returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the page URL, the breadcrumbs after the privacy hooks, the debug buffer and a config summary without headers or URL queries. A plugin or a custom serializer shows only its name. A debug buffer record keeps its context attributes. The app decides where to send the bundle.
 - Remote sampling answers can carry temporary capture switches. Only the names in `capture.remoteToggles` apply. The default list is empty. Privacy controls stay local.
 - `capture.serverTiming` adds response duration entries to fetch and XHR records. A valid traceparent entry links the client span to the server span.
 - `capture.reports` records deprecations, interventions and CSP reports as WARN `ui.report`. It omits message text and code samples. Report URLs have no credentials, query or fragment.
@@ -26,15 +25,19 @@ All notable changes to this project will be documented in this file. The format 
 - `capturePolicy.reportsPerWindow`, `resourcesPerWindow` and `lifecyclePerWindow` give each new capture a separate rate limit.
 - `payloadMode: "defer"` keeps payload references and builds records in idle time. The default `"copy"` builds at the call. Deferred calls keep their timestamp, trace, journey and ambient context keys. Flush, shutdown, page exit and identity changes drain pending calls. The debug buffer keeps immediate builds and privacy hooks.
 - `transportWorker` creates a dedicated HTTP transport worker. The worker calls `serveTransportWorker()`. Built-in encoding, gzip and HTTP sends run there. Header functions, retry, storage and exit sends stay on the main thread. A private port checks the exact SDK version. Worker startup or channel failures use HTTP fallback. A worker that does not connect before the request deadline is a startup failure. A worker module that does not load also selects HTTP. An offline failure uses no stored attempt.
+- `startMeasure(name, attrs?)` times an operation with named phases. `phase(name)` closes the open phase and starts the next phase. `end(outcome?)` records the total. Each phase goes into the histogram `ui.measure.phase.duration`, and the total goes into `ui.measure.duration`, in milliseconds. With `tracesEndpoint`, the measure is a span with one child span for each phase.
+- `npx @utk09/ui-observability doctor <url> --origin <origin>` checks an ingest server against the ingest contract. It tests the preflight, the allowed and exposed headers, a test batch, gzip and a repeated batch id. It prints `PASS` or `FAIL` for each rule. It sends real test batches with `service.name: "uiobs-doctor"`.
 
 ### Changed - v0.10.0
 
 - OTLP logs and spans use the logger namespace as the instrumentation scope name, for example `blotter.grid`. A record without a namespace keeps the scope `@utk09/ui-observability`. The scope has no version. Metrics keep the library scope. Update each backend query that filters by scope name.
+- `shutdown()` cancels a request that is still open after its final flush. A custom transport sees this in `request.signal`. A stored batch of that request stays in storage.
 
 ### Fixed - v0.10.0
 
 - A rotation sends the new delivery identity at once to each same-origin frame on the direct link. The owner no longer refuses the first batch of that frame after the rotation.
 - A same-origin frame with an explicit `securityContext.id` clears `security.context_mismatch` in `getHealth()` when the owner rotates to that ID.
+- A `config.invalid` message no longer prints the value of `headers`. A message about an invalid `endpoint`, `metricsEndpoint` or `tracesEndpoint` has no query and no fragment.
 
 ## [0.9.5] - 2026-11-01
 

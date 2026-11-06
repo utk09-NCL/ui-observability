@@ -1728,6 +1728,40 @@ describe("InteractionCapture rage and dead clicks", () => {
     capture.uninstall();
   });
 
+  it("records one rage click while clicks slide through the window", () => {
+    const { capture, logger, buy } = page({ rageClicks: true });
+
+    for (let index = 0; index < 5; index++) {
+      click(buy);
+      vi.advanceTimersByTime(400);
+    }
+    expect(events(logger, "ui.rage_click")).toHaveLength(1);
+
+    // A pause longer than the window ends the burst.
+    vi.advanceTimersByTime(1000);
+    click(buy);
+    click(buy);
+    click(buy);
+    expect(events(logger, "ui.rage_click")).toHaveLength(2);
+    capture.uninstall();
+  });
+
+  it("records no dead click on a link that opens elsewhere", async () => {
+    const { capture, logger } = page({ deadClicks: true });
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<a id="tab" target="_blank">Tab</a><a id="file" download>File</a>',
+    );
+
+    click(document.querySelector("#tab")!);
+    await vi.advanceTimersByTimeAsync(1000);
+    click(document.querySelector("#file")!);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(events(logger, "ui.dead_click")).toEqual([]);
+    capture.uninstall();
+  });
+
   it("records a dead click on a control that gives no response", async () => {
     const { capture, logger, buy, plain } = page({ deadClicks: true });
 

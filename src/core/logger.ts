@@ -410,7 +410,9 @@ export class OneLogger {
     if (
       runtime.config.payloadMode === "defer" &&
       runtime.config.enabled &&
-      !runtime.config.debugBuffer.enabled
+      !runtime.config.debugBuffer.enabled &&
+      // A deferred diagnostic record builds outside its loop guard. A hook failure then loops.
+      this.namespace !== DIAGNOSTICS_NAMESPACE
     ) {
       if (
         !runtime.builder.isEnabled(level, this.namespace, type) &&

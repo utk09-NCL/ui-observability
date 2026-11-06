@@ -904,6 +904,7 @@ export const CONFIG_SECTIONS = [
   "retention",
   "limits",
   "capture",
+  "debugBuffer",
 ] as const;
 
 /**
@@ -928,6 +929,7 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
   retention: [],
   limits: [],
   capture: ["webVitalsLoader", "urlTransform"],
+  debugBuffer: [],
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */

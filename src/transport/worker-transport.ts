@@ -14,7 +14,7 @@ import { DeadlineError, withDeadline } from "../utils/deadline";
 import { isOnline } from "../utils/platform";
 import { TransportError } from "./errors";
 import { resetHeaders, resolveHeaders } from "./headers";
-import { HttpTransport } from "./http-transport";
+import { CREDENTIAL_ADVICE, HttpTransport } from "./http-transport";
 import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 import { createWorkerClient, WorkerFault, type WorkerClient } from "./worker-client";
@@ -141,6 +141,7 @@ class WorkerTransport extends StatusTransport {
     throw this.reject(result.status, batch.id, kind, {
       retryAfterMs: result.retryAfterMs,
       maxBytes: result.maxBytes,
+      advice: CREDENTIAL_ADVICE,
     });
   }
 

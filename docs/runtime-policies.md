@@ -151,7 +151,7 @@ For Module Federation, configure the dependency as a singleton in the shell and 
 shared: {
   '@utk09/ui-observability': {
     singleton: true,
-    requiredVersion: '0.9.5',
+    requiredVersion: '0.10.0',
   },
 }
 ```
@@ -213,8 +213,9 @@ Health does not start a second runtime. It does not wait for initialization to c
 2. Replace `newSession()` at logout with awaited rotation. Also replace `configure()` calls that change delivery. Or disable isolation explicitly.
 3. Supply a stable security-context ID if you need offline replay after a page reload. The default isolation policy parks legacy untagged batches. Disable isolation only if you intend to send them with the current credentials.
 4. Register child frames before they start. Grant journey and sampling permissions where necessary. Or select origin-based discovery explicitly.
-5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame on an earlier version and a 0.9.5 owner ignore each other.
+5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame before 0.9.5 and an owner on 0.9.5 or later ignore each other.
 6. Set cache and bus budgets for the workload of the application. Then lock configuration if the shell owns it.
+7. Update each backend query that filters by OTLP scope name. Logs and spans now use the logger namespace as the scope name. Metrics keep the library scope.
 
 ## Operational budgets
 
@@ -276,7 +277,7 @@ Metric cardinality has a limit for each collection interval. The SDK adds extra 
 
 The diagnostics fallback is off by default. When it is on, it prints a fixed message. It never prints the exception, its message or its stack. The SDK still counts the failure under `handler.threw`. An application that needs the exception details can catch errors in its own diagnostic handler.
 
-`diagnostics.records: true` also sends each reported diagnostic as a record. A list of codes, for example `["transport.http_error", "storage.quota_exceeded"]`, sends only those codes. The records have the namespace `uiobs.diagnostics` and the type `system`. A fault has the level `WARN`. A normal event, for example `bus.role_resolved`, has the level `INFO`. The `throttleMs` interval of each code applies. A diagnostic that occurs while the SDK builds a diagnostic record gives no record. The record never contains the caught exception.
+`diagnostics.records: true` also sends each reported diagnostic as a record. A list of codes, for example `["transport.http_error", "storage.quota_exceeded"]`, sends only those codes. The records have the namespace `uiobs.diagnostics` and the type `system`. A fault has the level `WARN`. A normal event, for example `bus.role_resolved`, has the level `INFO`. The `throttleMs` interval of each code applies. A diagnostic that occurs while the SDK builds a diagnostic record gives no record. The record never contains the caught exception. A diagnostic of the first `configure()` gives no record, because the record builder does not exist yet. `onDiagnostic` still receives it. In a record, the `url` and `endpoint` detail fields have no query and no fragment. `onDiagnostic` keeps the full values.
 
 ### Debug buffer
 
@@ -292,7 +293,7 @@ The SDK builds each kept record at the time of the log call. The record has the 
 - It has the breadcrumbs. The processors and `redact` process them, as in an error record.
 - It has the records of the debug buffer. The privacy hooks processed them at the time of the log call.
 - It has a summary of the config. The summary has no `headers`. Each URL has no user info, query or fragment. A function shows only its name.
-- It does not have the values of `setContext()` or `contextProvider`.
+- Its own fields do not have the values of `setContext()` or `contextProvider`. A record of the debug buffer keeps its context attributes, as a sent record does. Use `redact` to remove them.
 
 ### Persistence and deletion
 

@@ -93,6 +93,15 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 | `metric.bucket_counts`        | number[] | Bucket counts of a histogram point.                               |
 | `otel.metric.overflow`        | boolean  | `true` on the point of the attribute sets above the series limit. |
 
+## Measure Attributes
+
+`startMeasure()` writes two histograms in milliseconds. The app attributes are also on each point. With `tracesEndpoint`, the measure span has the name of the measure and `measure.outcome`. Each child span has the name of the phase and `measure.name`.
+
+| Histogram                   | Attributes                         |
+| --------------------------- | ---------------------------------- |
+| `ui.measure.duration`       | `measure.name`, `measure.outcome`. |
+| `ui.measure.phase.duration` | `measure.name`, `measure.phase`.   |
+
 ## Span Records
 
 With `tracesEndpoint`, the library writes span records. The OTLP traces serializer reads these fields. They do not become OTLP attributes.

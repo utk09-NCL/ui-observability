@@ -52,6 +52,9 @@ export class UncleanExitCapture implements Capture {
   /** Timer that updates the marker. */
   private timer: ReturnType<typeof setInterval> | undefined;
 
+  /** True after pagehide. The browser fires visibilitychange after pagehide. */
+  private closing = false;
+
   /**
    * @param ctx Capture context with the config, diagnostics, logger and session id.
    */
@@ -63,11 +66,23 @@ export class UncleanExitCapture implements Capture {
     if (this.installed || typeof document === "undefined" || window.parent !== window) {
       return;
     }
+
+    // The marker holds the session id. Memory identity writes nothing to the device.
+    if (this.ctx.config.identity === "memory") {
+      this.ctx.diagnostics.report(
+        "capture.install_failed",
+        'capture.uncleanExit needs sessionStorage. identity: "memory" turns it off.',
+      );
+      return;
+    }
     this.installed = true;
 
     if (!this.ctx.once.uncleanExit) {
       this.ctx.once.uncleanExit = true;
-      this.reportPrevious();
+      // A popup copies the sessionStorage of its live opener. That marker is not a crash.
+      if (!window.opener) {
+        this.reportPrevious();
+      }
     }
 
     this.mark();
@@ -112,6 +127,10 @@ export class UncleanExitCapture implements Capture {
 
   /** Writes the marker of this page with the time and the visibility of now. */
   private readonly mark = (): void => {
+    if (this.closing) {
+      return;
+    }
+
     const marker: AliveMarker = {
       sessionId: this.ctx.sessionId(),
       at: Date.now(),
@@ -140,12 +159,14 @@ export class UncleanExitCapture implements Capture {
 
   /** A clean close removes the marker. The back-forward cache can keep the page. */
   private readonly onPageHide = (): void => {
+    this.closing = true;
     this.clear();
   };
 
   /** A page that comes back from the back-forward cache is alive again. */
   private readonly onPageShow = (event: Event): void => {
     if ((event as PageTransitionEvent).persisted) {
+      this.closing = false;
       this.mark();
     }
   };

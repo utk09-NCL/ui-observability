@@ -47,21 +47,13 @@ export class DebugBuffer {
    * @returns The records, oldest first. Each has `uiobs.debug_buffer: true`.
    */
   drain(): LogRecord[] {
-    const { enabled, maxRecords, maxAgeMs } = this.policy();
-    const kept = this.kept.slice(-maxRecords);
+    const kept = this.live();
     this.kept = [];
-    if (!enabled) {
-      return [];
-    }
 
-    const oldest = maxAgeMs === 0 ? -Infinity : Date.now() - maxAgeMs;
-
-    return kept
-      .filter((entry) => entry.at >= oldest)
-      .map(({ record }) => ({
-        ...record,
-        attributes: { ...record.attributes, [ATTR_DEBUG_BUFFER]: true },
-      }));
+    return kept.map(({ record }) => ({
+      ...record,
+      attributes: { ...record.attributes, [ATTR_DEBUG_BUFFER]: true },
+    }));
   }
 
   /**
@@ -69,7 +61,23 @@ export class DebugBuffer {
    * @returns The records, oldest first.
    */
   snapshot(): LogRecord[] {
-    return this.kept.slice(-this.policy().maxRecords).map(({ record }) => record);
+    return this.live().map(({ record }) => record);
+  }
+
+  /**
+   * Gives the kept records that the settings in force permit. A buffer that is off empties itself.
+   * @returns The records, oldest first.
+   */
+  private live(): Kept[] {
+    const { enabled, maxRecords, maxAgeMs } = this.policy();
+    if (!enabled) {
+      this.kept = [];
+      return [];
+    }
+
+    const oldest = maxAgeMs === 0 ? -Infinity : Date.now() - maxAgeMs;
+
+    return this.kept.slice(-maxRecords).filter((entry) => entry.at >= oldest);
   }
 
   /** Removes each kept record. The records of an old session or identity must not go out. */

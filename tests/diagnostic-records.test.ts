@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import { ObservabilityRuntime } from "../src/core/runtime";
-import { configure, createMemoryTransport, flush } from "../src/index";
+import { configure, createMemoryTransport, flush, rotateSecurityContext } from "../src/index";
 
 const base = {
   endpoint: null,
@@ -51,6 +51,71 @@ describe("diagnostics.records", () => {
       "log.type": "system",
       "diagnostic.count": 1,
     });
+  });
+
+  it("cuts the URL fields of a record and keeps them for onDiagnostic", async () => {
+    const memory = createMemoryTransport();
+    const onDiagnostic = vi.fn();
+    configure({
+      ...base,
+      transport: memory.transport,
+      onDiagnostic,
+      diagnostics: { records: true },
+    });
+    await flush();
+
+    const url = "https://api.example/x?token=K#part";
+    runtime().diagnostics.report("capture.header_failed", "The header failed.", {
+      url,
+      endpoint: "https://user:pw@ingest.example/logs?key=K",
+      status: 401,
+    });
+    await flush();
+
+    const record = memory
+      .records()
+      .find((one) => one.attributes["diagnostic.code"] === "capture.header_failed");
+    expect(record?.attributes["diagnostic.detail"]).toEqual({
+      url: "https://api.example/x",
+      endpoint: "https://ingest.example/logs",
+      status: 401,
+    });
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: expect.objectContaining({ url }) }),
+    );
+  });
+
+  it("sends the record of a finished rotation", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      ...base,
+      transport: memory.transport,
+      securityContext: { id: "old" },
+      diagnostics: { records: ["security.rotated"] },
+    });
+    await flush();
+
+    await rotateSecurityContext({ id: "new", delivery: { transport: memory.transport } });
+    await flush();
+
+    expect(memory.records().map((one) => one.attributes["diagnostic.code"])).toContain(
+      "security.rotated",
+    );
+  });
+
+  it("builds a diagnostic record at once in defer mode", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      ...base,
+      transport: memory.transport,
+      payloadMode: "defer",
+      diagnostics: { records: true },
+    });
+    await flush();
+
+    const emit = vi.spyOn(runtime(), "emit");
+    runtime().diagnostics.report("transport.http_error", "The send failed.");
+    expect(emit).toHaveBeenCalledOnce();
   });
 
   it("sends only the listed codes, and gives a notice the level INFO", async () => {

@@ -4,6 +4,7 @@
 // histogram. A mark adds a breadcrumb.
 
 import type { InstrumentDef } from "../models/metric";
+import { recordedUrl } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
 /** Histogram of the measures of the app, in milliseconds. */
@@ -77,21 +78,22 @@ export class UserTimingCapture implements Capture {
       return;
     }
 
-    const { userTimingInclude } = this.ctx.config.capture;
+    const { fullUrls, userTimingInclude } = this.ctx.config.capture;
     for (const entry of entries) {
       if (userTimingInclude.length > 0 && !matchesAny(entry.name, userTimingInclude)) {
         continue;
       }
 
+      // A name can hold a URL with a token. A third-party script can write any name.
+      const name = recordedUrl(entry.name, fullUrls);
       if (entry.entryType === "measure") {
-        this.ctx.recordMetric(USER_TIMING_DURATION, entry.duration, {
-          "user_timing.name": entry.name,
-        });
+        this.ctx.recordMetric(USER_TIMING_DURATION, entry.duration, { "user_timing.name": name });
       } else {
         this.ctx.breadcrumbs.push({
-          t: Date.now(),
+          // A buffered entry reaches the observer late. The trail needs the time of the mark.
+          t: Math.round(performance.timeOrigin + entry.startTime),
           category: "event",
-          message: entry.name.slice(0, this.ctx.config.limits.maxBodyChars),
+          message: name.slice(0, this.ctx.config.limits.maxBodyChars),
         });
       }
     }

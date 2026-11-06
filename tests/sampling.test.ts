@@ -10,7 +10,7 @@ import {
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import { ErrorCeiling, sampleKey, shouldSample } from "../src/core/sampling";
-import { configure, createMemoryTransport, flush, getLogger } from "../src/index";
+import { configure, counter, createMemoryTransport, flush, getLogger } from "../src/index";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { LogLevel, LogRecord } from "../src/models/log-record";
 
@@ -390,6 +390,30 @@ describe("ErrorCeiling", () => {
 });
 
 describe("alwaysSampleFrom in the runtime", () => {
+  it("applies the ceiling to log records only", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      storage: "memory",
+      identity: "memory",
+      bus: { mode: "off" },
+      transport: memory.transport,
+      sampling: { alwaysSampleFrom: "INFO" },
+      capturePolicy: { errorCeiling: 1 },
+    });
+    const log = getLogger("app");
+
+    log.info("first");
+    log.info("second");
+    counter("clicks").add(1);
+    await flush();
+
+    const bodies = memory.records().map((r) => r.body);
+    expect(bodies).toEqual(expect.arrayContaining(["first", "clicks"]));
+    expect(bodies).not.toContain("second");
+  });
+
   it("delivers a WARN at rate zero and drops an INFO", async () => {
     const memory = createMemoryTransport();
     configure({

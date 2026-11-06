@@ -49,6 +49,7 @@ import type { LogLevel } from "../models/log-record";
 import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
 import { isObject } from "../utils/guards";
+import { recordedUrl } from "../utils/platform";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -739,12 +740,10 @@ function resolveHeaders(
     return value;
   }
 
-  reportInvalid(
-    diagnostics,
-    "headers",
-    "an object of strings or a function",
-    value,
-    "the headers in force",
+  // The value can hold a token, and this message can become a record.
+  diagnostics.report(
+    "config.invalid",
+    "headers must be an object of strings or a function. The library keeps the headers in force.",
   );
   return fallback;
 }
@@ -1370,7 +1369,7 @@ function resolveSignalEndpoint(
     } catch (error) {
       diagnostics.report(
         "config.invalid",
-        `${key} is not a valid absolute URL: ${value}. The library keeps the value in force.`,
+        `${key} is not a valid absolute URL: ${recordedUrl(value, false)}. The library keeps the value in force.`,
         undefined,
         error,
       );
@@ -1621,7 +1620,7 @@ export function resolveConfig(
     } catch (error) {
       diagnostics.report(
         "config.invalid",
-        `endpoint is not a valid absolute URL: ${merged.endpoint}.`,
+        `endpoint is not a valid absolute URL: ${recordedUrl(merged.endpoint, false)}.`,
         undefined,
         error,
       );

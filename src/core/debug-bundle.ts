@@ -17,7 +17,7 @@ import type { Diagnostics } from "./diagnostics";
  */
 function stripUrls(value: unknown): unknown {
   if (typeof value === "string") {
-    return /^https?:\/\//i.test(value) ? recordedUrl(value, false) : value;
+    return /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? recordedUrl(value, false) : value;
   }
 
   if (Array.isArray(value)) {
@@ -44,7 +44,23 @@ export function configSummary(
   limits: SanitizeLimits,
   diagnostics: Diagnostics,
 ): Record<string, unknown> {
-  const copy: Record<string, unknown> = { ...config };
+  // A relative endpoint has no scheme. stripUrls() does not see it as a URL.
+  const cut = (value: unknown): unknown =>
+    typeof value === "string" ? recordedUrl(value, false) : value;
+  const { capture, serializer } = config;
+  const copy: Record<string, unknown> = {
+    ...config,
+    endpoint: cut(config.endpoint),
+    metricsEndpoint: cut(config.metricsEndpoint),
+    tracesEndpoint: cut(config.tracesEndpoint),
+    // An object of the app can hold a key in any field. Only its name goes out.
+    serializer: typeof serializer === "string" ? serializer : serializer.name,
+    capture: {
+      ...capture,
+      ignoreUrls: capture.ignoreUrls.map(cut),
+      plugins: capture.plugins.map((plugin) => plugin.name),
+    },
+  };
   // Static headers can hold a token.
   Reflect.deleteProperty(copy, "headers");
 

@@ -13,7 +13,11 @@ export default defineConfig({
   build: {
     lib: {
       // Use fileURLToPath. On Windows, URL.pathname gives "/C:/..." and the build fails.
-      entry: { index: fileURLToPath(new URL("src/index.ts", import.meta.url)) },
+      // The doctor entry serves bin/uiobs.mjs. The exports map of the package does not name it.
+      entry: {
+        index: fileURLToPath(new URL("src/index.ts", import.meta.url)),
+        doctor: fileURLToPath(new URL("src/doctor.ts", import.meta.url)),
+      },
       formats: ["es", "cjs"],
       fileName: (format, entryName) => `${entryName}.${format === "es" ? "js" : "cjs"}`,
     },

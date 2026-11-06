@@ -100,7 +100,7 @@ export default defineConfig(
   },
 
   {
-    files: ["tools/**/*.mjs"],
+    files: ["tools/**/*.mjs", "bin/**/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",

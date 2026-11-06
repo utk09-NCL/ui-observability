@@ -33,8 +33,8 @@ import { parseRetryAfter, TransportError } from "./errors";
 import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
-/** Advice for a 401 or a 403 answer on the HTTP path. */
-const CREDENTIAL_ADVICE =
+/** Advice for a 401 or a 403 answer of an HTTP send, on the main thread or in the worker. */
+export const CREDENTIAL_ADVICE =
   "In a cross-origin iframe, the session cookie is a third-party cookie. The browser " +
   "often blocks it. Forward the records to the platform document. As an alternative, " +
   "issue the cookie with the Partitioned attribute.";

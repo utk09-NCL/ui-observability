@@ -8,6 +8,7 @@ import type { Receive, WorkerLike } from "../bus/links";
 import type { Capture, CaptureContext, CaptureOnce } from "../capture/types";
 import {
   ATTR_BREADCRUMBS,
+  ATTR_DEBUG_BUFFER,
   ATTR_PAGE_URL,
   CAPTURE_NAMESPACE,
   REMOTE_CAPTURE_FLAGS,
@@ -34,7 +35,7 @@ import type {
   SecurityContextRotationOptions,
 } from "../models/config";
 import type { LossReporter } from "../models/drop";
-import type { InstrumentDef, MetricAttributes } from "../models/metric";
+import type { InstrumentDef, Measure, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
@@ -53,7 +54,7 @@ import {
   SessionTouch,
 } from "../utils/identity";
 import { runAsLibraryRequest } from "../utils/library-request";
-import { detectPlatform, type PlatformMetadata } from "../utils/platform";
+import { detectPlatform, type PlatformMetadata, recordedUrl } from "../utils/platform";
 import { sanitize, truncate } from "../utils/sanitize";
 import { unrefTimer } from "../utils/unref";
 import { Sequence } from "../utils/sequence";
@@ -73,6 +74,7 @@ import { DropReporter } from "./drops";
 import { HoldBuffer } from "./hold-buffer";
 import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
 import { OneLogger } from "./logger";
+import { createMeasure } from "./measure";
 import { makeCounter, makeHistogram, Meter, type RecordMetric } from "./meter";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
@@ -186,6 +188,28 @@ function captureKey(capture: CaptureOptions): string {
     userTimingInclude: capture.userTimingInclude.map(String),
     plugins: capture.plugins.map(pluginId),
   });
+}
+
+/**
+ * Cuts the URL fields of a diagnostic detail. Their query can hold a key. onDiagnostic stays local
+ * and keeps them.
+ * @param detail Detail of a diagnostic event.
+ * @returns The detail for a record.
+ */
+function recordDetail(detail: unknown): unknown {
+  if (!isObject(detail)) {
+    return detail;
+  }
+
+  const copy = { ...detail };
+  for (const key of ["url", "endpoint"]) {
+    const value = copy[key];
+    if (typeof value === "string") {
+      copy[key] = recordedUrl(value, false);
+    }
+  }
+
+  return copy;
 }
 
 /**
@@ -332,6 +356,9 @@ export class ObservabilityRuntime {
       this.refreshCaptures();
     },
   };
+
+  /** Count of delivery identity changes. The first id of a context is not a change. */
+  private identityEpoch = 0;
 
   /** Timer that restores the local capture switches after the remote TTL. */
   private remoteCaptureTimer: ReturnType<typeof setTimeout> | undefined;
@@ -576,7 +603,7 @@ export class ObservabilityRuntime {
       write(event.message, {
         "diagnostic.code": event.code,
         "diagnostic.count": event.count,
-        "diagnostic.detail": event.detail,
+        "diagnostic.detail": recordDetail(event.detail),
       });
     } finally {
       this.recordingDiagnostic = false;
@@ -625,6 +652,38 @@ export class ObservabilityRuntime {
     if (!this.destroyed && !this.rotating) {
       this.meter.record(def, value, attributes);
     }
+  }
+
+  /**
+   * Starts a timed operation. A shutdown or a new delivery identity before its end drops its values.
+   * @param name Operation name.
+   * @param attributes Attribute set of each histogram point.
+   * @returns The handle of the operation.
+   */
+  startMeasure(name: string, attributes?: MetricAttributes): Measure {
+    const epoch = this.identityEpoch;
+    const current = (): boolean =>
+      !this.destroyed &&
+      !this.rotating &&
+      (!this.config.securityContext.isolation || this.identityEpoch === epoch);
+    const copied = this.diagnostics.guard(
+      "record.sanitize_failed",
+      "The library could not read the attributes of the measure.",
+      () => ({ ...attributes }),
+    );
+
+    return createMeasure(name, copied ?? {}, this.tracing.request().span, {
+      metric: (def, value, points) => {
+        if (current()) {
+          this.recordMetric(def, value, points);
+        }
+      },
+      span: (span) => {
+        if (current()) {
+          this.recordSpan(span);
+        }
+      },
+    });
   }
 
   /**
@@ -863,7 +922,12 @@ export class ObservabilityRuntime {
     }
     const next = resolveConfig(accepted, this.diagnostics, this.config);
     this.keepStartupTunables(next);
+    const { redact, processors } = this.config;
     applyResolvedConfig(this.config, next);
+    // A kept record has only the hooks of its log call. New hooks must not miss it.
+    if (this.config.redact !== redact || this.config.processors !== processors) {
+      this.debugBuffer.clear();
+    }
     this.breadcrumbs.resize(this.config.capturePolicy.breadcrumbs);
     this.diagnostics.setHandler(this.diagnosticHandler());
     this.diagnostics.setPolicy(
@@ -1229,6 +1293,10 @@ export class ObservabilityRuntime {
                     : newId(this.diagnostics),
                 );
                 this.rotating = rotating;
+                this.identityEpoch++;
+                // The rules of the old owner must not apply to the new identity.
+                this.remote.sampling = null;
+                this.refreshCaptures();
               }
               this.config.securityContext.id = id;
             }
@@ -1784,7 +1852,11 @@ export class ObservabilityRuntime {
         this.diagnostics.count("record.dropped_malformed");
         continue;
       }
-      if (!shouldSample(record, this.config, this.remote.sampling?.current() ?? null)) {
+      // A debug buffer record explains an error. Its key would give the same sampling drop again.
+      if (
+        record.attributes[ATTR_DEBUG_BUFFER] !== true &&
+        !shouldSample(record, this.config, this.remote.sampling?.current() ?? null)
+      ) {
         this.diagnostics.count("record.dropped_by_sampling");
         continue;
       }
@@ -2019,6 +2091,7 @@ export class ObservabilityRuntime {
     next.lockConfiguration = this.config.lockConfiguration;
     // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
     applyResolvedConfig(this.config, next);
+    this.identityEpoch++;
     this.remote.sampling = null;
     this.refreshCaptures();
     this.context.clear();
@@ -2028,10 +2101,10 @@ export class ObservabilityRuntime {
     this.builder.invalidateResource();
     await this.syncSender();
     this.bus?.rotateContext();
+    // New calls go to the new sender. A long carry then drops no logger call, and the report below
+    // can give a record.
+    this.rotating = false;
     if (pending === "carry") {
-      // New calls go to the new sender while it stores the old batches again. A long carry then
-      // drops no logger call.
-      this.rotating = false;
       await this.carry(live, retired.stored);
     }
     this.diagnostics.report("security.rotated", "The runtime rotated its security context.", {

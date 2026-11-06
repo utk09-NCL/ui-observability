@@ -139,6 +139,45 @@ describe("UncleanExitCapture", () => {
     capture.uninstall();
   });
 
+  it("writes no marker at a visibility change after pagehide", () => {
+    const { capture } = setup();
+    capture.install();
+
+    dispatchEvent(transition("pagehide", false));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(marker()).toBeNull();
+
+    dispatchEvent(transition("pageshow", true));
+    sessionStorage.clear();
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(marker()).toMatchObject({ sessionId: "session-now" });
+    capture.uninstall();
+  });
+
+  it("reports nothing in a popup that copied the marker of its opener", () => {
+    sessionStorage.setItem(
+      ALIVE_KEY,
+      JSON.stringify({ sessionId: "opener", at: 1000, visibility: "visible" }),
+    );
+    vi.stubGlobal("opener", {});
+    const { capture, warn } = setup();
+    capture.install();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(marker()).toMatchObject({ sessionId: "session-now" });
+    capture.uninstall();
+  });
+
+  it("writes nothing to device storage with identity memory", () => {
+    const { capture, ctx } = setup();
+    ctx.config.identity = "memory";
+    capture.install();
+
+    expect(marker()).toBeNull();
+    expect(ctx.diagnostics.snapshot()["capture.install_failed"]).toBe(1);
+    capture.uninstall();
+  });
+
   it("updates the marker at each visibility change and at each interval", () => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);
@@ -218,7 +257,7 @@ describe("capture.uncleanExit in the runtime", () => {
       endpoint: null,
       serviceName: "svc",
       storage: "memory",
-      identity: "memory",
+      identity: "storage",
       bus: { mode: "off" },
       transport: memory.transport,
       capture: { errors: false, rejections: false, uncleanExit: true },

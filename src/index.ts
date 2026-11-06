@@ -15,7 +15,14 @@ import type { FrameOptions, SourceOptions } from "./models/bus";
 export type { FrameOptions, SourceOptions, BusPermission } from "./models/bus";
 import type { MetricType } from "./models/log-record";
 import type { DeliveryStats } from "./models/stats";
-import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./models/metric";
+import type {
+  Counter,
+  Histogram,
+  HistogramOptions,
+  InstrumentOptions,
+  Measure,
+  MetricAttributes,
+} from "./models/metric";
 
 export { OneLogger };
 export { serveTransportWorker } from "./transport/worker-entry";
@@ -57,6 +64,7 @@ export type {
   Histogram,
   HistogramOptions,
   InstrumentOptions,
+  Measure,
   MetricAttributes,
 } from "./models/metric";
 export type { CapturePlugin, PluginContext } from "./models/plugin";
@@ -320,6 +328,17 @@ export function histogram(name: string, options: HistogramOptions = {}): Histogr
   return makeHistogram(name, options, (def, value, attributes) => {
     requireRuntime().recordMetric(def, value, attributes);
   });
+}
+
+/**
+ * Times an operation with named phases. Each phase and the total go into duration histograms.
+ * With `tracesEndpoint`, the operation is a span with one child span for each phase.
+ * @param name Operation name. Each name makes one series.
+ * @param attributes Attribute set of each histogram point. Keep it small.
+ * @returns The handle of the operation.
+ */
+export function startMeasure(name: string, attributes?: MetricAttributes): Measure {
+  return requireRuntime().startMeasure(name, attributes);
 }
 
 /**

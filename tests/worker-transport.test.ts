@@ -246,6 +246,21 @@ describe("Worker transport", () => {
     expect(next.terminate).toHaveBeenCalledOnce();
   });
 
+  it("adds the credential advice to a 401 from the worker", async () => {
+    const { transport, diagnostics } = setup({
+      transportWorker: () => scriptedWorker({ status: 401 }) as unknown as Worker,
+    });
+    const report = vi.spyOn(diagnostics, "report");
+
+    await expect(transport.send(workerJob().batch)).rejects.toMatchObject({ kind: "permanent" });
+
+    expect(report).toHaveBeenCalledWith(
+      "transport.rejected_credentials",
+      expect.stringContaining("third-party cookie"),
+      expect.objectContaining({ status: 401 }),
+    );
+  });
+
   it("keeps a new worker after its replaced worker ends a request", async () => {
     const old = new FakeWorker();
     old.connect = () => undefined;

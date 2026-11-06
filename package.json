@@ -1,6 +1,6 @@
 {
   "name": "@utk09/ui-observability",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "UI observability and logging for browser, OpenFin and webview applications",
   "license": "Apache-2.0",
   "keywords": [
@@ -31,8 +31,12 @@
   "engines": {
     "node": ">=20.19.0"
   },
+  "bin": {
+    "uiobs": "bin/uiobs.mjs"
+  },
   "files": [
     "dist",
+    "bin",
     "CHANGELOG.md"
   ],
   "main": "./dist/index.cjs",

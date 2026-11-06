@@ -428,8 +428,9 @@ export class LogPipeline {
       const stream = this.streams[name];
 
       // Records at or above alwaysSampleFrom bypass sampling upstream. This ceiling is their
-      // only limit.
+      // only limit. A metric point or a span has the level INFO. A lost point gives a false sum.
       if (
+        name === "logs" &&
         !this.ceiling.allow(
           record,
           this.policy?.capturePolicy.errorCeiling,

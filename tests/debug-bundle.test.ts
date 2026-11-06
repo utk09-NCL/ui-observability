@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TELEMETRY_SDK_VERSION } from "../src/constants";
 import {
   addBreadcrumb,
@@ -63,6 +63,28 @@ describe("collectDebugBundle", () => {
     expect(capture.ignoreUrls).toEqual(["/health/", "https://ingest.example/v1/logs"]);
     expect(JSON.stringify(config)).not.toContain("token=abc");
     expect(JSON.stringify(config)).not.toContain("secret");
+  });
+
+  it("cuts a relative endpoint and each scheme, and names plugins and a serializer", async () => {
+    start({
+      endpoint: "/v1/logs?key=abc",
+      serializer: { name: "custom", apiKey: "abc", serialize: vi.fn() } as never,
+      capture: {
+        errors: false,
+        rejections: false,
+        ignoreUrls: ["wss://socket.example/live?token=abc"],
+        plugins: [{ name: "audit", apiKey: "abc", install: vi.fn(), uninstall: vi.fn() } as never],
+      },
+    });
+
+    const { config } = await collectDebugBundle();
+    const capture = config.capture as Record<string, unknown>;
+
+    expect(config.endpoint).toBe("/v1/logs");
+    expect(config.serializer).toBe("custom");
+    expect(capture.plugins).toEqual(["audit"]);
+    expect(capture.ignoreUrls).toEqual(["wss://socket.example/live", "/v1/logs"]);
+    expect(JSON.stringify(config)).not.toContain("abc");
   });
 
   it("gives no breadcrumbs and no resource when redact drops the bundle record", async () => {

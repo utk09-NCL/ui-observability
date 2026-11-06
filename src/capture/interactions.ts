@@ -18,6 +18,9 @@ import { patch } from "../utils/patch";
 import { recordedUrl } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
+/** Links that open elsewhere. The page gives no visible response, and the click is not dead. */
+const LEAVING_LINKS = 'a[target="_blank"], a[download]';
+
 /**
  * Generates a short CSS selector for an element. The order of preference is test ID, ID,
  * aria-label, then class names.
@@ -85,7 +88,11 @@ export class InteractionCapture implements Capture {
   private lastUrl = "";
 
   /** Element of the current click burst, and the times of its clicks. */
-  private burst: { target: Element | null; times: number[] } = { target: null, times: [] };
+  private burst: { target: Element | null; times: number[]; reported: boolean } = {
+    target: null,
+    times: [],
+    reported: false,
+  };
 
   /** Stops the dead click check that runs now. */
   private stopDeadCheck: (() => void) | undefined;
@@ -133,7 +140,7 @@ export class InteractionCapture implements Capture {
     }
 
     this.stopDeadCheck?.();
-    this.burst = { target: null, times: [] };
+    this.burst = { target: null, times: [], reported: false };
   }
 
   /** Rotates trace context and records a click breadcrumb. */
@@ -165,7 +172,11 @@ export class InteractionCapture implements Capture {
     if (options.rageClicks) {
       this.countRage(target, message, options);
     }
-    if (options.deadClicks && target.closest(`${DEAD_CLICK_CONTROLS}, [${attribute}]`)) {
+    if (
+      options.deadClicks &&
+      target.closest(`${DEAD_CLICK_CONTROLS}, [${attribute}]`) &&
+      !target.closest(LEAVING_LINKS)
+    ) {
       this.watchDead(message, options);
     }
   };
@@ -182,11 +193,13 @@ export class InteractionCapture implements Capture {
     const count = options.rageClickCount ?? RAGE_CLICK_COUNT;
     const times =
       this.burst.target === target ? this.burst.times.filter((t) => now - t < windowMs) : [];
+    // A burst ends when no click stays in the window. Clicks that slide through it give no event.
+    const reported = times.length > 0 && this.burst.reported;
     times.push(now);
-    this.burst = { target, times };
+    const reached = times.length >= count;
+    this.burst = { target, times, reported: reported || reached };
 
-    // More clicks in the same burst give no second event.
-    if (times.length === count) {
+    if (reached && !reported) {
       this.ctx.logger.logEvent("ui.rage_click", { "click.action": action, "click.count": count });
     }
   }

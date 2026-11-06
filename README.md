@@ -301,10 +301,30 @@ X-UiObs-Sampling: {"v":1,"ttlMs":600000,"defaultRate":0.1,"rates":{"blotter.grid
 | `histogram(name, { unit?, boundaries? })`      | Gives a histogram. `record(value, attrs?)` counts a value in buckets in memory. The library sends one point for each attribute set at each interval. |
 | `timeSync(label, fn, attrs?)`                  | Times a function and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                                                                |
 | `timeAsync(label, fn, attrs?)`                 | Times a promise and emits a duration histogram with `status` `SUCCESS` or `FAILURE`.                                                                 |
+| `startMeasure(name, attrs?)`                   | Times an operation with named phases. See [Measures](#measures).                                                                                     |
 
 The level methods give records with `log.type: "log"`. Records of the library itself have `log.type: "system"`. `logMetric` drops a value that is not finite and counts `record.dropped_malformed`.
 
 `counter` and `histogram` sum their values for `batching.metricFlushIntervalMs`. Then they send one point for each attribute set. 1000 calls of `add(1)` give one point with the value 1000. Sampling and `minLevel` do not drop a point. The console does not print it. Each instrument keeps at most 100 attribute sets in each interval. The values of more sets go to one set with `otel.metric.overflow: true`. Attribute values must be strings, finite numbers or booleans. The library drops an attribute key that starts with `metric.`. It also drops the keys that it sets on each record, for example `page.url` and `log.type`. The record limits do not cut the metric fields of a point, for example the bucket counts. `redact` cannot change them. Do not use a user id or a URL as an attribute. Each value makes a new series in the backend. The default histogram boundaries are `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]`. The points of the open interval go out at `flush()`, at `shutdown()` and before the exit flush. A frame that forwards its records sends its points at the interval, at `flush()` and at `shutdown()` only.
+
+### Measures
+
+`startMeasure()` times an operation with named phases.
+
+```ts
+const measure = startMeasure("checkout", { tier: "gold" });
+measure.phase("validate");
+await validate();
+measure.phase("payment");
+await pay();
+measure.end();
+```
+
+- `phase(name)` closes the open phase and starts the next phase. `end(outcome?)` closes the open phase and records the total. Later calls of the handle do nothing.
+- Each phase goes into the histogram `ui.measure.phase.duration` with `measure.name` and `measure.phase`. The total goes into `ui.measure.duration` with `measure.name` and `measure.outcome`. Both are in milliseconds.
+- The default outcome is `"ok"`. Each name, outcome and attribute set makes one series. Keep these values small in number.
+- With `tracesEndpoint`, the measure is a span of kind INTERNAL with one child span for each phase. The outcome `"error"` marks the measure span and its open phase as failed.
+- A shutdown drops a measure that has no end. With isolation, a new delivery identity also drops it.
 
 ### Context & Correlation
 
@@ -507,13 +527,13 @@ capture: {
 - A dead click is a click on a control that gives no DOM change, no navigation and no scroll in `deadClickMs` (default 1000). It gives the event `ui.dead_click`. A control is a button, a link, a `role="button"` element or an element with the action attribute.
 - A request alone is not a response. A page that changes its DOM all the time gives no dead click.
 
-`uncleanExit` finds a page of this tab that stopped without a clean close, for example after a crash. The top document keeps a marker in `sessionStorage`. A clean close removes it. The next page of the tab logs WARN `ui.unclean_exit`.
+`uncleanExit` finds a page of this tab that stopped without a clean close, for example after a crash. The top document keeps a marker in `sessionStorage`. A clean close removes it. The next page of the tab logs WARN `ui.unclean_exit`. A popup with an opener reports nothing, because it copies the `sessionStorage` of its opener. A duplicated tab copies it too, and can report a false exit. `identity: "memory"` turns this capture off, because that mode writes nothing to the device.
 
 - The attributes are `exit.session_id`, `exit.last_seen_ms`, `exit.visibility` and `exit.discarded`.
 - The marker updates every 30 seconds and at each visibility change. `exit.last_seen_ms` is correct to about 30 seconds.
 - A mobile OS can stop a hidden page with no close event. `exit.visibility: "hidden"` shows this case. `exit.discarded: true` shows a page that the browser discarded to free memory.
 
-`userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration`, in milliseconds, with the attribute `user_timing.name`. Each `performance.mark()` adds a breadcrumb. Frameworks create many marks and measures. Set `userTimingInclude`, for example `[/^app\./]`, to keep only the names of your app. `metrics.maxSeries` limits the number of names in one interval.
+`userTiming` records each `performance.measure()` of the app in the histogram `ui.user_timing.duration`, in milliseconds, with the attribute `user_timing.name`. Each `performance.mark()` adds a breadcrumb. Frameworks create many marks and measures. Set `userTimingInclude`, for example `[/^app\./]`, to keep only the names of your app. `metrics.maxSeries` limits the number of names in one interval. Names follow `fullUrls`. Without it, a name loses the part after the first `?` or `#`.
 
 `serverTiming` reads the `Server-Timing` response header of captured fetch and XHR requests. It adds `server.timing` entries with `name`, `duration` and `description`. A valid `traceparent;desc="00-<trace-id>-<span-id>-01"` adds an OTLP link to the client span. The client span keeps its own trace and parent. Set `tracesEndpoint` and `propagateTraceHeaderTo` to record client spans.
 
@@ -596,6 +616,7 @@ With `tracesEndpoint`, the library sends spans. The backend then has a root span
 
 - **Root span:** Each ambient trace has one root span of kind INTERNAL. It starts with the trace and ends when the trace rotates. Its name tells why the trace started: `ui.start`, `ui.interaction`, `ui.navigation` or `ui.trace`.
 - **Client span:** Each `fetch` or XHR request that gets `traceparent` from `capture.propagateTraceHeaderTo` has one span of kind CLIENT. The `traceparent` names the client span, and the root span is its parent. Its name is the HTTP method. Its attributes are `http.request.method`, `url.full`, `server.address`, `http.response.status_code` and `error.type`. A status of 0 or 400 and more sets the status ERROR.
+- **Measure span:** Each `startMeasure()` call has one span of kind INTERNAL under the root span. Each phase has one child span. Sampling and the OpenTelemetry rule apply to it as to a client span.
 - **Sampling:** `sampling.defaultRate` samples each trace by its trace id. The whole trace stays or goes. `minLevel` does not apply to a span. For a trace that sampling drops, the `traceparent` has the sampled flag off. A downstream service then drops its spans too.
 - **Exit:** The exit flush and `shutdown()` end the root span of the active trace. The root span of a trace ends one time. A tab that becomes hidden ends it too, because a mobile OS can stop a hidden page.
 - **OpenTelemetry:** With `otelLoader`, a trace from the OpenTelemetry API keeps its own spans. The library sends no span for it.
@@ -604,14 +625,15 @@ With `tracesEndpoint`, the library sends spans. The backend then has a root span
 
 ### Browser Storage Keys
 
-| Key                            | Store            | Written when                                                     | Option that stops it                              |
-| ------------------------------ | ---------------- | ---------------------------------------------------------------- | ------------------------------------------------- |
-| `ui-observability.session`     | `localStorage`   | At startup, then at most one time each minute while logging      | `identity: "memory"`                              |
-| `ui-observability.tab`         | `sessionStorage` | At startup, and when the bus finds a duplicated tab              | `identity: "memory"`                              |
-| `ui-observability.journey`     | `sessionStorage` | When a journey starts or ends                                    | `identity: "memory"`                              |
-| `ui-observability.batch.*`     | `localStorage`   | When a send fails and the `localstorage` adapter holds the batch | `storage` other than `auto` or `localstorage`     |
-| `ui-observability.emergency.*` | `localStorage`   | When the exit flush cannot send a batch                          | `endpoint: null`, `storage: "memory"` or `"none"` |
-| `ui-observability.probe`       | `localStorage`   | One write and one remove, when the library tests `localStorage`  | `storage` other than `auto` or `localstorage`     |
+| Key                            | Store            | Written when                                                     | Option that stops it                                 |
+| ------------------------------ | ---------------- | ---------------------------------------------------------------- | ---------------------------------------------------- |
+| `ui-observability.session`     | `localStorage`   | At startup, then at most one time each minute while logging      | `identity: "memory"`                                 |
+| `ui-observability.tab`         | `sessionStorage` | At startup, and when the bus finds a duplicated tab              | `identity: "memory"`                                 |
+| `ui-observability.journey`     | `sessionStorage` | When a journey starts or ends                                    | `identity: "memory"`                                 |
+| `ui-observability.alive`       | `sessionStorage` | At startup, at each visibility change and at each interval       | `capture.uncleanExit: false` or `identity: "memory"` |
+| `ui-observability.batch.*`     | `localStorage`   | When a send fails and the `localstorage` adapter holds the batch | `storage` other than `auto` or `localstorage`        |
+| `ui-observability.emergency.*` | `localStorage`   | When the exit flush cannot send a batch                          | `endpoint: null`, `storage: "memory"` or `"none"`    |
+| `ui-observability.probe`       | `localStorage`   | One write and one remove, when the library tests `localStorage`  | `storage` other than `auto` or `localstorage`        |
 
 IndexedDB holds undelivered batches with `storage: "auto"` or `"indexeddb"`, in the database `UiObservability`.
 
@@ -625,7 +647,7 @@ With `persistence.namespace`, the batch keys start with `ui-observability:namesp
 - [Browser support](docs/browser-support.md): the browser APIs that the library uses, and the fallback for each.
 - [Delivery guarantees](docs/delivery-guarantees.md): duplicates, order, each loss and its `onDrop` reason, retention, the exit flush and rotation.
 - [Threat model](docs/threat-model.md): the trust boundaries, the threats and the controls.
-- [Runtime policies and migration](docs/runtime-policies.md): the defaults, the overrides, security-context rotation, registered bus sources, health and the upgrade steps for 0.9.5.
+- [Runtime policies and migration](docs/runtime-policies.md): the defaults, the overrides, security-context rotation, registered bus sources, health and the upgrade steps.
 
 ---
 
@@ -675,6 +697,29 @@ The ingest server must meet these requirements:
 8. **Clock offset (optional):** Expose the `Date` header with `Access-Control-Expose-Headers: date`. Each later log and span record then carries `uiobs.clock_offset_ms`.
 
 `tools/reference-collector.mjs` implements each rule with no dependencies. It is not part of the package. Run `node tools/reference-collector.mjs`. Set `ALLOWED_ORIGINS` to the origins of your app. Set `UPSTREAM_URL` to an OTLP/HTTP collector, for example `http://localhost:4318`, to forward each OTLP batch there. The file lists the other settings: `PORT`, `AUTH_TOKEN`, `SAMPLING_RULES`, `MAX_BODY_BYTES` and `MAX_REQUESTS_PER_SECOND`.
+
+### Check an ingest server
+
+Run the command line tool against your ingest URL. Give the origin of your app.
+
+```bash
+npx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example
+```
+
+The tool prints `PASS` or `FAIL` for each rule. The exit code is 0 when each rule passes, 1 when a rule fails and 2 for a wrong command.
+
+| Rule              | Check                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `preflight`       | `OPTIONS` answers with a `2xx` status and permits the origin.                               |
+| `allowed headers` | The preflight allows each request header of the library.                                    |
+| `test batch`      | A `POST` of an OTLP batch gets a `2xx` status and permits the origin.                       |
+| `exposed headers` | The batch answer exposes `Retry-After`. The output names optional headers that stay hidden. |
+| `gzip`            | A `POST` with `Content-Encoding: gzip` gets a `2xx` status.                                 |
+| `deduplication`   | A second `POST` with the same `X-UiObs-Batch-Id` gets a `2xx` status.                       |
+
+- The tool sends real test batches. Each record has `service.name: "uiobs-doctor"`. Expect three test batches in the store of the server.
+- The tool sends no credentials and no `Authorization` header. A server that requires them fails `test batch`.
+- A client cannot see the store of the server. `deduplication` proves only that the server accepts a repeated id.
 
 ---
 

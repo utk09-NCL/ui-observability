@@ -27,6 +27,7 @@ import {
 } from "../src/index";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { resolveConfig } from "../src/core/config";
+import { applyRemote } from "../src/core/remote-rules";
 import { Diagnostics } from "../src/core/diagnostics";
 import { NetworkCapture } from "../src/capture/network";
 import { Bus } from "../src/bus/bus";
@@ -1327,6 +1328,19 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     await rt()["sender"]!["retry"]["drain"]();
     const bodies = send.records().map((r) => r.body);
     expect(bodies.filter((body) => body.startsWith("buffered"))).toHaveLength(5);
+  });
+
+  it("ends the old remote rules when it adopts a new owner context", async () => {
+    configure({ ...base, sampling: { remote: true } });
+    await flush();
+    const runtime = rt();
+    const adopt = (await runtime["constructBus"]())!["handlers"].onSecurityContext!;
+
+    adopt("owner-A");
+    applyRemote(runtime["remote"], runtime.config, { rules: { rates: {} }, ttlMs: 60000 });
+    adopt("owner-B");
+
+    expect(runtime["remote"].sampling).toBeNull();
   });
 
   it("uses the session that a same-origin owner stores when it adopts a new owner context", async () => {

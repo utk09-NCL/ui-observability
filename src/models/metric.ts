@@ -44,6 +44,20 @@ export interface Histogram {
   record(value: number, attributes?: MetricAttributes): void;
 }
 
+/** Handle of one timed operation. */
+export interface Measure {
+  /**
+   * Closes the open phase and starts the next phase. A call after `end()` does nothing.
+   * @param name Phase name. Each name makes one series.
+   */
+  phase(name: string): void;
+  /**
+   * Closes the open phase and records the total. A second call does nothing.
+   * @param outcome Result of the operation. `"error"` marks its span as failed. @default "ok"
+   */
+  end(outcome?: string): void;
+}
+
 /** Kind of an instrument. */
 export type InstrumentKind = "counter" | "histogram";
 

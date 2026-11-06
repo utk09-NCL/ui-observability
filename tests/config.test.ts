@@ -936,7 +936,7 @@ describe("resolveConfig", () => {
         'enabled must be true or false. The value is "yes". The library keeps true.',
         'compression must be "gzip" or "none". The value is "brotli". The library keeps "gzip".',
         'credentials must be "omit", "same-origin" or "include". The value is "all". The library keeps "omit".',
-        "headers must be an object of strings or a function. The value is 42. The library keeps the headers in force.",
+        "headers must be an object of strings or a function. The library keeps the headers in force.",
         'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The value is "session". The library keeps "auto".',
         'identity must be "storage" or "memory". The value is "cookie". The library keeps "storage".',
       ]);
@@ -1071,6 +1071,20 @@ describe("resolveConfig", () => {
         "The library ignores the sampling.alwaysSampleTypes entry an object. sampling.alwaysSampleTypes must be a list of strings.",
         'sampling.remote must be true or false. The value is "true". The library keeps false.',
       ]);
+    });
+
+    it("reports an unknown key of debugBuffer", () => {
+      const { texts } = resolveLoose({ debugBuffer: { enable: true } });
+
+      expect(texts).toEqual([
+        'The library ignores the unknown config key "debugBuffer.enable". Check the spelling.',
+      ]);
+    });
+
+    it("keeps a query of an invalid endpoint out of the message", () => {
+      const { texts } = resolveLoose({ endpoint: "/v1/logs?key=abc" });
+
+      expect(texts).toEqual(["endpoint is not a valid absolute URL: /v1/logs."]);
     });
 
     it("keeps a valid alwaysSampleFrom and reports an unknown level", () => {

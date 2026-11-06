@@ -13,6 +13,7 @@ import {
   getQueueDepth,
   registerFrame,
   startJourney,
+  startMeasure,
   startTrace,
 } from "../../src/index";
 
@@ -27,6 +28,9 @@ const workerEnabled = new URLSearchParams(location.search).get("worker") === "1"
 const transportWorker = workerEnabled
   ? () => new Worker(new URL("./transport-worker.ts", import.meta.url), { type: "module" })
   : undefined;
+
+/** Duration of each phase of the sample measure. */
+const MEASURE_PHASE_MS = 50;
 
 /** Number of log records generated in a single test burst. */
 const BURST_SIZE = 250;
@@ -200,6 +204,18 @@ on("info", () => {
 
 on("action", () => {
   log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
+});
+
+on("start-measure", () => {
+  const measure = startMeasure("checkout", { channel: "playground" });
+  measure.phase("validate");
+  setTimeout(() => {
+    measure.phase("submit");
+    setTimeout(() => {
+      measure.end();
+      void flush();
+    }, MEASURE_PHASE_MS);
+  }, MEASURE_PHASE_MS);
 });
 
 on("metric", () => {
