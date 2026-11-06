@@ -153,8 +153,9 @@ export async function getHealth(): Promise<ObservabilityHealth> {
 /**
  * Collects the state of the library for a support ticket. The bundle has the health, the
  * diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary.
- * The summary has no headers and no endpoint query. The privacy hooks process the breadcrumbs.
- * The app decides where to send the bundle.
+ * The summary has no headers and no URL query. A plugin or a custom serializer shows only its
+ * name. The privacy hooks process the breadcrumbs. A debug buffer record keeps its context
+ * attributes. The app decides where to send the bundle.
  * @returns Promise that resolves to a JSON-safe bundle.
  */
 export async function collectDebugBundle(): Promise<DebugBundle> {
@@ -522,7 +523,8 @@ export function getDiagnosticCounters(): Record<string, number> {
 }
 
 /**
- * Flushes pending records and stops all runtime subsystems.
+ * Flushes pending records and stops all runtime subsystems. It cancels a request that is still
+ * open after the final flush. A stored batch of that request stays in storage.
  * @returns Promise that resolves when shutdown completes.
  */
 export async function shutdown(): Promise<void> {

@@ -120,11 +120,11 @@ With `tracesEndpoint`, the library writes span records. The OTLP traces serializ
 
 With `diagnostics.records`, the library writes a record for each reported diagnostic. The namespace is `uiobs.diagnostics`. The body is the message of the diagnostic.
 
-| Attribute           | Type   | Value                                             |
-| ------------------- | ------ | ------------------------------------------------- |
-| `diagnostic.code`   | string | Diagnostic code, for example `transport.timeout`. |
-| `diagnostic.count`  | number | Number of reports of this code since startup.     |
-| `diagnostic.detail` | object | Detail of the diagnostic, if the code has detail. |
+| Attribute           | Type   | Value                                                                                                 |
+| ------------------- | ------ | ----------------------------------------------------------------------------------------------------- |
+| `diagnostic.code`   | string | Diagnostic code, for example `transport.timeout`.                                                     |
+| `diagnostic.count`  | number | Number of reports of this code since startup.                                                         |
+| `diagnostic.detail` | object | Detail of the diagnostic, if the code has detail. `url` and `endpoint` have no query and no fragment. |
 
 ## Capture Attributes
 
@@ -141,7 +141,7 @@ With `diagnostics.records`, the library writes a record for each reported diagno
 | `reports`        | WARN `ui.report`                                                   | `report.type`, `report.url`, optional `report.id`, `report.source`, `report.line`, `report.column`, `report.directive`, `report.blocked_url` |
 | `resourceTiming` | Histogram `ui.resource.duration`, in ms. Event `ui.resource.slow`  | `resource.initiator_type`, `server.address`. Slow events also have `resource.duration_ms` and `url.full`.                                    |
 | `lifecycle`      | Event `ui.lifecycle`                                               | `lifecycle.state`, `lifecycle.previous_state`, `lifecycle.duration_ms`                                                                       |
-| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`                                                                                                                           |
+| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`. It follows `fullUrls`.                                                                                                   |
 | `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type`                                                                                              |
 | `longFrames`     | Histogram `ui.long_frame.duration`, in ms                          | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`                                                    |
 | `console`        | The console message (ERROR or WARN)                                | `console.method`, `console.args` (array)                                                                                                     |

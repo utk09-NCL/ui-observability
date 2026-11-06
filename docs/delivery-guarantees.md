@@ -57,9 +57,10 @@ Some records never reach delivery by design. `onDrop` does not report them. The 
 
 - A record below `minLevel`, or outside the sample. With `debugBuffer`, the next error of the context sends the recent ones.
 - A record that a processor or `redact` drops.
-- A record above the error ceiling, `capturePolicy.errorCeiling`.
+- A log record above the error ceiling, `capturePolicy.errorCeiling`. Metric points and spans do not count.
 - A capture event above its rate limit.
 - A logger call during a rotation.
+- A `startMeasure()` measure that ends after `shutdown()`. With isolation, also one that ends after a new delivery identity.
 - A bus message that a budget refuses, and the records of a forwarder that has no owner.
 
 ## Retention
@@ -67,6 +68,7 @@ Some records never reach delivery by design. `onDrop` does not report them. The 
 A batch that did not send goes to storage. The default store is IndexedDB. Without it, the library uses `localStorage`, then memory.
 
 - With `retention.mode: "limited"`, the default, a stored batch stays for 24 hours or 5 attempts. Storage keeps at most 500 batches.
+- An offline failure and a throttle answer use no attempt. A network failure while the browser reports online uses one. A long server outage can then reach `max_attempts`.
 - With `retention.mode: "until-delivered"`, a stored batch has no age limit and no attempt limit. `retention.maxBatches` still applies.
 - A full store evicts the oldest batch without an action record first. An action is an audit fact.
 - With `storage: "memory"`, stored batches stay only until the page closes. With `storage: "none"`, a batch that did not send is lost.
@@ -80,6 +82,7 @@ The exit flush is best effort.
 - On `pagehide` and `freeze`, the library uses `sendBeacon` for payloads up to about 60 KB. With `headers`, it uses a keepalive fetch.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
+- `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage.
 
 ## Rotation
 
@@ -103,6 +106,8 @@ The deferred queue has a count cap that is separate from the delivery buffers. A
 ## Worker delivery
 
 A transport worker owns encoding, compression and HTTP sends for built-in serializers. The main runtime owns batching, record byte budgets, stored retries and the exit flush. A worker result has the same status meaning as an HTTP result. Header functions run on the main thread. Both paths share the cached result for exit sends.
+
+A worker that does not connect before the request deadline is a startup failure. The library then sends over HTTP until a new factory or a rotation. The job never left the page. No duplicate occurs. A worker module that does not load also selects HTTP.
 
 A worker failure can leave the result of an HTTP request unknown. HTTP fallback or a stored retry keeps the batch id. The ingest server must still deduplicate it. The main exit flush can also copy an unconfirmed worker batch. The ordinary duplicate rules apply to that copy.
 

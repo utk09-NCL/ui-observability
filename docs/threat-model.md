@@ -27,16 +27,18 @@ The library runs inside your page. It reads values from your code, from other do
 
 With `payloadMode: "defer"`, the queue holds raw payload references until the idle build. Processors and `redact` run before console output or delivery. A debug bundle excludes the raw queue. A fixed count cap limits retained references. The library drains pending calls before a session or delivery identity change.
 
+With `debugBuffer`, a kept record has only the hooks of its log call. A change of `redact` or `processors` empties the buffer. A kept record then cannot skip a new hook. A debug bundle holds these records with their context attributes. Review a bundle before you send it to a support system.
+
 ### 2. The Page to the Records
 
-| Threat                                                    | Control                                                                                                                                                                                                                                |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A token in a query string, a fragment or the user info.   | The library removes the user info from each URL that it records. Without `capture.fullUrls`, it also removes the query and the fragment. A stack trace keeps its script URLs.                                                          |
-| A token in a WebSocket URL.                               | The WebSocket capture removes the user info, the query and the fragment, also with `capture.fullUrls`. Only `capture.urlTransform` can record more.                                                                                    |
-| A click records the text or the attributes of an element. | Click capture records an application action name by default, for example `data-observability-action`. It reads no text and no selector unless `capture.interactions` turns them on. It skips regions in `[data-observability-ignore]`. |
-| A resource field identifies a user or a device.           | `metadata.pageUrl`, `metadata.userAgent` and `metadata.openfin` can remove `page.url`, `browser.user_agent` and the OpenFin fields.                                                                                                    |
-| Message content and request bodies.                       | The library never records a request body, a response body or WebSocket message content.                                                                                                                                                |
-| `console.error(error.response)` from third-party code.    | `capture.console` is off by default. The README tells you to set `redact` first.                                                                                                                                                       |
+| Threat                                                    | Control                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A token in a query string, a fragment or the user info.   | The library removes the user info from each URL that it records. Without `capture.fullUrls`, it also removes the query and the fragment. User timing names follow this rule. In a diagnostic record, the `url` and `endpoint` detail fields never keep a query or a fragment. A stack trace keeps its script URLs. |
+| A token in a WebSocket URL.                               | The WebSocket capture removes the user info, the query and the fragment, also with `capture.fullUrls`. Only `capture.urlTransform` can record more.                                                                                                                                                                |
+| A click records the text or the attributes of an element. | Click capture records an application action name by default, for example `data-observability-action`. It reads no text and no selector unless `capture.interactions` turns them on. It skips regions in `[data-observability-ignore]`.                                                                             |
+| A resource field identifies a user or a device.           | `metadata.pageUrl`, `metadata.userAgent` and `metadata.openfin` can remove `page.url`, `browser.user_agent` and the OpenFin fields.                                                                                                                                                                                |
+| Message content and request bodies.                       | The library never records a request body, a response body or WebSocket message content.                                                                                                                                                                                                                            |
+| `console.error(error.response)` from third-party code.    | `capture.console` is off by default. The README tells you to set `redact` first.                                                                                                                                                                                                                                   |
 
 Browser reports contain only fixed fields. The capture omits message text and code samples. It removes credentials, queries and fragments from report URLs. Server-Timing descriptions are server data. The ordinary processors and `redact` apply to them before delivery.
 
@@ -65,6 +67,10 @@ The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history
 ### Transport worker
 
 The app supplies a trusted dedicated worker script. The worker receives resolved request headers and records after processors and redaction. It receives no header function or app hook. Use the same SDK version in the page and the worker.
+
+### Command Line Tool
+
+`uiobs doctor` runs on your machine, not in the page. It sends test batches only to the URL that you name. It follows no redirect. It sends no credentials and no `Authorization` header. A test record has `service.name: "uiobs-doctor"`.
 
 The handshake transfers a private message port. Jobs and results use only that port. Each message has a fixed protocol tag and the exact SDK version. The worker validates jobs before it uses their endpoints or headers. The main thread validates status codes and response hints. The worker limits active jobs to 64.
 
@@ -98,6 +104,6 @@ A rotation stops the old channel and terminates the old worker before new delive
 
 ## Supply Chain
 
-The package has no runtime dependencies. `@opentelemetry/api` and `web-vitals` are optional peers. The library loads them only through `otelLoader` and `capture.webVitalsLoader`, which your code supplies.
+The package has no runtime dependencies and no install script. Its `bin` entry runs only when you call `uiobs`. `@opentelemetry/api` and `web-vitals` are optional peers. The library loads them only through `otelLoader` and `capture.webVitalsLoader`, which your code supplies.
 
 Defaults and intentional policy overrides are documented in [runtime policies](runtime-policies.md). Client-side controls do not authorize tenant access on the ingest server.

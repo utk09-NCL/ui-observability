@@ -4,39 +4,39 @@ By default, the SDK limits captured content, isolates delivery identities and li
 
 ## Defaults and overrides
 
-| Option                                 | Default                       | Override                                                                                                                           |
-| -------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `transportWorker`                      | Unset                         | Creates a dedicated worker for built-in encoding, compression and HTTP sends. The app supplies a fresh worker for each call.       |
-| `payloadMode`                          | `copy`                        | `defer` keeps raw payload references until an idle build. The debug buffer always builds at the call.                              |
-| `capture.remoteToggles`                | `[]`                          | Permits remote changes to the named capture switches for the sampling TTL. Privacy controls stay local.                            |
-| `capture.serverTiming`                 | `false`                       | Adds at most 32 Server-Timing response entries from at most 4096 header characters.                                                |
-| `capture.reports`                      | `false`                       | Records fixed report fields. URLs have no credentials, query or fragment. Text and code samples stay out.                          |
-| `capture.resourceTiming`               | `false`                       | Records resource duration histograms by initiator type and host. Skips ingest and ignored URLs.                                    |
-| `capture.resourceTiming.slowMs`        | `1000`                        | Minimum duration of a slow resource event, in milliseconds. Set `0` for no slow events.                                            |
-| `capture.lifecycle`                    | `false`                       | Records page states with the duration of the previous state.                                                                       |
-| `capturePolicy.reportsPerWindow`       | `20`                          | Maximum browser reports in each window. Set `0` for no limit.                                                                      |
-| `capturePolicy.resourcesPerWindow`     | `100`                         | Maximum resource entries in each window. Set `0` for no limit.                                                                     |
-| `capturePolicy.lifecyclePerWindow`     | `20`                          | Maximum lifecycle events in each window. Set `0` for no limit.                                                                     |
-| `capture.interactions`                 | `false`                       | `true`, or an options object, enables click breadcrumbs                                                                            |
-| `capture.interactions.text`            | `false`                       | `true` captures `textContent`                                                                                                      |
-| `capture.interactions.selector`        | `false`                       | `true` captures test IDs, IDs, ARIA labels or tag/classes                                                                          |
-| `capture.interactions.ignoreSelector`  | `[data-observability-ignore]` | Custom CSS selector, or `null` to include every region                                                                             |
-| `capture.interactions.actionAttribute` | `data-observability-action`   | Another attribute name, for example `data-testid`. Use letters, digits, hyphens and underscores                                    |
-| `capture.interactions.maxTextChars`    | `50`                          | Any nonnegative safe integer. `0` captures no text characters                                                                      |
-| `capture.interactions.rageClicks`      | `false`                       | `true` records `ui.rage_click` with the action name only. `rageClickCount` (3) and `rageClickWindowMs` (1000) set the burst        |
-| `capture.interactions.deadClicks`      | `false`                       | `true` records `ui.dead_click` with the action name only. `deadClickMs` (1000) sets the wait for a response                        |
-| `redact`, `processors`                 | Unset / empty                 | Application functions that rewrite or drop records                                                                                 |
-| `securityContext.id`                   | Generated for this runtime    | Supply an opaque stable ID to replay its queues after reload                                                                       |
-| `securityContext.isolation`            | `true`                        | `false` permits cross-context replay and ordinary routing reconfiguration                                                          |
-| `lockConfiguration`                    | `false`                       | `true` rejects nonidentical `configure()` calls                                                                                    |
-| `loggerCache.maxEntries`               | `256`                         | Nonnegative safe integer. `0` disables caching. `null` permits unbounded caching                                                   |
-| `bus.sourcePolicy`                     | `registered`                  | `trusted-origin` restores automatic child discovery by origin                                                                      |
-| `bus.validation`                       | `strict`                      | `envelope` relaxes message/record schema checks at the bus boundary                                                                |
-| `bus.maxMessageBytes`                  | `262144`                      | Nonnegative safe integer. `0` disables the limit                                                                                   |
-| `bus.maxRecordsPerMessage`             | `100`                         | Nonnegative safe integer. `0` disables the limit                                                                                   |
-| `bus.maxMessagesPerSecond`             | `100`                         | Applies to each physical source in a fixed one-second window. `0` disables the limit                                               |
-| `bus.maxTrackedSources`                | `256`                         | Capacity for named peers, for example OpenFin identities. Inactive entries expire after one second. `0` permits unbounded tracking |
-| `sampling.alwaysSampleFrom`            | `ERROR`                       | A lower level, for example `WARN`, also keeps the records of that level at each rate. `capturePolicy.errorCeiling` limits them     |
+| Option                                 | Default                       | Override                                                                                                                                                           |
+| -------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `transportWorker`                      | Unset                         | Creates a dedicated worker for built-in encoding, compression and HTTP sends. The app supplies a fresh worker for each call.                                       |
+| `payloadMode`                          | `copy`                        | `defer` keeps raw payload references until an idle build. The debug buffer always builds at the call.                                                              |
+| `capture.remoteToggles`                | `[]`                          | Permits remote changes to the named capture switches for the sampling TTL. Privacy controls stay local.                                                            |
+| `capture.serverTiming`                 | `false`                       | Adds at most 32 Server-Timing response entries from at most 4096 header characters.                                                                                |
+| `capture.reports`                      | `false`                       | Records fixed report fields. URLs have no credentials, query or fragment. Text and code samples stay out.                                                          |
+| `capture.resourceTiming`               | `false`                       | Records resource duration histograms by initiator type and host. Skips ingest and ignored URLs.                                                                    |
+| `capture.resourceTiming.slowMs`        | `1000`                        | Minimum duration of a slow resource event, in milliseconds. Set `0` for no slow events.                                                                            |
+| `capture.lifecycle`                    | `false`                       | Records page states with the duration of the previous state.                                                                                                       |
+| `capturePolicy.reportsPerWindow`       | `20`                          | Maximum browser reports in each window. Set `0` for no limit.                                                                                                      |
+| `capturePolicy.resourcesPerWindow`     | `100`                         | Maximum resource entries in each window. Set `0` for no limit.                                                                                                     |
+| `capturePolicy.lifecyclePerWindow`     | `20`                          | Maximum lifecycle events in each window. Set `0` for no limit.                                                                                                     |
+| `capture.interactions`                 | `false`                       | `true`, or an options object, enables click breadcrumbs                                                                                                            |
+| `capture.interactions.text`            | `false`                       | `true` captures `textContent`                                                                                                                                      |
+| `capture.interactions.selector`        | `false`                       | `true` captures test IDs, IDs, ARIA labels or tag/classes                                                                                                          |
+| `capture.interactions.ignoreSelector`  | `[data-observability-ignore]` | Custom CSS selector, or `null` to include every region                                                                                                             |
+| `capture.interactions.actionAttribute` | `data-observability-action`   | Another attribute name, for example `data-testid`. Use letters, digits, hyphens and underscores                                                                    |
+| `capture.interactions.maxTextChars`    | `50`                          | Any nonnegative safe integer. `0` captures no text characters                                                                                                      |
+| `capture.interactions.rageClicks`      | `false`                       | `true` records one `ui.rage_click` for each burst, with the action name and the click count. `rageClickCount` (3) and `rageClickWindowMs` (1000) set the burst     |
+| `capture.interactions.deadClicks`      | `false`                       | `true` records `ui.dead_click` with the action name only. `deadClickMs` (1000) sets the wait for a response. A `target="_blank"` or `download` link gives no event |
+| `redact`, `processors`                 | Unset / empty                 | Application functions that rewrite or drop records                                                                                                                 |
+| `securityContext.id`                   | Generated for this runtime    | Supply an opaque stable ID to replay its queues after reload                                                                                                       |
+| `securityContext.isolation`            | `true`                        | `false` permits cross-context replay and ordinary routing reconfiguration                                                                                          |
+| `lockConfiguration`                    | `false`                       | `true` rejects nonidentical `configure()` calls                                                                                                                    |
+| `loggerCache.maxEntries`               | `256`                         | Nonnegative safe integer. `0` disables caching. `null` permits unbounded caching                                                                                   |
+| `bus.sourcePolicy`                     | `registered`                  | `trusted-origin` restores automatic child discovery by origin                                                                                                      |
+| `bus.validation`                       | `strict`                      | `envelope` relaxes message/record schema checks at the bus boundary                                                                                                |
+| `bus.maxMessageBytes`                  | `262144`                      | Nonnegative safe integer. `0` disables the limit                                                                                                                   |
+| `bus.maxRecordsPerMessage`             | `100`                         | Nonnegative safe integer. `0` disables the limit                                                                                                                   |
+| `bus.maxMessagesPerSecond`             | `100`                         | Applies to each physical source in a fixed one-second window. `0` disables the limit                                                                               |
+| `bus.maxTrackedSources`                | `256`                         | Capacity for named peers, for example OpenFin identities. Inactive entries expire after one second. `0` permits unbounded tracking                                 |
+| `sampling.alwaysSampleFrom`            | `ERROR`                       | A lower level, for example `WARN`, also keeps the records of that level at each rate. `capturePolicy.errorCeiling` limits these log records                        |
 
 An invalid tuning value reports `config.invalid`. The previous valid value stays. `configure()` applies cache, capture and bus budget changes until configuration is locked. The bus role and its links are set at startup. Register a frame before its application starts. Then its discovery handshake can succeed.
 
@@ -124,7 +124,7 @@ await rotateSecurityContext(
 
 Use `flush` before you change external authentication or a live headers-provider closure. Retries stop when the old context stops. The SDK aborts HTTP sends. A custom `TransportRequest` receives `signal` and `routingContextId`. A custom transport must honor `signal` to cancel its own work. The SDK cannot recall a request or beacon that the server accepted. `timeoutMs` limits the pipeline flush. Storage cleanup has its own storage deadlines.
 
-During rotation, the SDK drops logger calls, metric measurements and forwarded records. It does not give them to either identity. `onDrop` reports the forwarded records with `security_context`. The rotation resets context, breadcrumbs, open metric aggregates, trace and journey state, and remote sampling. Supply `context` to replace ambient attributes. The application owns its `contextProvider` closures and scoped logger attributes. Update them, or create new scoped loggers, when the user changes. An overlapping rotation rejects. Callers must wait for completion. The upstream owner does the rotation. An independent frame can use `bus.mode: 'sender'` to own its delivery.
+During rotation, the SDK drops logger calls, metric measurements and forwarded records. It does not give them to either identity. With isolation, a `startMeasure()` measure of the old identity records nothing at its `end()`. `onDrop` reports the forwarded records with `security_context`. The rotation resets context, breadcrumbs, open metric aggregates, trace and journey state, and remote sampling. Supply `context` to replace ambient attributes. The application owns its `contextProvider` closures and scoped logger attributes. Update them, or create new scoped loggers, when the user changes. An overlapping rotation rejects. Callers must wait for completion. The upstream owner does the rotation. An independent frame can use `bus.mode: 'sender'` to own its delivery.
 
 Each batch keeps its delivery ID through persistence, splitting and retries. With isolation on, the active context does not send foreign batches or untagged legacy batches. They stay parked. Shared storage retention and capacity limits can still remove parked batches. A generated runtime-local ID does not resume the queues of a previous page. To resume after a reload, configure the correct stable context ID before the first log call. Never use one ID for two user or tenant authorization contexts. Do not put secrets or personal data in the ID.
 
@@ -283,7 +283,7 @@ The diagnostics fallback is off by default. When it is on, it prints a fixed mes
 
 `debugBuffer.enabled: true` keeps the records that `minLevel` or sampling drops. When this context sends an ERROR or FATAL record, it first sends the kept records. Each kept record has `uiobs.debug_buffer: true`. Then the buffer is empty.
 
-The SDK builds each kept record at the time of the log call. The record has the time, trace and context of that call. The processors and `redact` run at once. A record that they drop is not kept. Each logger call below `minLevel` then costs a full record build. `debugBuffer.maxRecords` limits the memory, and `debugBuffer.maxAgeMs` drops old records at the time of the error. A new session and a rotation empty the buffer. Each frame and worker keeps its own buffer.
+The SDK builds each kept record at the time of the log call. The record has the time, trace and context of that call. The processors and `redact` run at once. A record that they drop is not kept. Each logger call below `minLevel` then costs a full record build. `debugBuffer.maxRecords` limits the memory, and `debugBuffer.maxAgeMs` drops old records when the library reads them. A new session, a rotation and a change of `redact` or `processors` empty the buffer. A kept record has only the hooks of its log call. Turning the buffer off empties it at its next read. Each frame and worker keeps its own buffer. The owner of a frame does not sample a forwarded kept record again.
 
 ### Debug bundle
 
@@ -292,7 +292,7 @@ The SDK builds each kept record at the time of the log call. The record has the 
 - It has the SDK version, the health, the diagnostic counters, the resource attributes and the page URL.
 - It has the breadcrumbs. The processors and `redact` process them, as in an error record.
 - It has the records of the debug buffer. The privacy hooks processed them at the time of the log call.
-- It has a summary of the config. The summary has no `headers`. Each URL has no user info, query or fragment. A function shows only its name.
+- It has a summary of the config. The summary has no `headers`. Each URL has no user info, query or fragment. A function, a plugin and a custom serializer show only their names.
 - Its own fields do not have the values of `setContext()` or `contextProvider`. A record of the debug buffer keeps its context attributes, as a sent record does. Use `redact` to remove them.
 
 ### Persistence and deletion
@@ -331,7 +331,7 @@ With isolation on, WebSocket lifecycle events and message counters stay with the
 
 ### Temporary capture switches
 
-`sampling.remote: true` permits trusted sampling answers to carry boolean capture switches. Only names in `capture.remoteToggles` apply. The default list is empty. The SDK keeps the local config intact. Each remote update replaces the previous update. A timer restores local capture settings at TTL expiry. A rotation or remote sampling disable also restores them.
+`sampling.remote: true` permits trusted sampling answers to carry boolean capture switches. Only names in `capture.remoteToggles` apply. The default list is empty. The SDK keeps the local config intact. Each remote update replaces the previous update. A timer restores local capture settings at TTL expiry. A rotation or remote sampling disable also restores them. A forwarder ends the rules when its owner changes identity.
 
 The server cannot change privacy controls, capture options, plugins, ignored URLs or trace propagation targets. Enabling a configured capture keeps its local object or list options. Each forwarder validates the rules and applies its own allowlist. Its sampling permission and upstream authority checks stay in force.
 
@@ -353,6 +353,6 @@ Delivery stats and byte budgets count built records. The deferred queue has a se
 
 Record construction, processors, redaction, queue accounting, retry and storage stay on the main thread. Header functions also stay there. Built-in OTLP and ECS encoding, gzip and HTTP delivery run in the worker. Hidden-page keepalive sends and exit sends stay on the main thread. Both paths share the header cache.
 
-Each connection uses a private transferred port and the exact SDK version. The worker accepts one connection. It limits active jobs to 64. The main request deadline covers all steps. Worker startup failures or channel failures during a send select HTTP fallback for that sender. Timeouts and network failures use the normal retry policy.
+Each connection uses a private transferred port and the exact SDK version. The worker accepts one connection. It limits active jobs to 64. The main request deadline covers all steps. Worker startup failures or channel failures during a send select HTTP fallback for that sender. A worker that does not connect before the request deadline is a startup failure. A worker module that does not load also selects HTTP. Timeouts and network failures use the normal retry policy. An offline failure uses no stored attempt.
 
 Set the factory before the delivery stack loads. `configure()` cannot add or remove it after that point, also with isolation off. With isolation off, a new factory closes the old channel before the next worker request. Use `rotateSecurityContext()` for normal delivery changes. An omitted factory in the new delivery settings resets to the main HTTP path.

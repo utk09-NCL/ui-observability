@@ -150,7 +150,7 @@ export interface SamplingOptions {
   alwaysSampleTypes: string[];
   /**
    * Lowest level that the sampling rate never drops. `capturePolicy.errorCeiling` limits
-   * the records at this level and higher.
+   * the log records at this level and higher.
    * @default "ERROR"
    */
   alwaysSampleFrom: LogLevel;
@@ -391,8 +391,8 @@ export interface InteractionOptions {
    */
   actionAttribute?: string;
   /**
-   * Record the event `ui.rage_click` when one element gets `rageClickCount` clicks in
-   * `rageClickWindowMs`. The event has the action name only.
+   * Record one event `ui.rage_click` for each burst of `rageClickCount` clicks on one element
+   * in `rageClickWindowMs`. The event has the action name and the click count.
    * @default false
    */
   rageClicks?: boolean;
@@ -408,7 +408,8 @@ export interface InteractionOptions {
   rageClickWindowMs?: number;
   /**
    * Record the event `ui.dead_click` when a click on a control gives no DOM change, no navigation
-   * and no scroll in `deadClickMs`. The event has the action name only.
+   * and no scroll in `deadClickMs`. The event has the action name only. A click on a
+   * `target="_blank"` or `download` link gives no event.
    * @default false
    */
   deadClicks?: boolean;
@@ -581,12 +582,14 @@ export interface CaptureOptions {
   /**
    * Report a page of this tab that stopped without a clean close, for example after a crash.
    * The next page of the tab logs WARN `ui.unclean_exit`. It writes one sessionStorage key.
+   * A popup with an opener reports nothing. `identity: "memory"` turns this capture off.
    * @default false
    */
   uncleanExit: boolean;
   /**
    * Record each `performance.measure()` of the app in the histogram `ui.user_timing.duration`,
    * in milliseconds, with `user_timing.name`. Each `performance.mark()` adds a breadcrumb.
+   * Names follow `fullUrls`.
    * @default false
    */
   userTiming: boolean;
@@ -679,7 +682,10 @@ export type BatchKind = "logs" | "metrics" | "traces";
 
 /** One batch that the library gives to a custom transport. */
 export interface TransportRequest {
-  /** Abort signal for this delivery context. A custom transport must check it to cancel its work. */
+  /**
+   * Abort signal for this delivery context. It aborts at `shutdown()` and at a rotation. A custom
+   * transport must check it to cancel its work.
+   */
   signal?: AbortSignal;
   /** Delivery context of this batch. */
   routingContextId?: string;
@@ -766,7 +772,7 @@ export interface DeliveryPolicy {
   batchesPerDrain: number;
   /**
    * Fetch priority of each batch request. With "low", the requests of the app go first.
-   * The exit flush and a send from a hidden page use the browser default.
+   * The exit flush and a keepalive send from a hidden page use the browser default.
    * @default "low"
    */
   priority: "low" | "auto" | "high";
@@ -843,7 +849,9 @@ export interface DiagnosticsPolicy {
   consoleFallback: boolean;
   /**
    * Also send each reported diagnostic as a record in the namespace `uiobs.diagnostics`.
-   * A list of codes sends only those codes. The interval of `throttleMs` applies.
+   * A list of codes sends only those codes. The interval of `throttleMs` applies. A diagnostic
+   * of the first `configure()` gives no record. In a record, the `url` and `endpoint` detail
+   * fields have no query and no fragment. `onDiagnostic` gets the full values.
    * @default false
    */
   records: boolean | DiagnosticCode[];
@@ -938,7 +946,8 @@ export interface CapturePolicy {
    */
   windowMs: number;
   /**
-   * Maximum pipeline records at or above `sampling.alwaysSampleFrom` in one window.
+   * Maximum log records at or above `sampling.alwaysSampleFrom` in one window. Metric points
+   * and spans do not count.
    * Set 0 for no limit.
    * @default 500
    */
@@ -949,7 +958,8 @@ export interface CapturePolicy {
 export interface DebugBufferPolicy {
   /**
    * Keep the records that minLevel or sampling drops. An ERROR or FATAL record of this context
-   * sends them first, with `uiobs.debug_buffer: true`.
+   * sends them first, with `uiobs.debug_buffer: true`. A later change of `redact` or `processors`
+   * empties the buffer.
    * @default false
    */
   enabled: boolean;
@@ -959,7 +969,7 @@ export interface DebugBufferPolicy {
    */
   maxRecords: number;
   /**
-   * Maximum age of a kept record when the error occurs, in milliseconds. Set 0 for no age limit.
+   * Maximum age of a kept record when the library reads it, in milliseconds. Set 0 for no limit.
    * @default 60000
    */
   maxAgeMs: number;
