@@ -1,6 +1,6 @@
 {
   "name": "@utk09/ui-observability",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "UI observability and logging for browser, OpenFin and webview applications",
   "license": "Apache-2.0",
   "keywords": [
@@ -29,7 +29,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.22.3"
   },
   "bin": {
     "uiobs": "bin/uiobs.mjs"
@@ -50,23 +50,15 @@
     },
     "./package.json": "./package.json"
   },
-  "workspaces": [
-    "playground/react",
-    "playground/angular",
-    "playground/microfrontend/host",
-    "playground/microfrontend/remote-blotter",
-    "playground/microfrontend/remote-ticket",
-    "playground/console-only"
-  ],
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:*\"",
-    "dev:vanilla": "vite",
+    "dev": "concurrently -k \"pnpm run dev:vanilla\" \"pnpm run dev:ingest\" \"pnpm run dev:cross-origin\"",
+    "dev:vanilla": "pnpm --filter @example/vanilla run dev",
     "dev:ingest": "node tools/mock-ingest-server.mjs",
     "dev:cross-origin": "vite --config vite.cross-origin.config.ts",
-    "example:react": "npm run dev --workspace @example/react",
-    "example:angular": "npm run dev --workspace @example/angular",
-    "example:microfrontend": "concurrently -k \"npm run dev --workspace @example/mf-blotter\" \"npm run dev --workspace @example/mf-ticket\" \"npm run dev --workspace @example/mf-host\"",
-    "example:console-only": "npm run dev --workspace @example/console-only",
+    "example:react": "pnpm --filter @example/react run dev",
+    "example:angular": "pnpm --filter @example/angular run dev",
+    "example:microfrontend": "concurrently -k \"pnpm --filter @example/mf-blotter run dev\" \"pnpm --filter @example/mf-ticket run dev\" \"pnpm --filter @example/mf-host run dev\"",
+    "example:console-only": "pnpm --filter @example/console-only run dev",
     "build": "rimraf dist && tsc --project tsconfig.build.json && vite build",
     "build:watch": "vite build --watch",
     "lint": "eslint .",
@@ -80,8 +72,8 @@
     "check:peers": "node tools/check-peer-imports.mjs",
     "check:size": "node tools/check-size.mjs",
     "check:dev": "node tools/check-dev-server.mjs",
-    "verify": "npm run format:check && npm run typecheck && npm run build && npm run lint && npm run check:peers && npm run check:size && npm run check:dev && npm run test:coverage",
-    "prepublishOnly": "npm run verify"
+    "verify": "pnpm run format:check && pnpm run typecheck && pnpm run build && pnpm run lint && pnpm run check:peers && pnpm run check:size && pnpm run check:dev && pnpm run test:coverage",
+    "prepublishOnly": "pnpm run verify"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1",
@@ -96,28 +88,22 @@
     }
   },
   "devDependencies": {
-    "@eslint/js": "10.0.1",
-    "@opentelemetry/api": "1.9.1",
-    "@types/node": "26.6.5",
-    "@vitest/coverage-istanbul": "4.1.11",
-    "concurrently": "10.0.6",
-    "eslint": "10.12.0",
-    "eslint-config-prettier": "10.1.8",
-    "fake-indexeddb": "6.2.5",
-    "happy-dom": "20.14.6",
-    "prettier": "3.9.10",
-    "rimraf": "6.1.3",
-    "typescript": "~5.9.3",
-    "typescript-eslint": "8.71.1",
-    "vite": "8.3.4",
-    "vitest": "4.1.11",
-    "web-vitals": "6.2.3"
+    "@eslint/js": "catalog:library",
+    "@opentelemetry/api": "catalog:library",
+    "@types/node": "catalog:library",
+    "@vitest/coverage-istanbul": "catalog:library",
+    "concurrently": "catalog:library",
+    "eslint": "catalog:library",
+    "eslint-config-prettier": "catalog:library",
+    "fake-indexeddb": "catalog:library",
+    "happy-dom": "catalog:library",
+    "prettier": "catalog:library",
+    "rimraf": "catalog:library",
+    "typescript": "catalog:library",
+    "typescript-eslint": "catalog:library",
+    "vite": "catalog:library",
+    "vitest": "catalog:library",
+    "web-vitals": "catalog:library"
   },
-  "allowScripts": {
-    "@parcel/watcher@2.6.0": true,
-    "esbuild@0.28.1": true,
-    "lmdb@3.5.1": true,
-    "msgpackr-extract@3.0.4": true,
-    "fsevents@2.3.3": true
-  }
+  "packageManager": "pnpm@12.18.0"
 }

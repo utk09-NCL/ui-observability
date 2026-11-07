@@ -2,7 +2,22 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - Unreleased
+## [0.11.0] - 2026-11-07
+
+### Changed - v0.11.0
+
+- **Breaking:** Require Node 22.22.3 or later. Node 20 and earlier Node 22 releases are no longer supported.
+- Replace npm workspaces with pnpm 12.18.0. Keep separate dependency catalogs for the library and each playground in `pnpm-workspace.yaml`.
+- Replace `package-lock.json` with `pnpm-lock.yaml`. Link consumer playgrounds to the local library with `workspace:*`.
+- Update development dependencies, including Angular 22, Vitest 5 and Happy DOM 21. Use TypeScript 6.0.3 to meet Angular and linter requirements.
+- Update development commands and Angular configuration for pnpm. Document consumer installation with npm, pnpm and Yarn, with exact versions. Consumers do not need pnpm.
+
+### Fixed - v0.11.0
+
+- Give attached frame test fixtures empty `srcdoc` content. This creates their windows with iframe loading disabled in Happy DOM 21.
+- Wait for runtime startup and capture imports directly in the affected tests.
+
+## [0.10.0] - 2026-11-06
 
 ### Added - v0.10.0
 
