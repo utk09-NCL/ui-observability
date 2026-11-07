@@ -13,6 +13,7 @@ export default defineConfig({
     globals: true,
     environment: "happy-dom",
     setupFiles: ["./tests/setup.ts"],
+    clearMocks: false,
     restoreMocks: true,
     unstubGlobals: true,
     // src/ and tests/ only. The example workspaces are applications, not library

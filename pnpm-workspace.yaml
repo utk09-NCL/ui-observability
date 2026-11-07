@@ -1,0 +1,88 @@
+packages:
+  - playground/react
+  - playground/angular
+  - playground/microfrontend/host
+  - playground/microfrontend/remote-blotter
+  - playground/microfrontend/remote-ticket
+  - playground/console-only
+  - playground/vanilla
+
+engineStrict: true
+saveExact: true
+
+allowBuilds:
+  "@parcel/watcher": true
+  esbuild: true
+  fsevents: true
+  lmdb: true
+  msgpackr-extract: true
+
+catalogs:
+  library:
+    "@eslint/js": "10.0.1"
+    "@opentelemetry/api": "1.10.0"
+    "@types/node": "26.6.6"
+    "@vitest/coverage-istanbul": "5.1.0"
+    "concurrently": "10.0.6"
+    "eslint": "10.14.0"
+    "eslint-config-prettier": "10.1.8"
+    "fake-indexeddb": "6.2.7"
+    "happy-dom": "21.0.4"
+    "prettier": "3.9.10"
+    "rimraf": "6.1.4"
+    "typescript": "6.0.3"
+    "typescript-eslint": "8.72.1"
+    "vite": "8.3.6"
+    "vitest": "5.1.0"
+    "web-vitals": "6.2.3"
+  react:
+    "react": "19.3.1"
+    "react-dom": "19.3.1"
+    "web-vitals": "6.2.3"
+    "@types/react": "19.3.0"
+    "@types/react-dom": "19.3.0"
+    "@vitejs/plugin-react": "6.2.1"
+    "typescript": "6.0.3"
+    "vite": "8.3.6"
+  angular:
+    "@angular/common": "22.2.5"
+    "@angular/compiler": "22.2.5"
+    "@angular/core": "22.2.5"
+    "@angular/platform-browser": "22.2.5"
+    "@angular/router": "22.2.5"
+    "rxjs": "7.8.2"
+    "tslib": "2.9.1"
+    "@angular/build": "22.2.6"
+    "@angular/cli": "22.2.6"
+    "@angular/compiler-cli": "22.2.5"
+    "typescript": "6.0.3"
+  mf-host:
+    "@module-federation/vite": "1.23.11"
+    "typescript": "6.0.3"
+    "vite": "8.3.6"
+  mf-blotter:
+    "@module-federation/vite": "1.23.11"
+    "typescript": "6.0.3"
+    "vite": "8.3.6"
+  mf-ticket:
+    "react": "19.3.1"
+    "react-dom": "19.3.1"
+    "@module-federation/vite": "1.23.11"
+    "@types/react": "19.3.0"
+    "@types/react-dom": "19.3.0"
+    "typescript": "6.0.3"
+    "vite": "8.3.6"
+  console-only:
+    "typescript": "6.0.3"
+    "vite": "8.3.6"
+  vanilla:
+    "vite": "8.3.6"
+    "web-vitals": "6.2.3"
+minimumReleaseAgeExclude:
+  - "@angular/common@22.2.5"
+  - "@angular/compiler-cli@22.2.5"
+  - "@angular/compiler@22.2.5"
+  - "@angular/core@22.2.5"
+  - "@angular/platform-browser@22.2.5"
+  - "@angular/router@22.2.5"
+  - "@module-federation/vite@1.23.11"

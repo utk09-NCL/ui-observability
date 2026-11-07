@@ -302,6 +302,7 @@ describe("health and transition lifecycle", () => {
     configure(base);
     await flush();
     const iframe = document.createElement("iframe");
+    iframe.srcdoc = "";
     document.body.append(iframe);
     const detachFrame = registerFrame(iframe, { origin: location.origin });
     const worker = {
@@ -911,6 +912,7 @@ describe("policy edge cases", () => {
     const runtime = rt();
     expect(runtime.busCanAccept(window, location.origin)).toBe(false);
     const iframe = document.createElement("iframe");
+    iframe.srcdoc = "";
     document.body.append(iframe);
     const detach = registerFrame(iframe, { origin: location.origin });
     await vi.waitFor(() => {
@@ -1205,6 +1207,8 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     const { envelope: wrap } = await import("../src/models/bus");
     const parentFrame = document.createElement("iframe");
     const childFrame = document.createElement("iframe");
+    parentFrame.srcdoc = "";
+    childFrame.srcdoc = "";
     document.body.append(parentFrame, childFrame);
     vi.spyOn(window, "parent", "get").mockReturnValue(
       parentFrame.contentWindow as Window & typeof globalThis,
@@ -1474,6 +1478,8 @@ describe("direct link, owner adoption and answer routing", () => {
     const { bus } = makeBus();
     const a = document.createElement("iframe");
     const b = document.createElement("iframe");
+    a.srcdoc = "";
+    b.srcdoc = "";
     document.body.append(a, b);
     bus.registerFrame(a, { origin: location.origin });
     bus.registerFrame(b, { origin: location.origin });
@@ -1888,6 +1894,7 @@ describe("nested frames, carry timing and early encoding", () => {
     const { bus, config } = makeBus();
     config.bus.sourcePolicy = "trusted-origin";
     const frame = document.createElement("iframe");
+    frame.srcdoc = "";
     document.body.append(frame);
     bus.registerFrame(frame, { origin: "https://wrong.example" });
     dispatchEvent(

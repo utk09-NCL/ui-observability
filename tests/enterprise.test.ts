@@ -421,6 +421,7 @@ describe("bus source policies", () => {
     const { bus, onRecords } = setup();
     await bus.start();
     const iframe = document.createElement("iframe");
+    iframe.srcdoc = "";
     document.body.append(iframe);
     const send = (data: BusMessage) =>
       dispatchEvent(
@@ -499,6 +500,7 @@ describe("bus source policies", () => {
   it("supports early cancellation of public registrations", async () => {
     configure({ ...base, endpoint: null });
     const iframe = document.createElement("iframe");
+    iframe.srcdoc = "";
     document.body.append(iframe);
     registerFrame(iframe, { origin: location.origin })();
     const worker = {

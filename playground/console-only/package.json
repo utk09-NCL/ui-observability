@@ -8,10 +8,10 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
-    "@utk09/ui-observability": "file:../.."
+    "@utk09/ui-observability": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "~5.9.3",
-    "vite": "8.3.4"
+    "typescript": "catalog:console-only",
+    "vite": "catalog:console-only"
   }
 }

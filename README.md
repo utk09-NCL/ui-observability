@@ -10,8 +10,17 @@ The library batches records and sends them over HTTP as OTLP/JSON. It stores a b
 
 ## Installation
 
+Use one command for your package manager. Each command saves an exact version.
+
 ```bash
-npm install @utk09/ui-observability
+# npm
+npm install --save-exact @utk09/ui-observability
+
+# pnpm
+pnpm add --save-exact @utk09/ui-observability
+
+# Yarn
+yarn add --exact @utk09/ui-observability
 ```
 
 ### Peer Dependencies
@@ -704,7 +713,7 @@ The ingest server must meet these requirements:
 Run the command line tool against your ingest URL. Give the origin of your app.
 
 ```bash
-npx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example
+pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example
 ```
 
 The tool prints `PASS` or `FAIL` for each rule. The exit code is 0 when each rule passes, 1 when a rule fails and 2 for a wrong command.
@@ -723,16 +732,33 @@ The tool prints `PASS` or `FAIL` for each rule. The exit code is 0 when each rul
 - A client cannot see the store of the server. `deduplication` proves only that the server accepts a repeated id.
 - The tool follows no redirect. A `3xx` answer is a failure, because a browser refuses a preflight that redirects.
 - An origin has no path and no trailing slash. A wrong command prints the usage and the arguments that the tool received.
-- The tool needs Node 20.19 or later.
+- The tool needs Node 22.22.3 or later.
 
 ---
 
 ## Development
 
+Use Node 22.22.3 or later and pnpm 12.18.0. `.nvmrc` selects the minimum Node version.
+The `packageManager` field pins pnpm. See the [pnpm installation instructions](https://pnpm.io/installation).
+Angular supports Node `^22.22.3 || ^24.15.0 || >=26.0.0`.
+Use one of these Node versions for the complete workspace.
+
+Install from the repository root. The first pnpm install creates `pnpm-lock.yaml`.
+Commit that file with dependency changes. Use `pnpm install --frozen-lockfile` for later installs that must keep the resolved versions.
+
+`pnpm-workspace.yaml` holds separate catalogs for `library`, `vanilla`, `react`, `angular`, `console-only`, `mf-host`, `mf-blotter` and `mf-ticket`.
+Each manifest uses its named catalog for external dependencies.
+The consumer playgrounds use `workspace:*` for the local library. The vanilla playground loads the library source.
+Change versions in the relevant catalog, then run `pnpm install`.
+
+Dependency versions use the current stable releases checked on 2026-11-07.
+TypeScript uses 6.0.3 because Angular 22 and typescript-eslint require TypeScript below 6.1.
+The workspace enables install scripts for `@parcel/watcher`, `esbuild`, `fsevents`, `lmdb` and `msgpackr-extract`.
+
 ```bash
-npm install
-npm run dev      # Playground, mock ingest server and iframe host
-npm run verify   # Format check, typecheck, build, lint, peer, size and dev-server checks, tests
+pnpm install
+pnpm run dev      # Playground, mock ingest server and iframe host
+pnpm run verify   # Format check, typecheck, build, lint, peer, size and dev-server checks, tests
 ```
 
 - Vanilla playground: `http://localhost:5173/playground/vanilla/index.html`. Add `?worker=1` to send through the transport worker.
@@ -741,16 +767,29 @@ npm run verify   # Format check, typecheck, build, lint, peer, size and dev-serv
 - The React example sends its counter, histogram and HTTP duration points to `/v1/metrics`.
 - After a build, run `node bin/uiobs.mjs doctor http://localhost:8787/v1/logs --origin http://localhost:5173` to test the command line tool on the mock server.
 
+After dependency changes, run these checks:
+
+```bash
+pnpm run lint:fix
+pnpm run format
+pnpm run verify
+pnpm --filter './playground/**' --if-present run build
+```
+
+`verify` checks the library. The last command builds each consumer playground that has a build script.
+Check the vanilla frames, React and Angular in a browser before a release.
+To clear the React dependency cache, run `pnpm --filter @example/react run dev --force`.
+
 ### Example Applications
 
 Build the package first:
 
 ```bash
-npm run build
-npm run example:react          # http://localhost:5180
-npm run example:angular        # http://localhost:4200
-npm run example:microfrontend  # Shell on http://localhost:5191, remotes on 5192 and 5193
-npm run example:console-only   # http://localhost:5195
+pnpm run build
+pnpm run example:react          # http://localhost:5180
+pnpm run example:angular        # http://localhost:4200
+pnpm run example:microfrontend  # Shell on http://localhost:5191, remotes on 5192 and 5193
+pnpm run example:console-only   # http://localhost:5195
 ```
 
 ---

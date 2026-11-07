@@ -116,9 +116,8 @@ function buffered(): LogRecord[] {
 
 /** Waits for startup to finish. */
 async function ready(): Promise<void> {
-  await vi.waitFor(() => {
-    expect(runtime()["ready"]).toBe(true);
-  });
+  await runtime()["started"];
+  expect(runtime()["ready"]).toBe(true);
 }
 
 /**
@@ -295,9 +294,8 @@ describe("runtime lifecycle", () => {
 
     configure({ capture: { fetch: true } });
 
-    await vi.waitFor(() => {
-      expect(globalThis.fetch).not.toBe(stubbed);
-    });
+    await vi.dynamicImportSettled();
+    expect(globalThis.fetch).not.toBe(stubbed);
   });
 
   it("keeps the installed captures until the new set has loaded", async () => {

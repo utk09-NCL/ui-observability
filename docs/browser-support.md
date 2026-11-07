@@ -33,16 +33,16 @@ The library tests each optional browser API before it uses it. Without the API, 
 
 ## Contexts
 
-| Context             | Behavior                                                                                                                                              |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Top-level document  | Sends its own records and the records of its frames and workers.                                                                                      |
-| Same-origin iframe  | Forwards its records to its parent through a direct call after the parent registers it with `registerFrame()`. A frame inside it forwards through it. |
-| Cross-origin iframe | Forwards over `postMessage` after the parent registers its window/origin with `registerFrame()`. The child trusts its parent origin.                  |
-| Worker              | Forwards its records after `registerWorker(worker)` in the page. Without it, the worker sends its own records.                                        |
-| Sandboxed iframe    | Storage throws. The library keeps the ids and the batches in memory.                                                                                  |
-| Private browsing    | IndexedDB can be off. The library uses `localStorage` or memory.                                                                                      |
-| OpenFin             | A view forwards its records to the provider over `InterApplicationBus`. It flushes on `close-requested`.                                              |
-| Node                | Console only. See the README.                                                                                                                         |
+| Context               | Behavior                                                                                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Top-level document    | Sends its own records and the records of its frames and workers.                                                                                      |
+| Same-origin iframe    | Forwards its records to its parent through a direct call after the parent registers it with `registerFrame()`. A frame inside it forwards through it. |
+| Cross-origin iframe   | Forwards over `postMessage` after the parent registers its window/origin with `registerFrame()`. The child trusts its parent origin.                  |
+| Worker                | Forwards its records after `registerWorker(worker)` in the page. Without it, the worker sends its own records.                                        |
+| Sandboxed iframe      | Storage throws. The library keeps the ids and the batches in memory.                                                                                  |
+| Private browsing      | IndexedDB can be off. The library uses `localStorage` or memory.                                                                                      |
+| OpenFin               | A view forwards its records to the provider over `InterApplicationBus`. It flushes on `close-requested`.                                              |
+| Node 22.22.3 or later | Console only. See the README.                                                                                                                         |
 
 See [runtime policies](runtime-policies.md) for origin-based discovery overrides, source permissions and security-context coordination.
 

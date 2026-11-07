@@ -1,0 +1,13 @@
+{
+  "name": "@example/vanilla",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite ../.. --config ../../vite.config.ts"
+  },
+  "devDependencies": {
+    "vite": "catalog:vanilla",
+    "web-vitals": "catalog:vanilla"
+  }
+}
