@@ -285,6 +285,10 @@ The diagnostics fallback is off by default. When it is on, it prints a fixed mes
 
 The SDK builds each kept record at the time of the log call. The record has the time, trace and context of that call. The processors and `redact` run at once. A record that they drop is not kept. Each logger call below `minLevel` then costs a full record build. `debugBuffer.maxRecords` limits the memory, and `debugBuffer.maxAgeMs` drops old records when the library reads them. A new session, a rotation and a change of `redact` or `processors` empty the buffer. A kept record has only the hooks of its log call. Turning the buffer off empties it at its next read. Each frame and worker keeps its own buffer. The owner of a frame does not sample a forwarded kept record again.
 
+### Profiler
+
+`profiler.enabled: true` turns on the probes of `profiler.probe()`. The SDK sends one point for each probe with data at each interval of `profiler.flushIntervalMs`. It also sends the open interval at `flush()`, at `shutdown()`, at `newSession()`, before the exit flush and when `configure()` turns the profiler off. A rotation closes the open interval as records of the old context. `profiler.maxProbes` is a startup setting. A later change reports `config.invalid`. The startup value stays. With isolation, the values of a rotation and each span that is open at its end add no value. During a rotation, `shutdown()` and the exit flush do not send the open interval. When its owner changes its identity, a forwarder drops the profiler data of its open interval.
+
 ### Debug bundle
 
 `collectDebugBundle()` collects the state of the library for a support ticket. It returns a JSON-safe object. The SDK does not send it. Your app decides where to send it.

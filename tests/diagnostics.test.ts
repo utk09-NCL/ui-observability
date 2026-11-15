@@ -35,6 +35,35 @@ describe("Diagnostics", () => {
     expect(d.snapshot()["transport.http_error"]).toBe(4);
   });
 
+  it("returns true from report() when the handler got the event", () => {
+    const d = new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 1000);
+
+    expect(d.report("transport.http_error", "first")).toBe(true);
+  });
+
+  it("returns false from report() when the throttle drops the event", () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const d = new Diagnostics(handler, 1000);
+    d.report("transport.http_error", "first");
+
+    expect(d.report("transport.http_error", "inside the window")).toBe(false);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns true from report() when no handler exists", () => {
+    const d = new Diagnostics(undefined, 1000);
+
+    expect(d.report("transport.http_error", "first")).toBe(true);
+  });
+
+  it("returns true from report() when the handler throws", () => {
+    const d = new Diagnostics(() => {
+      throw new Error("handler failed");
+    }, 1000);
+
+    expect(d.report("transport.http_error", "first")).toBe(true);
+  });
+
   it("applies the default one-second throttle window when constructed without one", () => {
     vi.useFakeTimers();
     const handler = vi.fn<(event: DiagnosticEvent) => void>();

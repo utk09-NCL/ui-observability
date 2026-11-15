@@ -16,6 +16,7 @@ import {
   DEAD_CLICK_MS,
   DEFAULT_CONFIG,
   LEVEL_ORDER,
+  PROFILER_PROBE_LIMIT,
   REMOTE_CAPTURE_FLAGS,
   RESOURCE_SLOW_MS,
   RAGE_CLICK_COUNT,
@@ -128,7 +129,8 @@ type PolicySection =
   | "metrics"
   | "buffering"
   | "delivery"
-  | "debugBuffer";
+  | "debugBuffer"
+  | "profiler";
 
 /**
  * Reads one policy key that the generic checks cannot read, for example a list.
@@ -210,6 +212,7 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
     choices: { priority: ["low", "auto", "high"] },
   },
   debugBuffer: { ranges: { maxRecords: [1, 10_000], maxAgeMs: DURATION_RANGE } },
+  profiler: { ranges: { flushIntervalMs: [1000, 600_000], maxProbes: [1, PROFILER_PROBE_LIMIT] } },
 };
 
 /** Boolean keys of the capture section. */

@@ -102,6 +102,23 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 | `ui.measure.duration`       | `measure.name`, `measure.outcome`. |
 | `ui.measure.phase.duration` | `measure.name`, `measure.phase`.   |
 
+## Profile Attributes
+
+`profiler.probe()` writes one histogram in milliseconds. Each record is the summary of one probe for one interval. The record has the histogram fields of [Metric Records](#metric-records). With `metricsEndpoint`, only `profile.probe` and `profile.sample_every` are attributes of the OTLP point.
+
+| Histogram             | Attributes                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `ui.profile.duration` | `profile.probe`, `profile.sample_every`, `profile.p50`, `profile.p90`, `profile.p99`, `profile.overhead_ns`. |
+
+| Attribute              | Type   | Value                                                                                                                                                                                |
+| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `profile.probe`        | string | Probe name. It is an OTLP point attribute.                                                                                                                                           |
+| `profile.sample_every` | number | Sampling period of the probe. The probe measures one span of each period. It is an OTLP point attribute.                                                                             |
+| `profile.p50`          | number | 50th percentile of the interval, in milliseconds. It is the upper bound of its bucket, limited to the range from `metric.min` to `metric.max`.                                       |
+| `profile.p90`          | number | 90th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                             |
+| `profile.p99`          | number | 99th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                             |
+| `profile.overhead_ns`  | number | Cost of one `begin()` and `end()` pair, in whole nanoseconds. It is the cost of a pair in one short loop. It is absent before the one measurement, and when the clock is too coarse. |
+
 ## Span Records
 
 With `tracesEndpoint`, the library writes span records. The OTLP traces serializer reads these fields. They do not become OTLP attributes.

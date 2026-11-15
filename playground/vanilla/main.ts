@@ -11,6 +11,7 @@ import {
   getJourneyToken,
   getLogger,
   getQueueDepth,
+  profiler,
   registerFrame,
   startJourney,
   startMeasure,
@@ -40,6 +41,12 @@ const LONG_FRAME_MS = 300;
 
 /** Query parameter carrying the journey token to a second window. */
 const JOURNEY_PARAM = "__uiobs_journey";
+
+/** Number of spans that the profiler button measures. */
+const PROFILER_SPANS = 10_000;
+
+/** Number of values that each measured sort orders. */
+const SORT_ROWS = 32;
 
 /**
  * Queries a DOM element by selector, throwing if missing.
@@ -81,6 +88,10 @@ const toMessage = (err: unknown): string => (err instanceof Error ? err.message 
 const on = (id: string, fn: () => void): void => {
   el(`#${id}`).addEventListener("click", fn);
 };
+
+// A probe is valid before configure(). It measures nothing until the profiler checkbox turns
+// the profiler on.
+const sortProbe = profiler.probe("grid.sort", { sampleEvery: 1 });
 
 // Storage, transport, retry, the pipeline, the bus, the exit flush and every
 // capture module are built by this one call. The child frames load later, after
@@ -159,6 +170,11 @@ remoteCaptures.addEventListener("change", () => {
   configure({
     capture: { remoteToggles: remoteCaptures.checked ? ["serverTiming", "lifecycle"] : [] },
   });
+});
+
+const profilerEnabled = el("#profiler-enabled") as HTMLInputElement;
+profilerEnabled.addEventListener("change", () => {
+  configure({ profiler: { enabled: profilerEnabled.checked } });
 });
 
 on("server-timing", () => {
@@ -294,6 +310,25 @@ on("measure", () => {
     // Wait.
   }
   performance.measure("playground.work", "playground.work.start");
+});
+
+on("profiler-run", () => {
+  // The probe times each sort. flush() sends the summary record, so the mock server prints it.
+  for (let i = 0; i < PROFILER_SPANS; i++) {
+    // Gives each span a different unsorted array. The probe times the sort only.
+    const rows = Array.from({ length: SORT_ROWS }, (_, k) => (i * 31 + k * 17) % 97);
+    const token = sortProbe.begin();
+    rows.sort((a, b) => a - b);
+    sortProbe.end(token);
+  }
+
+  void flush();
+  note(
+    "playground.profiler",
+    profilerEnabled.checked
+      ? `${String(PROFILER_SPANS)} sorts measured. The server prints ui.profile.duration.`
+      : "With the profiler off, the probe records nothing. Tick the box and run again.",
+  );
 });
 
 on("console-error", () => {

@@ -1081,6 +1081,129 @@ describe("resolveConfig", () => {
       ]);
     });
 
+    describe("profiler", () => {
+      const PROFILER_DEFAULTS = { enabled: false, flushIntervalMs: 10_000, maxProbes: 64 };
+
+      it("gives the default profiler section", () => {
+        const { config, texts } = resolveLoose({});
+
+        expect(config.profiler).toEqual(PROFILER_DEFAULTS);
+        expect(texts).toEqual([]);
+      });
+
+      it("accepts each limit of the profiler ranges and the enabled flag", () => {
+        const lower = resolveLoose({
+          profiler: { enabled: true, flushIntervalMs: 1000, maxProbes: 1 },
+        });
+        const upper = resolveLoose({ profiler: { flushIntervalMs: 600_000, maxProbes: 1024 } });
+
+        expect(lower.config.profiler).toEqual({
+          enabled: true,
+          flushIntervalMs: 1000,
+          maxProbes: 1,
+        });
+        expect(upper.config.profiler).toEqual({
+          enabled: false,
+          flushIntervalMs: 600_000,
+          maxProbes: 1024,
+        });
+        expect(lower.texts).toEqual([]);
+        expect(upper.texts).toEqual([]);
+      });
+
+      it.each([
+        [
+          "flushIntervalMs",
+          999,
+          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 999. The library keeps 10000.",
+        ],
+        [
+          "flushIntervalMs",
+          600_001,
+          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 600001. The library keeps 10000.",
+        ],
+        [
+          "flushIntervalMs",
+          1500.5,
+          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 1500.5. The library keeps 10000.",
+        ],
+        [
+          "flushIntervalMs",
+          "10000",
+          'profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is "10000". The library keeps 10000.',
+        ],
+        [
+          "maxProbes",
+          0,
+          "profiler.maxProbes must be an integer from 1 to 1024. The value is 0. The library keeps 64.",
+        ],
+        [
+          "maxProbes",
+          1025,
+          "profiler.maxProbes must be an integer from 1 to 1024. The value is 1025. The library keeps 64.",
+        ],
+        [
+          "maxProbes",
+          2.5,
+          "profiler.maxProbes must be an integer from 1 to 1024. The value is 2.5. The library keeps 64.",
+        ],
+        [
+          "enabled",
+          "yes",
+          'profiler.enabled must be true or false. The value is "yes". The library keeps false.',
+        ],
+      ])(
+        "refuses profiler.%s with the value %j and keeps the value in force",
+        (key, value, text) => {
+          const { events, diagnostics } = collect();
+
+          const resolved = resolveConfig({ ...valid(), profiler: { [key]: value } }, diagnostics);
+
+          expect(resolved.profiler).toEqual(PROFILER_DEFAULTS);
+          expect(events.map((event) => event.code)).toEqual(["config.invalid"]);
+          expect(messages(events)).toEqual([text]);
+        },
+      );
+
+      it("reports an unknown key of profiler", () => {
+        const { config, texts } = resolveLoose({ profiler: { maxProbe: 5 } });
+
+        expect(config.profiler).toEqual(PROFILER_DEFAULTS);
+        expect(texts).toEqual([
+          'The library ignores the unknown config key "profiler.maxProbe". Check the spelling.',
+        ]);
+      });
+
+      it("merges a later profiler change onto the values in force", () => {
+        const { events, diagnostics } = collect();
+        const first = resolveConfig(
+          { ...valid(), profiler: { flushIntervalMs: 20_000, maxProbes: 128 } },
+          diagnostics,
+        );
+
+        const second = resolveConfig({ profiler: { enabled: true } }, diagnostics, first);
+
+        expect(second.profiler).toEqual({ enabled: true, flushIntervalMs: 20_000, maxProbes: 128 });
+        expect(resolveConfig({}, diagnostics, second).profiler).toEqual(second.profiler);
+        expect(messages(events)).toEqual([]);
+      });
+
+      it("keeps the profiler values in force on a later bad value", () => {
+        const { events, diagnostics } = collect();
+        const first = resolveConfig(
+          { ...valid(), profiler: { enabled: true, maxProbes: 128 } },
+          diagnostics,
+        );
+
+        const next = resolveConfig({ profiler: { maxProbes: 2000 } }, diagnostics, first);
+
+        expect(next.profiler).toEqual({ enabled: true, flushIntervalMs: 10_000, maxProbes: 128 });
+        expect(messages(events)).toEqual([
+          "profiler.maxProbes must be an integer from 1 to 1024. The value is 2000. The library keeps 128.",
+        ]);
+      });
+    });
+
     it("keeps a query of an invalid endpoint out of the message", () => {
       const { texts } = resolveLoose({ endpoint: "/v1/logs?key=abc" });
 

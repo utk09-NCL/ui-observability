@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+      // Shows a fault that happens before start() runs. A module that does not load gives no other
+      // sign.
+      (() => {
+        const fail = (message) => {
+          if (document.title === "done") {
+            return;
+          }
+
+          document.title = "failed";
+          const status = document.getElementById("status");
+          if (status) {
+            status.textContent = `The page failed. ${message}`;
+          }
+        };
+
+        window.addEventListener(
+          "error",
+          (event) => {
+            if (event.target instanceof HTMLScriptElement) {
+              fail(`The script ${event.target.src} did not load.`);
+            } else if (event instanceof ErrorEvent) {
+              fail(event.message);
+            }
+          },
+          true,
+        );
+        window.addEventListener("unhandledrejection", (event) => {
+          fail(String(event.reason));
+        });
+      })();
+    </script>
+    <title>profiler overhead benchmark</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+
+  <body>
+    <h1>profiler overhead benchmark</h1>
+    <p>
+      This page measures the cost of one <code>begin()</code> and <code>end()</code> pair of a
+      probe. Each number is a measurement of this browser and this machine. The page makes no claim
+      about another machine.
+    </p>
+    <p>
+      Keep this tab visible during the run. Close other tabs and each program that uses the CPU. No
+      capture runs on this page.
+    </p>
+    <p><a href="/playground/vanilla/index.html">Back to the playground</a></p>
+
+    <h2>Modes</h2>
+    <ul>
+      <li>
+        <code>baseline</code>. A plain loop with a counter. The page does not subtract it from
+        another mode.
+      </li>
+      <li><code>off</code>. Pairs on a probe while the profiler is off.</li>
+      <li><code>on</code>. Pairs on a probe with <code>sampleEvery: 1</code>.</li>
+      <li><code>sampled</code>. Pairs on a probe with <code>sampleEvery: 64</code>.</li>
+    </ul>
+
+    <h2>Settings</h2>
+    <p>
+      <label>Runs <input type="number" id="runs" min="1" step="1" value="101" /></label>
+      <label
+        >Pairs per run <input type="number" id="pairs" min="1" step="1" value="500000"
+      /></label>
+    </p>
+    <p id="settings-note"></p>
+    <button type="button" id="bench-start">Run benchmark</button>
+    <p id="status">Idle.</p>
+
+    <h2>Result in nanoseconds per pair</h2>
+    <table id="result-table"></table>
+    <p>
+      The page shows no average. With 101 runs, p99 is the second highest run. A p99.9 value needs
+      1000 runs or more. The mark <code>low resolution</code> means that the p50 run lasts fewer
+      than 100 clock ticks. The clock step then limits the value. Use more pairs per run.
+    </p>
+
+    <h2>Environment</h2>
+    <table id="env-table"></table>
+
+    <h2>JSON</h2>
+    <button type="button" id="copy-json" disabled>Copy JSON</button>
+    <pre id="result-json"></pre>
+
+    <p>
+      URL parameters. <code>autorun=1</code> starts the run at load. <code>runs=</code> and
+      <code>pairs=</code> set the inputs. A value must be a whole number from 1 to 10000 for runs
+      and from 1 to 50000000 for pairs. Another value uses the default.
+    </p>
+    <p>
+      <code>report=&lt;url&gt;</code> sends the JSON with a POST request when the run ends. The JSON
+      holds the user agent text, <code>crossOriginIsolated</code>, the clock tick and the timings.
+      The page accepts only the page host, localhost, 127.0.0.1 and [::1], with http or https.
+    </p>
+    <p>
+      The title of the page shows the state. It is <code>running</code> during a run,
+      <code>done</code> after a run and <code>failed</code> after a fault.
+    </p>
+
+    <script type="module" src="./profiler.ts"></script>
+  </body>
+</html>

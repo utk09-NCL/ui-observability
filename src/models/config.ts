@@ -975,6 +975,25 @@ export interface DebugBufferPolicy {
   maxAgeMs: number;
 }
 
+/** Duration probes that send a histogram summary record for each probe. */
+export interface ProfilerPolicy {
+  /**
+   * Record the probe durations. With false, a probe does nothing and does not read the clock.
+   * @default false
+   */
+  enabled: boolean;
+  /**
+   * Interval of the profiler summary records, in milliseconds. The range is 1000 to 600000.
+   * @default 10000
+   */
+  flushIntervalMs: number;
+  /**
+   * Maximum probes. The range is 1 to 1024. You cannot change this value after startup.
+   * @default 64
+   */
+  maxProbes: number;
+}
+
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
   /** Capture capacity and rate limits. */
@@ -995,6 +1014,8 @@ export interface ObservabilityConfig {
   delivery?: Partial<DeliveryPolicy>;
   /** Records that minLevel or sampling drops, kept for the next error. */
   debugBuffer?: Partial<DebugBufferPolicy>;
+  /** Duration probes that send a histogram summary record for each probe. */
+  profiler?: Partial<ProfilerPolicy>;
   /**
    * Refuse changes through configure(). Call setConfigurationLocked(false) to permit changes again.
    * @default false
@@ -1232,6 +1253,8 @@ export interface ResolvedConfig {
   delivery: DeliveryPolicy;
   /** Records that minLevel or sampling drops, kept for the next error. */
   debugBuffer: DebugBufferPolicy;
+  /** Duration probes that send a histogram summary record for each probe. */
+  profiler: ProfilerPolicy;
   /** True if configure() must refuse changes to the active settings. */
   lockConfiguration: boolean;
   /** Capacity of the logger cache. */

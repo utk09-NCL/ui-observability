@@ -7,6 +7,7 @@ import type { WorkerLike } from "./bus/links";
 import type { Journey } from "./core/journey";
 import { OneLogger, type OneLoggerOptions } from "./core/logger";
 import { makeCounter, makeHistogram } from "./core/meter";
+import { profilerCore } from "./core/profiler";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
 import type { SecurityContextUpdate, SecurityContextRotationOptions } from "./models/config";
@@ -22,6 +23,7 @@ import type {
   InstrumentOptions,
   Measure,
   MetricAttributes,
+  Profiler,
 } from "./models/metric";
 
 export { OneLogger };
@@ -37,6 +39,8 @@ export type {
   PersistencePolicy,
   MetadataPolicy,
   CapturePolicy,
+  DebugBufferPolicy,
+  ProfilerPolicy,
   BusOptions,
   CaptureOptions,
   InteractionOptions,
@@ -66,6 +70,9 @@ export type {
   InstrumentOptions,
   Measure,
   MetricAttributes,
+  Probe,
+  ProbeOptions,
+  Profiler,
 } from "./models/metric";
 export type { CapturePlugin, PluginContext } from "./models/plugin";
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
@@ -341,6 +348,28 @@ export function histogram(name: string, options: HistogramOptions = {}): Histogr
 export function startMeasure(name: string, attributes?: MetricAttributes): Measure {
   return requireRuntime().startMeasure(name, attributes);
 }
+
+/**
+ * Times code spans of the app with probes. A probe is a named handle with `begin()`, `end()` and
+ * `record()`. At each interval, the library sends one `ui.profile.duration` histogram for each
+ * probe with data.
+ *
+ * The profiler is off by default. Set `profiler.enabled` to true to turn it on. While it is off,
+ * a probe reads no clock. After `shutdown()`, a probe does nothing until a later `configure()`
+ * turns the profiler on. A probe stays valid across `configure()` and `shutdown()`. An app can
+ * make a probe before `configure()`. A call never throws.
+ * @example
+ * const render = profiler.probe("grid.render");
+ * const token = render.begin();
+ * drawGrid();
+ * render.end(token);
+ */
+export const profiler: Profiler = {
+  // The reports of a probe call go to the current runtime. After shutdown() resolves, the
+  // stopped runtime gets none.
+  probe: (name, options) =>
+    profilerCore().probe(name, options, ObservabilityRuntime.current()?.diagnostics),
+};
 
 /**
  * Measures the execution time of a synchronous function and logs a duration metric.

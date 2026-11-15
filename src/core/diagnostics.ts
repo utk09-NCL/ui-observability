@@ -132,18 +132,19 @@ export class Diagnostics {
    * @param message Event description.
    * @param detail Optional structured metadata.
    * @param cause Caught error instance or reason.
+   * @returns False when the throttle dropped the event.
    */
   report(
     code: DiagnosticCode,
     message: string,
     detail?: Record<string, unknown>,
     cause?: unknown,
-  ): void {
+  ): boolean {
     const count = this.count(code);
     const now = Date.now();
     const last = this.lastEmitted.get(code) ?? 0;
     if (now - last < this.throttleMs) {
-      return;
+      return false;
     }
     this.lastEmitted.set(code, now);
 
@@ -159,7 +160,7 @@ export class Diagnostics {
     const { handler } = this;
 
     if (!handler) {
-      return;
+      return true;
     }
     try {
       // The console capture skips a console call of the handler. Without the scope, the line
@@ -178,6 +179,8 @@ export class Diagnostics {
         });
       }
     }
+
+    return true;
   }
 
   /**

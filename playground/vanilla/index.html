@@ -76,6 +76,19 @@
       a button that does nothing
     </button>
 
+    <h2>Profiler</h2>
+    <p>
+      <label><input type="checkbox" id="profiler-enabled" autocomplete="off" /> Profiler</label>
+    </p>
+    <button type="button" id="profiler-run" data-observability-action="profiler-run">
+      Run 10,000 sorts
+    </button>
+    <a href="/playground/vanilla/profiler.html">overhead benchmark page</a>
+    <p>
+      The button times 10,000 sorts with the probe <code>grid.sort</code>. Then it calls
+      <code>flush()</code>. The server prints one <code>ui.profile.duration</code> record.
+    </p>
+
     <h2>Durability</h2>
     <button type="button" id="burst" data-observability-action="burst">250 logs in a burst</button>
     <button type="button" id="offline" data-observability-action="offline">

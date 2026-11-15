@@ -58,6 +58,50 @@ export interface Measure {
   end(outcome?: string): void;
 }
 
+/** Options of a probe. */
+export interface ProbeOptions {
+  /**
+   * The probe records one span of each `sampleEvery` spans. It is an integer from 1 to
+   * 2147483647.
+   * @default 1
+   */
+  sampleEvery?: number;
+}
+
+/**
+ * Probe that times one code span of the app. Each member is a function property, not a method.
+ * A destructured member then works, and a lint rule for unbound methods accepts it.
+ */
+export interface Probe {
+  /**
+   * Starts one span.
+   * @returns A token for `end()`, or -1 for a span that the profiler does not measure.
+   */
+  begin: () => number;
+  /**
+   * Ends one span.
+   * @param token The token that `begin()` returned.
+   */
+  end: (token: number) => void;
+  /**
+   * Adds a duration from another source.
+   * @param durationMs Duration in milliseconds. It is a finite number, 0 or larger.
+   */
+  record: (durationMs: number) => void;
+}
+
+/** Makes the probes of the app. `probe` is a function property. A destructured `probe` works. */
+export interface Profiler {
+  /**
+   * Gives the probe of a name. The same name gives the same probe. The first options of a
+   * name stay.
+   * @param name Probe name. It is a string that is not empty.
+   * @param options Sampling of the probe.
+   * @returns The probe.
+   */
+  probe: (name: string, options?: ProbeOptions) => Probe;
+}
+
 /** Kind of an instrument. */
 export type InstrumentKind = "counter" | "histogram";
 

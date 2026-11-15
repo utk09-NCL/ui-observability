@@ -76,6 +76,7 @@ import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
 import { OneLogger } from "./logger";
 import { createMeasure } from "./measure";
 import { makeCounter, makeHistogram, Meter, type RecordMetric } from "./meter";
+import { profilerCore, type ProfilerSink } from "./profiler";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
 import { sampleKey, shouldSample } from "./sampling";
@@ -259,6 +260,11 @@ function ownVersion(runtime: ObservabilityRuntime): boolean {
 export class ObservabilityRuntime {
   /** True while the runtime changes the security context. */
   private rotating = false;
+  /**
+   * True while this runtime has the profiler core attached. Without it, each configure() starts
+   * the sampling again, and a runtime with the profiler off makes the core and its global symbol.
+   */
+  private profilerOn = false;
   /** True while the runtime collects the last records of the old context. */
   private closingContext = false;
   /** Version of another SDK copy that owns the page runtime, or null. */
@@ -565,6 +571,7 @@ export class ObservabilityRuntime {
     );
     // The record builder exists now. A diagnostic can become a record.
     this.diagnostics.setHandler(this.diagnosticHandler());
+    this.syncProfiler();
   }
 
   /**
@@ -729,6 +736,60 @@ export class ObservabilityRuntime {
       aggregated: true,
     });
     this.emit(record);
+  }
+
+  /**
+   * Turns the profiler on or off from profiler.enabled. A switch to off first sends the points
+   * that wait. Without that collect, the switch drops them.
+   */
+  private syncProfiler(): void {
+    const { enabled } = this.config.profiler;
+    if (enabled === this.profilerOn) {
+      return;
+    }
+
+    this.profilerOn = enabled;
+    const core = profilerCore();
+    if (!enabled) {
+      core.collect(false);
+      core.detach();
+      return;
+    }
+
+    // The profiler points use the path of the meter points. The hooks and the transports apply.
+    const sink: ProfilerSink = {
+      capacity: this.config.profiler.maxProbes,
+      intervalMs: () => this.config.profiler.flushIntervalMs,
+      emit: (name, attributes, fields) => {
+        this.emitPoint(name, attributes, fields);
+      },
+      diagnostics: this.diagnostics,
+      // The same rule as emit(). The first collect of a rotation still goes to the old sender.
+      ready: () => !this.rotating || this.closingContext,
+    };
+    core.attach(sink);
+  }
+
+  /**
+   * Sends the open interval of the meter and the profiler. The profiler does not calibrate here.
+   * The flush and the exit path then stay short and synchronous.
+   */
+  private collectPoints(): void {
+    this.meter.collect();
+    if (this.profilerOn) {
+      profilerCore().collect(false);
+    }
+  }
+
+  /**
+   * Starts a new identity epoch. With isolation, the profiler also drops its data and its open
+   * spans. A span of the old identity then adds no value to the new identity.
+   */
+  private advanceIdentity(): void {
+    this.identityEpoch++;
+    if (this.profilerOn && this.config.securityContext.isolation) {
+      profilerCore().reset();
+    }
   }
 
   /**
@@ -939,6 +1000,8 @@ export class ObservabilityRuntime {
     this.console.update(this.config.console);
     this.keepBuiltStorage();
     this.keepBuiltIdentity();
+    // The handler and the resource are current now. A point and a diagnostic use them.
+    this.syncProfiler();
 
     // Reinstall only on a change. A reinstall unpatches and patches each host function.
     // A stale capture load stops at its generation check. A reinstall is safe at any time.
@@ -1052,6 +1115,16 @@ export class ObservabilityRuntime {
         { requested: next.journey.maxAgeMs },
       );
       next.journey.maxAgeMs = maxAgeMs;
+    }
+
+    const { maxProbes } = this.config.profiler;
+    if (next.profiler.maxProbes !== maxProbes) {
+      this.diagnostics.report(
+        "config.invalid",
+        `profiler.maxProbes cannot change after startup. It stays ${String(maxProbes)}.`,
+        { requested: next.profiler.maxProbes },
+      );
+      next.profiler.maxProbes = maxProbes;
     }
   }
 
@@ -1283,7 +1356,12 @@ export class ObservabilityRuntime {
                 // collect() removes the open measurements. emit() refuses them during this reset.
                 const rotating = this.rotating;
                 this.rotating = true;
-                this.meter.collect();
+                this.collectPoints();
+                // The profiler keeps its data while emit() refuses. The data of the old owner
+                // must not go to the new owner.
+                if (this.profilerOn) {
+                  profilerCore().reset();
+                }
                 // A same-origin owner stores its new session before it sends the new id. Use that
                 // session. Without it, each frame starts a different session.
                 const shared = this.sessionTouch.stored();
@@ -1293,7 +1371,7 @@ export class ObservabilityRuntime {
                     : newId(this.diagnostics),
                 );
                 this.rotating = rotating;
-                this.identityEpoch++;
+                this.advanceIdentity();
                 // The rules of the old owner must not apply to the new identity.
                 this.remote.sampling = null;
                 this.refreshCaptures();
@@ -1392,7 +1470,7 @@ export class ObservabilityRuntime {
             remote: this.remote,
             beforeExit: () => {
               drainDeferred(this);
-              this.meter.collect();
+              this.collectPoints();
               this.tracing.end();
             },
           });
@@ -1700,7 +1778,12 @@ export class ObservabilityRuntime {
 
     // The points of the open interval and the root span go out with the final flush.
     drainDeferred(this);
-    this.meter.collect();
+    this.collectPoints();
+    // After shutdown(), a probe reads no clock until the next configure().
+    if (this.profilerOn) {
+      this.profilerOn = false;
+      profilerCore().detach();
+    }
     this.tracing.end();
     this.destroyed = true;
     cancelDeferred(this);
@@ -1969,7 +2052,7 @@ export class ObservabilityRuntime {
    */
   private resetSession(sessionId: string): void {
     // Close the work of the old session first. Its points and its root span keep the old id.
-    this.meter.collect();
+    this.collectPoints();
     this.tracing.rotate("explicit");
     this.journey.end();
     // A shared machine: the next user must not see the trail of the previous user.
@@ -2066,7 +2149,7 @@ export class ObservabilityRuntime {
 
     this.closingContext = true;
     try {
-      this.meter.collect();
+      this.collectPoints();
       this.tracing.end();
       this.journey.end();
     } finally {
@@ -2091,7 +2174,7 @@ export class ObservabilityRuntime {
     next.lockConfiguration = this.config.lockConfiguration;
     // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
     applyResolvedConfig(this.config, next);
-    this.identityEpoch++;
+    this.advanceIdentity();
     this.remote.sampling = null;
     this.refreshCaptures();
     this.context.clear();
@@ -2302,7 +2385,7 @@ export class ObservabilityRuntime {
    */
   async flush(): Promise<void> {
     drainDeferred(this);
-    this.meter.collect();
+    this.collectPoints();
 
     // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.
     // After startup, do not wait. The handover of the forward buffer then stays synchronous.

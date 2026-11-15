@@ -756,6 +756,49 @@ export const METRIC_KEYS = {
   buckets: "metric.bucket_counts",
 } as const;
 
+/** Precision bits of the profiler histogram. Each power of two has 16 sub-buckets. */
+export const PROFILE_SUB_BITS = 4;
+
+/** Buckets of one profiler probe. This is 16 for 0 to 15 us and 16 for each exponent 4 to 25. */
+export const PROFILE_BUCKETS = 368;
+
+/** Largest profiler duration in microseconds (2^26 - 1). A larger value goes in the last bucket. */
+export const PROFILE_MAX_US = 67_108_863;
+
+/** Maximum buckets in one profiler summary record. More buckets make a large payload. */
+export const PROFILE_POINT_BUCKETS = 100;
+
+/** Default interval of the profiler summary records, in milliseconds. */
+export const PROFILER_FLUSH_INTERVAL_MS = 10_000;
+
+/** Default maximum probes. The runtime sets the limit at startup. */
+export const PROFILER_MAX_PROBES = 64;
+
+/** Metric name of the profiler summary records. */
+export const PROFILE_METRIC_NAME = "ui.profile.duration";
+
+/** Attribute keys of the profiler summary records. */
+export const PROFILE_KEYS = {
+  probe: "profile.probe",
+  sampleEvery: "profile.sample_every",
+  p50: "profile.p50",
+  p90: "profile.p90",
+  p99: "profile.p99",
+  overhead: "profile.overhead_ns",
+} as const;
+
+/** Maximum registered probe names. It is the maximum of profiler.maxProbes. */
+export const PROFILER_PROBE_LIMIT = 1024;
+
+/** Global symbol key of the profiler core. Copies of one library version share the core. */
+export const PROFILER_GLOBAL_KEY = "ui-observability.profiler";
+
+/** Minimum window of the profiler overhead measurement, in milliseconds. */
+export const PROFILER_CALIBRATION_MS = 2;
+
+/** Maximum begin() and end() pairs of the profiler overhead measurement. */
+export const PROFILER_CALIBRATION_PAIRS = 100_000;
+
 /** Namespace of the span records. */
 export const TRACE_NAMESPACE = "uiobs.traces";
 
@@ -905,6 +948,7 @@ export const CONFIG_SECTIONS = [
   "limits",
   "capture",
   "debugBuffer",
+  "profiler",
 ] as const;
 
 /**
@@ -930,6 +974,7 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
   limits: [],
   capture: ["webVitalsLoader", "urlTransform"],
   debugBuffer: [],
+  profiler: [],
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */
@@ -1099,6 +1144,11 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   },
   metadata: { pageUrl: true, userAgent: true, openfin: true, clockOffset: true },
   debugBuffer: { enabled: false, maxRecords: 200, maxAgeMs: 60_000 },
+  profiler: {
+    enabled: false,
+    flushIntervalMs: PROFILER_FLUSH_INTERVAL_MS,
+    maxProbes: PROFILER_MAX_PROBES,
+  },
   persistence: { namespace: "", requestPersistent: false },
   diagnostics: { throttleMs: 1000, consoleFallback: false, records: false },
   correlation: {
