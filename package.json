@@ -72,6 +72,8 @@
     "check:peers": "node tools/check-peer-imports.mjs",
     "check:size": "node tools/check-size.mjs",
     "check:dev": "node tools/check-dev-server.mjs",
+    "prepare": "pnpm run build",
+    "fix": "pnpm run lint:fix && pnpm run format",
     "verify": "pnpm run format:check && pnpm run typecheck && pnpm run build && pnpm run lint && pnpm run check:peers && pnpm run check:size && pnpm run check:dev && pnpm run test:coverage",
     "prepublishOnly": "pnpm run verify"
   },
