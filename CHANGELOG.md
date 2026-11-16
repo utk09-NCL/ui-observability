@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-11-16
+
+### Added - v0.12.0
+
+- `profiler.probe(name, options?)` returns a probe that times spans of app code. A probe has `begin()`, `end(token)`, `endAfterPaint(token)` and `record(durationMs)`. The profiler is off by default. Set `profiler.enabled: true` to turn it on. While it is off, `begin()` returns `-1` and a probe does not read the clock. A probe stays valid across `configure()` and `shutdown()`, and no call throws.
+- Every `profiler.flushIntervalMs` (default 10000, range 1000 to 600000) the library sends one `ui.profile.duration` histogram record for each probe that has data. The record has the count, sum, minimum, maximum and buckets, and the attributes `profile.probe`, `profile.sample_every`, `profile.p50`, `profile.p90`, `profile.p99`, `profile.self_p99` and `profile.overhead_ns`. `flush()`, `shutdown()`, `newSession()` and the exit flush also send the open interval. With `metricsEndpoint`, the record is an OTLP histogram point with the attributes `profile.probe` and `profile.sample_every`.
+- `profiler.maxProbes` sets the number of probes. The default is 64 and the range is 1 to 1024. It cannot change after startup. A probe above the limit does nothing, and the library reports `config.invalid`.
+- Probe option `sampleEvery: n` measures one span in every `n`. A span that is not measured does not read the clock.
+- Probe option `slowMs` adds a breadcrumb with the new category `profile` for each span that runs longer than the value.
+- Probe option `async: true` is for spans that an `await` splits. These spans report the total time only and do not change the self time of other spans.
+- `profile.self_p99` is the p99 of the self time of a probe with nested spans. The self time of a span is its duration without the measured spans inside it. The span stack has 32 levels.
+- `profiler.time(name, fn)` calls `fn` and times the call. When the result has a `then` function, the span ends when the result settles.
+- `probe.endAfterPaint(token)` ends a span in the first task after the next paint. The duration then includes style, layout and paint. In a hidden page, or without `requestAnimationFrame`, the span ends at once.
+- `profiler.framePhases: true` adds the phases of each long animation frame to every probe that had a span of 1 ms or more in that frame. The library sends them as the histogram `ui.profile.frame.duration` with the attributes `profile.probe` and `profile.frame_phase`. The phases are `script`, `render`, `style_layout` and `forced_layout`. A browser without long animation frames reports `capture.install_failed` one time.
+- `profiler.framePacing: true` measures the time between frames with the probe `frame.interval`.
+- At the end of the first interval with data, the profiler measures the cost of one `begin()` and `end()` pair and reports it as `profile.overhead_ns`. The measurement runs one time and blocks the thread for about 2 ms to 3 ms. `flush()`, `shutdown()` and the exit flush do not run it.
+- Session replay. The new `replay` config section records the DOM with the recorder of the app, `@rrweb/record`, and keeps the recent events in memory. After an ERROR or FATAL record, the library sends the buffer and the events of the next `replay.afterErrorMs` to `replay.endpoint`. The replay is off by default. `replay.loader` loads the recorder, for example `() => import("@rrweb/record")`.
+- `@rrweb/record` `^2` is a new optional peer. An app with the replay off does not need it.
+- `replay.bufferMs` (default 60000) and `replay.maxBufferBytes` (default 10000000) limit the buffer. `replay.afterErrorMs` (default 5000) sets the time after an error. `replay.uploadsPerWindow` (default 3) limits the uploads in each `capturePolicy.windowMs` window.
+- Replay uploads are batched. A segment closes at `replay.batchSize` events (default 200), at `replay.batchBytes` (default 512000) or after `replay.flushIntervalMs` (default 2000). One segment is in flight at a time. `replay.maxAttempts` (default 3) and `replay.maxQueueBytes` (default 20000000) limit the retries and the queue. `delivery.requestTimeoutMs`, `delivery.retryBaseDelayMs` and `delivery.retryMaxDelayMs` apply.
+- `replay.headers` sets the request headers of the replay endpoint, as an object or a function. The library never sends the `headers` of the log endpoint to the replay endpoint.
+- `replay.onSegment` receives each segment in place of the request to `replay.endpoint`.
+- Replay privacy. `replay.maskText` and `replay.maskInputs` are `true` by default. The library masks the text of each element and the value of each `input`, `textarea` and `select`, including hidden inputs and file inputs. A masked input value is `********`. A password input is always masked. Text in an element with the attribute `data-observability-unmask` stays in clear text. `replay.maskSelectors` and `replay.blockSelectors` take CSS selectors. An invalid selector reports `config.invalid`, and the replay does not start. The library also removes the query of the page URL and masks text that sits directly in a shadow root.
+- `replay.recordCanvas` (default `false`) records canvas elements.
+- `replay.requireConsent: true` records nothing until `startReplay()`. `stopReplay()` stops the recorder, stops the request in flight and drops the events that are not sent. The recorder then stays off until the next `startReplay()`, also after a later `configure()`.
+- Each record has the attribute `replay.id` while the recorder runs. Each segment has `replay.id`, `session.id`, `tab.id`, `service.name` and `sequence`.
+- `newSession()` and `rotateSecurityContext()` drop the replay buffer and start a new recording with a new `replay.id`.
+- The replay capture has its own install key. A change of another capture setting in `configure()`, or a remote capture switch, keeps the recorder, the buffer and the `replay.id`.
+- A change of `replay.endpoint`, `requireConsent`, `maskText`, `maskInputs`, `maskSelectors`, `blockSelectors`, `recordCanvas`, `bufferMs`, `capture.fullUrls` or `capture.ignoreUrls` starts a new recording and drops the buffer. A new `loader` function, `onSegment` function, `recordOptions` object or plugin function also does this. The batch settings, the limits and `replay.headers` apply to the recorder that runs.
+- A replay that could not start for a missing `loader`, `endpoint` or `onSegment` starts when a later `configure()` adds the missing value.
+- `replay.plugins` takes functions that create record plugins of the recorder. Each function gets `transformRequest`, a `transformRequestFn` for the network plugin. It skips each request to a URL in `capture.ignoreUrls` and removes the query of a URL unless `capture.fullUrls` is set.
+- `replay.recordOptions` passes `sampling`, `slimDOMOptions`, `ignoreClass`, `ignoreSelector`, `ignoreCSSAttributes`, `userTriggeredOnInput`, `recordAfter`, `inlineStylesheet` and `dataURLOptions` to the recorder. Another key reports `config.invalid`.
+- The library adds `replay.endpoint` to `capture.ignoreUrls`. A failed replay request then cannot start a new upload.
+- The replay endpoint contract in the README. Each segment is one `POST` with a JSON body, `X-UiObs-Batch-Id: <replay.id>-<sequence>` and `X-UiObs-Attempt`. The library sends a segment again after `429`, `5xx`, `401` and `403`.
+- `collectDebugBundle()` has a `replay` summary. It shows whether headers are set, the number of plugins and the key names of `recordOptions`, not their values.
+- New exported types: `Probe`, `ProbeOptions`, `Profiler`, `ProfilerPolicy`, `ReplayPolicy`, `ReplayLoader`, `ReplayPluginLoader`, `ReplayPluginTools` and `ReplaySegment`.
+- `uiobs doctor` has a `beacon` rule. It sends a `POST` with `Content-Type: text/plain;charset=UTF-8`, the batch id in `uiobs_batch_id` and `uiobs_exit=pagehide`, as the exit flush does. The tool now sends four test batches.
+- `uiobs doctor` accepts `--header "Name: value"`, more than one time. With a custom header the tool sends no beacon, because the exit flush then uses a keepalive fetch.
+- `uiobs doctor <url> --origin <origin> --replay` tests a replay endpoint. The rules are `preflight`, `allowed headers`, `test segment`, `gzip`, `large segment` and `deduplication`. The tool sends four test segments with `service.name: "uiobs-doctor"`. The `large segment` rule sends one segment of 5 MB without gzip. It finds a body limit of the server that is too low for a full snapshot. That request has the default `delivery.requestTimeoutMs` of 15 seconds.
+- `tools/mock-ingest-server.mjs` and `tools/reference-collector.mjs` accept `/v1/replay`. The reference collector limits a replay body to `MAX_REPLAY_BODY_BYTES` (16 MB by default).
+- Playground pages: a profiler overhead benchmark and a blotter page in `playground/vanilla`, a session replay control on the vanilla page, and a replay example with an IndexedDB store and an `rrweb-player` viewer in `playground/react`.
+- `docs/attributes.md`, `docs/runtime-policies.md` and `docs/threat-model.md` describe the profiler attributes, the `profiler` and `replay` sections and the risks of the profiler and the session replay. `docs/browser-support.md` and `docs/delivery-guarantees.md` have rows and sections for the profiler and the session replay.
+
+### Changed - v0.12.0
+
+- **Breaking:** `capture.longFrameThresholdMs` is now `capture.longFrameMs`. The library ignores the old key and uses the default of 100. Rename the key in your configuration.
+- The usage output of `uiobs doctor` prints only the known words and a URL without its query and user info. It prints `<hidden>` for each other argument. The tool refuses a URL with a user name or a password.
+- The gzip budget of the main graph is 49,993 B. The measured main graph is 45,448 B.
+- A `config.invalid` message now says "the current value" where it said "the value in force". Example: "The library keeps the current value." The change applies to 16 messages of `configure()`. Update a test or an alert that compares the full text.
+- The usage line of `uiobs doctor` names the option `--replay`.
+- Use pnpm 12.21.0. Update the development dependencies to their latest versions. TypeScript stays at 6.0.3.
+- Add the package scripts `prepare` and `fix`.
+
+### Fixed - v0.12.0
+
+- `counter()` and `histogram()` no longer throw when the options are `null` or have a getter or a Proxy trap that throws. The instrument uses the defaults, and the library reports `config.invalid`. This also applies to the `counter()` and `histogram()` of a capture plugin.
+- `startMeasure()` no longer throws when the `toString()` of the name throws. The measure has an empty name, and the library reports `record.sanitize_failed`.
+- A fault in the observer callback of the long frame capture or the user timing capture no longer becomes an uncaught error of the page. The library reports `capture.record_failed`.
+- The `webVitals` capture logged `navigation.dom_interactive_ms`, `navigation.dom_complete_ms` and `navigation.load_ms` as 0 when the library started before the load event. The capture now reads the navigation timing one task after the load event. It leaves out a value that the browser has not set. When the page becomes hidden before the load event, the capture logs the values that are ready. It logs the other values after the load event.
+- On a prerendered page, `navigation.dom_interactive_ms`, `navigation.dom_complete_ms` and `navigation.load_ms` counted from the start of the prerender. They now count from the activation of the page, and a value is not less than 0. The capture reports nothing before the activation. `navigation.type` is `prerender` for such a page. The `web-vitals` package uses the same rule for its metrics.
+
 ## [0.11.0] - 2026-11-07
 
 ### Changed - v0.11.0
