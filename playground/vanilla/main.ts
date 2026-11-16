@@ -119,9 +119,8 @@ configure({
     interactions: { rageClicks: true, deadClicks: true },
     navigation: true,
     webVitals: true,
-    // Literal specifier resolved by the bundler. The library's default loader
-    // holds it in a variable so a bundler cannot resolve it at build time,
-    // which leaves the browser unable to resolve the bare specifier at runtime.
+    // Required, because the library never imports web-vitals by name. Without it the library
+    // reports config.invalid and LCP, CLS and INP stay off.
     webVitalsLoader: () => import("web-vitals"),
     longFrames: true,
     // Records console.error and console.warn. console.info becomes a breadcrumb.

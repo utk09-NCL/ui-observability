@@ -909,7 +909,7 @@ pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/replay --origi
 
 ## Development
 
-Use Node 22.22.3 or later and pnpm 12.18.0. `.nvmrc` selects the minimum Node version.
+Use Node 22.22.3 or later and pnpm 12.21.0. `.nvmrc` selects the minimum Node version.
 The `packageManager` field pins pnpm. See the [pnpm installation instructions](https://pnpm.io/installation).
 Angular supports Node `^22.22.3 || ^24.15.0 || >=26.0.0`.
 Use one of these Node versions for the complete workspace.
@@ -933,7 +933,7 @@ pnpm run verify   # Format check, typecheck, build, lint, peer, size and dev-ser
 ```
 
 - Vanilla playground: `http://localhost:5173/playground/vanilla/index.html`. Add `?worker=1` to send through the transport worker.
-- Mock ingest server: `http://localhost:8787`. It accepts `/v1/logs`, `/v1/metrics` and `/v1/traces`. It prints one line for each record and for each metric point.
+- Mock ingest server: `http://localhost:8787`. It accepts `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`. It prints one line for each record, metric point, span and replay segment.
 - Cross-origin child frame: `http://localhost:5174`. The vanilla playground registers it and its same-origin child frame before they load.
 - The React example sends its counter, histogram and HTTP duration points to `/v1/metrics`.
 - After a build, run `node bin/uiobs.mjs doctor http://localhost:8787/v1/logs --origin http://localhost:5173` to test the command line tool on the mock server.
@@ -952,6 +952,8 @@ Check the vanilla frames, React and Angular in a browser before a release.
 To clear the React dependency cache, run `pnpm --filter @example/react run dev --force`.
 
 ### Example Applications
+
+The [playground guide](playground/README.md) tells you how to run each example and what to look for.
 
 Build the package first:
 
