@@ -165,7 +165,7 @@ describe("ConsoleCapture", () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it("wraps a method one time when the list has it two times, or when install runs again", () => {
+  it("wraps a method once when the list names it twice, or when install runs again", () => {
     const { sut, logger } = setup(["error", "error"]);
 
     sut.install();
@@ -240,7 +240,7 @@ describe("ConsoleCapture", () => {
     const sink = new ConsoleSink({ level: "DEBUG", styles: STYLES }, diagnostics);
     const library = console.error;
 
-    // The host wraps console.error after the library. Its wrapper logs through the library.
+    // The host wraps console.error after the library, and its wrapper logs through the library.
     console.error = (...args: unknown[]) => {
       library(...args);
       sink.write("host", "ERROR", "host saw an error");

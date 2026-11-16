@@ -1,7 +1,7 @@
 // src/transport/retry-engine.ts
 //
-// This module sends stored log batches again in the background. It uses exponential
-// backoff with jitter. It keeps one timer, never a chain of timers. Each scheduling path
+// Resends stored log batches in the background, with exponential backoff and jitter.
+// There is only ever one timer, never a chain of timers, because every scheduling path
 // clears the pending timer first.
 
 import { DRAIN_LOCK_NAME, STORAGE_DEADLINE_MS } from "../constants";
@@ -18,30 +18,30 @@ import { TransportError } from "./errors";
 import { batchKind } from "./serializers/select";
 import type { BatchTransport } from "./status-transport";
 
-/** Result of one delivery. A number is the delay before the next try of a failed batch. */
+/** Result of one delivery. A number is the delay before a failed batch is tried again. */
 type Outcome = "next" | "stop" | number;
 
 /**
- * This class sends persisted offline batches again on a timer. It uses backoff, a cross-tab
- * drain lock and batch splitting.
+ * Resends persisted offline batches on a timer, with backoff, a cross-tab drain lock and
+ * batch splitting.
  */
 export class RetryEngine {
-  /** This field holds the active retry timer handle. It is null when no timer runs. */
+  /** The active retry timer handle, or null when no timer is running. */
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  /** This field counts consecutive failed deliveries. The backoff calculation uses it. */
+  /** Consecutive failed deliveries. Feeds the backoff calculation. */
   private attempt = 0;
 
-  /** This flag is true while a storage drain runs. */
+  /** True while a storage drain is running. */
   private draining = false;
 
-  /** This flag is true after stop(). */
+  /** True after stop(). */
   private stopped = false;
 
-  /** Attempt limit of a stored batch. Retention cannot change after the delivery stack loads. */
+  /** Attempt limit for a stored batch. Retention can't change after the delivery stack loads. */
   private readonly maxAttempts: number;
 
-  /** This listener runs on the online event. It resets the attempt count and starts a drain. */
+  /** Runs on the online event. Resets the attempt count and starts a drain. */
   private readonly onOnline = (): void => {
     this.attempt = 0;
     this.schedule(0);
@@ -53,7 +53,7 @@ export class RetryEngine {
    * @param diagnostics Diagnostics reporter.
    * @param config Active configuration instance.
    * @param batchesPerDrain Maximum batches processed per drain tick.
-   * @param onLoss Receives the records of each batch that the engine drops.
+   * @param onLoss Receives the records of every batch that the engine drops.
    */
   constructor(
     private readonly storage: StorageAdapter,
@@ -66,7 +66,7 @@ export class RetryEngine {
     this.maxAttempts = storageLimits(config.retention).maxAttempts;
   }
 
-  /** This method starts the engine. It listens for online events and arms the first timer. */
+  /** Starts the engine. Listens for online events and arms the first timer. */
   start(): void {
     this.stopped = false;
 
@@ -77,7 +77,7 @@ export class RetryEngine {
     this.schedule(this.config.delivery.retryIdleDelayMs);
   }
 
-  /** This method schedules an earlier retry when storage receives a new offline batch. */
+  /** Schedules an earlier retry when storage receives a new offline batch. */
   nudge(): void {
     if (!this.draining) {
       this.schedule(this.config.delivery.retryBaseDelayMs);
@@ -85,9 +85,9 @@ export class RetryEngine {
   }
 
   /**
-   * Stores a batch that failed outside the drain loop. It applies the same rules
-   * as the drain. It does not store a refused batch whole. A whole batch causes another request
-   * with a payload that the server refused.
+   * Stores a batch that failed outside the drain loop, under the same rules as the drain.
+   * A refused batch is never stored whole, because that would cause another request with a
+   * payload the server already refused.
    * @param batch Rejected batch, with its attempt already counted.
    * @param error Failure thrown by the transport.
    */
@@ -103,7 +103,7 @@ export class RetryEngine {
     }
   }
 
-  /** This method stops the engine. It removes the listener and clears the pending timer. */
+  /** Stops the engine. Removes the listener and clears the pending timer. */
   stop(): void {
     this.stopped = true;
 
@@ -115,7 +115,8 @@ export class RetryEngine {
   }
 
   /**
-   * Tries one delivery pass of stored batches before a context change. The caller sets the deadline.
+   * Tries one delivery pass over the stored batches before a context change. The caller sets
+   * the deadline.
    * @returns Promise that resolves when this pass stops.
    */
   async flush(): Promise<void> {
@@ -128,7 +129,7 @@ export class RetryEngine {
   }
 
   /**
-   * Clears the pending timer. It then schedules a drain after the delay.
+   * Clears the pending timer, then schedules a drain after the delay.
    * @param delayMs Delay duration in milliseconds.
    */
   private schedule(delayMs: number): void {
@@ -147,16 +148,16 @@ export class RetryEngine {
   }
 
   /**
-   * Sets a deadline on a storage call. A call that does not settle keeps
-   * `draining` true. This window then runs no more drains.
+   * Puts a deadline on a storage call. A call that never settles would keep
+   * `draining` true, and this window would run no more drains.
    * @param work Storage promise to bound.
-   * @returns The value of the promise, or a rejection after the deadline.
+   * @returns The promise's value, or a rejection after the deadline.
    */
   private bounded<T>(work: Promise<T>): Promise<T> {
     return withDeadline(work, STORAGE_DEADLINE_MS);
   }
 
-  /** This method clears the pending timer when a timer is active. */
+  /** Clears the pending timer if there is one. */
   private clearTimer(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
@@ -165,8 +166,8 @@ export class RetryEngine {
   }
 
   /**
-   * Calculates the exponential backoff delay from consecutive failures. It applies
-   * full jitter, not a fixed offset. With a fixed offset, tabs that reconnect together send
+   * Calculates the exponential backoff delay from consecutive failures. Uses full jitter
+   * instead of a fixed offset, because with a fixed offset tabs that reconnect together send
    * their requests at the same time.
    * @returns Backoff duration in milliseconds.
    */
@@ -179,7 +180,7 @@ export class RetryEngine {
     return Math.random() * exponential;
   }
 
-  /** This method runs a drain under the origin-wide Web Lock. */
+  /** Runs a drain under the origin-wide Web Lock. */
   private async drain(): Promise<void> {
     if (this.draining) {
       return;
@@ -191,7 +192,7 @@ export class RetryEngine {
       const ran = await withDrainLock(lock, this.diagnostics, () => this.drainLocked());
 
       // The value is undefined when another window holds the lock. Without this reschedule,
-      // one lost lock race stops all drains in this window.
+      // one lost lock race would stop all drains in this window.
       if (ran !== true) {
         this.schedule(this.config.delivery.retryIdleDelayMs);
       }
@@ -201,8 +202,8 @@ export class RetryEngine {
   }
 
   /**
-   * Processes batches while it holds the Web Lock. It schedules the next tick.
-   * It always resolves. A throw leaves the engine idle with no armed timer.
+   * Processes batches while holding the Web Lock, and schedules the next tick.
+   * It always resolves, because a throw would leave the engine idle with no armed timer.
    * @returns Promise that resolves to true on completion.
    */
   private async drainLocked(): Promise<true> {
@@ -221,7 +222,7 @@ export class RetryEngine {
         return true;
       }
 
-      // A failure blocks only the kind of its batch. The other endpoint can accept its batches.
+      // A failure blocks only its own batch kind. The other endpoints can still accept batches.
       const blocked = new Set<BatchKind>();
       let delayMs = 0;
 
@@ -242,7 +243,8 @@ export class RetryEngine {
 
         if (outcome !== "next") {
           blocked.add(kind);
-          // Keep the longest delay. A shorter one sends before the Retry-After of the other server.
+          // Keep the longest delay. A shorter one would send before another server's
+          // Retry-After.
           delayMs = Math.max(delayMs, outcome);
         }
       }
@@ -271,11 +273,11 @@ export class RetryEngine {
   }
 
   /**
-   * Tries to deliver one batch. It removes the batch on success. On failure, it applies the
-   * rule for the failure kind.
+   * Tries to deliver one batch. Removes it on success, and on failure applies the rule for
+   * the failure kind.
    * @param batch Log batch to deliver.
-   * @returns "next" to continue with the next batch. "stop" to stop the current drain. A delay
-   * in milliseconds blocks the kind of the batch until the next drain.
+   * @returns "next" to continue with the next batch, "stop" to stop the current drain, or a
+   * delay in milliseconds that blocks the batch's kind until the next drain.
    */
   private async deliver(batch: LogBatch): Promise<Outcome> {
     if (batch.attempts >= this.maxAttempts) {
@@ -303,14 +305,15 @@ export class RetryEngine {
         return "next";
       }
 
-      // Offline stops both kinds. The other endpoint is not reachable either.
+      // Offline stops every kind, because the other endpoints aren't reachable either.
       if (failure?.kind === "offline") {
         this.schedule(this.config.delivery.retryIdleDelayMs);
         return "stop";
       }
 
-      // A throttle rejects no records. The server asks for the batch later. Do not bump the
-      // stored attempts here. A bump dead-letters the batch after five throttled responses.
+      // A throttle rejects no records. The server only asks for the batch later, so don't bump
+      // the stored attempts here. A bump would dead-letter the batch after
+      // `retention.maxAttempts` throttled responses.
       if (failure?.kind === "throttled") {
         this.attempt++;
         return failure.retryAfterMs ?? this.backoffMs();
@@ -323,8 +326,8 @@ export class RetryEngine {
   }
 
   /**
-   * Replaces a stored batch with the parts that survive its failure. The parts
-   * are the split halves, or nothing after a permanent refusal.
+   * Replaces a stored batch with whatever survives its failure. That is the split halves,
+   * or nothing after a permanent refusal.
    * @param batch Rejected log batch, already held in storage.
    * @param error Failure thrown by the transport.
    */
@@ -338,8 +341,8 @@ export class RetryEngine {
   }
 
   /**
-   * Selects the batches to keep after a failure. A 413 response splits the batch
-   * in two. A permanent refusal keeps nothing. Each other failure keeps the batch whole.
+   * Picks the batches to keep after a failure. A 413 response splits the batch in two, a
+   * permanent refusal keeps nothing, and any other failure keeps the batch whole.
    * @param batch Rejected log batch.
    * @param error Failure thrown by the transport.
    * @returns Batches to persist. The array is empty when the engine drops the records.

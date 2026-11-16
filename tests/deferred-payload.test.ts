@@ -163,7 +163,7 @@ describe("Deferred logger payloads", () => {
     expect(memory.records()).toHaveLength(1);
   });
 
-  it("gives deferred records to the synchronous exit transport", async () => {
+  it("hands deferred records to the synchronous exit transport", async () => {
     const exit = vi.fn(() => true);
     const { log } = await setup({ transportOnExit: exit });
     log.warn("last page record");

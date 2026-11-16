@@ -1,6 +1,6 @@
 // src/capture/console.ts
 //
-// Records the app's own console calls. Third-party code often reports a fault only to the console.
+// Records the app's own console calls, because third-party code often reports a fault only there.
 
 import { CONSOLE_BREADCRUMB_MAX_CHARS } from "../constants";
 import type { CapturedConsoleMethod } from "../models/config";
@@ -11,7 +11,7 @@ import { truncate } from "../utils/sanitize";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
 
-/** Methods that the capture accepts. */
+/** The console methods this capture can wrap. */
 const METHODS: readonly CapturedConsoleMethod[] = ["error", "warn", "info", "log"];
 
 /** Methods that `capture.console: true` wraps. */
@@ -20,33 +20,33 @@ const DEFAULT_METHODS: readonly CapturedConsoleMethod[] = ["error", "warn"];
 /** Signature of a console method. */
 type ConsoleFn = (...args: unknown[]) => void;
 
-/** Record function of a wrapper. Uninstall sets it to null. */
+/** A wrapper's record function. Uninstall sets it to null. */
 interface Target {
   /** Records one call, or null after uninstall. */
   record: ((args: unknown[]) => void) | null;
 }
 
-/** Target of a wrapper and the restore function of its patch. */
+/** A wrapper's target, plus the function that undoes its patch. */
 interface Wrapped {
-  /** Target of the wrapper. */
+  /** The wrapper's target. */
   target: Target;
-  /** Writes the original back if the method still holds the wrapper. Returns true then. */
+  /** Puts the original back if the method still holds the wrapper. Returns true if it did. */
   restore: () => boolean;
 }
 
 /**
- * Makes a wrapper that calls the original first, then the target.
- * The wrapper does not close over the capture. A wrapper that stays in place keeps no runtime.
- * @param original Method that was in place before the wrap.
- * @param target Target of the wrapper.
+ * Builds a wrapper that calls the original first, then the target.
+ * The wrapper doesn't close over the capture, so one that stays in place keeps no runtime alive.
+ * @param original The method that was in place before the wrap.
+ * @param target The wrapper's target.
  * @returns The wrapper.
  */
 function makeWrapper(original: ConsoleFn, target: Target): ConsoleFn {
   return (...args) => {
-    // Call the original first. Devtools then shows the same text, also when a record fails.
+    // Call the original first, so devtools shows the same text even when the record fails.
     Reflect.apply(original, console, args);
 
-    // Skip the lines that the library prints.
+    // Skip the lines the library itself prints.
     if (isLibraryConsole()) {
       return;
     }
@@ -55,28 +55,28 @@ function makeWrapper(original: ConsoleFn, target: Target): ConsoleFn {
   };
 }
 
-/** Wraps the selected console methods. It records each call as a record or a breadcrumb. */
+/** Wraps the selected console methods and records every call as a record or a breadcrumb. */
 export class ConsoleCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "console";
 
-  /** Active wrappers. A wrapper that is not in this map calls only the original. */
+  /** Active wrappers. A wrapper that isn't in this map only calls the original. */
   private readonly wrapped = new Map<CapturedConsoleMethod, Wrapped>();
 
-  /** Prevents a second wrap on a wrapped method. */
+  /** Guards against wrapping a method twice. */
   private installed = false;
 
-  /** Rate limit of this capture. Console noise must not use the allowance of the error capture. */
+  /** This capture's own rate limit, so console noise can't eat the error capture's allowance. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
-   * @param ctx Capture context containing configuration, diagnostics, logger, and breadcrumbs.
+   * @param ctx Capture context: configuration, diagnostics, logger and breadcrumbs.
    */
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Wraps each selected method. */
+  /** Wraps every selected method. */
   install(): void {
-    // Guard against a missing console. Some worker realms do not define it.
+    // Some worker realms don't define console, so guard against a missing one.
     if (this.installed || typeof console === "undefined") {
       return;
     }
@@ -87,7 +87,7 @@ export class ConsoleCapture implements Capture {
     }
   }
 
-  /** Restores each method that still holds the wrapper of this capture. */
+  /** Restores every method that still holds this capture's wrapper. */
   uninstall(): void {
     if (!this.installed) {
       return;
@@ -101,8 +101,8 @@ export class ConsoleCapture implements Capture {
         continue;
       }
 
-      // A restore here removes the wrapper of the other script. Leave it. The wrapper of this
-      // capture then calls only the original.
+      // Restoring here would remove the other script's wrapper, so leave it. Our wrapper now
+      // only calls the original.
       this.ctx.diagnostics.report(
         "capture.install_failed",
         `Another script wrapped console.${method} after the library. The library leaves that wrapper in place.`,
@@ -113,7 +113,7 @@ export class ConsoleCapture implements Capture {
   }
 
   /**
-   * Reads the methods from the configuration. It reports a value that is not usable.
+   * Reads the methods from the configuration and reports any value it can't use.
    * @returns Methods to wrap, with no duplicates.
    */
   private readMethods(): readonly CapturedConsoleMethod[] {
@@ -144,7 +144,7 @@ export class ConsoleCapture implements Capture {
   private wrap(method: CapturedConsoleMethod): void {
     const target: Target = {
       record: (args) => {
-        // The scope stops a console call in the record path from a second capture.
+        // The scope keeps a console call inside the record path from being captured again.
         runAsLibraryConsole(() => {
           this.ctx.diagnostics.guard(
             "capture.record_failed",
@@ -157,18 +157,18 @@ export class ConsoleCapture implements Capture {
       },
     };
 
-    // patch keeps the unbound method. Uninstall restores the same function, not a bound copy.
+    // patch keeps the unbound method, so uninstall restores the same function, not a bound copy.
     const restore = patch(console, method, (original) => makeWrapper(original, target));
     this.wrapped.set(method, { target, restore });
   }
 
   /**
    * Records one console call.
-   * @param method Console method of the call.
-   * @param args Arguments of the call.
+   * @param method The console method that was called.
+   * @param args The call's arguments.
    */
   private record(method: CapturedConsoleMethod, args: unknown[]): void {
-    // Duck typing finds an error from another realm. That error fails `instanceof Error`.
+    // Duck typing also finds an error from another realm, which fails `instanceof Error`.
     const errorAt = args.findIndex((arg) => isErrorLike(arg));
     const textAt = args.findIndex((arg) => typeof arg === "string");
     const error = args[errorAt] as ErrorLike | undefined;
@@ -198,7 +198,7 @@ export class ConsoleCapture implements Capture {
       return;
     }
 
-    // The record builder sanitizes the arguments. A warn record keeps its Error in the arguments.
+    // The record builder sanitizes the arguments. A warn record keeps its Error among them.
     const used = method === "error" ? [textAt, errorAt] : [textAt];
     const rest = args.filter((_, index) => !used.includes(index));
     const attrs: Record<string, unknown> = { "console.method": method };

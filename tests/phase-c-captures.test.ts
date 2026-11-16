@@ -92,6 +92,31 @@ describe("ResourceTimingCapture", () => {
     return { ctx, sut };
   }
 
+  it("reports a fault in an entry and does not throw into the browser", () => {
+    const { ctx, sut } = setup();
+    const error = new Error("meter fault");
+    const report = vi.spyOn(ctx.diagnostics, "report");
+    vi.mocked(ctx.recordMetric).mockImplementation(() => {
+      throw error;
+    });
+    vi.mocked(ctx.logger.logMetric).mockImplementation(() => {
+      throw error;
+    });
+    sut.install();
+
+    // The browser calls the observer callback directly, so a throw is an uncaught page error.
+    expect(() => {
+      ResourceObserver.latest.emit(resource());
+    }).not.toThrow();
+
+    expect(report).toHaveBeenCalledWith(
+      "capture.record_failed",
+      "The library could not record a resource timing entry.",
+      undefined,
+      error,
+    );
+  });
+
   it("records durations by host and initiator with a slow event", () => {
     const { ctx, sut } = setup();
     sut.install();

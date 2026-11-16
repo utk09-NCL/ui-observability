@@ -1,7 +1,7 @@
 // src/transport/custom-transport.ts
 //
-// Sends batches through the transport function that the consumer supplies. The status codes
-// have the same meaning as on the HTTP path. Retry, storage and the exit flush do not change.
+// Sends batches through the consumer's own transport function. Status codes mean the same as
+// on the HTTP path, and retry, storage and the exit flush work unchanged.
 
 import { HTTP_STATUS_MAX, HTTP_STATUS_MIN, HTTP_SUCCESS_END, HTTP_SUCCESS_MIN } from "../constants";
 import type { LogBatch } from "../models/batch";
@@ -38,7 +38,7 @@ export function toTransportRequest(
 }
 
 /**
- * Tests if a value is a usable transport response.
+ * Checks whether a value is a usable transport response.
  * @param value Value that the transport resolved to.
  * @returns True if the value has an integer status from 100 to 599.
  */
@@ -57,9 +57,10 @@ function isResponse(value: unknown): value is TransportResponse {
 }
 
 /**
- * Gives a number hint that the server can use. A string, NaN or Infinity breaks the throttle.
+ * Cleans a numeric hint from the transport's response before the library's throttle and
+ * batch split use it. A string, NaN or Infinity would break the throttle.
  * @param value Hint that the transport returned.
- * @returns The value, 0 or more, or undefined if it is not a finite number.
+ * @returns The value, 0 or more, or undefined if it isn't a finite number.
  */
 function finiteHint(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
@@ -93,10 +94,10 @@ export class CustomTransport extends StatusTransport {
     let response: unknown;
 
     try {
-      // A transport that never settles holds a dispatch slot. The deadline frees the slot.
+      // A transport that never settles would hold a dispatch slot forever. The deadline frees it.
       response = await withDeadline(
-        // The capture modules skip a request or a console line inside these scopes. Network
-        // capture warns about a request after an await, which is outside the scopes.
+        // Inside these scopes the capture modules skip requests and console lines. A request
+        // made after an await falls outside the scopes, and network capture warns about it.
         this.untilCancelled(
           trackTransportCall(() =>
             runAsLibraryRequest(() => runAsLibraryConsole(() => transport(request))),
@@ -105,7 +106,7 @@ export class CustomTransport extends StatusTransport {
         this.config.delivery.requestTimeoutMs,
       );
     } catch (error) {
-      // The pipeline reports the thrown error. Classify it here.
+      // The pipeline reports the thrown error. All we do here is classify it.
       const deadline = error instanceof DeadlineError ? error : undefined;
       const kind = deadline ? "timeout" : "transient";
       const message = deadline?.message ?? "The custom transport failed.";

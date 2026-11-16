@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <script>
-      // Shows a fault that happens before start() runs. A module that does not load gives no other
-      // sign.
+      // Surfaces anything that fails before start() runs. A module that fails to load gives no
+      // other sign.
       (() => {
         const fail = (message) => {
           if (document.title === "done") {

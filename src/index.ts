@@ -1,15 +1,22 @@
 // src/index.ts
 //
-// This file is the public entry point of the library. It exports the facade API,
-// logging primitives, and types.
+// The library's public entry point. Exports the facade API, the logging primitives and
+// the types.
 
 import type { WorkerLike } from "./bus/links";
 import type { Journey } from "./core/journey";
+import { INSTRUMENT_OPTIONS_FAULT } from "./constants";
 import { OneLogger, type OneLoggerOptions } from "./core/logger";
 import { makeCounter, makeHistogram } from "./core/meter";
 import { profilerCore } from "./core/profiler";
 import { ObservabilityRuntime } from "./core/runtime";
 import type { ObservabilityConfig } from "./models/config";
+export type {
+  ReplayLoader,
+  ReplayPluginLoader,
+  ReplayPluginTools,
+  ReplaySegment,
+} from "./models/replay";
 import type { SecurityContextUpdate, SecurityContextRotationOptions } from "./models/config";
 import type { DebugBundle, ObservabilityHealth } from "./models/health";
 import type { FrameOptions, SourceOptions } from "./models/bus";
@@ -41,6 +48,7 @@ export type {
   CapturePolicy,
   DebugBufferPolicy,
   ProfilerPolicy,
+  ReplayPolicy,
   BusOptions,
   CaptureOptions,
   InteractionOptions,
@@ -80,16 +88,15 @@ export type { DeliveryStats } from "./models/stats";
 export type { StorageAdapter } from "./models/storage";
 
 /**
- * Cached logger instances keyed by namespace. This map never holds a scoped logger.
- * A logger finds the runtime on each write.
- * The cache stays valid across configure() and shutdown().
+ * Cached loggers, keyed by namespace. A scoped logger never goes in this map.
+ * A logger looks up the runtime on every write, so the cache stays valid across
+ * configure() and shutdown().
  */
 const loggers = new Map<string, OneLogger>();
 
 /**
- * Retrieves the active runtime. After shutdown(), it returns the stopped runtime.
- * The stopped runtime does nothing. Before the first configure(), it starts a runtime
- * with default settings.
+ * Returns the active runtime. After shutdown() that is the stopped runtime, which does
+ * nothing. Before the first configure(), it starts a runtime with default settings.
  * @returns Runtime instance.
  */
 function requireRuntime(): ObservabilityRuntime {
@@ -98,14 +105,15 @@ function requireRuntime(): ObservabilityRuntime {
     return runtime;
   }
 
-  // Start a default runtime. A log call before configure() then does not throw.
+  // Start a default runtime, so a log call before configure() doesn't throw.
   return ObservabilityRuntime.configure({}, true);
 }
 
 /**
- * Removes stored logs. Pending records and requests can write to storage again.
- * @param scope Context or namespace whose stored records to remove.
- * @returns Promise that resolves when removal completes.
+ * Removes stored logs. Records and requests that are still pending can write to storage again
+ * afterwards.
+ * @param scope Whose stored records to remove: the context's or the namespace's.
+ * @returns Promise that resolves once the logs are removed.
  */
 export function clearPersistedLogs(scope: "context" | "namespace" = "context"): Promise<void> {
   if (!["context", "namespace"].includes(scope))
@@ -114,8 +122,9 @@ export function clearPersistedLogs(scope: "context" | "namespace" = "context"): 
 }
 
 /**
- * Initializes or reconfigures the observability runtime instance.
- * `payloadMode: "defer"` builds logger records in idle time. The debug buffer keeps immediate builds.
+ * Initializes or reconfigures the observability runtime.
+ * With `payloadMode: "defer"`, logger records are built in idle time. With the debug buffer on,
+ * they are still built at the call.
  * @param config Consumer configuration options.
  */
 export function configure(config: Partial<ObservabilityConfig>): void {
@@ -124,7 +133,8 @@ export function configure(config: Partial<ObservabilityConfig>): void {
 }
 
 /**
- * Locks or unlocks configuration. The lock does not control access by other code of this origin.
+ * Locks or unlocks the configuration. The lock isn't access control against other code on
+ * this origin.
  * @param locked True to refuse changes through configure().
  */
 export function setConfigurationLocked(locked: boolean): void {
@@ -132,10 +142,10 @@ export function setConfigurationLocked(locked: boolean): void {
 }
 
 /**
- * Stops delivery for the old context and starts delivery for the new context.
+ * Stops delivery for the old context and starts it for the new one.
  * @param update New identity, delivery settings and context attributes.
- * @param options Rule for old records and the flush deadline.
- * @returns Promise that resolves when the change completes.
+ * @param options What to do with old records, and the flush deadline.
+ * @returns Promise that resolves once the change is complete.
  */
 export function rotateSecurityContext(
   update: SecurityContextUpdate,
@@ -145,7 +155,7 @@ export function rotateSecurityContext(
 }
 
 /**
- * Reads the runtime state, delivery counts and policies of this SDK copy.
+ * Reads this SDK copy's runtime state, delivery counts and policies.
  * @returns Promise that resolves to the current state.
  */
 export async function getHealth(): Promise<ObservabilityHealth> {
@@ -158,11 +168,11 @@ export async function getHealth(): Promise<ObservabilityHealth> {
 }
 
 /**
- * Collects the state of the library for a support ticket. The bundle has the health, the
+ * Collects the library's state for a support ticket. The bundle holds the health, the
  * diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary.
- * The summary has no headers and no URL query. A plugin or a custom serializer shows only its
- * name. The privacy hooks process the breadcrumbs. A debug buffer record keeps its context
- * attributes. The app decides where to send the bundle.
+ * The summary has no headers and no URL query, and a plugin or custom serializer shows up by
+ * name only. The breadcrumbs go through the privacy hooks. A debug buffer record keeps its
+ * context attributes. Where the bundle gets sent is up to the app.
  * @returns Promise that resolves to a JSON-safe bundle.
  */
 export async function collectDebugBundle(): Promise<DebugBundle> {
@@ -171,7 +181,7 @@ export async function collectDebugBundle(): Promise<DebugBundle> {
 }
 
 /**
- * Removes the least recently used loggers until the cache meets its limit.
+ * Removes the least recently used loggers until the cache is within its limit.
  * @returns Cache limit, or null for no limit.
  */
 function trimLoggerCache(): number | null {
@@ -179,7 +189,7 @@ function trimLoggerCache(): number | null {
     .loggerCache.maxEntries;
   const max = limit === undefined ? 256 : limit;
   if (max !== null) {
-    // A Map keeps insertion order. The first keys are the least recently used loggers.
+    // A Map keeps insertion order, so the first keys are the least recently used loggers.
     for (const key of loggers.keys()) {
       if (loggers.size <= max) {
         break;
@@ -191,10 +201,11 @@ function trimLoggerCache(): number | null {
 }
 
 /**
- * Gives a namespace logger from the cache, or a new scoped logger.
+ * Returns the cached logger for a namespace, or a new scoped logger.
  * @param namespace Application subsystem or module namespace.
  * @param options Context attributes for this logger only.
- * @returns Logger for the namespace. Options or a disabled cache give a new logger.
+ * @returns Logger for the namespace. You get a new logger if you pass options or the cache
+ * is disabled.
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
   const max = trimLoggerCache();
@@ -204,7 +215,7 @@ export function getLogger(namespace: string, options?: OneLoggerOptions): OneLog
 
   logger ??= new OneLogger(requireRuntime, namespace);
 
-  // Move a cached logger to the end. The first entry is then the least recently used logger.
+  // Move a cached logger to the end, so the first entry is always the least recently used.
   loggers.delete(namespace);
   loggers.set(namespace, logger);
   trimLoggerCache();
@@ -213,8 +224,8 @@ export function getLogger(namespace: string, options?: OneLoggerOptions): OneLog
 }
 
 /**
- * Retrieves the default root logger instance.
- * @returns Root OneLogger instance for the "app" namespace.
+ * Returns the default root logger.
+ * @returns The OneLogger for the "app" namespace.
  */
 function root(): OneLogger {
   return getLogger("app");
@@ -223,7 +234,7 @@ function root(): OneLogger {
 /**
  * Logs a trace-level debug record.
  * @param message Detail message.
- * @param payload Optional contextual attributes.
+ * @param payload Optional context attributes.
  */
 export function trace(message: string, payload?: Record<string, unknown>): void {
   root().trace(message, payload);
@@ -232,7 +243,7 @@ export function trace(message: string, payload?: Record<string, unknown>): void 
 /**
  * Logs a debug-level record.
  * @param message Detail message.
- * @param payload Optional contextual attributes.
+ * @param payload Optional context attributes.
  */
 export function debug(message: string, payload?: Record<string, unknown>): void {
   root().debug(message, payload);
@@ -241,7 +252,7 @@ export function debug(message: string, payload?: Record<string, unknown>): void 
 /**
  * Logs an informational record.
  * @param message Informational message.
- * @param payload Optional contextual attributes.
+ * @param payload Optional context attributes.
  */
 export function info(message: string, payload?: Record<string, unknown>): void {
   root().info(message, payload);
@@ -250,34 +261,34 @@ export function info(message: string, payload?: Record<string, unknown>): void {
 /**
  * Logs a warning record.
  * @param message Warning message.
- * @param payload Optional contextual attributes.
+ * @param payload Optional context attributes.
  */
 export function warn(message: string, payload?: Record<string, unknown>): void {
   root().warn(message, payload);
 }
 
 /**
- * Logs an error record with causal error and breadcrumbs.
+ * Logs an error record, with the error that caused it and the breadcrumbs.
  * @param message Error summary.
- * @param err Caught error instance or reason.
- * @param payload Optional contextual attributes.
+ * @param err The caught error or reason.
+ * @param payload Optional context attributes.
  */
 export function error(message: string, err?: unknown, payload?: Record<string, unknown>): void {
   root().error(message, err, payload);
 }
 
 /**
- * Logs a fatal record with causal error and breadcrumbs.
+ * Logs a fatal record, with the error that caused it and the breadcrumbs.
  * @param message Fatal error summary.
- * @param err Caught error instance or reason.
- * @param payload Optional contextual attributes.
+ * @param err The caught error or reason.
+ * @param payload Optional context attributes.
  */
 export function fatal(message: string, err?: unknown, payload?: Record<string, unknown>): void {
   root().fatal(message, err, payload);
 }
 
 /**
- * Logs a discrete user interaction action.
+ * Logs a single user action.
  * @param name Action identifier.
  * @param payload Optional action attributes.
  */
@@ -295,11 +306,11 @@ export function logEvent(name: string, payload?: Record<string, unknown>): void 
 }
 
 /**
- * Logs a numerical metric measurement.
+ * Logs a numeric metric measurement.
  * @param name Metric identifier.
  * @param value Measured value.
  * @param unit Unit of measurement.
- * @param type Metric type classification.
+ * @param type Metric type.
  * @param attributes Optional metric attributes.
  */
 export function logMetric(
@@ -313,51 +324,93 @@ export function logMetric(
 }
 
 /**
- * Gives a counter. The library sums its values in memory. It sends one point for each attribute
- * set at each interval. A handle stays valid across configure() and shutdown().
+ * Reports instrument options the library couldn't read. Without a runtime there is nowhere to
+ * report to, so it does nothing.
+ * @param error What reading the options threw.
+ */
+function optionsFault(error: unknown): void {
+  ObservabilityRuntime.current()?.diagnostics.report(
+    "config.invalid",
+    INSTRUMENT_OPTIONS_FAULT,
+    undefined,
+    error,
+  );
+}
+
+/**
+ * Returns a counter. Values are summed in memory, and every interval the library sends one
+ * point per attribute set. A handle stays valid across configure() and shutdown().
  * @param name Metric name.
  * @param options Unit of the values.
  * @returns The counter.
  */
 export function counter(name: string, options: InstrumentOptions = {}): Counter {
-  return makeCounter(name, options, (def, value, attributes) => {
-    requireRuntime().recordMetric(def, value, attributes);
-  });
+  return makeCounter(
+    name,
+    options,
+    (def, value, attributes) => {
+      requireRuntime().recordMetric(def, value, attributes);
+    },
+    optionsFault,
+  );
 }
 
 /**
- * Gives a histogram. The library counts its values in buckets in memory. It sends one point for
- * each attribute set at each interval. A handle stays valid across configure() and shutdown().
+ * Returns a histogram. Values are counted into buckets in memory, and every interval the
+ * library sends one point per attribute set. A handle stays valid across configure() and
+ * shutdown().
  * @param name Metric name.
  * @param options Unit of the values and the bucket boundaries.
  * @returns The histogram.
  */
 export function histogram(name: string, options: HistogramOptions = {}): Histogram {
-  return makeHistogram(name, options, (def, value, attributes) => {
-    requireRuntime().recordMetric(def, value, attributes);
-  });
+  return makeHistogram(
+    name,
+    options,
+    (def, value, attributes) => {
+      requireRuntime().recordMetric(def, value, attributes);
+    },
+    optionsFault,
+  );
 }
 
 /**
- * Times an operation with named phases. Each phase and the total go into duration histograms.
- * With `tracesEndpoint`, the operation is a span with one child span for each phase.
- * @param name Operation name. Each name makes one series.
- * @param attributes Attribute set of each histogram point. Keep it small.
- * @returns The handle of the operation.
+ * Times an operation with named phases. Every phase and the total go into duration histograms.
+ * With `tracesEndpoint` set, the operation is also a span with one child span per phase.
+ * @param name Operation name. Every name creates one series.
+ * @param attributes Attribute set for every histogram point. Keep it small.
+ * @returns The operation's handle.
  */
 export function startMeasure(name: string, attributes?: MetricAttributes): Measure {
   return requireRuntime().startMeasure(name, attributes);
 }
 
 /**
- * Times code spans of the app with probes. A probe is a named handle with `begin()`, `end()` and
- * `record()`. At each interval, the library sends one `ui.profile.duration` histogram for each
- * probe with data.
+ * Starts the session replay recorder. With `replay.requireConsent` set, nothing is recorded
+ * until you call this, so call it once the user agrees. Does nothing while `replay.enabled`
+ * is false.
+ */
+export function startReplay(): void {
+  requireRuntime().setReplay(true);
+}
+
+/**
+ * Stops the session replay recorder and drops any replay events that haven't been sent. With
+ * `replay.requireConsent` set, the recorder stays off until the next `startReplay()`.
+ */
+export function stopReplay(): void {
+  requireRuntime().setReplay(false);
+}
+
+/**
+ * Times spans of app code with probes. A probe is a named handle with `begin()`, `end()`,
+ * `endAfterPaint()` and `record()`, and `time()` times a single function call. Once per
+ * interval the library sends one `ui.profile.duration` histogram for every probe that has data.
  *
- * The profiler is off by default. Set `profiler.enabled` to true to turn it on. While it is off,
- * a probe reads no clock. After `shutdown()`, a probe does nothing until a later `configure()`
- * turns the profiler on. A probe stays valid across `configure()` and `shutdown()`. An app can
- * make a probe before `configure()`. A call never throws.
+ * The profiler is off by default. Set `profiler.enabled` to true to turn it on. While it is
+ * off, probes don't read the clock. After `shutdown()` a probe does nothing until a later
+ * `configure()` turns the profiler back on. Probes stay valid across `configure()` and
+ * `shutdown()`, and you can create them before `configure()`. No call ever throws.
  * @example
  * const render = profiler.probe("grid.render");
  * const token = render.begin();
@@ -365,29 +418,30 @@ export function startMeasure(name: string, attributes?: MetricAttributes): Measu
  * render.end(token);
  */
 export const profiler: Profiler = {
-  // The reports of a probe call go to the current runtime. After shutdown() resolves, the
-  // stopped runtime gets none.
+  // Probe calls report to whichever runtime is current. Once shutdown() resolves, the stopped
+  // runtime gets nothing.
   probe: (name, options) =>
     profilerCore().probe(name, options, ObservabilityRuntime.current()?.diagnostics),
+  time: (name, fn) => profilerCore().time(name, fn, ObservabilityRuntime.current()?.diagnostics),
 };
 
 /**
- * Measures the execution time of a synchronous function and logs a duration metric.
+ * Times a synchronous function and logs a duration metric.
  * @param label Metric name prefix.
  * @param fn Synchronous function to time.
- * @param attributes Optional contextual attributes.
- * @returns Result returned by the timed function.
+ * @param attributes Optional context attributes.
+ * @returns Whatever the timed function returns.
  */
 export function timeSync<T>(label: string, fn: () => T, attributes?: Record<string, unknown>): T {
   return root().timeSync(label, fn, attributes);
 }
 
 /**
- * Measures the execution time of an asynchronous function and logs a duration metric.
+ * Times an asynchronous function and logs a duration metric.
  * @param label Metric name prefix.
  * @param fn Asynchronous function to time.
- * @param attributes Optional contextual attributes.
- * @returns Promise that resolves to the result of the timed function.
+ * @param attributes Optional context attributes.
+ * @returns Promise that resolves to the timed function's result.
  */
 export function timeAsync<T>(
   label: string,
@@ -400,14 +454,14 @@ export function timeAsync<T>(
 /**
  * Adds a breadcrumb to the trail. The next error record carries the trail.
  * @param message Description of the event.
- * @param data Optional metadata. The library copies it now.
+ * @param data Optional metadata. It is copied right away.
  */
 export function addBreadcrumb(message: string, data?: Record<string, unknown>): void {
   requireRuntime().addBreadcrumb(message, data);
 }
 
 /**
- * Sets a key-value pair on the ambient context. All later records include it.
+ * Sets a key-value pair on the ambient context. Every later record includes it.
  * @param key Attribute key.
  * @param value Attribute value.
  */
@@ -416,7 +470,7 @@ export function setContext(key: string, value: unknown): void {
 }
 
 /**
- * Merges multiple key-value pairs into the ambient context.
+ * Merges several key-value pairs into the ambient context.
  * @param values Key-value map of attributes to add.
  */
 export function setContextMap(values: Record<string, unknown>): void {
@@ -435,47 +489,47 @@ export function removeContext(key: string): void {
  * Starts a new journey correlation context.
  * @param name Journey workflow identifier.
  * @param options `parent` links the active journey as the parent. `id` sets the journey id, a
- * string of 1 to 64 letters, digits, "_", ".", ":" or "-". Without it, the library makes an id.
- * @returns Started Journey instance.
+ * string of 1 to 64 letters, digits, "_", ".", ":" or "-". Without it, the library generates one.
+ * @returns The started Journey.
  */
 export function startJourney(name: string, options?: { parent?: boolean; id?: string }): Journey {
   return requireRuntime().journey.start(name, options);
 }
 
-/** Terminates the active journey correlation context. */
+/** Ends the active journey correlation context. */
 export function endJourney(): void {
   requireRuntime().journey.end();
 }
 
 /**
- * Returns the currently active journey, or null if none is in progress.
- * @returns Active Journey instance or null.
+ * Returns the active journey, or null if none is in progress.
+ * @returns The active Journey, or null.
  */
 export function currentJourney(): Journey | null {
   return requireRuntime().journey.current();
 }
 
 /**
- * Serializes active journey metadata into a cross-context URL token.
- * @returns Serialized token string, or undefined if no journey is active.
+ * Serializes the active journey's metadata into a URL token that another context can adopt.
+ * @returns The token, or undefined if no journey is active.
  */
 export function getJourneyToken(): string | undefined {
   return requireRuntime().journey.getToken();
 }
 
 /**
- * Adopts a serialized journey token into this application realm.
+ * Adopts a serialized journey token in this application realm.
  * @param token Serialized journey token.
- * @returns True if the token is valid and the runtime adopts it.
+ * @returns True if the token is valid and the runtime adopted it.
  */
 export function adoptJourney(token: string): boolean {
   return requireRuntime().journey.adopt(token, "manual", true);
 }
 
 /**
- * Connects a Web Worker or MessagePort to the document bus for record routing.
- * @param worker Target Worker or MessagePort instance.
- * @param options Permissions of the worker. The default permission is "records".
+ * Connects a Web Worker or MessagePort to the document bus, so its records get routed.
+ * @param worker The Worker or MessagePort to connect.
+ * @param options The worker's permissions. Defaults to "records".
  * @returns Function that removes this registration.
  */
 export function registerWorker(worker: WorkerLike, options?: SourceOptions): () => void {
@@ -495,22 +549,22 @@ export function registerFrame(
   return requireRuntime().registerFrame(frame, options);
 }
 
-/** Rotates trace context to begin a new distributed trace. */
+/** Rotates the trace context to begin a new distributed trace. */
 export function startTrace(): void {
   requireRuntime().tracing.rotate("explicit");
 }
 
 /**
- * Returns W3C traceparent headers for outgoing HTTP request propagation.
- * @returns Map of trace header keys and values.
+ * Returns the W3C traceparent headers to put on an outgoing HTTP request.
+ * @returns Map of trace header names to values.
  */
 export function getTraceHeaders(): Record<string, string> {
   return requireRuntime().tracing.headers();
 }
 
 /**
- * Builds deferred calls and flushes pending batches across pipeline streams.
- * @returns Promise that resolves after the pipeline processes the queued batches.
+ * Builds any deferred calls and flushes the pending batches of every pipeline stream.
+ * @returns Promise that resolves once the pipeline has processed the queued batches.
  */
 export function flush(): Promise<void> {
   return requireRuntime().flush();
@@ -518,16 +572,16 @@ export function flush(): Promise<void> {
 
 /**
  * Counts the batches waiting in storage for delivery.
- * @returns Promise that resolves to the number of stored batches. A forwarder reports 0.
- * A forwarder does not store batches.
+ * @returns Promise that resolves to the number of stored batches. A forwarder doesn't store
+ * batches, so it reports 0.
  */
 export function getQueueDepth(): Promise<number> {
   return requireRuntime().queueDepth();
 }
 
 /**
- * Reads the delivery state of this context.
- * @returns Promise that resolves to the records that wait, the records in requests, the batches
+ * Reads this context's delivery state.
+ * @returns Promise that resolves to the records waiting, the records in requests, the batches
  * in storage and the time of the last accepted send. A forwarder reports only its own buffers.
  */
 export function getStats(): Promise<DeliveryStats> {
@@ -535,26 +589,26 @@ export function getStats(): Promise<DeliveryStats> {
 }
 
 /**
- * Starts new correlation in this tab. It ends the active journey and starts a new trace. Other
- * tabs read the new id at their next startup. Use rotateSecurityContext() at logout or at a
- * tenant change.
+ * Starts a new correlation in this tab. Ends the active journey and starts a new trace. Other
+ * tabs pick up the new id at their next startup. For a logout or a tenant change, use
+ * rotateSecurityContext().
  */
 export function newSession(): void {
   requireRuntime().newSession();
 }
 
 /**
- * Returns a snapshot of cumulative diagnostic event counts.
- * @returns Map of diagnostic fault codes to occurrence counts.
+ * Returns a snapshot of the cumulative diagnostic event counts.
+ * @returns Map of diagnostic codes to how often each one occurred.
  */
 export function getDiagnosticCounters(): Record<string, number> {
   return requireRuntime().diagnostics.snapshot();
 }
 
 /**
- * Flushes pending records and stops all runtime subsystems. It cancels a request that is still
- * open after the final flush. A stored batch of that request stays in storage.
- * @returns Promise that resolves when shutdown completes.
+ * Flushes pending records and stops every runtime subsystem. A request still open after the
+ * final flush is cancelled, and its stored batch stays in storage.
+ * @returns Promise that resolves once shutdown is complete.
  */
 export async function shutdown(): Promise<void> {
   await ObservabilityRuntime.current()?.destroy();

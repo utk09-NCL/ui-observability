@@ -69,7 +69,7 @@ These attributes show a problem in the record:
 | `error.suppressed_count` | number | Number of repeats of the same error that the capture dropped before this record.       |
 | `breadcrumbs`            | array  | Last events before the error. Each item has `t`, `category`, `message` and `data`.     |
 
-The breadcrumb categories are `log`, `action`, `event`, `click`, `navigation`, `http`, `console`, `frame` and `custom`.
+The breadcrumb categories are `log`, `action`, `event`, `click`, `navigation`, `http`, `console`, `frame`, `profile` and `custom`.
 
 A `click` breadcrumb has the action name as its message. The name comes from the closest `data-observability-action` attribute, or from the attribute in `capture.interactions.actionAttribute`. Without a name, the message is `unknown-click`. `data.text` and `data.selector` are present only when `capture.interactions` turns them on.
 
@@ -102,22 +102,31 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 | `ui.measure.duration`       | `measure.name`, `measure.outcome`. |
 | `ui.measure.phase.duration` | `measure.name`, `measure.phase`.   |
 
+## Replay Attribute
+
+| Attribute   | Type   | Value                                                                                                                                          |
+| ----------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replay.id` | string | Id of the session replay recording. Each record has it while the recorder runs. Each segment of the recording has the same id. See the README. |
+
 ## Profile Attributes
 
 `profiler.probe()` writes one histogram in milliseconds. Each record is the summary of one probe for one interval. The record has the histogram fields of [Metric Records](#metric-records). With `metricsEndpoint`, only `profile.probe` and `profile.sample_every` are attributes of the OTLP point.
 
-| Histogram             | Attributes                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `ui.profile.duration` | `profile.probe`, `profile.sample_every`, `profile.p50`, `profile.p90`, `profile.p99`, `profile.overhead_ns`. |
+| Histogram                   | Attributes                                                                                                                                                |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui.profile.duration`       | `profile.probe`, `profile.sample_every`, `profile.p50`, `profile.p90`, `profile.p99`, `profile.self_p99`, `profile.overhead_ns`.                          |
+| `ui.profile.frame.duration` | `profile.probe`, `profile.frame_phase`. Only with `profiler.framePhases`. One value for each phase of each long animation frame with a span of the probe. |
 
-| Attribute              | Type   | Value                                                                                                                                                                                |
-| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `profile.probe`        | string | Probe name. It is an OTLP point attribute.                                                                                                                                           |
-| `profile.sample_every` | number | Sampling period of the probe. The probe measures one span of each period. It is an OTLP point attribute.                                                                             |
-| `profile.p50`          | number | 50th percentile of the interval, in milliseconds. It is the upper bound of its bucket, limited to the range from `metric.min` to `metric.max`.                                       |
-| `profile.p90`          | number | 90th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                             |
-| `profile.p99`          | number | 99th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                             |
-| `profile.overhead_ns`  | number | Cost of one `begin()` and `end()` pair, in whole nanoseconds. It is the cost of a pair in one short loop. It is absent before the one measurement, and when the clock is too coarse. |
+| Attribute              | Type   | Value                                                                                                                                                                                       |
+| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profile.probe`        | string | Probe name. It is an OTLP point attribute.                                                                                                                                                  |
+| `profile.sample_every` | number | Sampling period of the probe. The probe measures one span of each period. It is an OTLP point attribute.                                                                                    |
+| `profile.p50`          | number | 50th percentile of the interval, in milliseconds. It is the upper bound of its bucket, limited to the range from `metric.min` to `metric.max`.                                              |
+| `profile.p90`          | number | 90th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                                    |
+| `profile.p99`          | number | 99th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                                    |
+| `profile.self_p99`     | number | 99th percentile of the self time, in milliseconds. The self time of a span is its duration without the measured spans inside it. It is absent when no span of the interval has a self time. |
+| `profile.frame_phase`  | string | Phase of a long animation frame. It is `script`, `render`, `style_layout` or `forced_layout`. `forced_layout` is a part of `script`.                                                        |
+| `profile.overhead_ns`  | number | Cost of one `begin()` and `end()` pair, in whole nanoseconds. It is the cost of a pair in one short loop. It is absent before the one measurement, and when the clock is too coarse.        |
 
 ## Span Records
 
@@ -159,7 +168,7 @@ With `diagnostics.records`, the library writes a record for each reported diagno
 | `resourceTiming` | Histogram `ui.resource.duration`, in ms. Event `ui.resource.slow`  | `resource.initiator_type`, `server.address`. Slow events also have `resource.duration_ms` and `url.full`.                                    |
 | `lifecycle`      | Event `ui.lifecycle`                                               | `lifecycle.state`, `lifecycle.previous_state`, `lifecycle.duration_ms`                                                                       |
 | `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`. It follows `fullUrls`.                                                                                                   |
-| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type`                                                                                              |
+| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type` `navigation.type` is `prerender` for a page that the browser prerendered.                    |
 | `longFrames`     | Histogram `ui.long_frame.duration`, in ms                          | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`                                                    |
 | `console`        | The console message (ERROR or WARN)                                | `console.method`, `console.args` (array)                                                                                                     |
 | `webSocket`      | Events `websocket.open`, `websocket.close`, WARN `websocket.error` | `url.full`, `server.address`, `websocket.close.code` (number), `websocket.close.clean` (boolean)                                             |

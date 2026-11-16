@@ -1,7 +1,7 @@
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext, CaptureOnce } from "./types";
 
-/** Records page states with the duration of the previous state. */
+/** Records page state changes, each with how long the previous state lasted. */
 export class LifecycleCapture implements Capture {
   readonly name = "lifecycle";
 
@@ -13,7 +13,7 @@ export class LifecycleCapture implements Capture {
 
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Installs document and back-forward cache listeners. */
+  /** Installs the document and back-forward cache listeners. */
   install(): void {
     if (this.installed) {
       return;
@@ -55,7 +55,7 @@ export class LifecycleCapture implements Capture {
     }
   };
 
-  /** Updates the state even when its event exceeds the rate limit. */
+  /** Updates the state even when the rate limit drops its event. */
   private transition(state: string): void {
     if (!this.installed || state === this.phase.state) {
       return;

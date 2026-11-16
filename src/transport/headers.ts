@@ -1,7 +1,7 @@
 import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConfig } from "../models/config";
 
-/** Header cache of one HTTP transport. The worker path shares its fallback transport's cache. */
+/** One HTTP transport's header cache. The worker path shares its fallback transport's cache. */
 interface CachedHeaders {
   source: unknown;
   endpoint: string | null;
@@ -12,7 +12,7 @@ interface CachedHeaders {
 
 const caches = new WeakMap<object, CachedHeaders>();
 
-/** Reads the last headers only while their source and all destinations stay in force. */
+/** Returns the last headers, but only while their source and all destinations are unchanged. */
 export function lastHeaders(
   owner: object,
   config: ResolvedConfig,
@@ -67,7 +67,7 @@ export async function resolveHeaders(
   return resolved ?? {};
 }
 
-/** Removes rejected credentials before the next call of the headers function. */
+/** Forgets rejected credentials before the headers function is called again. */
 export function resetHeaders(owner: object): void {
   caches.delete(owner);
 }

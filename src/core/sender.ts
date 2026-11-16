@@ -1,9 +1,9 @@
 // src/core/sender.ts
 //
-// This module builds the delivery stack of the sender role.
-// The stack has storage, transport, retry, pipeline and exit flush.
-// The runtime imports this module dynamically only when the config sets an endpoint.
-// Console-only mode does not download this module.
+// Builds the delivery stack for the sender role: storage, transport, retry, pipeline and
+// exit flush.
+// The runtime imports this module dynamically, and only when the config sets an endpoint,
+// so console-only mode never downloads it.
 
 import { STORAGE_NAME_INDEXEDDB, STORAGE_NAME_LOCAL } from "../constants";
 import type { LogBatch } from "../models/batch";
@@ -37,7 +37,7 @@ export interface SenderDeps {
   /** Memory store that this runtime keeps when the security context changes. */
   storage?: StorageAdapter;
   onStorage?: (storage: StorageAdapter) => void;
-  /** Receives the state of the request for persistent storage. */
+  /** Receives the state of the persistent-storage request. */
   onPersistence?: (state: StoragePersistence) => void;
   /** Active configuration instance. */
   config: ResolvedConfig;
@@ -45,19 +45,19 @@ export interface SenderDeps {
   diagnostics: Diagnostics;
   /** Receives a report when storage drops batches before delivery. */
   onGap: GapReporter;
-  /** Receives the records that the transport, the retry engine and the exit flush lose. */
+  /** Receives the records lost by the transport, the retry engine and the exit flush. */
   onLoss: LossReporter;
-  /** Slot of the runtime for the sampling rules from the ingest server. */
+  /** The runtime's slot for the sampling rules from the ingest server. */
   remote: RemoteSlot;
-  /** Sends the points of the open metric interval before the exit flush drains the buffers. */
+  /** Sends the open metric interval's points before the exit flush drains the buffers. */
   beforeExit?: () => void;
 }
 
 /** Delivery stack for one sender runtime. */
 export class Sender {
-  /** True after retire(). A late emergency import then does not wake the retry engine. */
+  /** True after retire(), so a late emergency import doesn't wake the retry engine. */
   private retired = false;
-  /** Emergency queue import. retire() waits for it before it reads storage. */
+  /** Emergency queue import. retire() waits for it before reading storage. */
   private emergencyImport: Promise<void> = Promise.resolve();
 
   /**
@@ -66,7 +66,7 @@ export class Sender {
    * @param pipeline Pipeline that batches records.
    * @param exitFlush Handler that sends pending records on unload.
    * @param diagnostics Diagnostics reporter.
-   * @param transport Transport of the pipeline and the retry engine.
+   * @param transport The transport that the pipeline and the retry engine use.
    */
   private constructor(
     private readonly storage: ContextStorage,
@@ -79,7 +79,7 @@ export class Sender {
 
   /**
    * Builds the delivery stack and starts the retry loop. The emergency queue import runs
-   * after the start. A slow IndexedDB open then does not hold the boot buffer.
+   * after the start, so a slow IndexedDB open doesn't hold up the boot buffer.
    * @param deps Configuration, diagnostics and gap reporter.
    * @returns Promise that resolves to the started sender.
    */
@@ -120,13 +120,13 @@ export class Sender {
       }
     };
 
-    // The clock offset of the last accepted answer. The pipeline adds it to new records.
+    // The clock offset from the last accepted response. The pipeline adds it to new records.
     let clockOffsetMs: number | undefined;
     const onClock = (offsetMs: number): void => {
       clockOffsetMs = offsetMs;
     };
 
-    // The stack keeps one transport for its life. The runtime refuses a later change.
+    // The stack keeps one transport for its whole life, and the runtime refuses a later change.
     // The exit flush reads the last headers from the HTTP transport.
     const { onLoss } = deps;
     const worker =
@@ -165,7 +165,7 @@ export class Sender {
           flushIntervalMs: batching.metricFlushIntervalMs,
           batchSize: batching.metricBatchSize,
         },
-        // A span has the size of a log record. The traces stream uses the log batching.
+        // A span is the size of a log record, so the traces stream uses the log batching.
         traces: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
       },
       () => config.securityContext.id || undefined,
@@ -184,7 +184,8 @@ export class Sender {
       beforeExit: deps.beforeExit,
     });
 
-    // If one step fails, stop both. A retry loop with no owner sends after load reports failure.
+    // If one step fails, stop both. A retry loop with no owner would keep sending after the
+    // load reports failure.
     let started = false;
 
     try {
@@ -212,8 +213,8 @@ export class Sender {
   }
 
   /**
-   * Sends the records in the stream buffers. Then it waits for each batch in flight.
-   * @returns Promise that resolves when the pipeline sends or stores each batch.
+   * Sends the records in the stream buffers, then waits for every batch in flight.
+   * @returns Promise that resolves once the pipeline has sent or stored every batch.
    */
   async flush(): Promise<void> {
     await this.pipeline.flushPending();
@@ -252,16 +253,16 @@ export class Sender {
 
   /**
    * Reads the delivery state of the pipeline and the transport.
-   * @returns Records that wait, records in requests and the last accepted send.
+   * @returns Waiting records, records in requests and the last accepted send.
    */
   stats(): Omit<DeliveryStats, "stored"> {
     return { ...this.pipeline.counts(), lastSendAt: this.transport.lastSendAt() };
   }
 
   /**
-   * Sends pending records with a normal flush, then with the exit flush. Then it stops all
-   * timers and listeners. Then it closes storage. The normal flush keeps the headers, gzip
-   * and the retry. The exit flush takes the records that the normal flush did not confirm.
+   * Sends pending records with a normal flush, then with the exit flush, then stops all
+   * timers and listeners and closes storage. The normal flush keeps the headers, gzip and
+   * the retry. The exit flush picks up the records the normal flush didn't confirm.
    * @returns Promise that resolves when storage closes.
    */
   async destroy(): Promise<void> {
@@ -279,11 +280,12 @@ export class Sender {
   }
 
   /**
-   * Stops this sender before a new delivery identity takes effect. It does not run exit delivery.
+   * Stops this sender before a new delivery identity takes effect. Does not run exit delivery.
    * @param policy Rule for the old records.
    * @param timeoutMs Maximum wait for a flush, in milliseconds.
    * @param contextId Identity of the old delivery context.
-   * @returns Records that were in memory, and the batches that were stored, after the delivery attempt.
+   * @returns The records that were in memory and the batches that were stored, after the
+   * delivery attempt.
    */
   async retire(
     policy: "discard" | "flush" | "retain" | "carry",
@@ -314,7 +316,7 @@ export class Sender {
     await this.emergencyImport;
     const stored = await this.storage.take(Number.MAX_SAFE_INTEGER);
     if (policy === "retain") {
-      // Store the drained batches whole. One batch for each record fills retention.maxBatches.
+      // Store the drained batches whole. One batch per record would fill retention.maxBatches.
       for (const batch of drained) {
         await this.storage.save({
           ...batch,
@@ -324,7 +326,7 @@ export class Sender {
       }
     }
     // "carry" keeps the stored batches until adopt() stores each one again under the new id.
-    // A tab that closes during the carry then parks the rest. It does not lose them.
+    // If the tab closes during the carry, the rest are parked, not lost.
     const discard = policy === "discard" || policy === "flush";
     await this.storage.retire(discard);
     if (discard) {
@@ -334,15 +336,16 @@ export class Sender {
   }
 
   /**
-   * Stores batches of an earlier context under this context. Then the retry engine sends them.
-   * The live buffer does not take them. A large backlog would exceed its budget.
-   * @param batches Stored batches of the earlier context.
+   * Stores an earlier context's batches under this context, and the retry engine then sends
+   * them. They don't go through the live buffer, because a large backlog would exceed its
+   * budget.
+   * @param batches The earlier context's stored batches.
    * @param contextId Identity of this delivery context.
    * @returns Promise that resolves when the batches are stored.
    */
   async adopt(batches: readonly LogBatch[], contextId: string): Promise<void> {
     for (const batch of batches) {
-      // The same id replaces the old copy. The attempts of the old destination do not count here.
+      // The same id replaces the old copy. Attempts against the old destination don't count here.
       await this.storage.save({
         ...batch,
         attempts: 0,
@@ -357,7 +360,7 @@ export class Sender {
   }
 
   /**
-   * Moves the batches of the emergency queue into storage, then wakes the retry engine.
+   * Moves the emergency queue's batches into storage, then wakes the retry engine.
    * The previous page load parked them during its unload.
    */
   private async importEmergency(): Promise<void> {

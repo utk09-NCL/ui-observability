@@ -1,32 +1,32 @@
 // src/capture/unclean-exit.ts
 //
-// Finds a page of this tab that stopped without a clean close, for example after a crash. The top
-// document keeps a marker in sessionStorage. A clean close removes it. The next page of the tab
-// reports a marker that it finds.
+// Detects a page in this tab that ended without a clean close, for example after a crash. The
+// top document keeps a marker in sessionStorage and a clean close removes it, so if the tab's
+// next page finds a marker, it reports it.
 
 import { ALIVE_KEY, ALIVE_UPDATE_MS } from "../constants";
 import type { Capture, CaptureContext } from "./types";
 
-/** Marker of a page that is alive. */
+/** Marker left by a page that is alive. */
 interface AliveMarker {
-  /** Session id of the page. */
+  /** The page's session id. */
   sessionId: string;
-  /** Epoch time in milliseconds of the last update. */
+  /** When the marker was last updated, in epoch milliseconds. */
   at: number;
-  /** Visibility of the page at the last update. */
+  /** The page's visibility at the last update. */
   visibility: string;
 }
 
-/** Document with the flag of a page that the browser discarded to free memory. */
+/** A document with the flag the browser sets on a page it discarded to free memory. */
 interface DiscardDocument {
   wasDiscarded?: boolean;
 }
 
 /**
  * Reads a marker from its sessionStorage text.
- * @param text Stored text, or null without a marker.
- * @returns The marker, or null for no marker or a marker of another shape.
- * @throws SyntaxError for text that is not JSON. The caller reports it.
+ * @param text Stored text, or null when there is no marker.
+ * @returns The marker, or null if there is none or it has the wrong shape.
+ * @throws SyntaxError for text that isn't JSON. The caller reports it.
  */
 function readMarker(text: string | null): AliveMarker | null {
   const value: unknown = text === null ? null : JSON.parse(text);
@@ -41,7 +41,7 @@ function readMarker(text: string | null): AliveMarker | null {
   return valid ? { sessionId, at: at as number, visibility } : null;
 }
 
-/** Reports the unclean exit of the previous page, and keeps the marker of this page. */
+/** Reports the previous page's unclean exit, and maintains this page's marker. */
 export class UncleanExitCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "uncleanExit";
@@ -52,7 +52,7 @@ export class UncleanExitCapture implements Capture {
   /** Timer that updates the marker. */
   private timer: ReturnType<typeof setInterval> | undefined;
 
-  /** True after pagehide. The browser fires visibilitychange after pagehide. */
+  /** True after pagehide. Needed because the browser fires visibilitychange after pagehide. */
   private closing = false;
 
   /**
@@ -60,14 +60,15 @@ export class UncleanExitCapture implements Capture {
    */
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Reports the marker of the previous page one time. Then it keeps the marker of this page. */
+  /** Reports the previous page's marker once, then starts maintaining this page's own. */
   install(): void {
-    // Only the top document keeps the marker. A same-origin frame shares its sessionStorage.
+    // Only the top document keeps the marker, because a same-origin frame shares its
+    // sessionStorage.
     if (this.installed || typeof document === "undefined" || window.parent !== window) {
       return;
     }
 
-    // The marker holds the session id. Memory identity writes nothing to the device.
+    // The marker holds the session id, and memory identity writes nothing to the device.
     if (this.ctx.config.identity === "memory") {
       this.ctx.diagnostics.report(
         "capture.install_failed",
@@ -79,7 +80,7 @@ export class UncleanExitCapture implements Capture {
 
     if (!this.ctx.once.uncleanExit) {
       this.ctx.once.uncleanExit = true;
-      // A popup copies the sessionStorage of its live opener. That marker is not a crash.
+      // A popup copies its live opener's sessionStorage, so that marker isn't a crash.
       if (!window.opener) {
         this.reportPrevious();
       }
@@ -92,7 +93,7 @@ export class UncleanExitCapture implements Capture {
     this.timer = setInterval(this.mark, ALIVE_UPDATE_MS);
   }
 
-  /** Removes the listeners, the timer and the marker. The capture stopped with no crash. */
+  /** Removes the listeners, the timer and the marker, since the capture stopped without a crash. */
   uninstall(): void {
     if (!this.installed) {
       return;
@@ -106,7 +107,7 @@ export class UncleanExitCapture implements Capture {
     this.clear();
   }
 
-  /** Logs WARN `ui.unclean_exit` when the previous page of this tab left its marker. */
+  /** Logs WARN `ui.unclean_exit` if this tab's previous page left its marker behind. */
   private reportPrevious(): void {
     const marker = this.ctx.diagnostics.guard(
       "storage.unavailable",
@@ -125,7 +126,7 @@ export class UncleanExitCapture implements Capture {
     });
   }
 
-  /** Writes the marker of this page with the time and the visibility of now. */
+  /** Writes this page's marker with the current time and visibility. */
   private readonly mark = (): void => {
     if (this.closing) {
       return;
@@ -146,7 +147,7 @@ export class UncleanExitCapture implements Capture {
     );
   };
 
-  /** Removes the marker of this page. */
+  /** Removes this page's marker. */
   private clear(): void {
     this.ctx.diagnostics.guard(
       "storage.unavailable",
@@ -157,7 +158,7 @@ export class UncleanExitCapture implements Capture {
     );
   }
 
-  /** A clean close removes the marker. The back-forward cache can keep the page. */
+  /** A clean close removes the marker. The page may still live on in the back-forward cache. */
   private readonly onPageHide = (): void => {
     this.closing = true;
     this.clear();

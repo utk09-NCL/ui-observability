@@ -7,14 +7,15 @@ import type { LogBatch } from "./batch";
 import type { RetentionOptions } from "./config";
 
 /**
- * State of the request for persistent storage. "off" means no request. "pending" waits for the
- * browser. "unsupported" means the browser has no `navigator.storage.persist()`.
+ * State of the request for persistent storage. "off" means no request was made and "pending"
+ * is waiting for the browser. "unsupported" means the browser has no
+ * `navigator.storage.persist()`.
  */
 export type StoragePersistence = "off" | "pending" | "granted" | "denied" | "unsupported";
 
 /** Persistent batch storage interface. All methods must resolve and never throw. */
 export interface StorageAdapter {
-  /** Adapter identifier name. */
+  /** Adapter name. */
   readonly name: string;
 
   /**
@@ -30,14 +31,14 @@ export interface StorageAdapter {
    */
   take(limit: number): Promise<LogBatch[]>;
   /**
-   * Reads batches of one context without loading batches of other contexts.
+   * Reads one context's batches without loading those of other contexts.
    * @param id Delivery context id.
    * @param limit Maximum batches to return.
-   * @returns Batches of this context, oldest first.
+   * @returns This context's batches, oldest first.
    */
   takeContext?(id: string, limit: number): Promise<LogBatch[]>;
   /**
-   * Counts batches of one context without loading them.
+   * Counts one context's batches without loading them.
    * @param id Delivery context id.
    * @returns Number of batches in this context.
    */
@@ -83,8 +84,8 @@ export interface StorageLimits {
 }
 
 /**
- * Gives the storage limits of a retention setting. "until-delivered" has no age limit and no
- * attempt limit. The batch cap still applies.
+ * Returns the storage limits for a retention setting. "until-delivered" has no age limit and
+ * no attempt limit, but the batch cap still applies.
  * @param retention Retention setting from the config.
  * @returns The limits for the storage adapters and the retry engine.
  */
@@ -105,8 +106,8 @@ export interface PruneResult {
   /** Total records dropped within evicted batches. */
   records: number;
   /**
-   * Cause of the drop. If more than one rule applies, this is the last rule. "not_stored" means
-   * that storage did not keep a batch after a failed send.
+   * Cause of the drop. If more than one rule applied, this is the last one. "not_stored" means
+   * storage did not keep a batch after a failed send.
    */
   reason: "expired" | "over_capacity" | "quota" | "not_stored";
 }
@@ -114,6 +115,6 @@ export interface PruneResult {
 /**
  * Callback invoked when dropped records create a telemetry gap.
  * @param result Summary of evicted data.
- * @param dropped The dropped batches. A corrupt entry has no batch. The list then has none for it.
+ * @param dropped The dropped batches. A corrupt entry has no batch, so the list omits it.
  */
 export type GapReporter = (result: PruneResult, dropped: readonly LogBatch[]) => void;

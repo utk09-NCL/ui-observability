@@ -59,7 +59,7 @@ describe("shouldSample bypasses", () => {
 
   it("keeps each level at or above alwaysSampleFrom at rate zero", () => {
     const fromWarn = config({ defaultRate: 0, alwaysSampleFrom: "WARN" });
-    // A forwarded record can hold a level name that the library does not know.
+    // A forwarded record can carry a level name the library doesn't know.
     const level = (name: string): LogRecord => record({}, { severityText: name as LogLevel });
 
     expect(shouldSample(level("WARN"), fromWarn)).toBe(true);
@@ -76,7 +76,7 @@ describe("shouldSample bypasses", () => {
   });
 
   it("keeps an aggregated metric point at rate zero", () => {
-    // A child frame forwards its points. A sample of a sum gives a false sum.
+    // A child frame forwards its points, and sampling a sum gives a false sum.
     const point = record({ [ATTR_LOG_TYPE]: "metric", [METRIC_KEYS.start]: "1000000000000" });
     expect(shouldSample(point, config({ defaultRate: 0 }))).toBe(true);
   });
@@ -217,7 +217,7 @@ describe("shouldSample with remote rules", () => {
   });
 
   it("caps each remote rate at remoteMaxRate when it reads the rules", () => {
-    // A configure() that lowers the cap then applies to the rules in force.
+    // A configure() that lowers the cap also applies to the rules already in effect.
     const rates = config({ defaultRate: 0, remoteMaxRate: 0 });
 
     expect(shouldSample(record(), rates, { rates: { app: 1 } })).toBe(false);
@@ -225,7 +225,7 @@ describe("shouldSample with remote rules", () => {
   });
 
   it("caps a record below minLevel at remoteMaxRate, also with a config rate of 1", () => {
-    // A remote minLevel adds records. Without the cap, they ship at the config rate.
+    // A remote minLevel adds records. Without the cap, they would ship at the config rate.
     const rates = resolveConfig(
       {
         endpoint: "https://x/v1/logs",
@@ -242,8 +242,8 @@ describe("shouldSample with remote rules", () => {
   });
 
   it("caps a record by the config level of its namespace, not by the global minLevel", () => {
-    // trading.ticks allows DEBUG in the config. A remote rule must not cap it. trading raises its
-    // level to WARN. An INFO record that a remote rule adds there gets the cap.
+    // trading.ticks allows DEBUG in the config, so a remote rule must not cap it. trading raises
+    // its level to WARN, so an INFO record that a remote rule adds there gets the cap.
     const rates = resolveConfig(
       {
         endpoint: "https://x/v1/logs",
@@ -263,7 +263,7 @@ describe("shouldSample with remote rules", () => {
   });
 
   it("does not cap an action or a metric below minLevel", () => {
-    // minLevel does not apply to an action or a metric. A remote rule must not drop them.
+    // minLevel doesn't apply to an action or a metric, so a remote rule must not drop them.
     const rates = resolveConfig(
       {
         endpoint: "https://x/v1/logs",
@@ -340,7 +340,7 @@ describe("ErrorCeiling", () => {
 
     expect(ceiling.allow(warn, 2, ERROR_STORM_WINDOW_MS, "WARN")).toBe(false);
     expect(ceiling.allow(record(), 2, ERROR_STORM_WINDOW_MS, "WARN")).toBe(true);
-    // With "FATAL", sampling governs an ERROR. The ceiling does not count it.
+    // With "FATAL", sampling governs an ERROR and the ceiling doesn't count it.
     expect(ceiling.allow(err(), 2, ERROR_STORM_WINDOW_MS, "FATAL")).toBe(true);
   });
 
@@ -359,8 +359,8 @@ describe("ErrorCeiling", () => {
   });
 
   it("starts a new window when the clock moves back", () => {
-    // Without the reset, the window ends only when the clock is past the old start again. Each
-    // ERROR record before that time is lost.
+    // Without the reset, the window only ends once the clock passes the old start again, and every
+    // ERROR record before then is lost.
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
     const ceiling = new ErrorCeiling();

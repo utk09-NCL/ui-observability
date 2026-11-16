@@ -14,13 +14,13 @@ import type { LogRecord } from "../src/models/log-record";
 
 const SPAN = { traceId: "a".repeat(32), spanId: "b".repeat(16), parentSpanId: "c".repeat(16) };
 
-/** Builds typed sinks that record each call. */
+/** Builds typed sinks that record every call. */
 const sinksOf = () => ({
   metric: vi.fn<MeasureSinks["metric"]>(),
   span: vi.fn<MeasureSinks["span"]>(),
 });
 
-/** Builds a measure on a clock that the test sets. */
+/** Builds a measure on a clock the test controls. */
 function setupMeasure(span?: typeof SPAN) {
   vi.spyOn(Date, "now").mockReturnValue(1000);
   const clock = vi.spyOn(performance, "now").mockReturnValue(10);
@@ -29,7 +29,7 @@ function setupMeasure(span?: typeof SPAN) {
   return { measure, clock, sinks };
 }
 
-/** Gives each histogram call as its name, value and attributes. */
+/** Returns every histogram call as its name, value and attributes. */
 function points(sinks: ReturnType<typeof sinksOf>): unknown[] {
   return sinks.metric.mock.calls.map(([def, value, attributes]) => [def.name, value, attributes]);
 }

@@ -1,7 +1,7 @@
 // src/utils/openfin.ts
 //
-// Reads the optional OpenFin runtime API. The library does not import an OpenFin package. The
-// types list only the members that the library reads. Each member is optional, because a test, an
+// Reads the optional OpenFin runtime API without importing an OpenFin package. The types
+// list only the members that the library reads. Every member is optional, because a test, an
 // older runtime or OpenFin web can leave it out.
 
 /** The InterApplicationBus operations that the bus link uses. */
@@ -26,13 +26,13 @@ export interface FinIab {
   ): Promise<void>;
 }
 
-/** The members of fin.me that the library reads. */
+/** The fin.me members that the library reads. */
 export interface FinMe {
   /** True in an OpenFin view. */
   isView?: boolean;
   /** Identity of the window or view. */
   identity?: { uuid?: string; name?: string };
-  /** Resolves the creation options of the window, with customData. */
+  /** Resolves the window's creation options, including customData. */
   getOptions?: () => Promise<{ customData?: Record<string, unknown> }>;
   /** Adds a window event listener. */
   on?: (event: string, listener: () => void) => void;
@@ -42,14 +42,14 @@ export interface FinMe {
 
 /** The members of the OpenFin global that the library reads. */
 export interface FinLike {
-  /** The window or view of this document. */
+  /** This document's window or view. */
   me?: FinMe;
-  /** The message bus of the OpenFin runtime. */
+  /** The OpenFin runtime's message bus. */
   InterApplicationBus?: FinIab;
 }
 
 /**
- * Gives the OpenFin global.
+ * Returns the OpenFin global.
  * @returns The fin global, or undefined outside OpenFin.
  */
 export function getFin(): FinLike | undefined {

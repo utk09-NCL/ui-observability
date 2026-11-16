@@ -1,8 +1,8 @@
 // src/core/sampling.ts
 //
-// This module samples records by namespace rule, journey ID and trace ID.
-// The journey ID is the sampling key. The module keeps or drops a full journey.
-// The result is the same across windows and reloads.
+// Samples records by namespace rule, journey ID and trace ID.
+// The journey ID is the sampling key, so a whole journey is kept or dropped together and
+// the result is the same across windows and reloads.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -42,9 +42,9 @@ function hash(value: string): number {
 }
 
 /**
- * Reads a string attribute from a log record. It returns an empty string for an absent
- * or non-string value. A forwarded record has passed only a shape check.
- * @param record Log record to test.
+ * Reads a string attribute from a log record. Returns an empty string for an absent
+ * or non-string value, because a forwarded record has only passed a shape check.
+ * @param record Log record to read from.
  * @param key Attribute key.
  * @returns String attribute value, or empty string if missing or non-string.
  */
@@ -55,7 +55,7 @@ function readAttr(record: LogRecord, key: string): string {
 
 /** Value of the longest prefix that matches a namespace. */
 interface PrefixMatch<T> {
-  /** Value of the prefix, for example a rate or a level. */
+  /** The prefix's value, for example a rate or a level. */
   value: T;
   /** Length of the prefix. */
   length: number;
@@ -86,11 +86,11 @@ export function longestPrefix<T>(
 }
 
 /**
- * Finds the minimum level of a namespace in the config. The longest matching prefix of
- * `minLevels` wins. A namespace with no match uses `minLevel`.
+ * Finds a namespace's minimum level in the config. The longest matching prefix in
+ * `minLevels` wins, and a namespace with no match uses `minLevel`.
  * @param namespace Target application namespace.
  * @param config Active configuration instance.
- * @returns The minimum level of the namespace.
+ * @returns The namespace's minimum level.
  */
 export function levelFor(namespace: string, config: ResolvedConfig): LogLevel {
   return longestPrefix(namespace, config.minLevels)?.value ?? config.minLevel;
@@ -101,7 +101,7 @@ export function levelFor(namespace: string, config: ResolvedConfig): LogLevel {
  * A remote prefix wins over a config prefix of the same length.
  * @param namespace Target application namespace.
  * @param config Active configuration instance.
- * @param remote Remote rules in force, or null.
+ * @param remote Current remote rules, or null.
  * @returns Matched namespace sampling rate or default rate.
  */
 function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules | null): number {
@@ -109,8 +109,8 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
   const local = longestPrefix(namespace, rates);
   const fromRemote = remote ? longestPrefix(namespace, remote.rates) : undefined;
 
-  // Cap a remote rate when sampling reads it. A configure() that lowers the cap then applies
-  // immediately.
+  // Cap a remote rate at the point where sampling reads it, so a configure() that lowers the
+  // cap takes effect immediately.
   if (fromRemote && fromRemote.length >= (local?.length ?? -1)) {
     return Math.min(fromRemote.value, remoteMaxRate);
   }
@@ -125,17 +125,17 @@ function rateFor(namespace: string, config: ResolvedConfig, remote: RemoteRules 
 }
 
 /**
- * Checks if a level is at or above a threshold level.
- * @param level Level of the record. A forwarded record can hold any string.
+ * Checks whether a level is at or above a threshold level.
+ * @param level The record's level. A forwarded record can hold any string.
  * @param from Threshold level.
- * @returns True for a known level that is not below the threshold.
+ * @returns True for a known level that isn't below the threshold.
  */
 function atOrAbove(level: string, from: LogLevel): boolean {
   return LEVEL_ORDER[level as LogLevel] >= LEVEL_ORDER[from];
 }
 
 /**
- * Decides if sampling keeps a key at a rate. One key always gives the same result.
+ * Decides whether sampling keeps a key at a rate. The same key always gets the same result.
  * @param key Journey ID or trace ID.
  * @param rate Sampling rate, 0..1.
  * @returns True if sampling keeps the key.
@@ -159,20 +159,20 @@ export interface SampleInput {
   type: string;
   /** Originating application namespace. */
   namespace: string;
-  /** Active journey ID. It is empty when no journey runs. */
+  /** Active journey ID. Empty when no journey is running. */
   journeyId: string;
-  /** Trace ID. It is the sampling key when no journey runs. */
+  /** Trace ID. Used as the sampling key when no journey is running. */
   traceId: string;
-  /** True for a point of a counter or histogram. A sample of a sum gives a false sum. */
+  /** True for a counter or histogram point. Sampling a sum would give a false sum. */
   aggregated?: boolean;
 }
 
 /**
- * Decides if sampling keeps an entry. It reads fields, not a record.
- * This lets the caller drop an entry before the attribute walk runs.
+ * Decides whether sampling keeps an entry. Reads fields, not a record, so the caller can
+ * drop an entry before the attribute walk runs.
  * @param input Fields the sampling decision reads.
  * @param config Active configuration instance.
- * @param remote Remote rules in force, or null.
+ * @param remote Current remote rules, or null.
  * @returns True if the runtime keeps and sends the entry.
  */
 export function shouldSampleInput(
@@ -196,25 +196,25 @@ export function shouldSampleInput(
 
   let rate = rateFor(input.namespace, config, remote);
 
-  // A remote level adds the records below the config level of the namespace. Cap them too, or they
-  // ship at the config rate. The level does not apply to an action or a metric. Do not cap them.
+  // A remote level lets in records below the namespace's config level. Cap those too, or they
+  // ship at the config rate. The level doesn't apply to an action or a metric, so don't cap
+  // them.
   const configLevel = levelFor(input.namespace, config);
   const belowMinLevel = LEVEL_ORDER[input.level as LogLevel] < LEVEL_ORDER[configLevel];
   if (remote && belowMinLevel && !LEVEL_BYPASS_TYPES.includes(input.type as LogType)) {
     rate = Math.min(rate, config.sampling.remoteMaxRate);
   }
 
-  // Use the trace ID when the journey ID is absent. The trace ID still groups one
-  // operation.
+  // Fall back to the trace ID when there is no journey ID. It still groups one operation.
   return sampleKey(input.journeyId || input.traceId, rate);
 }
 
 /**
- * Decides if sampling keeps a built log record. The runtime uses it for records
+ * Decides whether sampling keeps a built log record. The runtime uses it for records
  * that a child context sends over the bus.
  * @param record Record to evaluate.
  * @param config Active configuration instance.
- * @param remote Remote rules in force, or null.
+ * @param remote Current remote rules, or null.
  * @returns True if the runtime keeps and sends the record.
  */
 export function shouldSample(
@@ -238,19 +238,19 @@ export function shouldSample(
 }
 
 /**
- * Sets a fixed-window limit on the records that bypass sampling by their level.
+ * Puts a fixed-window limit on the records that bypass sampling because of their level.
  *
- * ErrorCapture already limits auto-captured errors. This class limits the remaining case.
- * An example is application code that calls logger.error in a render loop.
+ * ErrorCapture already limits auto-captured errors. This class covers what is left, for
+ * example application code that calls logger.error in a render loop.
  */
 export class ErrorCeiling {
   /** Records at or above the threshold level admitted in the current window. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
-   * Checks a record against the limit. It counts only records at or above `from`.
+   * Checks a record against the limit. Only records at or above `from` are counted.
    * @param record Record about to enter a stream.
-   * @param limit Maximum records in one window. Set 0 for no limit.
+   * @param limit Maximum records in one window. Pass 0 for no limit.
    * @param windowMs Rate limit window, in milliseconds.
    * @param from Lowest level that bypasses sampling.
    * @returns False when the window has no allowance left. The caller must drop the record.
@@ -265,7 +265,7 @@ export class ErrorCeiling {
       return true;
     }
 
-    // Use a fixed window, not a sliding window. A quiet period adds no allowance.
+    // Use a fixed window, not a sliding one, so a quiet period adds no allowance.
     return limit === 0 || countInWindow(this.window, limit, windowMs);
   }
 }

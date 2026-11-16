@@ -1,11 +1,11 @@
 // src/models/metric.ts
 //
-// Types of the counter and histogram instruments.
+// Types for the counter and histogram instruments.
 
-/** Attribute set of a metric point. Keep it small. Each set is one series in the backend. */
+/** Attribute set of a metric point. Keep it small, because every set is a series in the backend. */
 export type MetricAttributes = Record<string, string | number | boolean>;
 
-/** Options of an instrument. */
+/** Instrument options. */
 export interface InstrumentOptions {
   /**
    * Unit of the values, for example "ms" or "By".
@@ -14,41 +14,41 @@ export interface InstrumentOptions {
   unit?: string;
 }
 
-/** Options of a histogram. */
+/** Histogram options. */
 export interface HistogramOptions extends InstrumentOptions {
   /**
    * Ascending bucket boundaries, at most 50. A value goes into the first bucket whose boundary
-   * is equal to or larger than the value.
+   * is greater than or equal to it.
    * @default [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
    */
   boundaries?: readonly number[];
 }
 
-/** Counter that sums its values in memory. The library sends one point at each interval. */
+/** Counter that sums its values in memory. The library sends one point every interval. */
 export interface Counter {
   /**
-   * Adds a value to the sum of an attribute set.
+   * Adds a value to an attribute set's sum.
    * @param value Finite number, 0 or larger.
-   * @param attributes Attribute set of the point.
+   * @param attributes The point's attribute set.
    */
   add(value: number, attributes?: MetricAttributes): void;
 }
 
-/** Histogram that counts its values in buckets in memory. It sends one point at each interval. */
+/** Histogram that counts its values into buckets in memory. Sends one point every interval. */
 export interface Histogram {
   /**
-   * Adds a value to the buckets of an attribute set.
+   * Adds a value to an attribute set's buckets.
    * @param value Finite number.
-   * @param attributes Attribute set of the point.
+   * @param attributes The point's attribute set.
    */
   record(value: number, attributes?: MetricAttributes): void;
 }
 
-/** Handle of one timed operation. */
+/** Handle for one timed operation. */
 export interface Measure {
   /**
-   * Closes the open phase and starts the next phase. A call after `end()` does nothing.
-   * @param name Phase name. Each name makes one series.
+   * Closes the open phase and starts the next one. Does nothing after `end()`.
+   * @param name Phase name. Every name creates its own series.
    */
   phase(name: string): void;
   /**
@@ -58,61 +58,85 @@ export interface Measure {
   end(outcome?: string): void;
 }
 
-/** Options of a probe. */
+/** Probe options. */
 export interface ProbeOptions {
   /**
-   * The probe records one span of each `sampleEvery` spans. It is an integer from 1 to
-   * 2147483647.
+   * Record one span out of every `sampleEvery`. An integer from 1 to 2147483647.
    * @default 1
    */
   sampleEvery?: number;
+  /**
+   * A span that runs longer than this many milliseconds leaves a breadcrumb. Must be a finite
+   * number, 0 or more. Unset by default, which means no breadcrumbs.
+   */
+  slowMs?: number;
+  /**
+   * Set to true when an `await` splits the probe's spans. Those spans report total time only:
+   * they have no self time, and they don't eat into the self time of other spans.
+   * @default false
+   */
+  async?: boolean;
 }
 
 /**
- * Probe that times one code span of the app. Each member is a function property, not a method.
- * A destructured member then works, and a lint rule for unbound methods accepts it.
+ * Times one span of app code. Every member is a function property rather than a method, so you
+ * can destructure them and unbound-method lint rules stay quiet.
  */
 export interface Probe {
   /**
-   * Starts one span.
-   * @returns A token for `end()`, or -1 for a span that the profiler does not measure.
+   * Starts a span.
+   * @returns A token to pass to `end()`, or -1 if the profiler isn't measuring this span.
    */
   begin: () => number;
   /**
-   * Ends one span.
-   * @param token The token that `begin()` returned.
+   * Ends a span.
+   * @param token The token `begin()` returned.
    */
   end: (token: number) => void;
   /**
-   * Adds a duration from another source.
-   * @param durationMs Duration in milliseconds. It is a finite number, 0 or larger.
+   * Ends a span after the page's next paint, so the duration includes style, layout and paint.
+   * Where there is no frame callback, or the page is hidden, the span ends right away.
+   * @param token The token `begin()` returned.
+   */
+  endAfterPaint: (token: number) => void;
+  /**
+   * Adds a duration you measured some other way.
+   * @param durationMs Duration in milliseconds. A finite number, 0 or larger.
    */
   record: (durationMs: number) => void;
 }
 
-/** Makes the probes of the app. `probe` is a function property. A destructured `probe` works. */
+/** Creates the app's probes. `probe` is a function property, so destructuring it works. */
 export interface Profiler {
   /**
-   * Gives the probe of a name. The same name gives the same probe. The first options of a
-   * name stay.
-   * @param name Probe name. It is a string that is not empty.
-   * @param options Sampling of the probe.
+   * Returns the probe for a name. The same name always gives the same probe, and only the
+   * options from the first call count.
+   * @param name Probe name. A non-empty string.
+   * @param options Probe options.
    * @returns The probe.
    */
   probe: (name: string, options?: ProbeOptions) => Probe;
+  /**
+   * Calls a function and times it with the named probe. If the result has a `then` function,
+   * the span ends when it settles. Errors from the function go to the caller.
+   * @param name Probe name. A non-empty string.
+   * @param fn The function to call.
+   * @returns Whatever `fn` returned, or the result of its `then` call.
+   */
+  time: <T>(name: string, fn: () => T) => T;
 }
 
-/** Kind of an instrument. */
+/** Instrument kind. */
 export type InstrumentKind = "counter" | "histogram";
 
-/** Definition of an instrument. A handle gives it to the meter at each call. */
+/** Instrument definition. A handle passes it to the meter on every call. */
 export interface InstrumentDef {
   /** Metric name. */
   name: string;
-  /** Kind of the instrument. */
+  /** Instrument kind. */
   kind: InstrumentKind;
   /** Unit of the values. */
   unit: string;
-  /** Bucket boundaries of a histogram. A counter has none. */
+  /** A histogram's bucket boundaries. A counter has none. */
   boundaries: readonly number[];
 }

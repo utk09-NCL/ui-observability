@@ -57,7 +57,7 @@ export class FakeChannel {
   }
 }
 
-/** Dedicated worker stand-in. A test can replace its connect handler or emit an error. */
+/** Fake dedicated worker. A test can replace its connect handler or emit an error. */
 export class FakeWorker extends EventTarget {
   private stop: (() => void) | undefined;
   port: FakePort | undefined;

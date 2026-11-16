@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>profiler blotter</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+
+  <body>
+    <h1>profiler blotter</h1>
+    <p>
+      This page draws a blotter of 5,000 rows and times its work with probes. It shows the self
+      time, an async span, a span that ends after the paint, the frame phases and the frame pacing.
+      Each number is a measurement of this browser and this machine.
+    </p>
+    <p><a href="/playground/vanilla/index.html">Back to the playground</a></p>
+
+    <h2>Actions</h2>
+    <p>
+      <button type="button" id="blotter-render">Draw 5,000 rows</button>
+      <button type="button" id="blotter-sort">Sort by price</button>
+      <button type="button" id="blotter-update">Update 500 rows</button>
+      <button type="button" id="blotter-thrash">Read 100 row heights</button>
+      <button type="button" id="blotter-load">Load rows later</button>
+      <button type="button" id="blotter-all">Run each action</button>
+    </p>
+    <p id="status">Idle.</p>
+
+    <h2>Probes</h2>
+    <table id="probe-table"></table>
+    <p>
+      Each row is one <code>ui.profile.duration</code> record of this run. The durations are in
+      milliseconds. The page shows no average. <code>self p99</code> is the time in the span and not
+      in a span inside it. An async probe and a span that ends after the paint have none.
+    </p>
+
+    <h2>Frame phases</h2>
+    <table id="phase-table"></table>
+    <p>
+      Each row sums the <code>ui.profile.frame.duration</code> points of one probe and one phase. A
+      row shows only for a long animation frame with a span of that probe. Firefox and Safari report
+      no long animation frames.
+    </p>
+
+    <h2>Breadcrumbs</h2>
+    <pre id="crumbs"></pre>
+
+    <h2>JSON</h2>
+    <pre id="result-json"></pre>
+    <p>
+      URL parameters. <code>autorun=1</code> runs each action at load. The title of the page shows
+      the state. It is <code>running</code> during a run, <code>done</code> after a run and
+      <code>failed</code> after a fault.
+    </p>
+
+    <h2>Blotter</h2>
+    <div id="blotter-box">
+      <table id="blotter">
+        <thead>
+          <tr>
+            <th>Id</th>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Quantity</th>
+            <th>Price</th>
+            <th>Notional</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="blotter-body"></tbody>
+      </table>
+    </div>
+
+    <script type="module" src="./blotter.ts"></script>
+  </body>
+</html>

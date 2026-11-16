@@ -1,13 +1,13 @@
 // src/models/health.ts
 //
-// Defines the runtime state and delivery counts that getHealth() gives to the app.
+// Runtime state and delivery counts that getHealth() returns to the app.
 
 import type { DeliveryStats } from "./stats";
 import type { BusOptions, LoggerCacheOptions, SecurityContextOptions } from "./config";
 import type { LogRecord } from "./log-record";
 import type { StoragePersistence } from "./storage";
 
-/** State of this SDK copy. A configured console-only runtime can have the status "ready". */
+/** State of this SDK copy. A configured console-only runtime can report the status "ready". */
 export interface ObservabilityHealth extends DeliveryStats {
   /** Version of this SDK copy. */
   sdkVersion: string;
@@ -21,15 +21,15 @@ export interface ObservabilityHealth extends DeliveryStats {
   senderReady: boolean;
   /** True if configure() cannot change the current settings. */
   configurationLocked: boolean;
-  /** Codes of the current runtime or context failures. */
+  /** Codes for the current runtime or context failures. */
   issues: ("runtime.version_mismatch" | "sender.unavailable" | "security.context_mismatch")[];
   /** Logger cache capacity and the number of cached loggers. */
   loggerCache: LoggerCacheOptions & { size: number };
   /** Active delivery context id and isolation rule. */
   securityContext: SecurityContextOptions;
-  /** State of the request of `persistence.requestPersistent`. */
+  /** State of the `persistence.requestPersistent` request. */
   storagePersistence: StoragePersistence;
-  /** Source, validation and capacity rules of the bus. */
+  /** The bus's source, validation and capacity rules. */
   bus: Pick<
     BusOptions,
     | "sourcePolicy"
@@ -41,24 +41,24 @@ export interface ObservabilityHealth extends DeliveryStats {
   >;
 }
 
-/** State of the library for a support ticket. Each field is JSON-safe. */
+/** Library state for a support ticket. Every field is JSON-safe. */
 export interface DebugBundle {
-  /** Time of the bundle, as an ISO 8601 string. */
+  /** When the bundle was created, as an ISO 8601 string. */
   createdAt: string;
   /** Version of this SDK copy. */
   sdkVersion: string;
-  /** Health snapshot, as getHealth() gives it. */
+  /** Health snapshot, as returned by getHealth(). */
   health: ObservabilityHealth;
-  /** Number of reports of each diagnostic code since startup. */
+  /** How many times each diagnostic code was reported since startup. */
   diagnostics: Record<string, number>;
-  /** Resource attributes of this context, for example service.name and session.id. */
+  /** This context's resource attributes, for example service.name and session.id. */
   resource: Record<string, unknown>;
-  /** Page URL, with the rules of the page.url attribute. */
+  /** Page URL, under the same rules as the page.url attribute. */
   pageUrl: string;
-  /** Recent breadcrumbs. The processors and redact processed them. */
+  /** Recent breadcrumbs, after the processors and redact have run on them. */
   breadcrumbs: unknown[];
-  /** Records that the debug buffer keeps now. */
+  /** Records currently in the debug buffer. */
   debugBuffer: LogRecord[];
-  /** Resolved config without headers. Endpoints have no query. A function shows only its name. */
+  /** Resolved config without headers. Endpoints lose their query. Functions show only a name. */
   config: Record<string, unknown>;
 }

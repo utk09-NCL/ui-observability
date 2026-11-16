@@ -16,9 +16,9 @@ describe("BreadcrumbBuffer", () => {
   });
 
   it("holds every crumb, still in order, the moment it fills exactly to capacity", () => {
-    // The push to the last empty slot also moves the write pointer back to zero. An untouched ring
-    // starts at the same pointer value. The `filled` flag tells the two states apart. This push is
-    // the first one that sets it.
+    // The push into the last empty slot also wraps the write pointer back to zero, which is where
+    // an untouched ring starts. The `filled` flag tells the two states apart, and this push is the
+    // first to set it.
     const buffer = new BreadcrumbBuffer(3);
     buffer.push(crumb("A"));
     buffer.push(crumb("B"));

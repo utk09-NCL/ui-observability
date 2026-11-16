@@ -1,8 +1,8 @@
 // tests/setup.ts
 //
-// This file grows with the library. The platform cache is the last module-level cache. This file
-// resets it. Without the reset, a platform that one test file detects goes into the next file. The
-// failure then occurs far from its cause.
+// This file grows with the library. The platform cache is the last module-level cache, and it is
+// reset here. Without the reset, a platform detected in one test file leaks into the next, and the
+// failure shows up far from its cause.
 import "fake-indexeddb/auto";
 import { afterEach, vi } from "vitest";
 import { resetPlatformCache } from "../src/utils/platform";
@@ -20,12 +20,12 @@ interface DestroyableRuntime {
 }
 
 afterEach(async () => {
-  // Shut down the runtime. Do not only forget it. A delete of the symbol leaves a live runtime with
-  // no owner. Its retry timer, its unload handlers and its patched fetch stay into the next test
-  // file. The failure then occurs in an unrelated place.
+  // Shut the runtime down rather than only forgetting it. Deleting the symbol leaves a live runtime
+  // with no owner, and its retry timer, unload handlers and patched fetch carry over into the next
+  // test file. The failure then shows up somewhere unrelated.
   //
-  // The runtime does not exist yet. This code uses optional chaining, not a type. It starts to do
-  // real work when a runtime exists, with no edit here.
+  // Not every test starts a runtime, so this uses optional chaining on a minimal shape rather
+  // than the runtime's type.
   const registry = globalThis as Record<symbol, DestroyableRuntime | undefined>;
   await registry[RUNTIME_KEY]?.destroy?.();
 
@@ -33,8 +33,8 @@ afterEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   resetPlatformCache();
-  // Use Reflect, not `delete registry[RUNTIME_KEY]`. Lint bans a computed delete. Reflect removes
-  // the key fully. It does not leave the key with the value undefined.
+  // Use Reflect, not `delete registry[RUNTIME_KEY]`, because lint bans a computed delete. Reflect
+  // removes the key entirely instead of leaving it set to undefined.
   Reflect.deleteProperty(registry, RUNTIME_KEY);
   Reflect.deleteProperty(registry, STOPPED_KEY);
 });

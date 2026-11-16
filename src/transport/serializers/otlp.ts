@@ -1,8 +1,8 @@
 // src/transport/serializers/otlp.ts
 //
-// This module serializes log batches as OTLP/JSON log records. It groups the records by resource.
-// It gives each logger namespace its own instrumentation scope.
-// The OTLP metrics serializer uses its value encoding and its resource grouping.
+// Serializes log batches as OTLP/JSON log records. Records are grouped by resource, and each
+// logger namespace gets its own instrumentation scope.
+// The OTLP metrics serializer reuses the value encoding and the resource grouping from here.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -13,22 +13,22 @@ import {
 import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 
-/** This type holds an OTLP AnyValue with typed value wrappers. */
+/** An OTLP AnyValue with typed value wrappers. */
 type AnyValue = Record<string, unknown>;
 
-/** This interface holds an OTLP KeyValue pair. */
+/** An OTLP KeyValue pair. */
 export interface KeyValue {
-  /** This field holds the attribute key. */
+  /** The attribute key. */
   key: string;
-  /** This field holds the typed AnyValue. */
+  /** The typed AnyValue. */
   value: AnyValue;
 }
 
-/** This interface holds the records that share resource attributes. */
+/** Records that share the same resource attributes. */
 export interface ResourceGroup {
-  /** This field holds the resource attribute map. */
+  /** The resource attribute map. */
   resource: Record<string, unknown>;
-  /** This field holds the log records of the resource. */
+  /** The resource's log records. */
   records: LogRecord[];
 }
 
@@ -50,15 +50,16 @@ function toAnyValue(value: unknown): AnyValue | null {
     return { boolValue: value };
   }
 
-  // Encode int64 as a decimal string. The OTLP protobuf JSON mapping requires it. A conforming
-  // collector returns a 400 status for a number. The response does not give the cause.
-  // An integer above MAX_SAFE_INTEGER goes to doubleValue. Its text can be "1e+21" or overflow int64.
+  // Encode int64 as a decimal string, as the OTLP protobuf JSON mapping requires. A conforming
+  // collector answers a number with a 400 status, and the response doesn't give the cause.
+  // An integer above MAX_SAFE_INTEGER goes to doubleValue, because its text can be "1e+21" or
+  // overflow int64.
   if (typeof value === "number") {
     return Number.isSafeInteger(value) ? { intValue: String(value) } : { doubleValue: value };
   }
 
-  // Convert a BigInt to a decimal string. JSON.stringify throws on a BigInt and loses the
-  // batch.
+  // Convert a BigInt to a decimal string. JSON.stringify throws on a BigInt and would lose
+  // the batch.
   if (typeof value === "bigint") {
     return { intValue: value.toString() };
   }
@@ -96,11 +97,11 @@ export function toKeyValues(source: Record<string, unknown>): KeyValue[] {
   return out;
 }
 
-/** This map caches the JSON key of each resource object. It prevents a repeated stringify. */
+/** Caches the JSON key of every resource object, which avoids a repeated stringify. */
 const resourceKeys = new WeakMap<object, string>();
 
 /**
- * Returns the stable JSON key of a resource object. It caches the key.
+ * Returns the stable JSON key of a resource object, and caches it.
  * @param resource Resource attribute object.
  * @returns JSON key string.
  */
@@ -117,9 +118,9 @@ function resourceKey(resource: Record<string, unknown>): string {
 }
 
 /**
- * Groups records by their resource attributes. It keeps the record order in each group.
+ * Groups records by their resource attributes, keeping the record order within each group.
  * @param records Records to group.
- * @returns One group for each resource.
+ * @returns One group per resource.
  */
 export function groupByResource(records: LogRecord[]): ResourceGroup[] {
   const groups = new Map<string, ResourceGroup>();
@@ -139,19 +140,19 @@ export function groupByResource(records: LogRecord[]): ResourceGroup[] {
   return [...groups.values()];
 }
 
-/** This interface holds the records of one instrumentation scope. */
+/** The records of one instrumentation scope. */
 export interface ScopeGroup {
-  /** This field holds the scope name. It is the logger namespace. */
+  /** The scope name, which is the logger namespace. */
   name: string;
-  /** This field holds the records of the scope. */
+  /** The scope's records. */
   records: LogRecord[];
 }
 
 /**
- * Groups records by their logger namespace. It keeps the record order in each group.
- * A record without a namespace goes to the scope of the library.
+ * Groups records by their logger namespace, keeping the record order within each group.
+ * A record without a namespace goes to the library's own scope.
  * @param records Records of one resource.
- * @returns One group for each namespace.
+ * @returns One group per namespace.
  */
 export function groupByScope(records: LogRecord[]): ScopeGroup[] {
   const groups = new Map<string, LogRecord[]>();
@@ -172,13 +173,13 @@ export function groupByScope(records: LogRecord[]): ScopeGroup[] {
   return [...groups].map(([name, scoped]) => ({ name, records: scoped }));
 }
 
-/** This serializer writes log records as OTLP/JSON payloads. */
+/** Writes log records as OTLP/JSON payloads. */
 export const otlpSerializer: LogSerializer = {
-  /** This field holds the format name. */
+  /** The format name. */
   name: SERIALIZER_NAME_OTLP,
 
   /**
-   * Groups records by resource. It encodes them as an OTLP
+   * Groups records by resource and encodes them as an OTLP
    * ExportLogsServiceRequest JSON payload.
    * @param records Array of log records to serialize.
    * @returns Serialized JSON batch payload.

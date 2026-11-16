@@ -213,7 +213,7 @@ iframe {
   display: block;
 }
 
-/* Tables and number inputs of the profiler benchmark page */
+/* Tables and number inputs on the profiler benchmark page */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -249,4 +249,10 @@ input[type="number"] {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+/* Scroll box for the blotter page. All 5,000 rows stay in the layout. */
+#blotter-box {
+  max-height: 24rem;
+  overflow: auto;
 }

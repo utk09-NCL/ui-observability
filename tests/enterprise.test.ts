@@ -188,7 +188,7 @@ describe("security context delivery", () => {
       expect(rt().breadcrumbs.snapshot()).toEqual([]);
       getLogger("orders").info("B record");
       await flush();
-      // Carried stored batches wait in storage under the new id. The retry engine sends them.
+      // The carried-over batches sit in storage under the new id until the retry engine sends them.
       await rt()["sender"]!["retry"]["drain"]();
       const bodies = b.mock.calls.flatMap(([r]) => r.records.map((r) => r.body));
       expect(bodies).toContain("B record");
@@ -293,7 +293,8 @@ describe("security context delivery", () => {
     configure({ ...base, transport: transport() });
     await flush();
     const before = getDiagnosticCounters()["config.invalid"] ?? 0;
-    // An unset environment variable gives undefined. It keeps the endpoint. It is not a change.
+    // An unset environment variable comes through as undefined. That keeps the endpoint and
+    // doesn't count as a change.
     configure({ endpoint: undefined, minLevel: "WARN" });
     expect(rt().config.minLevel).toBe("WARN");
     expect(getDiagnosticCounters()["config.invalid"] ?? 0).toBe(before);

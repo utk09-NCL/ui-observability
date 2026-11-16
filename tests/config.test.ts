@@ -12,8 +12,8 @@ const OTHER_ENDPOINT = "https://ingest-two.example/v1/logs";
 /**
  * A diagnostics instance with no throttle.
  *
- * The default window of one second hides each message after the first. One resolve can report many
- * different problems. The diagnostics tests cover the throttle. Here, the throttle hides the
+ * The default one-second window hides every message after the first, and one resolve can report
+ * many different problems. The diagnostics tests cover the throttle. Here it would hide the
  * subject of the test.
  */
 function collect(): { events: DiagnosticEvent[]; diagnostics: Diagnostics } {
@@ -51,7 +51,7 @@ describe("resolveConfig", () => {
     expect(resolved.capture.fullUrls).toBe(false);
     expect(resolved.console.level).toBeNull();
 
-    // The only problem must be the absent serviceName.
+    // The only problem must be the missing serviceName.
     expect(messages(events)).toHaveLength(1);
     expect(events[0].code).toBe("config.invalid");
   });
@@ -62,7 +62,7 @@ describe("resolveConfig", () => {
     expect(resolveConfig({ ...valid(), console: true }, diagnostics).console.level).toBe("DEBUG");
     expect(resolveConfig({ ...valid(), console: "WARN" }, diagnostics).console.level).toBe("WARN");
 
-    // false has to turn off a level already in force, not fall through to it.
+    // false has to turn off a level already in effect, not fall through to it.
     const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
     expect(resolveConfig({ console: false }, diagnostics, live).console.level).toBeNull();
   });
@@ -82,7 +82,7 @@ describe("resolveConfig", () => {
     expect(events).toEqual([]);
   });
 
-  it("keeps the level and the styles in force on a later partial console change", () => {
+  it("keeps the current level and styles on a later partial console change", () => {
     const { diagnostics } = collect();
     const live = resolveConfig(
       { ...valid(), console: { level: "WARN", styles: { WARN: "color:orange" } } },
@@ -156,7 +156,7 @@ describe("resolveConfig", () => {
     ]);
   });
 
-  it("reports an onDrop that is not a function, and keeps the hook in force", () => {
+  it("reports an onDrop that is not a function, and keeps the current hook", () => {
     const { events, diagnostics } = collect();
     const onDrop = (): void => undefined;
     const first = resolveConfig({ ...valid(), onDrop }, diagnostics);
@@ -168,7 +168,7 @@ describe("resolveConfig", () => {
     expect(messages(events)).toEqual(["onDrop must be a function. The library ignores the value."]);
   });
 
-  it("keeps the transport and the exit hook in force when a new value is not a function", () => {
+  it("keeps the current transport and exit hook when a new value is not a function", () => {
     const { events, diagnostics } = collect();
     const transport = () => Promise.resolve({ status: 200 });
     const transportOnExit = () => true;
@@ -187,7 +187,7 @@ describe("resolveConfig", () => {
     expect(messages(events)).toHaveLength(2);
   });
 
-  it("reports a null console value and keeps the console settings in force", () => {
+  it("reports a null console value and keeps the current console settings", () => {
     const { events, diagnostics } = collect();
     const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
     const nothing = null as unknown as ObservabilityConfig["console"];
@@ -260,11 +260,11 @@ describe("resolveConfig", () => {
     expect(events).toEqual([]);
   });
 
-  it("keeps the endpoint in force when a reconfigure passes endpoint: undefined", () => {
+  it("keeps the current endpoint when a reconfigure passes endpoint: undefined", () => {
     const { diagnostics } = collect();
     const first = resolveConfig(valid(), diagnostics);
 
-    // An unset environment variable gives undefined. The live endpoint must not change.
+    // An unset environment variable comes through as undefined. The live endpoint must not change.
     const second = resolveConfig({ endpoint: undefined }, diagnostics, first);
 
     expect(second.endpoint).toBe(ENDPOINT);
@@ -341,8 +341,8 @@ describe("resolveConfig", () => {
     it("falls back to 1 when the rate is not a number at all", () => {
       const { events, diagnostics } = collect();
       const input: Partial<ObservabilityConfig> = { ...valid() };
-      // A JavaScript consumer can pass any value. This guard is for that case. No other part of the
-      // library sees the problem.
+      // A JavaScript consumer can pass any value. This guard is for that case, since no other
+      // part of the library sees the problem.
       input.sampling = { defaultRate: "high" } as unknown as Partial<SamplingOptions>;
 
       const resolved = resolveConfig(input, diagnostics);
@@ -450,7 +450,7 @@ describe("resolveConfig", () => {
       ]);
     });
 
-    it("keeps the map in force for a value that is not an object", () => {
+    it("keeps the current map for a value that is not an object", () => {
       const { events, diagnostics } = collect();
       const first = resolveConfig({ ...valid(), minLevels: { trading: "DEBUG" } }, diagnostics);
 
@@ -460,7 +460,7 @@ describe("resolveConfig", () => {
       expect(messages(events)[0]).toContain("minLevels must be an object of level names");
     });
 
-    it("replaces the map in force with a new map", () => {
+    it("replaces the current map with a new map", () => {
       const { diagnostics } = collect();
       const first = resolveConfig({ ...valid(), minLevels: { trading: "DEBUG" } }, diagnostics);
 
@@ -481,7 +481,7 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
 
-    it("reports a value that is not a function, and keeps the provider in force", () => {
+    it("reports a value that is not a function, and keeps the current provider", () => {
       const { events, diagnostics } = collect();
       const provider = () => ({ route: "/" });
       const first = resolveConfig({ ...valid(), contextProvider: provider }, diagnostics);
@@ -593,7 +593,7 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
 
-    it("reports a value that is not an absolute URL and keeps the value in force", () => {
+    it("reports a value that is not an absolute URL and keeps the current value", () => {
       const { events, diagnostics } = collect();
       const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
 
@@ -604,7 +604,7 @@ describe("resolveConfig", () => {
       expect(events[0].cause).toBeInstanceOf(Error);
     });
 
-    it("reports a value that is not a string and keeps the value in force", () => {
+    it("reports a value that is not a string and keeps the current value", () => {
       const { events, diagnostics } = collect();
 
       const resolved = resolveConfig(
@@ -640,12 +640,12 @@ describe("resolveConfig", () => {
 
       const second = resolveConfig({ metricsEndpoint: "" }, diagnostics, first);
 
-      // A request of the library must not give a record. That record gives a new request.
+      // A library request must not produce a record, because that record produces a new request.
       expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
     });
 
     it("reports a metricsEndpoint with no endpoint and no transport", () => {
-      // Only the delivery stack sends. It does not load without endpoint or transport.
+      // Only the delivery stack sends, and it doesn't load without endpoint or transport.
       const { events, diagnostics } = collect();
 
       resolveConfig({ ...valid(), endpoint: null, metricsEndpoint: METRICS }, diagnostics);
@@ -720,7 +720,7 @@ describe("resolveConfig", () => {
     });
   });
 
-  it("merges a reconfigure onto the config already in force, not onto the defaults", () => {
+  it("merges a reconfigure onto the current config, not onto the defaults", () => {
     const { diagnostics } = collect();
     const first = resolveConfig(
       { ...valid(), minLevel: "TRACE", capture: { fetch: true } },
@@ -729,7 +729,7 @@ describe("resolveConfig", () => {
 
     const second = resolveConfig({ enabled: false }, diagnostics, first);
 
-    // A call with one key must not discard all other settings.
+    // A call with one key must not discard every other setting.
     expect(second.enabled).toBe(false);
     expect(second.endpoint).toBe(ENDPOINT);
     expect(second.serviceName).toBe("checkout");
@@ -740,8 +740,8 @@ describe("resolveConfig", () => {
   describe("unknown keys", () => {
     it("reports an unknown key by name rather than ignoring it silently", () => {
       const { events, diagnostics } = collect();
-      // This test finds this failure. Each type is correct, because the argument is a Partial. The
-      // library sends nothing.
+      // This is the failure the test exists to catch. Every type is correct, because the argument
+      // is a Partial, and the library sends nothing.
       const input: Partial<ObservabilityConfig> & Record<string, unknown> = {
         ...valid(),
         remoteUrl: "https://typo.example",
@@ -833,7 +833,7 @@ describe("resolveConfig", () => {
       expect(resolveConfig({ ...valid(), serializer: mine }, diagnostics).serializer).toBe(mine);
     });
 
-    it("keeps the serializer already in force across a reconfigure", () => {
+    it("keeps the current serializer across a reconfigure", () => {
       const { diagnostics } = collect();
       const live = resolveConfig({ ...valid(), serializer: "ecs" }, diagnostics);
 
@@ -864,8 +864,8 @@ describe("resolveConfig", () => {
 
   describe("value checks", () => {
     /**
-     * Resolves a config with values that the type does not accept.
-     * @param input Values to put over the valid config.
+     * Resolves a config with values the type doesn't accept.
+     * @param input Values layered over the valid config.
      * @returns The resolved config and the diagnostic messages.
      */
     function resolveLoose(input: Record<string, unknown>) {
@@ -882,7 +882,7 @@ describe("resolveConfig", () => {
       expect(texts).toEqual([]);
     });
 
-    it("reports an unknown minLevel and keeps the level in force", () => {
+    it("reports an unknown minLevel and keeps the current level", () => {
       const { config, texts } = resolveLoose({ minLevel: "verbose" });
 
       expect(config.minLevel).toBe("INFO");
@@ -891,7 +891,7 @@ describe("resolveConfig", () => {
       ]);
     });
 
-    it("keeps the minLevel of the config in force on a later bad value", () => {
+    it("keeps the config's minLevel on a later bad value", () => {
       const { diagnostics } = collect();
       const first = resolveConfig({ ...valid(), minLevel: "WARN" }, diagnostics);
 
@@ -904,7 +904,7 @@ describe("resolveConfig", () => {
       expect(next.minLevel).toBe("WARN");
     });
 
-    it("reports an unknown console level and keeps the console settings in force", () => {
+    it("reports an unknown console level and keeps the current console settings", () => {
       const asString = resolveLoose({ console: "loud" });
       const asObject = resolveLoose({ console: { level: 3 } });
 
@@ -936,14 +936,14 @@ describe("resolveConfig", () => {
         'enabled must be true or false. The value is "yes". The library keeps true.',
         'compression must be "gzip" or "none". The value is "brotli". The library keeps "gzip".',
         'credentials must be "omit", "same-origin" or "include". The value is "all". The library keeps "omit".',
-        "headers must be an object of strings or a function. The library keeps the headers in force.",
+        "headers must be an object of strings or a function. The library keeps the current headers.",
         'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The value is "session". The library keeps "auto".',
         'identity must be "storage" or "memory". The value is "cookie". The library keeps "storage".',
       ]);
     });
 
     it("clears the headers on an explicit undefined, and keeps them on a missing key", () => {
-      // On logout, the old Authorization header must not go on the next send.
+      // On logout, the old Authorization header must not go out on the next send.
       const { diagnostics } = collect();
       const first = resolveConfig(
         { ...valid(), headers: { authorization: "Bearer t" } },
@@ -988,7 +988,7 @@ describe("resolveConfig", () => {
         },
       });
 
-      // One "null" entry trusts each sandboxed and data: document, for example a frame in an ad.
+      // One "null" entry trusts every sandboxed and data: document, for example a frame in an ad.
       expect(config.bus.trustedOrigins).toEqual(["https://parent.example"]);
       expect(texts).toHaveLength(4);
       expect(texts[0]).toBe(
@@ -1004,7 +1004,7 @@ describe("resolveConfig", () => {
       expect(config.bus).toMatchObject({ mode: "auto", trustedOrigins: [], openFinRole: "auto" });
       expect(texts).toHaveLength(3);
       expect(texts[1]).toBe(
-        'bus.trustedOrigins must be a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame. The value is "https://a.example". The library keeps the list in force.',
+        'bus.trustedOrigins must be a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame. The value is "https://a.example". The library keeps the current list.',
       );
     });
 
@@ -1026,7 +1026,7 @@ describe("resolveConfig", () => {
         capture: {
           fetch: "yes",
           console: "error",
-          longFrameThresholdMs: -1,
+          longFrameMs: -1,
           propagateTraceHeaderTo: "https://api.internal",
         },
       });
@@ -1034,7 +1034,7 @@ describe("resolveConfig", () => {
       expect(config.capture).toMatchObject({
         fetch: false,
         console: false,
-        longFrameThresholdMs: 100,
+        longFrameMs: 100,
         propagateTraceHeaderTo: [],
       });
       expect(texts).toHaveLength(4);
@@ -1042,7 +1042,7 @@ describe("resolveConfig", () => {
         'capture.fetch must be true or false. The value is "yes". The library keeps false.',
       );
       expect(texts).toContain(
-        "capture.longFrameThresholdMs must be a finite number of 0 or more. The value is -1. The library keeps 100.",
+        "capture.longFrameMs must be a finite number of 0 or more. The value is -1. The library keeps 100.",
       );
     });
 
@@ -1081,10 +1081,200 @@ describe("resolveConfig", () => {
       ]);
     });
 
-    describe("profiler", () => {
-      const PROFILER_DEFAULTS = { enabled: false, flushIntervalMs: 10_000, maxProbes: 64 };
+    describe("replay", () => {
+      const REPLAY_DEFAULTS = {
+        enabled: false,
+        mode: "onError",
+        endpoint: "",
+        requireConsent: false,
+        bufferMs: 60_000,
+        maxBufferBytes: 10_000_000,
+        afterErrorMs: 5000,
+        uploadsPerWindow: 3,
+        batchSize: 200,
+        batchBytes: 512_000,
+        flushIntervalMs: 2000,
+        maxQueueBytes: 20_000_000,
+        maxAttempts: 3,
+        maskText: true,
+        maskInputs: true,
+        recordCanvas: false,
+        maskSelectors: [],
+        blockSelectors: [],
+        loader: null,
+        onSegment: null,
+        headers: null,
+        plugins: [],
+        recordOptions: {},
+      };
 
-      it("gives the default profiler section", () => {
+      it("returns the default replay section, with replay off and every mask on", () => {
+        const { config, texts } = resolveLoose({});
+
+        expect(config.replay).toEqual(REPLAY_DEFAULTS);
+        expect(texts).toEqual([]);
+      });
+
+      it("accepts each replay key", () => {
+        const loader = (): Promise<never> => Promise.reject(new Error("not called"));
+        const onSegment = (): void => undefined;
+        const plugin = (): unknown => ({});
+        const replay = {
+          enabled: true,
+          mode: "onError",
+          endpoint: "https://replay.example/v1/replay",
+          requireConsent: true,
+          bufferMs: 5000,
+          maxBufferBytes: 100_000,
+          afterErrorMs: 0,
+          uploadsPerWindow: 0,
+          batchSize: 1,
+          batchBytes: 10_000,
+          flushIntervalMs: 100,
+          maxQueueBytes: 100_000,
+          maxAttempts: 10,
+          maskText: false,
+          maskInputs: false,
+          recordCanvas: true,
+          maskSelectors: [".account"],
+          blockSelectors: ["#blotter"],
+          loader,
+          onSegment,
+          headers: { Authorization: "Bearer replay" },
+          plugins: [plugin],
+          recordOptions: { sampling: { mousemove: false } },
+        };
+
+        const { config, texts } = resolveLoose({ replay });
+
+        expect(config.replay).toEqual(replay);
+        expect(config.replay.loader).toBe(loader);
+        expect(texts).toEqual([]);
+      });
+
+      it.each([
+        ["bufferMs", 4999, "an integer from 5000 to 600000", "60000"],
+        ["maxBufferBytes", 99_999, "an integer from 100000 to 200000000", "10000000"],
+        ["afterErrorMs", -1, "an integer from 0 to 600000", "5000"],
+        ["uploadsPerWindow", 1.5, "an integer from 0 to 9007199254740991", "3"],
+        ["batchSize", 0, "an integer from 1 to 10000", "200"],
+        ["batchBytes", 9999, "an integer from 10000 to 10000000", "512000"],
+        ["flushIntervalMs", 60_001, "an integer from 100 to 60000", "2000"],
+        ["maxQueueBytes", "big", "an integer from 100000 to 200000000", "20000000"],
+        ["maxAttempts", 11, "an integer from 1 to 10", "3"],
+        ["enabled", "yes", "true or false", "false"],
+        ["requireConsent", 1, "true or false", "false"],
+        ["maskText", "no", "true or false", "true"],
+        ["maskInputs", 0, "true or false", "true"],
+        ["recordCanvas", "on", "true or false", "false"],
+        ["endpoint", 8787, "a string", ""],
+        ["maskSelectors", ".account", "a list of strings", "the current value"],
+        ["maskSelectors", [".account", 5], "a list of strings", "the current value"],
+        ["blockSelectors", {}, "a list of strings", "the current value"],
+        ["loader", "@rrweb/record", "a function or null", "the current value"],
+        ["onSegment", {}, "a function or null", "the current value"],
+        [
+          "headers",
+          { Authorization: 5 },
+          "an object of strings, a function or null",
+          "the current value",
+        ],
+        ["headers", "Bearer x", "an object of strings, a function or null", "the current value"],
+        ["headers", ["a"], "an object of strings, a function or null", "the current value"],
+        ["plugins", (): unknown => ({}), "a list of functions", "the current value"],
+        ["plugins", ["console"], "a list of functions", "the current value"],
+        ["recordOptions", [], "an object", "the current value"],
+        ["recordOptions", null, "an object", "the current value"],
+      ])(
+        "refuses replay.%s with the value %j and keeps the current value",
+        (key, value, expected, kept) => {
+          const { events, diagnostics } = collect();
+
+          const resolved = resolveConfig({ ...valid(), replay: { [key]: value } }, diagnostics);
+
+          expect(resolved.replay).toEqual(REPLAY_DEFAULTS);
+          expect(events.map((event) => event.code)).toEqual(["config.invalid"]);
+          expect(messages(events)[0]).toMatch(
+            new RegExp(`^replay\\.${key} must be ${expected}\\. .* The library keeps ${kept}\\.$`),
+          );
+        },
+      );
+
+      it("refuses a replay mode that the library does not have", () => {
+        const { config, texts } = resolveLoose({ replay: { mode: "session" } });
+
+        expect(config.replay.mode).toBe("onError");
+        expect(texts).toHaveLength(1);
+        expect(texts[0]).toContain("replay.mode");
+      });
+
+      it("reports an unknown key of replay", () => {
+        const { texts } = resolveLoose({ replay: { maskTexts: false } });
+
+        expect(texts).toEqual([
+          'The library ignores the unknown config key "replay.maskTexts". Check the spelling.',
+        ]);
+      });
+
+      it("adds the replay endpoint to the ignore list of the network capture", () => {
+        const { diagnostics } = collect();
+        const first = resolveConfig(
+          { ...valid(), replay: { endpoint: "https://replay.example/v1/replay" } },
+          diagnostics,
+        );
+        const second = resolveConfig(
+          { replay: { endpoint: "https://replay.example/v2/replay" } },
+          diagnostics,
+          first,
+        );
+
+        // Without this, a failed replay request produces an error record, and that record
+        // produces another replay request.
+        expect(first.capture.ignoreUrls).toContain("https://replay.example/v1/replay");
+        expect(second.capture.ignoreUrls).toContain("https://replay.example/v2/replay");
+        expect(second.capture.ignoreUrls).not.toContain("https://replay.example/v1/replay");
+      });
+
+      it("accepts a function for the replay headers", () => {
+        const headers = (): Record<string, string> => ({ Authorization: "Bearer replay" });
+        const { config, texts } = resolveLoose({ replay: { headers } });
+
+        expect(config.replay.headers).toBe(headers);
+        expect(texts).toEqual([]);
+      });
+
+      it("removes the replay loader and the segment function with null", () => {
+        const { diagnostics, events } = collect();
+        const loader = (): Promise<never> => Promise.reject(new Error("not called"));
+        const first = resolveConfig(
+          { ...valid(), replay: { loader, onSegment: () => undefined, maskSelectors: [".a"] } },
+          diagnostics,
+        );
+
+        const kept = resolveConfig({ replay: { enabled: true } }, diagnostics, first);
+        const cleared = resolveConfig(
+          { replay: { loader: null, onSegment: null } },
+          diagnostics,
+          kept,
+        );
+
+        // A later call without the replay key leaves every value as it was.
+        expect(kept.replay).toMatchObject({ enabled: true, loader, maskSelectors: [".a"] });
+        expect(cleared.replay).toMatchObject({ enabled: true, loader: null, onSegment: null });
+        expect(events).toEqual([]);
+      });
+    });
+
+    describe("profiler", () => {
+      const PROFILER_DEFAULTS = {
+        enabled: false,
+        flushIntervalMs: 10_000,
+        maxProbes: 64,
+        framePhases: false,
+        framePacing: false,
+      };
+
+      it("returns the default profiler section", () => {
         const { config, texts } = resolveLoose({});
 
         expect(config.profiler).toEqual(PROFILER_DEFAULTS);
@@ -1098,12 +1288,13 @@ describe("resolveConfig", () => {
         const upper = resolveLoose({ profiler: { flushIntervalMs: 600_000, maxProbes: 1024 } });
 
         expect(lower.config.profiler).toEqual({
+          ...PROFILER_DEFAULTS,
           enabled: true,
           flushIntervalMs: 1000,
           maxProbes: 1,
         });
         expect(upper.config.profiler).toEqual({
-          enabled: false,
+          ...PROFILER_DEFAULTS,
           flushIntervalMs: 600_000,
           maxProbes: 1024,
         });
@@ -1152,8 +1343,18 @@ describe("resolveConfig", () => {
           "yes",
           'profiler.enabled must be true or false. The value is "yes". The library keeps false.',
         ],
+        [
+          "framePhases",
+          1,
+          "profiler.framePhases must be true or false. The value is 1. The library keeps false.",
+        ],
+        [
+          "framePacing",
+          "on",
+          'profiler.framePacing must be true or false. The value is "on". The library keeps false.',
+        ],
       ])(
-        "refuses profiler.%s with the value %j and keeps the value in force",
+        "refuses profiler.%s with the value %j and keeps the current value",
         (key, value, text) => {
           const { events, diagnostics } = collect();
 
@@ -1165,6 +1366,19 @@ describe("resolveConfig", () => {
         },
       );
 
+      it("accepts the frame phases and the frame pacing flags of the profiler", () => {
+        const { config, texts } = resolveLoose({
+          profiler: { framePhases: true, framePacing: true },
+        });
+
+        expect(config.profiler).toEqual({
+          ...PROFILER_DEFAULTS,
+          framePhases: true,
+          framePacing: true,
+        });
+        expect(texts).toEqual([]);
+      });
+
       it("reports an unknown key of profiler", () => {
         const { config, texts } = resolveLoose({ profiler: { maxProbe: 5 } });
 
@@ -1174,7 +1388,7 @@ describe("resolveConfig", () => {
         ]);
       });
 
-      it("merges a later profiler change onto the values in force", () => {
+      it("merges a later profiler change onto the current values", () => {
         const { events, diagnostics } = collect();
         const first = resolveConfig(
           { ...valid(), profiler: { flushIntervalMs: 20_000, maxProbes: 128 } },
@@ -1183,12 +1397,17 @@ describe("resolveConfig", () => {
 
         const second = resolveConfig({ profiler: { enabled: true } }, diagnostics, first);
 
-        expect(second.profiler).toEqual({ enabled: true, flushIntervalMs: 20_000, maxProbes: 128 });
+        expect(second.profiler).toEqual({
+          ...PROFILER_DEFAULTS,
+          enabled: true,
+          flushIntervalMs: 20_000,
+          maxProbes: 128,
+        });
         expect(resolveConfig({}, diagnostics, second).profiler).toEqual(second.profiler);
         expect(messages(events)).toEqual([]);
       });
 
-      it("keeps the profiler values in force on a later bad value", () => {
+      it("keeps the current profiler values on a later bad value", () => {
         const { events, diagnostics } = collect();
         const first = resolveConfig(
           { ...valid(), profiler: { enabled: true, maxProbes: 128 } },
@@ -1197,7 +1416,7 @@ describe("resolveConfig", () => {
 
         const next = resolveConfig({ profiler: { maxProbes: 2000 } }, diagnostics, first);
 
-        expect(next.profiler).toEqual({ enabled: true, flushIntervalMs: 10_000, maxProbes: 128 });
+        expect(next.profiler).toEqual({ ...PROFILER_DEFAULTS, enabled: true, maxProbes: 128 });
         expect(messages(events)).toEqual([
           "profiler.maxProbes must be an integer from 1 to 1024. The value is 2000. The library keeps 128.",
         ]);
@@ -1236,8 +1455,8 @@ describe("resolveConfig", () => {
 
 describe("tunable sections", () => {
   /**
-   * Resolves a config with tunable values that the type does not accept.
-   * @param input Values to put over the valid config.
+   * Resolves a config with tunable values the type doesn't accept.
+   * @param input Values layered over the valid config.
    * @returns The resolved config and the diagnostic messages.
    */
   function resolveTunables(input: Record<string, unknown>) {
@@ -1246,7 +1465,7 @@ describe("tunable sections", () => {
     return { config, texts: messages(events) };
   }
 
-  it("gives the default batching, retention, limits and journey age", () => {
+  it("returns the default batching, retention, limits and journey age", () => {
     const { config, texts } = resolveTunables({});
 
     expect(config.batching).toEqual({
@@ -1301,7 +1520,7 @@ describe("tunable sections", () => {
     expect(texts).toEqual([]);
   });
 
-  it("reports a value outside its range and keeps the value in force", () => {
+  it("reports a value outside its range and keeps the current value", () => {
     const { config, texts } = resolveTunables({
       batching: { logBatchSize: 0, logFlushIntervalMs: 1.5 },
       retention: { maxAttempts: 21, mode: "forever" },
@@ -1348,8 +1567,8 @@ describe("applyResolvedConfig", () => {
   it("copies scalars in place and merges sections into the objects already there", () => {
     const { diagnostics } = collect();
     const live = resolveConfig({ ...valid(), capture: { fetch: false } }, diagnostics);
-    // Many parts of the library keep these references from construction. They do not read them
-    // again. The identity of each reference is the subject of this test.
+    // Many parts of the library keep these references from construction and never read them
+    // again. The identity of every reference is what this test checks.
     const capture = live.capture;
     const sampling = live.sampling;
     const bus = live.bus;

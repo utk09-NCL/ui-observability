@@ -1,7 +1,7 @@
 // src/storage/memory-storage.ts
 //
-// This module keeps batches in volatile memory during offline periods. A reload loses all of
-// them. This adapter is the last fallback.
+// Keeps batches in volatile memory during offline periods, so a reload loses all of them.
+// This adapter is the last fallback.
 
 import { STORAGE_NAME_MEMORY } from "../constants";
 import { countRecords, type LogBatch } from "../models/batch";
@@ -9,17 +9,17 @@ import type { GapReporter, PruneResult, StorageAdapter, StorageLimits } from "..
 import { hasAction, pickEvictable } from "./eviction";
 import { addDrop } from "./gap";
 
-/** This StorageAdapter keeps batches in volatile memory. */
+/** StorageAdapter that keeps batches in volatile memory. */
 export class MemoryStorage implements StorageAdapter {
-  /** This field holds the storage strategy name. */
+  /** The storage strategy name. */
   readonly name = STORAGE_NAME_MEMORY;
 
-  /** This array holds the batches in FIFO order. */
+  /** The batches, in FIFO order. */
   private batches: LogBatch[] = [];
 
   /**
    * @param limits Storage capacity and retention thresholds.
-   * @param onGap Optional callback for dropped record reporting.
+   * @param onGap Optional callback for reporting dropped records.
    */
   constructor(
     private readonly limits: StorageLimits,
@@ -28,7 +28,7 @@ export class MemoryStorage implements StorageAdapter {
 
   /**
    * Appends a batch and applies retention pruning.
-   * @param batch Batch to store.
+   * @param batch The batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
     // A batch with a known id replaces the old copy in place, as IndexedDB put() does.
@@ -42,19 +42,19 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Returns up to `limit` batches in FIFO order. It does not delete them.
+   * Returns up to `limit` batches in FIFO order without deleting them.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise that resolves to an array of batches.
+   * @returns A promise that resolves to the batches.
    */
   take(limit: number): Promise<LogBatch[]> {
     return Promise.resolve(this.batches.slice(0, limit));
   }
 
   /**
-   * Returns up to `limit` batches of one context in FIFO order. It does not delete them.
+   * Returns up to `limit` batches of one context in FIFO order without deleting them.
    * @param id Delivery context id.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise that resolves to the batches of this context.
+   * @returns A promise that resolves to this context's batches.
    */
   takeContext(id: string, limit: number): Promise<LogBatch[]> {
     return Promise.resolve(
@@ -63,9 +63,9 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Counts the stored batches of one context.
+   * Counts one context's stored batches.
    * @param id Delivery context id.
-   * @returns Promise that resolves to the batch count of this context.
+   * @returns A promise that resolves to this context's batch count.
    */
   countContext(id: string): Promise<number> {
     return Promise.resolve(this.batches.filter((batch) => batch.routingContextId === id).length);
@@ -81,9 +81,9 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Sets the delivery attempt count of a stored batch.
+   * Sets a stored batch's delivery attempt count.
    * @param id Batch identifier.
-   * @param attempts New absolute attempt count.
+   * @param attempts The new absolute attempt count.
    */
   bumpAttempts(id: string, attempts: number): Promise<void> {
     const found = this.batches.find((batch) => batch.id === id);
@@ -94,9 +94,8 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Removes expired batches. It then removes the oldest batches above the
-   * capacity limit.
-   * @returns Promise that resolves to prune summary metrics.
+   * Removes expired batches, then the oldest batches above the capacity limit.
+   * @returns A promise that resolves to the prune summary metrics.
    */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
@@ -108,7 +107,7 @@ export class MemoryStorage implements StorageAdapter {
 
     const excess = this.batches.length - this.limits.maxBatches;
     if (excess > 0) {
-      // An action is an audit fact. Evict each batch without an action first.
+      // An action is an audit fact, so evict the batches without one first.
       const evicted = pickEvictable(this.batches, excess, hasAction);
       this.batches = this.batches.filter((batch) => !evicted.includes(batch));
       this.report(result, "over_capacity", evicted);
@@ -118,9 +117,9 @@ export class MemoryStorage implements StorageAdapter {
   }
 
   /**
-   * Adds dropped batches to the prune result. It reports them with their own reason.
-   * @param result Prune result of all rules.
-   * @param reason Rule that dropped the batches.
+   * Adds dropped batches to the prune result and reports them under their own reason.
+   * @param result The prune result across all rules.
+   * @param reason The rule that dropped the batches.
    * @param dropped The dropped batches.
    */
   private report(result: PruneResult, reason: PruneResult["reason"], dropped: LogBatch[]): void {
@@ -134,19 +133,19 @@ export class MemoryStorage implements StorageAdapter {
 
   /**
    * Returns the number of stored batches.
-   * @returns Promise that resolves to batch count.
+   * @returns A promise that resolves to the batch count.
    */
   count(): Promise<number> {
     return Promise.resolve(this.batches.length);
   }
 
-  /** This method deletes all stored batches. */
+  /** Deletes every stored batch. */
   clear(): Promise<void> {
     this.batches = [];
     return Promise.resolve();
   }
 
-  /** This method deletes all stored batches when the storage closes. */
+  /** Deletes every stored batch when the storage closes. */
   close(): Promise<void> {
     this.batches = [];
     return Promise.resolve();

@@ -1,11 +1,11 @@
 // src/utils/deadline.ts
 //
-// Sets a deadline for a promise that can stay pending. A pending promise raises no
-// diagnostics event. Without a deadline, its caller waits forever and keeps its slot.
+// Puts a deadline on a promise that could stay pending. A pending promise raises no
+// diagnostics event, so without a deadline its caller waits forever and keeps its slot.
 
 import { unrefTimer } from "./unref";
 
-/** Error of a promise that did not settle before its deadline. */
+/** The error for a promise that didn't settle before its deadline. */
 export class DeadlineError extends Error {
   /**
    * @param ms Deadline in milliseconds.
@@ -17,10 +17,10 @@ export class DeadlineError extends Error {
 }
 
 /**
- * Rejects when a promise does not settle within a deadline.
- * @param work Promise to bound.
+ * Rejects when a promise doesn't settle within a deadline.
+ * @param work The promise to bound.
  * @param ms Deadline in milliseconds.
- * @returns The value of the promise, or a rejection after the deadline.
+ * @returns The promise's value, or a rejection after the deadline.
  */
 export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   let expire: ReturnType<typeof setTimeout> | undefined;
@@ -34,7 +34,7 @@ export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
     unrefTimer(timer);
   });
 
-  // Clear the timer on success and on failure. If not, each storage call leaves an armed timer.
+  // Clear the timer on success and on failure. Otherwise every storage call leaves an armed timer.
   return Promise.race([work, deadline]).finally(() => {
     clearTimeout(expire);
   });

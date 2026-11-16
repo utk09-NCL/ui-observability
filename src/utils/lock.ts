@@ -1,11 +1,11 @@
 // src/utils/lock.ts
 //
-// Coordinates origin-wide batch draining operations using the Web Locks API.
-// Without the lock, every window on the origin drains and sends the same batches.
+// Coordinates batch draining across the origin with the Web Locks API. Without the lock,
+// every window on the origin would drain and send the same batches.
 
 import type { Diagnostics } from "../core/diagnostics";
 
-/** Lock grant object, or null when the lock is not available. */
+/** Lock grant object, or null when the lock isn't available. */
 type LockGrant = { name: string } | null;
 
 /** Structural interface for navigator.locks operations. */
@@ -24,15 +24,15 @@ interface LockManagerLike {
 }
 
 /**
- * Executes an asynchronous function under a Web Locks API origin-wide lock.
- * It runs the task directly when the Web Locks API is not available.
+ * Runs an async function under an origin-wide Web Locks API lock. Runs the task directly when
+ * the Web Locks API isn't available.
  * @param name Origin-scoped lock identifier.
  * @param diagnostics Diagnostics reporter.
- * @param fn Asynchronous task to execute while holding the lock.
+ * @param fn The async task to run while holding the lock.
  * @param options Lock acquisition options.
- * @param options.skipIfBusy When true, the task does not run if another context holds the lock.
- * @returns Promise of the task result. It resolves to undefined when another context holds the
- * lock. A caller that reads undefined as a task result stops rescheduling.
+ * @param options.skipIfBusy When true, the task doesn't run if another context holds the lock.
+ * @returns A promise of the task's result. Resolves to undefined when another context holds
+ * the lock. A caller that reads undefined as a task result stops rescheduling.
  */
 export function withDrainLock<T>(
   name: string,
@@ -42,7 +42,7 @@ export function withDrainLock<T>(
 ): Promise<T | undefined> {
   const locks = (globalThis as { navigator?: { locks?: LockManagerLike } }).navigator?.locks;
 
-  // Run the task without a lock when the Web Locks API is not available.
+  // Run the task without a lock when the Web Locks API isn't available.
   if (!locks?.request) {
     return fn();
   }
@@ -58,11 +58,12 @@ export function withDrainLock<T>(
 }
 
 /**
- * Gives the lock name of one application namespace. Two namespaces on one origin then do not wait for each other.
- * Without it, the retry pass of one application skips while the other holds the lock.
+ * Returns the lock name for one application namespace, so two namespaces on one origin don't
+ * wait for each other. Otherwise one application's retry pass would be skipped while the
+ * other holds the lock.
  * @param name Base lock name.
  * @param namespace Application storage namespace. An empty value keeps the base name.
- * @returns Lock name for this namespace.
+ * @returns The lock name for this namespace.
  */
 export function lockName(name: string, namespace: string): string {
   return namespace ? `${name}:${encodeURIComponent(namespace)}` : name;

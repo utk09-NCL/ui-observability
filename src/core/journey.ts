@@ -1,8 +1,8 @@
 // src/core/journey.ts
 //
-// This module manages the lifecycle of a user journey across windows. It encodes tokens,
-// stores the journey and ends it at expiry. Do not trust a value from storage or a token.
-// Any code on the origin can write to both.
+// Manages a user journey's lifecycle across windows: encodes tokens, stores the journey and
+// ends it at expiry. Never trust a value from storage or a token, because any code on the
+// origin can write to both.
 
 import {
   BASE64_GROUP_CHARS,
@@ -29,9 +29,9 @@ import { getFin } from "../utils/openfin";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
-/** Lifetime rules for a journey. A journey is one user task across several contexts. */
+/** Lifetime rules for a journey, which is one user task spanning several contexts. */
 export interface JourneyOptions {
-  /** Maximum open time of a journey, in milliseconds. After this time, the engine ends it. */
+  /** Maximum time a journey stays open, in milliseconds. After that the engine ends it. */
   maxAgeMs: number;
   /** True if the journey ends for all contexts when the owning context closes. */
   endOnOwnerClose: boolean;
@@ -39,7 +39,7 @@ export interface JourneyOptions {
   urlParam: string;
 }
 
-/** Journey lifetime policy in force. Tests build an engine with shorter values. */
+/** The journey lifetime policy in effect. Tests build an engine with shorter values. */
 export const JOURNEY_OPTIONS: JourneyOptions = {
   maxAgeMs: JOURNEY_MAX_AGE_MS,
   endOnOwnerClose: JOURNEY_END_ON_OWNER_CLOSE,
@@ -50,11 +50,11 @@ export const JOURNEY_OPTIONS: JourneyOptions = {
 export interface Journey {
   /** Unique journey correlation identifier. */
   id: string;
-  /** Journey workflow name for a person to read. */
+  /** Human-readable name of the journey's workflow. */
   name: string;
   /** Journey start timestamp in epoch milliseconds. */
   startedAt: number;
-  /** Optional parent journey ID when the journey branches from an earlier journey. */
+  /** Parent journey ID, set when the journey branches from an earlier one. */
   parentId?: string;
   /** Context identifier of the document that started the journey. */
   ownerContextId: string;
@@ -84,7 +84,7 @@ function readNumber(source: object, key: string): number | undefined {
 
 /**
  * Parses and validates an unknown value into a Journey object. The value comes from
- * sessionStorage or from a bus message of another realm.
+ * sessionStorage or from another realm's bus message.
  * @param value Unverified parsed JSON value.
  * @returns Validated Journey instance or null.
  */
@@ -108,7 +108,7 @@ export function parseJourney(value: unknown): Journey | null {
 }
 
 /**
- * Parses and validates decoded token payload into a Journey object.
+ * Parses and validates a decoded token payload into a Journey object.
  * @param value Unverified parsed token payload.
  * @returns Validated Journey instance or null.
  */
@@ -119,7 +119,8 @@ function journeyFromTokenPayload(value: unknown): Journey | null {
   const id = readString(value, "i");
   const name = readString(value, "n");
   const startedAt = readNumber(value, "s");
-  // The library always writes a start time. A token without one, or from the future, never expires.
+  // We always write a start time. A token without one, or with one from the future, would
+  // never expire.
   const future = startedAt !== undefined && startedAt > Date.now() + JOURNEY_CLOCK_SKEW_MS;
   if (id === undefined || name === undefined || startedAt === undefined || future) {
     return null;
@@ -144,8 +145,8 @@ function encodeToken(journey: Journey): string {
     n: journey.name.slice(0, JOURNEY_TOKEN_NAME_MAX_CHARS),
     s: journey.startedAt,
   });
-  // Convert the UTF-8 bytes to a binary string before btoa. btoa throws above U+00FF.
-  // Without this step, a name in a non-Latin script fails.
+  // Convert the UTF-8 bytes to a binary string before btoa, which throws above U+00FF.
+  // Without this step, a name in a non-Latin script would fail.
   const bytes = new TextEncoder().encode(json);
   let binary = "";
   for (const byte of bytes) {
@@ -186,7 +187,7 @@ export class JourneyEngine {
   }
 
   /**
-   * Finds and adopts the initial journey. It checks the URL query, then sessionStorage,
+   * Finds and adopts the initial journey. Checks the URL query first, then sessionStorage,
    * then OpenFin customData.
    * @returns Promise that resolves when journey initialization completes.
    */
@@ -213,7 +214,7 @@ export class JourneyEngine {
   }
 
   /**
-   * Starts a new journey. It replaces the active journey and tells connected peers.
+   * Starts a new journey, replacing the active one and telling connected peers.
    * @param name Human-readable workflow name.
    * @param opts Optional parent linkage and pre-assigned identifier.
    * @returns Started Journey instance.
@@ -232,10 +233,10 @@ export class JourneyEngine {
   }
 
   /**
-   * Gives the id of a new journey. A longer id, or an id with multibyte characters, makes the
-   * journey token too long for adoptJourney().
+   * Picks the id for a new journey. A longer id, or one with multibyte characters, would make
+   * the journey token too long for adoptJourney().
    * @param requested Id from the app, or undefined.
-   * @returns The requested id when it matches JOURNEY_ID_PATTERN, else a new id.
+   * @returns The requested id when it matches JOURNEY_ID_PATTERN, otherwise a new id.
    */
   private journeyId(requested: unknown): string {
     if (requested === undefined) {
@@ -263,10 +264,9 @@ export class JourneyEngine {
   }
 
   /**
-   * Applies a journey update from a bus peer. It does not broadcast the update again.
-   * An echo makes two windows send the change back and forth without end.
-   * It ignores a journey with the same ID as the active journey. Thus an echo cannot
-   * restart the timer.
+   * Applies a journey update from a bus peer without broadcasting it again. An echo would
+   * make two windows send the change back and forth forever. A journey with the same ID as
+   * the active one is ignored, so an echo can't restart the timer.
    * @param journey Updated Journey instance or null.
    */
   applyRemote(journey: Journey | null): void {
@@ -396,8 +396,8 @@ export class JourneyEngine {
 
   /**
    * Decodes a base64url token into a validated Journey object. Anyone can edit the URL
-   * that holds a token. Each step throws on bad input. The guard reports the failure
-   * and does not throw it.
+   * that holds a token, and every step throws on bad input. The guard reports the failure
+   * instead of letting it throw.
    * @param token Encoded token string.
    * @returns Decoded Journey instance or null on decode error.
    */
@@ -492,8 +492,8 @@ export class JourneyEngine {
   }
 
   /**
-   * Removes the journey token from the address bar after the engine adopts it.
-   * If not, a copy or a bookmark of the link starts the same journey in another session.
+   * Removes the journey token from the address bar once the engine has adopted it.
+   * Otherwise a copied or bookmarked link would start the same journey in another session.
    */
   private removeUrlToken(): void {
     this.diagnostics.guard(
@@ -502,17 +502,17 @@ export class JourneyEngine {
       () => {
         const url = new URL(location.href);
         url.searchParams.delete(this.options.urlParam);
-        // Keep history.state. A router stores its own state there.
+        // Keep history.state, because a router stores its own state there.
         history.replaceState(history.state, "", url.href);
       },
     );
   }
 
   /**
-   * Reads the journey token from the customData of the OpenFin window options.
-   * OPENFIN_OPTIONS_TIMEOUT_MS limits the wait. At the deadline, it reports
-   * openfin.unavailable and returns no token. A window without a token gives the same result.
-   * @returns Promise that resolves to token string or null.
+   * Reads the journey token from customData in the OpenFin window options. The wait is
+   * capped by OPENFIN_OPTIONS_TIMEOUT_MS. At the deadline we report openfin.unavailable and
+   * return no token. A window with no token gives the same result.
+   * @returns Promise that resolves to the token string or null.
    */
   private async readOpenFinToken(): Promise<string | null> {
     const me = getFin()?.me;
@@ -521,8 +521,8 @@ export class JourneyEngine {
       return null;
     }
 
-    // Use call to keep the receiver of the native OpenFin method. A detached copy
-    // throws when called.
+    // Use call so the native OpenFin method keeps its receiver. A detached copy throws when
+    // called.
     const options = await this.diagnostics.guardAsync(
       "openfin.unavailable",
       "The library could not read fin.me.getOptions().",

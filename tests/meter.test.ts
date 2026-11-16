@@ -19,7 +19,7 @@ const histogramDef = (boundaries: readonly number[] = [10, 100]): InstrumentDef 
 });
 
 /**
- * Builds a meter with a 1000 ms interval. It collects the points and the diagnostic events.
+ * Builds a meter with a 1000 ms interval that collects the points and the diagnostic events.
  * @returns The meter, its points and its events.
  */
 function setup() {
@@ -81,7 +81,7 @@ describe("Meter", () => {
     }
     meter.collect();
 
-    // A value equal to a boundary goes into the bucket of that boundary.
+    // A value equal to a boundary goes into that boundary's bucket.
     expect(points[0].point).toMatchObject({
       "metric.type": "histogram",
       "metric.count": 4,
@@ -109,7 +109,7 @@ describe("Meter", () => {
     expect(events.map((event) => event.code)).toEqual(["config.invalid"]);
   });
 
-  it("copies the boundaries, so a later change of the array of the app changes nothing", () => {
+  it("copies the boundaries, so the app changing its array later has no effect", () => {
     const { meter, points } = setup();
     const boundaries = [10, 100];
 
@@ -121,7 +121,7 @@ describe("Meter", () => {
   });
 
   it("reads the boundaries by index, not with a custom iterator of the array", () => {
-    // The iterator can give more values than the length check sees.
+    // The iterator can yield more values than the length check sees.
     const { meter, points } = setup();
     const boundaries = [10, 100];
     Object.defineProperty(boundaries, Symbol.iterator, {
@@ -187,8 +187,8 @@ describe("Meter", () => {
   });
 
   it("drops the attribute keys that the library sets on the record", () => {
-    // The serializer removes or replaces these keys. Two sets that differ only in them give two
-    // points with the same attributes.
+    // The serializer removes or replaces these keys, so two sets that differ only in them would
+    // produce two points with the same attributes.
     const { meter, points } = setup();
 
     meter.record(counterDef(), 1, { "metric.x": "a", "page.url": "/a", venue: "LSE" });

@@ -24,7 +24,7 @@ const ALLOWED_ORIGINS = new Set([
 
 let forcedStatus = 0;
 let forcedRetryAfter = 0;
-// Sampling rules that each accepted batch gets in X-UiObs-Sampling. Empty sends no header.
+// Sampling rules sent in X-UiObs-Sampling with every accepted batch. Empty means no header.
 let samplingRules = "";
 const seenBatchIds = new Map(); // idempotency, as the real server must also do
 
@@ -42,7 +42,7 @@ function cors(req, res) {
   // Without this the browser hides Retry-After from the client on every
   // cross-origin response, so a 429 or 503 arrives with no delay attached and
   // the client backs off on its own schedule instead of the server's.
-  // The client reads the sampling rules only if this list has the header.
+  // The client also can't read the sampling rules unless their header is on this list.
   res.setHeader(
     "Access-Control-Expose-Headers",
     "retry-after, x-uiobs-sampling, date, server-timing",
@@ -55,8 +55,8 @@ const unwrap = (v) => (v ? Object.values(v)[0] : undefined);
 const kv = (list) => Object.fromEntries((list ?? []).map((a) => [a.key, unwrap(a.value)]));
 const iso = (nanos) => new Date(Number(BigInt(nanos) / 1000000n)).toISOString();
 
-// One line for each data point of an ExportMetricsServiceRequest. A sum and a gauge show the
-// value. A histogram shows its count and its sum.
+// Prints one line per data point in an ExportMetricsServiceRequest. Sums and gauges show their
+// value, histograms show their count and sum.
 function printMetrics(payload, batchId) {
   const points = [];
   for (const rm of payload.resourceMetrics ?? []) {
@@ -91,7 +91,7 @@ function printMetrics(payload, batchId) {
   }
 }
 
-// One line for each span of an ExportTraceServiceRequest. A root span has no parent.
+// Prints one line per span in an ExportTraceServiceRequest. A root span has no parent.
 function printTraces(payload, batchId) {
   const lines = [];
   for (const rs of payload.resourceSpans ?? []) {
@@ -167,11 +167,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // The library sends a batch of metric records to /v1/metrics when metricsEndpoint is set, and
-  // a batch of span records to /v1/traces when tracesEndpoint is set.
+  // The library sends metric batches to /v1/metrics when metricsEndpoint is set, and span
+  // batches to /v1/traces when tracesEndpoint is set.
   const isMetrics = url.pathname === "/v1/metrics";
   const isTraces = url.pathname === "/v1/traces";
-  if ((url.pathname !== "/v1/logs" && !isMetrics && !isTraces) || req.method !== "POST") {
+  // Session replay segments go to replay.endpoint. They aren't OTLP batches.
+  const isReplay = url.pathname === "/v1/replay";
+  if (
+    (url.pathname !== "/v1/logs" && !isMetrics && !isTraces && !isReplay) ||
+    req.method !== "POST"
+  ) {
     res.writeHead(404).end();
     return;
   }
@@ -230,6 +235,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (isReplay) {
+    const events = Array.isArray(payload.events) ? payload.events.length : 0;
+    console.log(
+      `[replay] replay=${payload["replay.id"]} sequence=${payload.sequence} events=${events} ` +
+        `bytes=${raw.length} session=${payload["session.id"]}`,
+    );
+    res.writeHead(204).end();
+    return;
+  }
+
   if (isMetrics) {
     printMetrics(payload, batchId);
     res.writeHead(204).end();
@@ -277,6 +292,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(
-    `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics and /v1/traces`,
+    `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics, /v1/traces and /v1/replay`,
   );
 });

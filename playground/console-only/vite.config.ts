@@ -1,11 +1,11 @@
 import { defineConfig, type Plugin } from "vite";
 
-/** Optional peers of the library. This app installs neither. */
+/** The library's optional peers. This app installs neither. */
 const OPTIONAL_PEERS = ["web-vitals", "@opentelemetry/api"];
 
 /**
- * Fails each resolve of an optional peer by name.
- * The repo root installs both peers. This plugin stands in for a consumer that does not.
+ * Fails any attempt to resolve an optional peer by name.
+ * The repo root installs both peers, so this plugin stands in for a consumer that doesn't.
  * @returns Vite plugin.
  */
 const forbidOptionalPeers = (): Plugin => ({
@@ -27,7 +27,7 @@ const forbidOptionalPeers = (): Plugin => ({
 
 export default defineConfig({
   plugins: [forbidOptionalPeers()],
-  // Serve the library as source. This makes the plugin see each import in dist/index.js.
+  // Serve the library as source, so the plugin sees every import in dist/index.js.
   optimizeDeps: { exclude: ["@utk09/ui-observability"] },
   server: { port: 5195, strictPort: true },
 });

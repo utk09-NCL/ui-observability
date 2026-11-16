@@ -4,7 +4,7 @@ import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
-/** Resource durations in milliseconds. URLs and paths do not create metric series. */
+/** Resource durations in milliseconds. URLs and paths never create metric series. */
 const RESOURCE_DURATION: InstrumentDef = {
   name: "ui.resource.duration",
   kind: "histogram",
@@ -22,7 +22,7 @@ export class ResourceTimingCapture implements Capture {
 
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Reads buffered resources only at the first install in this document. */
+  /** Reads buffered resources only on the first install in this document. */
   install(): void {
     if (this.observer) {
       return;

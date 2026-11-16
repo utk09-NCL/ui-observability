@@ -254,8 +254,8 @@ describe("createParentLink", () => {
   const PARENT = "https://app.example";
 
   /**
-   * Makes this document a frame whose parent is on an origin.
-   * @param origin Origin that document.referrer gives.
+   * Turns this document into a frame whose parent is on the given origin.
+   * @param origin The origin document.referrer reports.
    * @returns The fake parent window.
    */
   function frameOf(origin: string) {
@@ -269,7 +269,7 @@ describe("createParentLink", () => {
   /**
    * Dispatches a bus message as if a window posted it.
    * @param source Window that posted the message.
-   * @param origin Origin of the poster.
+   * @param origin The poster's origin.
    */
   function postFrom(source: unknown, origin: string): void {
     dispatchEvent(
@@ -751,8 +751,8 @@ describe("createBroadcastLink", () => {
   });
 
   it("returns null and reports when the channel cannot be opened", () => {
-    // Use a function expression, not vi.fn. The code calls the constructor with `new`. Vitest warns
-    // when a mock implementation is not a function or a class.
+    // Use a function expression, not vi.fn, because the code calls the constructor with `new`.
+    // Vitest warns when a mock implementation is not a function or a class.
     vi.stubGlobal("BroadcastChannel", function ThrowingChannel(): never {
       throw new Error("channel unavailable");
     });
@@ -1113,8 +1113,8 @@ describe("Bus role resolution: auto mode", () => {
       { timeoutMs: 20, maxAttempts: 3 },
     );
 
-    // No parent replies. In this environment, window.parent === window. createParentLink then
-    // returns null. The role resolves without a handshake.
+    // No parent replies. In this environment window.parent === window, so createParentLink
+    // returns null and the role resolves without a handshake.
     expect(await bus.start()).toBe("sender");
     bus.destroy();
   });
@@ -1188,9 +1188,9 @@ describe("Bus role resolution: auto mode", () => {
       },
       diagnostics,
     );
-    // This is the real OpenFin desktop shape. A real view is always its own top-level document. The
-    // control-link path and the candidate-link path for "openfin" both run. They share the one
-    // memoized subscription.
+    // This is the real OpenFin desktop shape, where a view is always its own top-level document.
+    // The control-link path and the candidate-link path for "openfin" both run, and they share the
+    // one memoized subscription.
     const bus = new Bus(
       config,
       diagnostics,
@@ -1253,8 +1253,8 @@ describe("Bus role resolution: auto mode", () => {
 
 describe("Bus handshake", () => {
   it("settles a handshake from a welcome that was never a DOM message event", async () => {
-    // This is the OpenFin and worker case. Neither channel fires a `message` event. A handshake
-    // that listens only for that event times out here each time.
+    // This is the OpenFin and worker case. Neither channel fires a `message` event, so a handshake
+    // that only listens for that event would time out here every time.
     const { bus } = make({ timeoutMs: 1000 });
     const upstream = fakeLink("openfin");
     upstream.post.mockImplementation((message: BusMessage) => {
@@ -1833,8 +1833,8 @@ describe("Bus internals: openControlLinks", () => {
   });
 
   it("skips a control link whose factory declines to build one", () => {
-    // Without BroadcastChannel, createBroadcastLink returns null. The bus adds no link. A top-level
-    // document then opens only the children link.
+    // Without BroadcastChannel, createBroadcastLink returns null and the bus adds no link. A
+    // top-level document then opens only the children link.
     vi.stubGlobal("BroadcastChannel", undefined);
 
     const { bus } = make();
@@ -2038,8 +2038,8 @@ describe("Bus journey scope", () => {
     };
 
   /**
-   * Makes a forwarder whose owner sits on a parent link.
-   * @param ownerId Context id of the owner, or null for a link with no handshake.
+   * Creates a forwarder whose owner sits on a parent link.
+   * @param ownerId The owner's context id, or null for a link with no handshake.
    * @returns The bus and its handlers.
    */
   function forwarderOf(ownerId: string | null) {
@@ -2215,7 +2215,7 @@ describe("Bus journey scope", () => {
   });
 
   it("auto: uses origin scope in OpenFin Core Web", () => {
-    // View B of a Core Web platform adopts the journey of view A over the broadcast link.
+    // View B of a Core Web platform adopts view A's journey over the broadcast link.
     const { bus, handlers: h } = make({}, { platform: "openfin_web" });
 
     deliver(
@@ -2257,14 +2257,14 @@ describe("Bus journey scope", () => {
 describe("Bus remote sampling", () => {
   const wire: RemoteWire = { v: 1, ttlMs: 5000, rates: { grid: 1 } };
 
-  /** Overlay stand-in that answers with the wire rules. */
+  /** Fake overlay that answers with the wire rules. */
   const stub = (): RemoteSampling => ({ wire: () => wire }) as unknown as RemoteSampling;
 
   /** Source of a message from a parent window on the page origin. */
   const parent = (): MessageSource => ({ link: "parent", origin: location.origin });
 
   /**
-   * Makes a forwarder bus with a fake upstream link.
+   * Creates a forwarder bus with a fake upstream link.
    * @param kind Kind of the upstream link.
    * @param trustedOrigins Value of bus.trustedOrigins.
    * @returns The bus, its handlers, its config and the upstream link.
@@ -2280,7 +2280,7 @@ describe("Bus remote sampling", () => {
     return { ...made, upstream };
   }
 
-  it("answers a direct sampling question, with null when no rules are in force", () => {
+  it("answers a direct sampling question, with null when no rules are active", () => {
     const { bus, handlers: h } = make();
     const reply = vi.fn<Receive>();
     const direct = { link: "direct", origin: "same-origin" };
@@ -2289,7 +2289,7 @@ describe("Bus remote sampling", () => {
     h.remote.sampling = stub();
     bus.acceptDirect({ t: "ui-observability.message.sampling-request", from: "child" }, reply);
 
-    // A null answer ends the copy of the forwarder. A revocation then reaches it.
+    // A null answer ends the forwarder's copy, so a revocation reaches it.
     expect(reply.mock.calls).toEqual([
       [{ t: "ui-observability.message.sampling", from: "ctx-1", to: "child", rules: null }, direct],
       [{ t: "ui-observability.message.sampling", from: "ctx-1", to: "child", rules: wire }, direct],
@@ -2346,7 +2346,7 @@ describe("Bus remote sampling", () => {
       { link: "worker", origin: "same-origin" },
     );
 
-    // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
+    // A sibling answer on OpenFin would give N squared messages, and a stale copy could win.
     expect(upstream.post).not.toHaveBeenCalled();
     expect(worker.post).toHaveBeenCalledWith({
       t: "ui-observability.message.sampling",
@@ -2435,7 +2435,7 @@ describe("Bus remote sampling", () => {
   it("refuses rules from a parent on an origin that is not trusted, and reports it", () => {
     const { bus, handlers: h, diagnostics } = forwarder();
 
-    // A hostile page can embed the app. It must not lower minLevel and read the DEBUG records.
+    // A hostile page can embed the app, and it must not lower minLevel to read the DEBUG records.
     deliver(
       bus,
       { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1", rules: wire },
@@ -2469,7 +2469,7 @@ describe("Bus remote sampling", () => {
     expect(h.remote.sampling).toBeNull();
   });
 
-  it("refuses rules that are not valid, and reports them", () => {
+  it("refuses invalid rules and reports them", () => {
     const { bus, handlers: h, diagnostics } = forwarder();
 
     deliver(

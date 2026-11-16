@@ -59,7 +59,7 @@ import {
   warn,
 } from "../src/index";
 
-// These tests select the old policy. It permits routing changes and source discovery by origin.
+// These tests select the old policy, which permits routing changes and source discovery by origin.
 const base = {
   securityContext: { isolation: false },
   bus: {
@@ -85,7 +85,7 @@ function runtime(): ObservabilityRuntime {
 }
 
 /**
- * The bus of the pinned runtime, which startup has loaded.
+ * The pinned runtime's bus, which startup has loaded.
  * @returns The bus.
  */
 function bus(): Bus {
@@ -103,8 +103,8 @@ const settle = (): Promise<void> =>
   });
 
 /**
- * Takes the records that wait in the pipeline of the sender.
- * @returns The records of each kind, metrics first.
+ * Takes the records waiting in the sender's pipeline.
+ * @returns The records of every kind, metrics first.
  */
 function buffered(): LogRecord[] {
   return (
@@ -180,8 +180,8 @@ describe("runtime lifecycle", () => {
 
     configure({ storage: "indexeddb" });
 
-    // The runtime selects the adapter one time. After a swap, the runtime cannot get to the batches
-    // in the old adapter.
+    // The runtime selects the adapter once. After a swap, it couldn't reach the batches in the
+    // old adapter.
     expect(runtime().config.storage).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
@@ -208,7 +208,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("does not report a later configure() that repeats the startup tunables", () => {
-    // React StrictMode calls configure() two times with the same config.
+    // React StrictMode calls configure() twice with the same config.
     configure({ ...base, limits: { maxBodyChars: 300 }, journey: { maxAgeMs: 60_000 } });
     configure({ ...base, limits: { maxBodyChars: 300 }, journey: { maxAgeMs: 60_000 } });
 
@@ -264,7 +264,7 @@ describe("runtime lifecycle", () => {
 
     configure({ identity: "storage" });
 
-    // The ids exist from startup. A later change cannot move them.
+    // The ids exist from startup, and a later change can't move them.
     expect(runtime().config.identity).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
@@ -334,7 +334,7 @@ describe("runtime lifecycle", () => {
     configure({ capture: { fetch: false } });
     await settle();
 
-    // The first load is stale. It must not install a capture that the second configure removed.
+    // The first load is stale and must not install a capture the second configure removed.
     expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual([
       "errors",
     ]);
@@ -395,7 +395,7 @@ describe("runtime lifecycle", () => {
     configure(base);
     const log = getLogger("test");
 
-    // The bus has no role yet. The runtime keeps this record in the buffer.
+    // The bus has no role yet, so the runtime keeps this record in the buffer.
     log.info("during boot");
     const journey = startJourney("order-lifecycle");
 
@@ -407,7 +407,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("does not stamp the journey on a boot record that redact already saw", async () => {
-    // The journey name can hold a customer name. redact is the last gate.
+    // The journey name can hold a customer name, and redact is the last gate.
     configure({ ...base, redact: (record) => record });
     getLogger("test").info("during boot");
     startJourney("customer-name");
@@ -429,7 +429,7 @@ describe("runtime lifecycle", () => {
 
     const bodies = runtime()["bootBuffer"].records.map((record: LogRecord) => record.body);
     expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
-    // The buffer evicted the first record. The second record is now the oldest.
+    // The buffer evicted the first record, so the second is now the oldest.
     expect(bodies[0]).toBe("record 1");
     expect(runtime().diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
   });
@@ -468,7 +468,7 @@ describe("runtime lifecycle", () => {
     });
   });
 
-  it("gives onDrop the batches that storage evicts", async () => {
+  it("passes the batches that storage evicts to onDrop", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, onDrop });
     const evicted: LogBatch = {
@@ -491,7 +491,7 @@ describe("runtime lifecycle", () => {
     });
   });
 
-  it("gives onDrop a batch that the serializer cannot encode", async () => {
+  it("passes a batch the serializer cannot encode to onDrop", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     const broken = {
       name: "broken",
@@ -529,8 +529,8 @@ describe("runtime lifecycle", () => {
     expect(getLogger("trading.blotter", options)).not.toBe(getLogger("trading.blotter", options));
   });
 
-  it("makes no runtime when getLogger runs before configure", () => {
-    // A module-level getLogger runs before the app calls configure. ES imports evaluate first.
+  it("creates no runtime when getLogger runs before configure", () => {
+    // A module-level getLogger runs before the app calls configure, since ES imports run first.
     getLogger("early");
     getLogger("early.scoped", { scopedContext: { a: 1 } });
 
@@ -561,7 +561,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("takes the startup tunables from the first configure() after an early log call", async () => {
-    // A module can log at import time. The write starts a runtime with defaults.
+    // A module can log at import time, and that write starts a runtime with defaults.
     info("module loaded");
     // That runtime reports the missing endpoint and serviceName.
     const before = getDiagnosticCounters()["config.invalid"];
@@ -618,7 +618,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("runs the redact hook of the sender on a forwarded record", async () => {
-    // A worker that never calls configure() has no redact. The sender is the last gate.
+    // A worker that never calls configure() has no redact, so the sender is the last gate.
     configure({
       ...base,
       redact: (record) => ({ ...record, body: record.body.replace(/\S+@\S+/, "[email]") }),
@@ -732,7 +732,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("applies a journey update routed from the bus", async () => {
-    // In "tab" scope, a sender does not adopt the journey of a child. "origin" adopts each.
+    // In "tab" scope, a sender doesn't adopt a child's journey. "origin" adopts every one.
     configure({ ...base, journey: { scope: "origin" } });
     await ready();
     const applyRemote = vi.spyOn(runtime().journey, "applyRemote");
@@ -804,7 +804,7 @@ describe("runtime lifecycle", () => {
     });
     await ready();
 
-    // ready() does not wait for the capture chunks. They load in parallel with startup.
+    // ready() doesn't wait for the capture chunks, which load in parallel with startup.
     await vi.waitFor(() => {
       expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toEqual(
         expect.arrayContaining(["interactions", "web-vitals", "long-frames", "console"]),
@@ -828,7 +828,7 @@ describe("runtime lifecycle", () => {
     );
   });
 
-  it("records an app console.error one time, and does not print the mirror line", async () => {
+  it("records an app console.error once, and does not print the mirror line", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     configure({ ...base, console: "DEBUG", capture: { console: true } });
     await ready();
@@ -871,7 +871,7 @@ describe("runtime lifecycle", () => {
     });
   });
 
-  it("ignores a sampling header that is not valid, and reports it", async () => {
+  it("ignores an invalid sampling header, and reports it", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -890,7 +890,7 @@ describe("runtime lifecycle", () => {
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 
-  it("gives the bus the slot of the remote rules, and samples forwarded records with them", async () => {
+  it("hands the remote rules slot to the bus, and samples forwarded records with those rules", async () => {
     configure({ ...base, sampling: { remote: true, defaultRate: 0 } });
     await ready();
     const slot = runtime()["remote"];
@@ -965,8 +965,8 @@ describe("runtime lifecycle", () => {
     const pending = vi.spyOn(pipeline, "flushPending");
     const forExit = vi.spyOn(pipeline, "drainForExit");
 
-    // A tab switch. The document continues to run. A batch in flight is still on its way. A take of
-    // it here sends those records two times.
+    // A tab switch. The document keeps running and a batch in flight is still on its way, so
+    // taking it here would send those records twice.
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
     // A second switch, with nothing buffered behind it.
@@ -1021,12 +1021,12 @@ describe("delivery stack loading", () => {
       expect(runtime()["sender"]).toBeDefined();
     });
 
-    // The runtime holds the record during the load. Then it gives the record to the stack.
+    // The runtime holds the record during the load, then hands it to the stack.
     expect(buffered().map((record) => record.body)).toEqual(["during load"]);
   });
 
   it("stops the retry loop when the exit flush fails to install", async () => {
-    // A retry loop with no owner sends after the runtime reports a failed load.
+    // A retry loop with no owner would send after the runtime reports a failed load.
     vi.spyOn(ExitFlush.prototype, "install").mockImplementation(() => {
       throw new Error("listener refused");
     });
@@ -1069,7 +1069,7 @@ describe("delivery stack loading", () => {
 
     configure({ transport: undefined });
 
-    // Without the transport, the retry engine removes each stored batch as delivered.
+    // Without the transport, the retry engine would remove every stored batch as delivered.
     expect(runtime().config.transport).toBe(transport);
 
     await shutdown();
@@ -1078,12 +1078,12 @@ describe("delivery stack loading", () => {
 
     configure({ transport });
 
-    // The HTTP stack exists. It ignores a new transport with no message.
+    // The HTTP stack already exists and would silently ignore a new transport.
     expect(runtime().config.transport).toBeUndefined();
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 
-  it("accepts a new transport function in place of the one in force", async () => {
+  it("accepts a new transport function in place of the current one", async () => {
     const first = vi.fn(() => Promise.resolve({ status: 202 }));
     const second = vi.fn(() => Promise.resolve({ status: 202 }));
     configure({ ...base, endpoint: null, transport: first });
@@ -1114,7 +1114,7 @@ describe("delivery stack loading", () => {
     configure({ endpoint: null });
     configure({ endpoint: "" });
 
-    // Without an endpoint, the retry engine removes each stored batch as delivered.
+    // Without an endpoint, the retry engine would remove every stored batch as delivered.
     expect(runtime().config.endpoint).toBe(base.endpoint);
     expect(runtime().config.capture.ignoreUrls).toContain(base.endpoint);
     expect(getDiagnosticCounters()["config.invalid"]).toBe(2);
@@ -1137,7 +1137,7 @@ describe("delivery stack loading", () => {
     configure({ serviceName: "renamed" });
     await Promise.resolve();
 
-    // A forwarder gives its records to another context. It must not send them itself.
+    // A forwarder hands its records to another context and must not send them itself.
     expect(runtime()["sender"]).toBeUndefined();
     expect(runtime()["senderLoad"]).toBeUndefined();
   });
@@ -1156,7 +1156,7 @@ describe("delivery stack loading", () => {
     expect(getDiagnosticCounters()["record.dropped_boot_buffer_full"]).toBe(1);
   });
 
-  it("gives onDrop the held records of a failed load", async () => {
+  it("passes the held records of a failed load to onDrop", async () => {
     vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, endpoint: null, onDrop });
@@ -1172,7 +1172,7 @@ describe("delivery stack loading", () => {
     });
   });
 
-  it("gives onDrop the startup records and each later record after a failed startup load", async () => {
+  it("passes the startup records and every later record to onDrop after a failed startup load", async () => {
     vi.spyOn(Sender, "create").mockRejectedValueOnce(new Error("chunk failed"));
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, onDrop });
@@ -1189,7 +1189,7 @@ describe("delivery stack loading", () => {
     });
   });
 
-  it("gives onDrop the held records when shutdown() comes before the load ends", async () => {
+  it("passes the held records to onDrop when shutdown() comes before the load ends", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, endpoint: null, onDrop });
     await ready();
@@ -1635,7 +1635,7 @@ describe("newSession", () => {
     const failed = records.find((record) => record.body === "after");
     expect(root?.resource["session.id"]).toBe(before);
     expect(point?.resource["session.id"]).toBe(before);
-    // A shared machine: the next user must not see the trail of the previous user.
+    // A shared machine: the next user must not see the previous user's trail.
     expect(failed?.attributes.breadcrumbs).toEqual([]);
   });
 
@@ -2159,7 +2159,7 @@ describe("public API", () => {
 
     const token = getJourneyToken();
     if (token === undefined) {
-      throw new Error("a journey in force always has a token");
+      throw new Error("an active journey always has a token");
     }
 
     endJourney();
@@ -2246,9 +2246,9 @@ describe("runtime version guard", () => {
   const KEY = Symbol.for("ui-observability.runtime");
 
   /**
-   * Pins a runtime of another copy of the library on the page.
-   * @param sdkVersion Version of that copy. Undefined is a copy before 0.9.0.
-   * @returns The stand-in for the runtime of the other copy.
+   * Pins a runtime from another copy of the library on the page.
+   * @param sdkVersion That copy's version. Undefined means a copy from before 0.9.0.
+   * @returns The fake runtime of the other copy.
    */
   function pinOther(sdkVersion?: string) {
     const other = { sdkVersion, destroyed: false, reconfigure: vi.fn() };
@@ -2257,7 +2257,7 @@ describe("runtime version guard", () => {
   }
 
   beforeEach(() => {
-    // The stopped local runtime of a previous test takes each log call.
+    // A stopped local runtime from a previous test would take every log call.
     ObservabilityRuntime["local"] = null;
   });
 
@@ -2312,7 +2312,7 @@ describe("runtime version guard", () => {
 
   it("keeps its own runtime console-only on a later configure", async () => {
     pinOther("0.8.5");
-    // React StrictMode calls configure() two times.
+    // React StrictMode calls configure() twice.
     configure(base);
     configure({ ...base, transport: vi.fn(), bus: { mode: "auto" } });
     const local = runtime();
@@ -2385,7 +2385,7 @@ describe("runtime reconfigure", () => {
     await ready();
     const old = runtime();
 
-    // destroy() marks the runtime immediately. It clears the global key after its awaits.
+    // destroy() marks the runtime immediately, but only clears the global key after its awaits.
     const closing = shutdown();
     configure(base);
     const fresh = runtime();
@@ -2408,8 +2408,8 @@ describe("runtime reconfigure", () => {
 describe("capture plugins", () => {
   /**
    * Builds a plugin with spies.
-   * @param name Name of the plugin.
-   * @returns The plugin and the contexts that install() got.
+   * @param name The plugin's name.
+   * @returns The plugin and the contexts install() received.
    */
   const spyPlugin = (name = "visibility") => {
     const seen: PluginContext[] = [];
@@ -2508,7 +2508,7 @@ describe("spans", () => {
   const TRACES = "https://x/v1/traces";
 
   /**
-   * Reads the span records that the runtime emitted.
+   * Reads the span records the runtime emitted.
    * @param emit Spy on emit.
    * @returns The span records.
    */
@@ -2585,7 +2585,7 @@ describe("spans", () => {
 });
 
 describe("runtime on Node", () => {
-  it("runs console-only, keeps the ids in memory and reports a destination one time", async () => {
+  it("runs console-only, keeps the ids in memory and reports a destination once", async () => {
     vi.stubGlobal("document", undefined);
 
     configure({ serviceName: "svc", capture: { fetch: true } });
@@ -2604,8 +2604,8 @@ describe("runtime on Node", () => {
 
 describe("counter and histogram", () => {
   /**
-   * Collects the metric points that the runtime emits.
-   * @returns The spy on emit and a reader of the points.
+   * Collects the metric points the runtime emits.
+   * @returns The spy on emit and a reader for the points.
    */
   const points = () => {
     const emit = vi.spyOn(runtime(), "emit");
@@ -2668,7 +2668,7 @@ describe("counter and histogram", () => {
   });
 
   it("keeps all buckets of a point at a small maxArrayLength", async () => {
-    // A cut bucket list makes the serializer drop the point.
+    // A cut bucket list would make the serializer drop the point.
     configure({ ...base, limits: { maxArrayLength: 2 } });
     await ready();
     const { read } = points();
@@ -2683,7 +2683,7 @@ describe("counter and histogram", () => {
   });
 
   it("keeps the metric fields at maxDepth 1 and a small maxAttributeCount", async () => {
-    // The limits cut only the attributes of the call.
+    // The limits only cut the call's attributes.
     configure({ ...base, limits: { maxDepth: 1, maxAttributeCount: 2 } });
     await ready();
     const { read } = points();
@@ -2700,7 +2700,7 @@ describe("counter and histogram", () => {
   });
 
   it("keeps the metric fields when the attributes exceed maxRecordBytes", async () => {
-    // The builder drops the attributes of the call. The point must stay.
+    // The builder drops the call's attributes, but the point must stay.
     configure({ ...base, limits: { maxRecordBytes: 1024 } });
     await ready();
     const { read } = points();
@@ -2713,7 +2713,7 @@ describe("counter and histogram", () => {
   });
 
   it("keeps all buckets of a point after a redact hook that returns a new record", async () => {
-    // The builder sanitizes the record from the hook again.
+    // The builder sanitizes the hook's record again.
     configure({
       ...base,
       limits: { maxArrayLength: 2 },

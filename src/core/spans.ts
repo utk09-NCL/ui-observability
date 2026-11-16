@@ -1,7 +1,7 @@
 // src/core/spans.ts
 //
-// Builds the span data of a root span and the span fields of a span record. The runtime builds
-// each span as a record with the type "span". The traces serializer reads the span fields.
+// Builds the span data for a root span and the span fields for a span record. The runtime
+// builds every span as a record of type "span", and the traces serializer reads the span fields.
 
 import { SPAN_KEYS } from "../constants";
 import type { EndedTrace, RotateReason } from "../utils/tracing";
@@ -9,7 +9,7 @@ import type { EndedTrace, RotateReason } from "../utils/tracing";
 /** Microseconds in one millisecond. */
 const US_PER_MS = 1000;
 
-/** Name of the root span for each cause of the start of a trace. */
+/** Root span name for each reason a trace can start. */
 const ROOT_NAMES: Record<RotateReason, string> = {
   start: "ui.start",
   interaction: "ui.interaction",
@@ -18,7 +18,7 @@ const ROOT_NAMES: Record<RotateReason, string> = {
   maxAge: "ui.trace",
 };
 
-/** One span that the runtime records. */
+/** One span recorded by the runtime. */
 export interface SpanData {
   /** Span name. */
   name: string;
@@ -28,7 +28,7 @@ export interface SpanData {
   traceId: string;
   /** Span ID. */
   spanId: string;
-  /** Span ID of the parent, or "" for a root span. */
+  /** The parent's span ID, or "" for a root span. */
   parentSpanId: string;
   /** Start time in epoch milliseconds. */
   startMs: number;
@@ -36,15 +36,15 @@ export interface SpanData {
   endMs: number;
   /** True for a failed operation. */
   error: boolean;
-  /** Attributes of the span. */
+  /** The span's attributes. */
   attributes: Record<string, unknown>;
   /** Server span linked through a response traceparent entry. */
   link?: { traceId: string; spanId: string };
 }
 
 /**
- * Converts epoch milliseconds to nanoseconds, as a decimal string. It keeps microseconds.
- * @param ms Epoch time in milliseconds. It can have a fraction.
+ * Converts epoch milliseconds to nanoseconds as a decimal string, keeping microseconds.
+ * @param ms Epoch time in milliseconds. May have a fraction.
  * @returns Epoch time in nanoseconds.
  */
 function unixNano(ms: number): string {
@@ -52,7 +52,7 @@ function unixNano(ms: number): string {
 }
 
 /**
- * Builds the root span of an ambient trace that ended.
+ * Builds the root span for an ambient trace that has ended.
  * @param ended The trace.
  * @returns The span data.
  */
@@ -71,7 +71,7 @@ export function rootSpan(ended: EndedTrace): SpanData {
 }
 
 /**
- * Builds the span fields of a span record. The record limits do not cut them.
+ * Builds the span fields for a span record. The record limits don't trim them.
  * @param span The span data.
  * @returns The fields.
  */

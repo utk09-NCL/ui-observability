@@ -112,3 +112,25 @@ A worker that does not connect before the request deadline is a startup failure.
 A worker failure can leave the result of an HTTP request unknown. HTTP fallback or a stored retry keeps the batch id. The ingest server must still deduplicate it. The main exit flush can also copy an unconfirmed worker batch. The ordinary duplicate rules apply to that copy.
 
 A delivery rotation cancels pending jobs and terminates the old worker before it applies new settings. Each job holds its own endpoint and resolved headers. A late result cannot apply to the next sender. A hidden page uses the main HTTP keepalive path. Shutdown flushes records before it terminates the worker.
+
+## Profiler points
+
+A profiler summary record is a metric point. It follows the rules of this page from the moment the library builds it.
+
+- A probe keeps its durations in memory until the end of the interval. `flush()`, `shutdown()`, `newSession()` and the exit flush send the open interval.
+- A page that stops without an exit event loses the open interval. The interval is `profiler.flushIntervalMs` long at most.
+- A span that is open when the profiler turns off adds no value. With `securityContext.isolation`, a span that is open at a rotation adds no value.
+- A probe above `profiler.maxProbes` adds no value. The library reports `config.invalid`.
+- The count in a record is the count of measured spans. With `sampleEvery`, multiply it by `profile.sample_every` for an estimate.
+
+## Session replay segments
+
+A replay segment is not a batch. The promises of this page do not apply to it.
+
+- A segment is only in memory. The library does not store it. A page reload or a crash loses each segment that is not sent.
+- The exit flush sends no segment. An upload that is open when the page closes stops there.
+- The library sends a segment again after `429`, `5xx`, `401`, `403` and a network error, up to `replay.maxAttempts`. Then it drops the segment and reports the reason to diagnostics. `onDrop` does not report a replay segment.
+- Above `replay.maxQueueBytes`, the library drops the oldest segment that waits. Above `replay.maxBufferBytes`, the buffer drops its oldest part before an upload starts.
+- The library sends the segments of one recording in the order of `sequence`, one at a time. A dropped segment leaves a gap in the sequence.
+- The server can get one segment more than one time. Deduplicate by `X-UiObs-Batch-Id`, which is `<replay.id>-<sequence>`.
+- `stopReplay()`, `newSession()` and `rotateSecurityContext()` drop each event and each segment that is not sent.

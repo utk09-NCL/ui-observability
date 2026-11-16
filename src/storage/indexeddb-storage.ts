@@ -1,6 +1,6 @@
 // src/storage/indexeddb-storage.ts
 //
-// This module stores batches in IndexedDB. It indexes them by creation time.
+// Stores batches in IndexedDB, indexed by creation time.
 
 import { QUOTA_EVICTION_DIVISOR, QUOTA_EXCEEDED_ERROR, STORAGE_NAME_INDEXEDDB } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -10,19 +10,19 @@ import { EvictionPick, hasAction } from "./eviction";
 import { addDrop, reportEviction } from "./gap";
 import { IdbDriver } from "./idb-driver";
 
-/** This StorageAdapter keeps batches in IndexedDB. */
+/** StorageAdapter that keeps batches in IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
-  /** This field holds the storage strategy name. */
+  /** The storage strategy name. */
   readonly name = STORAGE_NAME_INDEXEDDB;
 
-  /** This driver holds the IndexedDB code for the batch store. */
+  /** Holds the IndexedDB code for the batch store. */
   private readonly db: IdbDriver;
 
   /**
    * @param dbName Database name.
    * @param limits Storage capacity and retention thresholds.
    * @param diagnostics Diagnostics reporter.
-   * @param onGap Optional callback for dropped record reporting.
+   * @param onGap Optional callback for reporting dropped records.
    */
   constructor(
     dbName: string,
@@ -34,16 +34,16 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Opens the database. It has no guard. The factory needs the rejection to
-   * select the next adapter.
+   * Opens the database. Not guarded, because the factory needs the rejection to pick the
+   * next adapter.
    */
   async open(): Promise<void> {
     await this.db.ready();
   }
 
   /**
-   * Writes a batch to IndexedDB. It then prunes the storage.
-   * @param batch Batch to store.
+   * Writes a batch to IndexedDB, then prunes the storage.
+   * @param batch The batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
     try {
@@ -66,8 +66,8 @@ export class IndexedDbStorage implements StorageAdapter {
           reportEviction(this.diagnostics, this.onGap, gap, evicted);
         }
 
-        // The eviction makes room for this batch. Without a second write, save() resolves.
-        // The library then loses the batch. No counter shows the loss.
+        // The eviction made room for this batch, so write it again. Without the second write,
+        // save() resolves, the batch is lost and no counter shows it.
         const stored = await this.diagnostics.guardAsync(
           "storage.degraded",
           "The library could not write the batch after it removed old batches.",
@@ -89,16 +89,16 @@ export class IndexedDbStorage implements StorageAdapter {
         { batchId: batch.id },
         error,
       );
-      // The diagnostic above names the failure. A storage.evicted report counts it two times.
+      // The diagnostic above names the failure. A storage.evicted report would count it twice.
       this.onGap?.({ batches: 1, records: batch.records.length, reason: "not_stored" }, [batch]);
     }
   }
 
   /**
-   * Reads batches of one context in creation order without removing them.
+   * Reads one context's batches in creation order without removing them.
    * @param id Delivery context id.
-   * @param limit Maximum batches to return.
-   * @returns Batches of this context, oldest first.
+   * @param limit Maximum number of batches to return.
+   * @returns This context's batches, oldest first.
    */
   async takeContext(id: string, limit: number): Promise<LogBatch[]> {
     return (
@@ -111,9 +111,9 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Counts stored batches of one context.
+   * Counts one context's stored batches.
    * @param id Delivery context id.
-   * @returns Number of batches in this context.
+   * @returns The number of batches in this context.
    */
   async countContext(id: string): Promise<number> {
     return (
@@ -126,15 +126,15 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Reads up to `limit` batches in FIFO order. It does not delete them.
+   * Reads up to `limit` batches in FIFO order without deleting them.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Array of retrieved batches.
+   * @returns The retrieved batches.
    */
   async take(limit: number): Promise<LogBatch[]> {
     const batches = await this.diagnostics.guardAsync(
       "storage.degraded",
       "The library could not read the stored batches.",
-      // getAll() takes an unsigned 32-bit count. A larger count throws. Then the read gives nothing.
+      // getAll() takes an unsigned 32-bit count. Anything larger throws and the read is empty.
       () => this.db.takeOldest(Math.min(limit, 0xffffffff)),
     );
     return batches ?? [];
@@ -153,9 +153,9 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Sets the delivery attempt count of a stored batch.
+   * Sets a stored batch's delivery attempt count.
    * @param id Batch identifier.
-   * @param attempts New absolute attempt count.
+   * @param attempts The new absolute attempt count.
    */
   async bumpAttempts(id: string, attempts: number): Promise<void> {
     await this.diagnostics.guardAsync(
@@ -166,8 +166,7 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Removes expired batches. It then removes the oldest batches above the
-   * capacity limit.
+   * Removes expired batches, then the oldest batches above the capacity limit.
    * @returns Prune summary metrics.
    */
   async prune(): Promise<PruneResult> {
@@ -197,7 +196,7 @@ export class IndexedDbStorage implements StorageAdapter {
 
   /**
    * Returns the number of stored batches.
-   * @returns Total batch count or 0 on failure.
+   * @returns The total batch count, or 0 on failure.
    */
   async count(): Promise<number> {
     const total = await this.diagnostics.guardAsync(
@@ -208,7 +207,7 @@ export class IndexedDbStorage implements StorageAdapter {
     return total ?? 0;
   }
 
-  /** This method deletes all stored batches from the database. */
+  /** Deletes every stored batch from the database. */
   async clear(): Promise<void> {
     await this.diagnostics.guardAsync(
       "storage.degraded",
@@ -217,7 +216,7 @@ export class IndexedDbStorage implements StorageAdapter {
     );
   }
 
-  /** This method closes the active IndexedDB connection. */
+  /** Closes the active IndexedDB connection. */
   async close(): Promise<void> {
     await this.diagnostics.guardAsync(
       "storage.degraded",
@@ -227,9 +226,9 @@ export class IndexedDbStorage implements StorageAdapter {
   }
 
   /**
-   * Adds dropped batches to the prune result. It reports them with their own reason.
-   * @param result Prune result of all rules.
-   * @param reason Rule that dropped the batches.
+   * Adds dropped batches to the prune result and reports them under their own reason.
+   * @param result The prune result across all rules.
+   * @param reason The rule that dropped the batches.
    * @param dropped The dropped batches.
    */
   private addGap(result: PruneResult, reason: PruneResult["reason"], dropped: LogBatch[]): void {
@@ -239,13 +238,13 @@ export class IndexedDbStorage implements StorageAdapter {
 
   /**
    * Deletes the given number of stored batches. Batches without an action go first, oldest
-   * first. An action is an audit fact. It has no guard. Both callers guard it. A guard here
-   * hides the failure and reports an eviction that did not occur.
+   * first, because an action is an audit fact. Not guarded, because both callers guard it. A
+   * guard here would hide the failure and report an eviction that never happened.
    * @param howMany Number of batches to evict.
    * @returns The evicted batches.
    */
   private async evictOldest(howMany: number): Promise<LogBatch[]> {
-    // Only the records tell if a batch holds an action. The walk stops at enough plain batches.
+    // Only the records say whether a batch holds an action. Stop at enough plain batches.
     const pick = new EvictionPick(howMany, hasAction);
     await this.db.walkOldest((batch) => pick.add(batch));
 

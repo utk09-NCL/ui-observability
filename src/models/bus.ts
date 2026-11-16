@@ -5,26 +5,26 @@
 import { BUS_PROTOCOL, type BUS_TYPE } from "../constants";
 import type { LogRecord } from "./log-record";
 
-/** Permissions of one child window or worker. The handshake needs no separate permission. */
+/** What one child window or worker may do. The handshake needs no permission of its own. */
 export type BusPermission = "records" | "journey:read" | "journey:write" | "sampling:read";
 export interface SourceOptions {
-  /** Permissions of this source. Without this list, the source can send records only. */
+  /** This source's permissions. Without the list, the source can only send records. */
   permissions?: BusPermission[];
 }
 
 /** Origin and permissions for one child frame registration. */
 export interface FrameOptions extends SourceOptions {
-  /** Expected window origin, with its scheme and port. The origin must match exactly. */
+  /** Expected window origin, including its scheme and port. Must match exactly. */
   origin: string;
 }
 
-/** Delivery role. It tells if this context sends its records or forwards them upstream. */
+/** Delivery role: whether this context sends its own records or forwards them upstream. */
 export type BusRole = "sender" | "forwarder";
 
 /**
- * Kind of transport channel. The bus uses it to route incoming and outgoing messages.
- * Without it, `receive` cannot tell the channels apart. Then a same-origin iframe
- * looks like a duplicated tab.
+ * Kind of transport channel, which the bus uses to route incoming and outgoing messages.
+ * Without it, `receive` can't tell the channels apart and a same-origin iframe looks like a
+ * duplicated tab.
  */
 export type LinkKind =
   /** Synchronous call into a same-origin parent runtime. */
@@ -44,13 +44,13 @@ export type LinkKind =
 
 /** Origin and transport metadata for an incoming bus message. */
 export interface MessageSource {
-  /** Source identity from the transport. The source does not supply it in message.from. */
+  /** Source identity as the transport reports it. The source can't supply it in message.from. */
   peer?: object | string;
   /** Inbound transport channel kind. */
   link: LinkKind;
   /** `event.origin` for `parent` and `children`. Other links use `"same-origin"` or `"openfin"`. */
   origin: string;
-  /** Sends an answer to this source only. A link that cannot address one source omits it. */
+  /** Replies to this source only. A link that can't address a single source omits it. */
   reply?: (message: BusMessage) => void;
 }
 
@@ -59,9 +59,9 @@ export type BusMessage =
   /** Handshake discovery announcement from a starting forwarder. */
   | { t: typeof BUS_TYPE.hello; from: string; tabId: string }
   /**
-   * Handshake response from an upstream owner. The `to` field holds the address.
-   * A welcome on InterApplicationBus goes to every subscriber. Without an address,
-   * each waiting view accepts the welcome as its own.
+   * Handshake response from an upstream owner, addressed through the `to` field. A welcome on
+   * InterApplicationBus reaches every subscriber, so without an address every waiting view
+   * would accept the welcome as its own.
    */
   | {
       t: typeof BUS_TYPE.welcome;
@@ -72,23 +72,23 @@ export type BusMessage =
     }
   /** Telemetry log records forwarded to an upstream sender. */
   | { t: typeof BUS_TYPE.records; from: string; records: LogRecord[]; routingContextId?: string }
-  /** Delivery context update. Only the owner from the handshake can send it to its children. */
+  /** Delivery context update. Only the owner from the handshake may send it to its children. */
   | { t: typeof BUS_TYPE.securityContext; from: string; id: string }
   /**
-   * Journey update, or the answer to a journey question. An answer holds the address of the
-   * context that asked in `to`. The payload comes from another realm. The receiver parses it.
+   * Journey update, or the answer to a journey question. An answer carries the asking
+   * context's address in `to`. The payload comes from another realm, so the receiver parses it.
    */
   | { t: typeof BUS_TYPE.journey; from: string; to?: string; journey: unknown }
   /** Query requesting active journey state from connected peers. */
   | { t: typeof BUS_TYPE.journeyRequest; from: string }
   /** Tab identifier claim broadcast to detect collisions across windows. */
   | { t: typeof BUS_TYPE.tab; from: string; tabId: string }
-  /** Request of a forwarder for the remote sampling rules in force. */
+  /** A forwarder's request for the current remote sampling rules. */
   | { t: typeof BUS_TYPE.samplingRequest; from: string }
   /**
-   * Remote sampling rules in the shape of the header, with the remaining TTL. The `to` field
-   * holds the address of the forwarder that asked. The receiver validates `rules` again.
-   * Null rules end the copy of the forwarder.
+   * Remote sampling rules in the header's shape, with the remaining TTL. `to` holds the address
+   * of the forwarder that asked. The receiver validates `rules` again. Null rules end the
+   * forwarder's copy.
    */
   | { t: typeof BUS_TYPE.sampling; from: string; to: string; rules: unknown };
 
@@ -110,12 +110,12 @@ export function envelope(message: BusMessage): BusEnvelope {
 }
 
 /**
- * Validates the protocol tag and unpacks a raw payload into a bus message. A
- * document gets `message` events from all embedded content on the page. This
- * includes analytics tags, video players and extensions. Without the tag check,
- * the bus parses a message from a video player as a log record.
+ * Validates the protocol tag and unpacks a raw payload into a bus message. A document gets
+ * `message` events from all embedded content on the page, including analytics tags, video
+ * players and extensions. Without the tag check, the bus would parse a video player's message
+ * as a log record.
  * @param data Raw payload received over a transport link.
- * @returns Validated message, or null if payload is invalid or unrecognized.
+ * @returns The validated message, or null if the payload is invalid or unrecognized.
  */
 export function unwrap(data: unknown): BusMessage | null {
   if (typeof data !== "object" || data === null) {

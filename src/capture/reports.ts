@@ -2,7 +2,7 @@ import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
 
-/** Report fields that this capture reads. Message text and samples stay out. */
+/** The report fields this capture reads. Message text and samples stay out. */
 interface BrowserReport {
   type: string;
   url: string;
@@ -28,7 +28,7 @@ export class ReportCapture implements Capture {
 
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Installs report and CSP listeners. CSP reports do not need ReportingObserver. */
+  /** Installs the report and CSP listeners. CSP reports don't need ReportingObserver. */
   install(): void {
     if (this.installed) {
       return;
@@ -85,7 +85,7 @@ export class ReportCapture implements Capture {
     );
   };
 
-  /** Reads only fixed report fields. The diagnostics guard contains a failed field read. */
+  /** Reads only a fixed set of report fields. The diagnostics guard contains a failed read. */
   private record(report: BrowserReport): void {
     if (!this.installed || this.ctx.isActive?.() === false) {
       return;

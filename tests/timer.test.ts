@@ -189,7 +189,7 @@ describe("ConsoleSink", () => {
   /**
    * A sink with the diagnostics throttle disabled, plus the events it reported.
    * @param level Mirroring threshold.
-   * @param styles CSS styles of the prefix parts.
+   * @param styles CSS styles for the prefix parts.
    * @returns The sink and its event list.
    */
   function sinkOf(
@@ -235,7 +235,7 @@ describe("ConsoleSink", () => {
 
     sinkOf("TRACE").sink.write("board.hop", "INFO", "hello");
 
-    // The namespace tells apart the logs of each part of the app.
+    // The namespace shows which part of the app a log came from.
     expect(spy).toHaveBeenCalledWith(
       "%c[%s]%c[INFO]%c",
       STYLES.namespace,
@@ -317,7 +317,7 @@ describe("ConsoleSink", () => {
   });
 
   it("prints a sanitized copy of the payload, not the caller's object", () => {
-    // Devtools keeps a reference to each logged object. A copy releases the caller's object.
+    // Devtools keeps a reference to every logged object, so a copy releases the caller's object.
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const payload: Record<string, unknown> = { orderId: "ORD-1" };
     payload.self = payload;
@@ -362,7 +362,7 @@ describe("ConsoleSink", () => {
   });
 
   it("reports a console method that throws instead of failing the log call", () => {
-    // A host can instrument console. Its fault must not reach the caller's log call.
+    // A host can instrument console, and its fault must not reach the caller's log call.
     vi.spyOn(console, "info").mockImplementation(() => {
       throw new Error("instrumented");
     });

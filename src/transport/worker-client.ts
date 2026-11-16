@@ -16,7 +16,7 @@ export class WorkerFault extends Error {
   }
 }
 
-/** One pending request of the private channel. */
+/** One pending request on the private channel. */
 interface Pending {
   job: WorkerJob;
   resolve: (result: WorkerResult) => void;
@@ -191,7 +191,8 @@ export function createWorkerClient(factory: () => Worker, diagnostics: Diagnosti
             cancel("cancelled");
           };
           const timer = setTimeout(() => {
-            // A worker with no ready answer has not started. HTTP cannot duplicate its unsent job.
+            // A worker that hasn't answered ready hasn't started, so HTTP can't duplicate its
+            // unsent job.
             if (current.ready) {
               cancel("timeout");
             } else {

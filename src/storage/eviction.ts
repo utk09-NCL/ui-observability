@@ -1,32 +1,32 @@
 // src/storage/eviction.ts
 //
-// This module selects the stored batches to evict. An action is an audit fact. The batches without
-// an action go first. The walk stops early. A read of the full store at each save blocks the page.
+// Picks which stored batches to evict. An action is an audit fact, so batches without one go
+// first. The walk stops early, because reading the whole store on every save blocks the page.
 
 import { isActionRecord, type LogBatch } from "../models/batch";
 
 /**
- * Tests if a batch holds an action. An eviction removes such a batch last.
- * @param batch Batch to test.
- * @returns True if one record of the batch is an action.
+ * Checks whether a batch holds an action. Eviction removes such a batch last.
+ * @param batch The batch to check.
+ * @returns True if any record in the batch is an action.
  */
 export function hasAction(batch: LogBatch): boolean {
-  // Another script on the origin can write to the database. A throw in a cursor handler stops
-  // the eviction walk. The walk then never settles.
+  // Another script on the origin can write to the database. A throw in a cursor handler would
+  // stop the eviction walk, and the walk would never settle.
   return Array.isArray(batch.records) && batch.records.some(isActionRecord);
 }
 
-/** Collects the items to evict from a walk in age order, oldest first. */
+/** Collects the items to evict from an oldest-first walk. */
 export class EvictionPick<T> {
   /** Items without an audit fact. */
   private readonly plain: T[] = [];
 
-  /** Oldest items with an audit fact. The pick uses them only when too few plain items exist. */
+  /** The oldest items with an audit fact. Only used when there aren't enough plain items. */
   private readonly audit: T[] = [];
 
   /**
    * @param howMany Number of items to evict.
-   * @param isAudit Tests if an item holds an audit fact.
+   * @param isAudit Checks whether an item holds an audit fact.
    */
   constructor(
     private readonly howMany: number,
@@ -35,8 +35,8 @@ export class EvictionPick<T> {
 
   /**
    * Adds the next item of the walk.
-   * @param item Next oldest item.
-   * @returns False when the pick has enough items without an audit fact. The walk then stops.
+   * @param item The next oldest item.
+   * @returns False once the pick has enough items without an audit fact, which stops the walk.
    */
   add(item: T): boolean {
     if (!this.isAudit(item)) {
@@ -49,7 +49,7 @@ export class EvictionPick<T> {
   }
 
   /**
-   * Gives the items to evict. The items without an audit fact come first.
+   * Returns the items to evict, with the ones without an audit fact first.
    * @returns The picked items.
    */
   picked(): T[] {
@@ -58,11 +58,11 @@ export class EvictionPick<T> {
 }
 
 /**
- * Picks the items to evict from a walk in age order. It stops the walk early.
+ * Picks the items to evict from an oldest-first walk, and stops the walk early.
  * @param items Items, oldest first. A generator reads each item only when the walk needs it.
  * @param howMany Number of items to evict.
- * @param isAudit Tests if an item holds an audit fact.
- * @returns The picked items. The items without an audit fact come first.
+ * @param isAudit Checks whether an item holds an audit fact.
+ * @returns The picked items, with the ones without an audit fact first.
  */
 export function pickEvictable<T>(
   items: Iterable<T>,

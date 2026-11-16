@@ -1,7 +1,7 @@
 // tools/reference-collector.mjs
 //
-// Reference ingest server for the library. It implements each rule of the ingest contract in the
-// README. It has no dependencies, and it is not part of the package. Use it as a model for your
+// Reference ingest server for the library. It implements every rule of the ingest contract in
+// the README, has no dependencies, and is not part of the package. Use it as a model for your
 // own server, or run it in front of an OpenTelemetry collector.
 //
 // Run: node tools/reference-collector.mjs
@@ -10,17 +10,19 @@
 //   HOST                     Interface to listen on. Default 127.0.0.1. Set 0.0.0.0 to accept
 //                            requests from other hosts.
 //   PORT                     Port. Default 4320.
-//   ALLOWED_ORIGINS          Origins that can send, separated by commas. Default: none. A request
-//                            with another Origin header gets 403.
-//   ALLOW_CREDENTIALS        "true" sends Access-Control-Allow-Credentials. Use it only with
+//   ALLOWED_ORIGINS          Comma-separated origins that may send. Default: none. A request
+//                            with any other Origin header gets 403.
+//   ALLOW_CREDENTIALS        "true" sends Access-Control-Allow-Credentials. Only use it with
 //                            credentials: "include" in the library.
-//   AUTH_TOKEN               If set, each request must send "Authorization: Bearer <token>". A
-//                            token in a browser bundle is public. It does not prove who the user is.
+//   AUTH_TOKEN               If set, every request must send "Authorization: Bearer <token>".
+//                            A token in a browser bundle is public, so it doesn't prove who
+//                            the user is.
 //   UPSTREAM_URL             Base URL of an OTLP/HTTP collector, for example http://localhost:4318.
-//                            The server forwards each OTLP batch there. Without it, the server
-//                            prints a summary of each batch.
-//   SAMPLING_RULES           JSON text of the remote sampling rules, for X-UiObs-Sampling.
+//                            Every OTLP batch is forwarded there. Without it, the server prints
+//                            a summary of each batch.
+//   SAMPLING_RULES           The remote sampling rules as JSON text, for X-UiObs-Sampling.
 //   MAX_BODY_BYTES           Largest body after gzip decoding. Default 1048576.
+//   MAX_REPLAY_BODY_BYTES    The same limit for a /v1/replay body. Default 16777216.
 //   MAX_REQUESTS_PER_SECOND  Requests from one address above this rate get 429. Default 50.
 
 import { timingSafeEqual } from "node:crypto";
@@ -28,10 +30,10 @@ import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
 
 /**
- * Reads a positive integer from the environment. A value such as "1mb" gives NaN. A NaN limit
- * turns the limit off, so the server stops at startup.
+ * Reads a positive integer from the environment. A value such as "1mb" parses to NaN, and a
+ * NaN limit would turn the limit off, so the server refuses to start instead.
  * @param name Variable name.
- * @param fallback Value without the variable.
+ * @param fallback Value to use when the variable isn't set.
  * @returns The integer.
  */
 function positiveInteger(name, fallback) {
@@ -56,52 +58,59 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN ?? "";
 const UPSTREAM_URL = (process.env.UPSTREAM_URL ?? "").replace(/\/+$/, "");
 const SAMPLING_RULES = process.env.SAMPLING_RULES ?? "";
 const MAX_BODY_BYTES = positiveInteger("MAX_BODY_BYTES", 1_048_576);
+// A replay segment holding a full snapshot is a single event, and the library can't split it.
+const MAX_REPLAY_BODY_BYTES = positiveInteger("MAX_REPLAY_BODY_BYTES", 16_777_216);
 const MAX_REQUESTS_PER_SECOND = positiveInteger("MAX_REQUESTS_PER_SECOND", 50);
 
-/** Keep each batch id for 24 hours. The contract asks for at least 24 hours. */
+/** Keep every batch id for 24 hours, the minimum the contract asks for. */
 const DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Largest number of batch ids in memory. The oldest id goes first. */
+/** Maximum number of batch ids kept in memory. The oldest id is evicted first. */
 const DEDUP_MAX_IDS = 100_000;
 
-/** Batch id that the server accepts. The library sends a UUID or hex text. */
+/** Batch ids the server accepts. The library sends a UUID or a hex string. */
 const BATCH_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 
-/** Attempt count that the server accepts. */
+/** Attempt counts the server accepts. */
 const ATTEMPT_PATTERN = /^\d{1,4}$/;
 
-/** Exit reasons that the library sends in uiobs_exit. */
+/** Exit reasons the library sends in uiobs_exit. */
 const EXIT_REASONS = new Set(["hidden", "pagehide", "freeze", "openfin-close", "shutdown"]);
 
-/** Longest sampling header that the library reads. */
+/** Longest sampling header the library will read. */
 const SAMPLING_MAX_CHARS = 4096;
 
-/** Delay that a client waits after 429 or 503, in seconds. */
+/** How long a client waits after a 429 or 503, in seconds. */
 const RETRY_AFTER_SECONDS = 5;
 
-/** Time limit of a forward to the upstream collector. */
+/** Timeout for a forward to the upstream collector. */
 const UPSTREAM_TIMEOUT_MS = 10_000;
 
-/** Ingest path and the top-level key of its OTLP request. */
+/**
+ * Maps each ingest path to the top-level key of its request body. For the three OTLP paths,
+ * that is the key of the OTLP request.
+ */
 const PATHS = {
   "/v1/logs": "resourceLogs",
   "/v1/metrics": "resourceMetrics",
   "/v1/traces": "resourceSpans",
+  // A session replay segment: a list of recorder events, with no OTLP form.
+  "/v1/replay": "events",
 };
 
-/** Media types that the library sends. A beacon sends text/plain to avoid a preflight. */
+/** Media types the library sends. A beacon uses text/plain to avoid a preflight. */
 const MEDIA_TYPES = new Set(["application/json", "text/plain", "application/x-ndjson"]);
 
-/** Batch id and the time when the server accepted it. */
+/** Every accepted batch id, with the time the server accepted it. */
 const seen = new Map();
 
-/** Batch ids of the requests in progress. A second copy that arrives at the same time waits. */
+/** Batch ids of requests in progress. A second copy arriving at the same time has to wait. */
 const inFlight = new Set();
 
-/** Fixed window of the request rate. Each address has its own count. */
+/** Fixed window for the request rate, with a separate count per address. */
 const rate = { start: 0, counts: new Map() };
 
-// Stop at a bad sampling value. The library ignores rules that are not valid.
+// Stop at startup on a bad sampling value, since the library ignores invalid rules.
 if (SAMPLING_RULES !== "") {
   JSON.parse(SAMPLING_RULES);
   if (SAMPLING_RULES.length > SAMPLING_MAX_CHARS) {
@@ -119,7 +128,7 @@ function cors(req, res) {
   res.setHeader("Vary", "Origin");
 
   if (origin && ALLOWED_ORIGINS.has(origin)) {
-    // Never "*". "*" does not work with credentials.
+    // Never "*", which doesn't work with credentials.
     res.setHeader("Access-Control-Allow-Origin", origin);
     if (ALLOW_CREDENTIALS) {
       res.setHeader("Access-Control-Allow-Credentials", "true");
@@ -158,13 +167,14 @@ function throttle(res, status, retryAfter = String(RETRY_AFTER_SECONDS)) {
 }
 
 /**
- * Counts one request of an address in the rate window. One client then cannot throttle the others.
+ * Counts a request against its address in the rate window, so one client can't throttle the
+ * others.
  * @param address Remote address of the request.
- * @returns False when the address is above the rate.
+ * @returns False when the address is over the rate.
  */
 function allowRate(address) {
   const now = Date.now();
-  // A new window clears the map. Its size is then the number of addresses in one second.
+  // Clear the map on every new window, so it never holds more than one second of addresses.
   if (now - rate.start >= 1000) {
     rate.start = now;
     rate.counts.clear();
@@ -176,9 +186,9 @@ function allowRate(address) {
 }
 
 /**
- * Tests the bearer token in constant time.
+ * Checks the bearer token in constant time.
  * @param req Request.
- * @returns True without AUTH_TOKEN, or with the correct token.
+ * @returns True if AUTH_TOKEN is unset or the token is correct.
  */
 function authorized(req) {
   if (AUTH_TOKEN === "") {
@@ -191,18 +201,19 @@ function authorized(req) {
 }
 
 /**
- * Reads the body. It stops at MAX_BODY_BYTES.
+ * Reads the body, stopping at the limit.
  * @param req Request.
- * @returns Promise of the body, or null when the body is too large.
+ * @param limit Largest body to accept, in bytes.
+ * @returns A promise for the body, or null when the body is too large.
  */
-function readBody(req) {
+function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
 
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         resolve(null);
         return;
       }
@@ -216,7 +227,7 @@ function readBody(req) {
 }
 
 /**
- * Removes the batch ids that are older than 24 hours.
+ * Removes batch ids older than 24 hours.
  */
 function pruneSeen() {
   const oldest = Date.now() - DEDUP_TTL_MS;
@@ -229,19 +240,19 @@ function pruneSeen() {
 }
 
 /**
- * Keeps a batch id. Rule 3 of the contract.
+ * Remembers a batch id. Rule 3 of the contract.
  * @param key Path and batch id.
  */
 function remember(key) {
   seen.set(key, Date.now());
-  // A Map keeps the insertion order. The first key is the oldest.
+  // A Map keeps insertion order, so the first key is the oldest.
   while (seen.size > DEDUP_MAX_IDS) {
     seen.delete(seen.keys().next().value);
   }
 }
 
 /**
- * Counts the items of an OTLP request.
+ * Counts the items in an OTLP request.
  * @param payload Parsed OTLP request.
  * @param key Top-level key of the request.
  * @returns Number of log records, data points or spans.
@@ -262,7 +273,7 @@ function countItems(payload, key) {
  * Sends an OTLP request to the upstream collector.
  * @param path Ingest path.
  * @param text OTLP JSON text.
- * @returns Promise of the status for the library.
+ * @returns A promise for the status to send back to the library.
  */
 async function forward(path, text) {
   try {
@@ -273,15 +284,15 @@ async function forward(path, text) {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
 
-    // Free the connection. The server does not read the answer body.
+    // We never read the response body, so cancel it to free the connection.
     await response.body?.cancel();
 
     if (response.ok) {
       return { status: 204 };
     }
 
-    // The library retries 429, 503 and 5xx, and splits a batch on 413. It drops a batch for each
-    // other 4xx. A 401 or 403 from the upstream is a fault of this server, not of the batch.
+    // The library retries 429, 503 and 5xx, splits a batch on 413, and drops it on any other
+    // 4xx. A 401 or 403 from the upstream is this server's fault, not the batch's.
     if (response.status === 429 || response.status === 503) {
       return { status: response.status, retryAfter: response.headers.get("retry-after") };
     }
@@ -350,8 +361,8 @@ async function handle(req, res) {
     return;
   }
 
-  // The exit flush cannot set headers. Its batch id arrives as a query parameter. A strict pattern
-  // also keeps a newline or a control code out of the server log.
+  // The exit flush can't set headers, so its batch id arrives as a query parameter. The strict
+  // pattern also keeps newlines and control codes out of the server log.
   const batchId = String(
     req.headers["x-uiobs-batch-id"] ?? url.searchParams.get("uiobs_batch_id") ?? "",
   );
@@ -367,7 +378,7 @@ async function handle(req, res) {
     return;
   }
 
-  // Two tabs can send one stored batch at the same time. The second copy tries again later.
+  // Two tabs can send the same stored batch at the same time. The second copy retries later.
   if (dedupKey !== "" && inFlight.has(dedupKey)) {
     throttle(res, 503, "1");
     return;
@@ -389,17 +400,18 @@ async function handle(req, res) {
  * @param req Request.
  * @param res Response.
  * @param url Request URL.
- * @param key Top-level key of the OTLP request.
+ * @param key Top-level key of the request body.
  * @param mediaType Media type of the body.
  * @param batchId Batch id, or "".
  * @param dedupKey Path and batch id, or "".
  */
 async function accept(req, res, url, key, mediaType, batchId, dedupKey) {
-  // Rule 5: 413 with the limit. The library splits the batch.
-  let body = await readBody(req);
+  // Rule 5: 413 with the limit. The library splits a log batch but drops a replay segment.
+  const limit = key === "events" ? MAX_REPLAY_BODY_BYTES : MAX_BODY_BYTES;
+  let body = await readBody(req, limit);
   const tooLarge = () => {
     res.setHeader("Connection", "close");
-    end(res, 413, JSON.stringify({ maxBytes: MAX_BODY_BYTES }));
+    end(res, 413, JSON.stringify({ maxBytes: limit }));
   };
   if (body === null) {
     tooLarge();
@@ -408,8 +420,8 @@ async function accept(req, res, url, key, mediaType, batchId, dedupKey) {
 
   if (req.headers["content-encoding"] === "gzip") {
     try {
-      // The limit stops a small gzip body that decodes to a very large body.
-      body = gunzipSync(body, { maxOutputLength: MAX_BODY_BYTES });
+      // The limit stops a small gzip body from decoding into a huge one.
+      body = gunzipSync(body, { maxOutputLength: limit });
     } catch (error) {
       if (error.code === "ERR_BUFFER_TOO_LARGE") {
         tooLarge();
@@ -427,7 +439,7 @@ async function accept(req, res, url, key, mediaType, batchId, dedupKey) {
   const exitText = EXIT_REASONS.has(exit) ? ` exit=${exit}` : "";
   const label = `${url.pathname} batch=${batchId || "-"} attempt=${attempt}${exitText}`;
 
-  // An ECS batch is NDJSON. It has no OTLP form for the upstream collector.
+  // An ECS batch is NDJSON, which has no OTLP form to send to the upstream collector.
   if (mediaType === "application/x-ndjson") {
     const lines = text.split("\n").filter((line) => line !== "");
     console.log(`[ecs] ${label} documents=${lines.length}`);
@@ -445,7 +457,12 @@ async function accept(req, res, url, key, mediaType, batchId, dedupKey) {
       return;
     }
 
-    if (UPSTREAM_URL !== "") {
+    if (key === "events") {
+      // The upstream collector only takes OTLP. A real server would store the segment by its ids.
+      console.log(
+        `[replay] ${label} replay=${String(payload["replay.id"])} sequence=${String(payload.sequence)} events=${payload.events.length}`,
+      );
+    } else if (UPSTREAM_URL !== "") {
       const result = await forward(url.pathname, text);
       if (result.status === 429 || result.status === 503) {
         throttle(res, result.status, result.retryAfter ?? undefined);
@@ -457,10 +474,12 @@ async function accept(req, res, url, key, mediaType, batchId, dedupKey) {
       }
     }
 
-    console.log(`[otlp] ${label} items=${countItems(payload, key)}`);
+    if (key !== "events") {
+      console.log(`[otlp] ${label} items=${countItems(payload, key)}`);
+    }
   }
 
-  // Keep the id only after the batch is safe. A failed forward then gets the retry.
+  // Only remember the id once the batch is safe, so a failed forward can still be retried.
   if (dedupKey !== "") {
     remember(dedupKey);
   }
@@ -485,7 +504,9 @@ const server = createServer((req, res) => {
 setInterval(pruneSeen, 10 * 60 * 1000).unref();
 
 server.listen(PORT, HOST, () => {
-  console.log(`reference collector on http://${HOST}:${PORT} (/v1/logs, /v1/metrics, /v1/traces)`);
+  console.log(
+    `reference collector on http://${HOST}:${PORT} (/v1/logs, /v1/metrics, /v1/traces, /v1/replay)`,
+  );
   if (AUTH_TOKEN === "") {
     console.warn("no AUTH_TOKEN: each client that can reach the server can send batches");
   }

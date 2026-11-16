@@ -1,25 +1,25 @@
 // src/storage/context-storage.ts
 //
-// Gives access to stored batches of one delivery context and one application namespace.
+// Scopes the shared batch store to one delivery context and one application namespace.
 
 import type { SecurityContextOptions } from "../models/config";
 import type { LogBatch } from "../models/batch";
 import type { StorageAdapter } from "../models/storage";
 
-/** Gives access to one part of the shared store. Records of other contexts stay stored. */
+/** A view of one slice of the shared store. Other contexts' records are left alone. */
 export class ContextStorage implements StorageAdapter {
-  /** Adapter name of the underlying store. */
+  /** Name of the underlying adapter. */
   readonly name: string;
-  /** False after this context store stops accepting writes. */
+  /** False once this context store stops accepting writes. */
   private active = true;
-  /** True if a late save must remove its batch after it completes. */
+  /** True if a late save has to remove its batch once it finishes. */
   private discard = false;
 
   /**
-   * Builds access to one application namespace and delivery context.
-   * @param store Underlying batch store.
-   * @param policy Active context id and isolation rule.
-   * @param namespace Application storage namespace.
+   * Scopes a store to one application namespace and delivery context.
+   * @param store The underlying batch store.
+   * @param policy The active context id and the isolation rule.
+   * @param namespace The application's storage namespace.
    */
   constructor(
     private readonly store: StorageAdapter,
@@ -30,8 +30,8 @@ export class ContextStorage implements StorageAdapter {
   }
 
   /**
-   * Checks if a batch belongs to the permitted namespace and context.
-   * @param batch Batch to check.
+   * Checks whether a batch belongs to this namespace and context.
+   * @param batch The batch to check.
    * @returns True if this adapter can accept the batch.
    */
   accepts(batch: LogBatch): boolean {
@@ -42,24 +42,24 @@ export class ContextStorage implements StorageAdapter {
   }
 
   /**
-   * Stores a batch of this context. A late save removes its batch after a discard.
-   * @param batch Batch to store.
-   * @returns Promise that resolves when the save and any removal complete.
+   * Stores a batch for this context. After a discard, a late save removes its own batch again.
+   * @param batch The batch to store.
+   * @returns A promise that resolves once the save, and any removal, is done.
    */
   async save(batch: LogBatch): Promise<void> {
     if (!this.active || !this.accepts(batch)) return;
     await this.store.save(batch);
-    // A slow save can complete after the context change cleared these records.
+    // A slow save can finish after the context change already cleared these records.
     if (this.discard) await this.store.remove(batch.id);
   }
 
   /**
-   * Reads stored batches of this context, oldest first.
-   * @param limit Maximum batches to return.
-   * @returns Batches in creation order. The method does not remove them.
+   * Reads this context's stored batches, oldest first.
+   * @param limit Maximum number of batches to return.
+   * @returns The batches in creation order. They are not removed.
    */
   async take(limit: number): Promise<LogBatch[]> {
-    // Read only this part of the store. A full read on each retry pass parses all contexts.
+    // Read only this context's slice. A full read on every retry pass would parse all contexts.
     if (!this.isolated()) {
       return (await this.store.take(limit)).filter((batch) => this.accepts(batch));
     }
@@ -73,7 +73,7 @@ export class ContextStorage implements StorageAdapter {
   }
 
   /**
-   * Checks if reads are limited to the active context.
+   * Checks whether reads are limited to the active context.
    * @returns True if isolation is on and the context has an id.
    */
   private isolated(): boolean {
@@ -83,33 +83,33 @@ export class ContextStorage implements StorageAdapter {
   /**
    * Removes one stored batch.
    * @param id Batch id.
-   * @returns Promise that resolves when removal completes.
+   * @returns A promise that resolves once the batch is removed.
    */
   remove(id: string): Promise<void> {
     return this.store.remove(id);
   }
 
   /**
-   * Changes the attempt count of a stored batch.
+   * Updates a stored batch's attempt count.
    * @param id Batch id.
-   * @param attempts Total attempt count to store.
-   * @returns Promise that resolves when the change completes.
+   * @param attempts The total attempt count to store.
+   * @returns A promise that resolves once the change is saved.
    */
   bumpAttempts(id: string, attempts: number): Promise<void> {
     return this.store.bumpAttempts(id, attempts);
   }
 
   /**
-   * Applies the retention and capacity limits of the underlying store.
-   * @returns Summary of the batches and records removed.
+   * Applies the underlying store's retention and capacity limits.
+   * @returns A summary of the batches and records it removed.
    */
   prune(): ReturnType<StorageAdapter["prune"]> {
     return this.store.prune();
   }
 
   /**
-   * Counts stored batches of this context.
-   * @returns Number of batches in this context.
+   * Counts this context's stored batches.
+   * @returns The number of batches in this context.
    */
   async count(): Promise<number> {
     if (!this.isolated()) {
@@ -124,29 +124,30 @@ export class ContextStorage implements StorageAdapter {
   }
 
   /**
-   * Removes stored batches of this context.
-   * @returns Promise that resolves when removal completes.
+   * Removes this context's stored batches.
+   * @returns A promise that resolves once they are removed.
    */
   async clear(): Promise<void> {
     for (const batch of await this.take(Number.MAX_SAFE_INTEGER)) await this.store.remove(batch.id);
   }
 
   /**
-   * Stops new writes and clears this context if required. Other contexts can keep the memory store.
-   * @param discard True to remove this context before closing the store.
-   * @returns Promise that resolves when removal and closure complete.
+   * Stops new writes and, if asked, clears this context. The memory store is left open for
+   * other contexts.
+   * @param discard True to remove this context's batches before closing the store.
+   * @returns A promise that resolves once the removal and the close are done.
    */
   async retire(discard: boolean): Promise<void> {
     this.active = false;
     this.discard = discard;
     if (discard) await this.clear();
-    // Keep the memory store for later context changes. It can hold records of other contexts.
+    // Keep the memory store around for later context changes. It may hold other contexts' records.
     if (this.name !== "memory") await this.close();
   }
 
   /**
-   * Removes all batches in the application namespace.
-   * @returns Promise that resolves when removal completes.
+   * Removes every batch in the application namespace.
+   * @returns A promise that resolves once they are removed.
    */
   clearNamespace(): Promise<void> {
     return this.store.clear();
@@ -154,7 +155,7 @@ export class ContextStorage implements StorageAdapter {
 
   /**
    * Closes the underlying store.
-   * @returns Promise that resolves when closure completes.
+   * @returns A promise that resolves once it is closed.
    */
   close(): Promise<void> {
     return this.store.close();

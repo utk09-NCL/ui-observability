@@ -56,8 +56,8 @@ describe("the emergency queue", () => {
   });
 
   it("claims each key before the save, so a second window finds nothing", async () => {
-    // Five windows can restore at the same time after a crash. The code removes the key
-    // synchronously. The race window is then one statement, not an await.
+    // Five windows can restore at the same time after a crash. Removing the key synchronously
+    // shrinks the race window to one statement instead of an await.
     saveToEmergencyQueue(batch("b1"), quiet());
     const storage = new MemoryStorage(limits);
 
@@ -83,7 +83,7 @@ describe("the emergency queue", () => {
     expect(keys[MAX_ENTRIES - 1]).toContain(".b24");
   });
 
-  it("gives onLoss the oldest entries that it drops, and skips a corrupt one", () => {
+  it("passes the oldest entries it drops to onLoss, and skips a corrupt one", () => {
     const onLoss = vi.fn<LossReporter>();
     for (let i = 0; i < MAX_ENTRIES; i++) {
       saveToEmergencyQueue(batch(`b${String(i)}`, 1000 + i), quiet());
@@ -97,7 +97,7 @@ describe("the emergency queue", () => {
     expect(onLoss).toHaveBeenCalledWith("exit_queue_full", [{ body: "b0" }], ["b0"]);
   });
 
-  it("gives onLoss a batch that the store refuses", () => {
+  it("passes a batch the store refuses to onLoss", () => {
     const blocked = useFakeLocalStorage();
     const onLoss = vi.fn<LossReporter>();
     blocked.add("setItem");
@@ -108,7 +108,7 @@ describe("the emergency queue", () => {
   });
 
   it("reports a loss report that throws and does not throw itself", () => {
-    // The exit flush calls the queue. A throw there skips the shutdown of the sender.
+    // The exit flush calls the queue, so a throw there would skip the sender's shutdown.
     const blocked = useFakeLocalStorage();
     blocked.add("setItem");
     const { handler, diagnostics } = listening();
@@ -148,8 +148,8 @@ describe("the emergency queue", () => {
   });
 
   it("reports rather than throwing when the store refuses the write", () => {
-    // This code runs while a document unloads. A throw here is the last event in that window. No
-    // code can catch it.
+    // This runs while a document unloads. A throw here is the last event in that window, and
+    // nothing can catch it.
     const blocked = useFakeLocalStorage();
     const { handler, diagnostics } = listening();
     blocked.add("setItem");

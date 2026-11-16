@@ -70,7 +70,7 @@ describe("otlpSerializer", () => {
     expect(scopes).toEqual([
       { scope: { name: "blotter.grid" }, bodies: ["one", "three"] },
       { scope: { name: "orders" }, bodies: ["two"] },
-      // A record without a usable namespace goes to the scope of the library.
+      // A record without a usable namespace goes to the library's scope.
       { scope: { name: "@utk09/ui-observability" }, bodies: ["four", "five"] },
     ]);
   });
@@ -96,7 +96,7 @@ describe("otlpSerializer", () => {
   });
 
   it("encodes an integer above MAX_SAFE_INTEGER as a double", () => {
-    // 1e21 prints as "1e+21". That text is not a valid int64.
+    // 1e21 prints as "1e+21", which is not a valid int64.
     const attributes = { unsafe: 2 ** 53 + 2, huge: 1e21 };
 
     const byKey = attrs(record({ attributes }));
@@ -130,7 +130,7 @@ describe("otlpSerializer", () => {
 
     const byKey = attrs(record({ attributes }));
 
-    // The serializer also drops null inside an array. OTLP has no field for it.
+    // The serializer also drops null inside an array, because OTLP has no field for it.
     expect(byKey.tags).toEqual({ arrayValue: { values: kept } });
     expect(byKey.leg.kvlistValue.values).toContainEqual({
       key: "side",
@@ -166,8 +166,8 @@ describe("ecsSerializer", () => {
   it("converts the OTLP nanosecond string into an ISO timestamp", () => {
     expect(ecs(record())["@timestamp"]).toBe(new Date(1755543600123).toISOString());
 
-    // A record that the bus forwards passed only a shape check. BigInt throws on a non-numeric
-    // string. That throw loses each record in the batch.
+    // A record forwarded by the bus only passed a shape check. BigInt throws on a non-numeric
+    // string, and that throw would lose every record in the batch.
     const at = Date.parse(ecs(record({ timeUnixNano: "not-a-number" }))["@timestamp"]);
     expect(Number.isNaN(at)).toBe(false);
   });
@@ -216,7 +216,7 @@ describe("ecsSerializer", () => {
     expect(Object.keys(doc.labels)).toEqual(["service.name", "log.type", "error.captured_by"]);
   });
 
-  it("gives a metric the event kind metric, and has no error and no logger without them", () => {
+  it("marks a metric with the event kind metric, and leaves out error and logger when there are none", () => {
     const doc = ecs(
       record({ attributes: { "log.type": "metric", "app.namespace": 7, "error.type": 3 } }),
     );
@@ -319,10 +319,10 @@ describe("splitBatch", () => {
 
     expect(first.records).toHaveLength(2);
     expect(second.records).toHaveLength(3);
-    // Use new ids. With the id "original" again, the server drops the second half as a duplicate.
+    // Use new ids. Reusing "original" would make the server drop the second half as a duplicate.
     expect(first.id).not.toBe("original");
     expect(second.id).not.toBe(first.id);
-    // The age and the attempts stay. A split does not give a second chance.
+    // The age and the attempts carry over. A split is not a second chance.
     expect(first.createdAt).toBe(1000);
     expect(first.attempts).toBe(2);
   });

@@ -9,7 +9,7 @@ import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { CaptureOptions } from "../src/models/config";
 import { TraceEngine } from "../src/utils/tracing";
 
-/** Stand-in for PerformanceObserver. A test calls emit() to deliver entries. */
+/** Fake PerformanceObserver. A test calls emit() to deliver entries. */
 class FakeObserver {
   static supportedEntryTypes: readonly string[] | undefined = [];
 
@@ -39,7 +39,7 @@ class FakeObserver {
   }
 }
 
-/** Returns the observer that the stub created last. */
+/** Returns the observer the stub created last. */
 const active = (): FakeObserver | undefined => FakeObserver.created.at(-1);
 
 /**
@@ -51,7 +51,7 @@ function support(types: readonly string[] | undefined): void {
   vi.stubGlobal("PerformanceObserver", FakeObserver);
 }
 
-/** Builds the `once` flags of a new document. */
+/** Builds the `once` flags for a new document. */
 const freshOnce = (): CaptureOnce => ({
   webVitals: false,
   navigationTiming: false,
@@ -62,8 +62,8 @@ const freshOnce = (): CaptureOnce => ({
 
 /**
  * Builds a capture around a spy logger, with the diagnostics throttle off.
- * @param capture Capture settings over longFrames on.
- * @param once The `once` flags. Two captures with one object act as a reinstall in one document.
+ * @param capture Capture settings layered over longFrames on.
+ * @param once The `once` flags. Two captures sharing one object act as a reinstall in one document.
  * @returns The capture, its spy metric logger, its breadcrumbs and its diagnostic events.
  */
 function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
@@ -114,6 +114,23 @@ afterEach(() => {
 });
 
 describe("LongFrameCapture", () => {
+  it("reports a fault in a frame and does not throw into the browser", () => {
+    support(["long-animation-frame"]);
+    const { sut, logMetric, events } = setup();
+    const error = new Error("logger fault");
+    logMetric.mockImplementation(() => {
+      throw error;
+    });
+    sut.install();
+
+    // The browser calls the observer callback directly, so a throw is an uncaught page error.
+    expect(() => active()?.emit(frame(120))).not.toThrow();
+
+    expect(events.map(({ code, message, cause }) => [code, message, cause])).toEqual([
+      ["capture.record_failed", "The library could not record a long frame.", error],
+    ]);
+  });
+
   it("observes long-animation-frame when the browser supports it", () => {
     support(["longtask", "long-animation-frame"]);
     const { sut } = setup();
@@ -165,7 +182,7 @@ describe("LongFrameCapture", () => {
     expect(none.events.map((event) => event.code)).toEqual(["capture.install_failed"]);
   });
 
-  it("reports missing support one time for each document", () => {
+  it("reports missing support once per document", () => {
     support(["layout-shift"]);
     const once = freshOnce();
 
@@ -248,7 +265,7 @@ describe("LongFrameCapture", () => {
 
   it("uses a custom threshold", () => {
     support(["long-animation-frame"]);
-    const { sut, logMetric } = setup({ longFrameThresholdMs: 250 });
+    const { sut, logMetric } = setup({ longFrameMs: 250 });
     sut.install();
 
     active()?.emit(frame(200), frame(260));
@@ -259,15 +276,15 @@ describe("LongFrameCapture", () => {
   it("reports a threshold that is not usable, and uses the default", () => {
     support(["long-animation-frame"]);
     const { sut, ctx, logMetric, events } = setup();
-    // resolveConfig rejects -1. Set it after the resolve to reach the guard of the capture.
-    ctx.config.capture.longFrameThresholdMs = -1;
+    // resolveConfig rejects -1, so set it after the resolve to reach the capture's guard.
+    ctx.config.capture.longFrameMs = -1;
     sut.install();
 
     active()?.emit(frame(99), frame(100));
 
     expect(logMetric).toHaveBeenCalledTimes(1);
     expect(events.map((event) => event.message)).toEqual([
-      expect.stringContaining("capture.longFrameThresholdMs must be a number of 0 or more"),
+      expect.stringContaining("capture.longFrameMs must be a number of 0 or more"),
     ]);
   });
 

@@ -5,7 +5,10 @@
 import type { WebVitalsMetric, WebVitalsModule, WebVitalsReporter } from "../models/config";
 import type { Capture, CaptureContext } from "./types";
 
-/** Captures browser navigation timing benchmarks and Core Web Vitals. */
+/** True while the browser prerenders the page. The DOM typings don't declare the field yet. */
+const prerendering = (): boolean => (document as { prerendering?: boolean }).prerendering === true;
+
+/** Captures browser navigation timing and Core Web Vitals. */
 export class WebVitalsCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "web-vitals";
@@ -13,12 +16,15 @@ export class WebVitalsCapture implements Capture {
   /** Prevents duplicate listener registration. */
   private installed = false;
 
+  /** Navigation metrics already logged, so the early and the late read never repeat one. */
+  private readonly logged = new Set<string>();
+
   /**
-   * @param ctx Capture context containing configuration, diagnostics, and logger.
+   * @param ctx Capture context: configuration, diagnostics and logger.
    */
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Reports navigation timing and starts to load web-vitals. */
+  /** Reports navigation timing and starts loading web-vitals. */
   install(): void {
     if (this.installed) {
       return;
@@ -31,8 +37,8 @@ export class WebVitalsCapture implements Capture {
       return;
     }
 
-    // Do not import the peer by name. The Vite dev server fails if the peer is not installed.
-    // Do not set `once` here. A later configure() call with a loader must subscribe.
+    // Don't import the peer by name, because the Vite dev server fails if it isn't installed.
+    // Don't set `once` here either. A later configure() call with a loader must still subscribe.
     const loader = this.ctx.config.capture.webVitalsLoader;
     if (!loader) {
       this.ctx.diagnostics.report(
@@ -42,22 +48,22 @@ export class WebVitalsCapture implements Capture {
       return;
     }
 
-    // Set the flag after a successful load, not before. A failed load then gets a new
+    // Set the flag after a successful load, not before, so a failed load gets another
     // attempt on a later install.
     void this.loadWebVitals(loader);
   }
 
   /**
    * Marks the module as uninstalled. The web-vitals reporters stay subscribed
-   * because the package has no unsubscribe. `ctx.once` prevents a second set.
+   * because the package has no unsubscribe, and `ctx.once` prevents a second set.
    */
   uninstall(): void {
     this.installed = false;
   }
 
   /**
-   * Loads the web-vitals module and registers metric reporters.
-   * @param loader Loader that the consumer supplies.
+   * Loads the web-vitals module and registers the metric reporters.
+   * @param loader The loader the consumer supplies.
    */
   private async loadWebVitals(loader: () => Promise<WebVitalsModule>): Promise<void> {
     const module = await this.ctx.diagnostics.guardAsync(
@@ -74,8 +80,8 @@ export class WebVitalsCapture implements Capture {
       return;
     }
 
-    // Two installs in one turn both load the module. Only the first subscribes.
-    // web-vitals has no unsubscribe, and a second set reports each metric two times.
+    // Two installs in one turn both load the module, but only the first subscribes.
+    // web-vitals has no unsubscribe, and a second set would report every metric twice.
     if (this.ctx.once.webVitals) {
       return;
     }
@@ -86,8 +92,8 @@ export class WebVitalsCapture implements Capture {
       (metric: WebVitalsMetric): void => {
         this.ctx.logger.logMetric(
           `web_vitals.${name}`,
-          // Keep three decimals. CLS is a small fraction. An integer value
-          // reports each layout shift as zero.
+          // Keep three decimals. CLS is a small fraction, and rounding it to an integer
+          // would report every layout shift as zero.
           Math.round(metric.value * 1000) / 1000,
           unit,
           "gauge",
@@ -102,44 +108,115 @@ export class WebVitalsCapture implements Capture {
     module.onTTFB(send("ttfb", "ms"));
   }
 
-  /** Extracts and logs PerformanceNavigationTiming benchmarks one time for each document. */
+  /** Logs the navigation timing metrics, once per document and only after the load event. */
   private reportNavigationTiming(): void {
-    // The entry describes the one navigation of this document. A second report after a
-    // reconfigure duplicates the seven metrics.
+    // The entry describes this document's one navigation, so a second report after a
+    // reconfigure would duplicate the seven metrics.
     if (this.ctx.once.navigationTiming) {
       return;
     }
     this.ctx.once.navigationTiming = true;
 
+    this.guardNavigation(() => {
+      const nav = performance.getEntriesByType("navigation")[0] as
+        PerformanceNavigationTiming | undefined;
+      if (!nav) {
+        return;
+      }
+
+      const log = (): void => {
+        this.guardNavigation(() => {
+          this.logNavigation(nav);
+        });
+      };
+
+      // A prerendered page has no activationStart until the user opens it, and a page nobody
+      // opens must report nothing. So the full report waits for the activation.
+      const whenOpened = (): void => {
+        if (prerendering()) {
+          document.addEventListener("prerenderingchange", log, { once: true });
+        } else {
+          log();
+        }
+      };
+
+      if (nav.loadEventEnd > 0) {
+        whenOpened();
+        return;
+      }
+
+      // An app usually starts the library before the load event, when domComplete and
+      // loadEventEnd are still 0. Read one task after load, because the browser sets
+      // loadEventEnd only once the load handlers have returned. The entry is live.
+      const later = (): void => {
+        setTimeout(() => {
+          document.removeEventListener("visibilitychange", early);
+          whenOpened();
+        }, 0);
+      };
+
+      // A user who leaves a slow page before it has loaded would otherwise report nothing,
+      // and the slowest loads would be missing from the data. Log what is ready by then.
+      // A page that is still prerendering is hidden too, but nobody has left it.
+      const early = (): void => {
+        if (document.visibilityState === "hidden" && !prerendering()) {
+          log();
+        }
+      };
+      document.addEventListener("visibilitychange", early);
+
+      // Inside a load handler the state is already "complete" and no second load event comes.
+      if (document.readyState === "complete") {
+        later();
+      } else {
+        addEventListener("load", later, { once: true });
+      }
+    });
+  }
+
+  /**
+   * Runs one step of the navigation timing read. The browser calls the late steps directly,
+   * so anything they throw would be an uncaught error on the page.
+   * @param step The step to run.
+   */
+  private guardNavigation(step: () => void): void {
     this.ctx.diagnostics.guard(
       "capture.install_failed",
       "The library could not read the navigation timing.",
-      () => {
-        const nav = performance.getEntriesByType("navigation")[0] as
-          PerformanceNavigationTiming | undefined;
-        if (!nav) {
-          return;
-        }
-
-        const metrics: Record<string, number> = {
-          "navigation.dns_ms": nav.domainLookupEnd - nav.domainLookupStart,
-          "navigation.tcp_ms": nav.connectEnd - nav.connectStart,
-          "navigation.ttfb_ms": nav.responseStart - nav.requestStart,
-          "navigation.response_ms": nav.responseEnd - nav.responseStart,
-          "navigation.dom_interactive_ms": nav.domInteractive,
-          "navigation.dom_complete_ms": nav.domComplete,
-          "navigation.load_ms": nav.loadEventEnd,
-        };
-
-        for (const [name, value] of Object.entries(metrics)) {
-          // Filters unrecorded or negative timings to avoid false zero readings.
-          if (Number.isFinite(value) && value >= 0) {
-            this.ctx.logger.logMetric(name, Math.round(value), "ms", "gauge", {
-              "navigation.type": nav.type,
-            });
-          }
-        }
-      },
+      step,
     );
+  }
+
+  /**
+   * Logs every navigation metric that is ready and hasn't been logged yet.
+   * @param nav The document's navigation entry.
+   */
+  private logNavigation(nav: PerformanceNavigationTiming): void {
+    // On a prerendered page the entry's clock starts long before the user sees anything.
+    // Count the milestones from the activation and never below 0, as the web-vitals package
+    // does for its own metrics. Older browsers have no activationStart.
+    const opened = (nav as { activationStart?: number }).activationStart ?? 0;
+    // 0 means "not reached yet", and NaN makes the check below skip it.
+    const since = (time: number): number => (time > 0 ? Math.max(time - opened, 0) : NaN);
+    const type = opened > 0 ? "prerender" : nav.type;
+    const metrics: Record<string, number> = {
+      "navigation.dns_ms": nav.domainLookupEnd - nav.domainLookupStart,
+      "navigation.tcp_ms": nav.connectEnd - nav.connectStart,
+      "navigation.ttfb_ms": nav.responseStart - nav.requestStart,
+      "navigation.response_ms": nav.responseEnd - nav.responseStart,
+      "navigation.dom_interactive_ms": since(nav.domInteractive),
+      "navigation.dom_complete_ms": since(nav.domComplete),
+      "navigation.load_ms": since(nav.loadEventEnd),
+    };
+
+    for (const [name, value] of Object.entries(metrics)) {
+      // Skip timings that are missing or negative, so they don't show up as false zeros.
+      if (Number.isFinite(value) && value >= 0 && !this.logged.has(name)) {
+        this.logged.add(name);
+        this.ctx.logger.logMetric(name, Math.round(value), "ms", "gauge", {
+          "navigation.type": type,
+        });
+      }
+    }
   }
 }

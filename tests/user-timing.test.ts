@@ -9,7 +9,7 @@ import { configure, flush } from "../src/index";
 import type { CaptureOptions } from "../src/models/config";
 import { TraceEngine } from "../src/utils/tracing";
 
-/** Stand-in for PerformanceObserver. A test calls emit() to deliver entries. */
+/** Fake PerformanceObserver. A test calls emit() to deliver entries. */
 class FakeObserver {
   static supportedEntryTypes: readonly string[] | undefined = ["mark", "measure"];
 
@@ -36,7 +36,7 @@ class FakeObserver {
   }
 }
 
-/** Returns the observer that the stub created last. */
+/** Returns the observer the stub created last. */
 const active = (): FakeObserver => FakeObserver.created.at(-1)!;
 
 /** Entry types of a browser with User Timing. */
@@ -52,7 +52,7 @@ function support(types: readonly string[] | undefined): void {
   vi.stubGlobal("PerformanceObserver", FakeObserver);
 }
 
-/** Builds the `once` flags of a new document. */
+/** Builds the `once` flags for a new document. */
 const freshOnce = (): CaptureOnce => ({
   webVitals: false,
   navigationTiming: false,
@@ -63,8 +63,8 @@ const freshOnce = (): CaptureOnce => ({
 
 /**
  * Builds a capture around a spy meter, with the diagnostics throttle off.
- * @param capture Capture settings over userTiming on.
- * @param once The `once` flags. Two captures with one object act as a reinstall in one document.
+ * @param capture Capture settings layered over userTiming on.
+ * @param once The `once` flags. Two captures sharing one object act as a reinstall in one document.
  * @returns The capture and its context.
  */
 function setup(capture: Partial<CaptureOptions> = {}, once = freshOnce()) {
@@ -101,6 +101,29 @@ afterEach(() => {
 });
 
 describe("UserTimingCapture", () => {
+  it("reports a fault in an entry and does not throw into the browser", () => {
+    support(USER_TIMING_TYPES);
+    const { sut, ctx } = setup();
+    const error = new Error("meter fault");
+    const report = vi.spyOn(ctx.diagnostics, "report");
+    vi.mocked(ctx.recordMetric).mockImplementation(() => {
+      throw error;
+    });
+    sut.install();
+
+    // The browser calls the observer callback directly, so a throw is an uncaught page error.
+    expect(() => {
+      active().emit(measure("app.grid.render", 12.5));
+    }).not.toThrow();
+
+    expect(report).toHaveBeenCalledWith(
+      "capture.record_failed",
+      "The library could not record a user timing entry.",
+      undefined,
+      error,
+    );
+  });
+
   it("records a measure in the histogram and a mark as a breadcrumb", () => {
     support(USER_TIMING_TYPES);
     const { sut, ctx } = setup();
@@ -118,7 +141,7 @@ describe("UserTimingCapture", () => {
     expect(active().disconnected).toBe(true);
   });
 
-  it("gives a buffered mark the time of the mark", () => {
+  it("stamps a buffered mark with the mark's own time", () => {
     support(USER_TIMING_TYPES);
     const { sut, ctx } = setup();
     vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(1000);
@@ -189,7 +212,7 @@ describe("UserTimingCapture", () => {
     sut.uninstall();
   });
 
-  it("reports a browser without User Timing entries one time", () => {
+  it("reports a browser without User Timing entries once", () => {
     const once = freshOnce();
     for (const types of [undefined, ["longtask"]]) {
       support(types);

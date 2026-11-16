@@ -1,11 +1,11 @@
 // src/utils/guards.ts
 //
-// Type guards for values from outside the library, for example config input, a server answer or
-// the payload of a call.
+// Type guards for values that come from outside the library, such as config input, a server
+// answer or a call's payload.
 
 /**
- * Tests if a value is an object that is not null and not an array.
- * @param value Value to test.
+ * Checks whether a value is a non-null object that isn't an array.
+ * @param value The value to check.
  * @returns True for an object with string keys.
  */
 export function isObject(value: unknown): value is Record<string, unknown> {

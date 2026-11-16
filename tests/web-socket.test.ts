@@ -14,9 +14,9 @@ const URL_WITH_SECRETS = "wss://user:pw@feed.example/prices?token=abc#x";
 
 const TARGET = { "url.full": "wss://feed.example/prices", "server.address": "feed.example" };
 
-/** Stand-in for the WebSocket of the browser. It opens no connection. */
+/** Fake browser WebSocket that opens no connection. */
 class FakeSocket extends EventTarget {
-  /** True to make send() throw, as a socket that is not open does. */
+  /** True to make send() throw, the way a socket that isn't open does. */
   static failSend = false;
 
   readonly url: string;
@@ -37,8 +37,8 @@ class FakeSocket extends EventTarget {
 }
 
 /**
- * Makes a socket with the WebSocket constructor in force.
- * @param url URL of the server.
+ * Creates a socket with the current WebSocket constructor.
+ * @param url The server's URL.
  * @returns The socket.
  */
 function open(url = URL_WITH_SECRETS): FakeSocket {
@@ -57,8 +57,8 @@ function close(socket: FakeSocket, code: number, wasClean: boolean): void {
 }
 
 /**
- * Builds a capture with spy tools, and installs it.
- * @param ignoreUrls URL patterns that the capture does not record.
+ * Builds and installs a capture with spy tools.
+ * @param ignoreUrls URL patterns the capture doesn't record.
  * @param capture Other capture settings.
  * @returns The capture, its spies and its diagnostic events.
  */
@@ -224,7 +224,7 @@ describe("WebSocketCapture", () => {
     capture.uninstall();
   });
 
-  it("installs one time, and does nothing without WebSocket", () => {
+  it("installs once, and does nothing without WebSocket", () => {
     const { capture, ctx } = setup();
     const Tracked = globalThis.WebSocket;
 

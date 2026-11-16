@@ -4,7 +4,7 @@ import { configure, createMemoryTransport, flush, getHealth, shutdown } from "..
 import { requestPersistence } from "../src/storage/persistence";
 
 /**
- * Gives the page a storage manager with this persist function.
+ * Stubs a storage manager whose persist call is the given function.
  * @param persist Function that answers the request.
  */
 const stubPersist = (persist: () => Promise<boolean>): void => {
@@ -19,7 +19,7 @@ const base = {
 } as const;
 
 describe("requestPersistence", () => {
-  it("gives the answer of the browser", async () => {
+  it("returns the browser's answer", async () => {
     const diagnostics = new Diagnostics(vi.fn(), 0);
 
     stubPersist(() => Promise.resolve(true));
@@ -37,7 +37,7 @@ describe("requestPersistence", () => {
     expect(diagnostics.snapshot()["storage.unavailable"]).toBe(1);
   });
 
-  it("gives unsupported without persist() or without a navigator", async () => {
+  it("returns unsupported without persist() or without a navigator", async () => {
     const diagnostics = new Diagnostics(vi.fn(), 0);
 
     vi.stubGlobal("navigator", { storage: {} });

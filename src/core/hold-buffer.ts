@@ -1,7 +1,7 @@
 // src/core/hold-buffer.ts
 //
-// This module holds records while the runtime cannot deliver them. An action is an audit fact.
-// Actions have their own cap. A storm of other records cannot push an action out.
+// Holds records while the runtime can't deliver them. An action is an audit fact, so actions
+// have their own cap and a storm of other records can't push one out.
 
 import { BUS_MAX_BOOT_BUFFER_ACTIONS, BUS_MAX_BOOT_BUFFER_RECORDS } from "../constants";
 import { isActionRecord } from "../models/batch";
@@ -12,7 +12,7 @@ export class HoldBuffer {
   /** Held records in arrival order. */
   private held: LogRecord[] = [];
 
-  /** Number of held actions. A count finds a full buffer without a scan at each push. */
+  /** Number of held actions. Counting them spots a full buffer without a scan on every push. */
   private actions = 0;
 
   /**
@@ -42,7 +42,7 @@ export class HoldBuffer {
     if (count < cap) {
       this.actions += action ? 1 : 0;
     } else {
-      // Scan only at the cap. A scan at each push is quadratic in a log storm.
+      // Scan only at the cap. Scanning on every push would be quadratic in a log storm.
       const oldest = this.held.findIndex((one) => isActionRecord(one) === action);
       const [dropped] = this.held.splice(oldest, 1);
       this.onDrop(dropped);

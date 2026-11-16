@@ -1,8 +1,8 @@
 // src/storage/local-storage.ts
 //
-// This module stores batches in localStorage with time-ordered keys. The padding makes
-// keys().sort() a sort by creation time. Without padding, the sort uses hex order. take()
-// then does not return the oldest batch first.
+// Stores batches in localStorage under time-ordered keys. The padding makes keys().sort() a
+// sort by creation time. Without it the sort would compare the decimal times as text, so "10"
+// sorts before "9", and take() would not return the oldest batch first.
 
 import {
   BATCH_KEY_TIME_WIDTH,
@@ -24,9 +24,10 @@ interface Entry {
 }
 
 /**
- * Reads the creation time from a storage key. prune() runs after each save. A
- * read from the batch parses the full store for each save.
- * @param key Prefixed storage key.
+ * Reads the creation time from a storage key. prune() runs after every save, and reading the
+ * time from the batch would parse the whole store each time.
+ * @param key The prefixed storage key.
+ * @param prefix The storage key prefix.
  * @returns Creation time in epoch milliseconds, or null for a malformed key.
  */
 function createdAtOf(key: string, prefix: string): number | null {
@@ -36,15 +37,15 @@ function createdAtOf(key: string, prefix: string): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-/** This StorageAdapter keeps batches in localStorage. */
+/** StorageAdapter that keeps batches in localStorage. */
 export class LocalStorageStorage implements StorageAdapter {
-  /** This field holds the storage strategy name. */
+  /** The storage strategy name. */
   readonly name = STORAGE_NAME_LOCAL;
 
   /**
    * @param limits Storage capacity and retention thresholds.
    * @param diagnostics Diagnostics reporter.
-   * @param onGap Optional callback for dropped record reporting.
+   * @param onGap Optional callback for reporting dropped records.
    */
   constructor(
     private readonly limits: StorageLimits,
@@ -54,8 +55,8 @@ export class LocalStorageStorage implements StorageAdapter {
   ) {}
 
   /**
-   * Writes a batch to localStorage. It removes the oldest entries on a quota error.
-   * @param batch Batch to store.
+   * Writes a batch to localStorage, removing the oldest entries on a quota error.
+   * @param batch The batch to store.
    */
   async save(batch: LogBatch): Promise<void> {
     if (this.write(batch, "localStorage refused a batch, evicting the oldest")) {
@@ -65,8 +66,8 @@ export class LocalStorageStorage implements StorageAdapter {
 
     this.evictForQuota();
 
-    // The eviction makes room for this batch. Without a second write, save() resolves.
-    // The library then loses the batch. No counter shows the loss.
+    // The eviction made room for this batch, so write it again. Without the second write,
+    // save() resolves, the batch is lost and no counter shows it.
     if (!this.write(batch, "localStorage refused a batch even after evicting")) {
       const gap: PruneResult = { batches: 1, records: batch.records.length, reason: "quota" };
       reportEviction(this.diagnostics, this.onGap, gap, [batch]);
@@ -74,17 +75,17 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Returns up to `limit` batches in FIFO order. It does not delete them.
+   * Returns up to `limit` batches in FIFO order without deleting them.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise that resolves to an array of valid batches.
+   * @returns A promise that resolves to the valid batches.
    */
   take(limit: number): Promise<LogBatch[]> {
     const out: LogBatch[] = [];
 
     for (const key of this.keys().slice(0, limit)) {
       const batch = this.read(key);
-      // The entry is corrupt. The library cannot recover it. Remove it without a gap count. It has
-      // no readable record count.
+      // A corrupt entry can't be recovered. Remove it without a gap count, because it has no
+      // readable record count.
       if (batch === null) {
         this.removeKey(key);
         continue;
@@ -96,11 +97,11 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Returns up to `limit` batches of one context in FIFO order. It does not delete them.
-   * It stops at the limit. The later entries then stay unparsed.
+   * Returns up to `limit` batches of one context in FIFO order without deleting them. Stops
+   * at the limit, so later entries are never parsed.
    * @param id Delivery context id.
    * @param limit Maximum number of batches to retrieve.
-   * @returns Promise that resolves to the batches of this context.
+   * @returns A promise that resolves to this context's batches.
    */
   takeContext(id: string, limit: number): Promise<LogBatch[]> {
     const out: LogBatch[] = [];
@@ -118,9 +119,10 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Counts the stored batches of one context. The context id is not in the key. Each entry is read.
+   * Counts one context's stored batches. The context id isn't in the key, so every entry is
+   * read.
    * @param id Delivery context id.
-   * @returns Promise that resolves to the batch count of this context.
+   * @returns A promise that resolves to this context's batch count.
    */
   countContext(id: string): Promise<number> {
     let count = 0;
@@ -135,7 +137,7 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Reads the valid batches one at a time, oldest first. It removes a corrupt entry.
+   * Reads the valid batches one at a time, oldest first, and removes any corrupt entry.
    * @yields Each valid batch.
    */
   private *batches(): Generator<LogBatch> {
@@ -162,9 +164,9 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Sets the delivery attempt count of a stored batch. It does not change the key.
+   * Sets a stored batch's delivery attempt count. The key doesn't change.
    * @param id Batch identifier.
-   * @param attempts New absolute attempt count.
+   * @param attempts The new absolute attempt count.
    */
   bumpAttempts(id: string, attempts: number): Promise<void> {
     const key = this.keyOf(id);
@@ -190,9 +192,8 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Deletes expired batches. It then removes the oldest batches above the
-   * capacity limit.
-   * @returns Promise that resolves to prune summary metrics.
+   * Deletes expired batches, then the oldest batches above the capacity limit.
+   * @returns A promise that resolves to the prune summary metrics.
    */
   prune(): Promise<PruneResult> {
     const cutoff = Date.now() - this.limits.maxAgeMs;
@@ -202,7 +203,7 @@ export class LocalStorageStorage implements StorageAdapter {
 
     for (const key of this.keys()) {
       const createdAt = createdAtOf(key, this.prefix);
-      // A key with no readable time also has no position in the sort order.
+      // A key with no readable time has no place in the sort order either.
       if (createdAt === null || createdAt < cutoff) {
         expired.push(key);
         continue;
@@ -210,8 +211,7 @@ export class LocalStorageStorage implements StorageAdapter {
       alive.push(key);
     }
 
-    // The record count is the one field that the key does not contain. Parse only the
-    // deleted batches.
+    // The record count is the one field the key doesn't hold, so parse only the deleted batches.
     this.drop(result, "expired", [...this.entries(expired)]);
 
     const excess = alive.length - this.limits.maxBatches;
@@ -223,28 +223,28 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Returns the number of stored batch keys. It does not deserialize the batches.
-   * @returns Promise that resolves to batch count.
+   * Returns the number of stored batch keys without deserializing the batches.
+   * @returns A promise that resolves to the batch count.
    */
   count(): Promise<number> {
     return Promise.resolve(this.keys().length);
   }
 
-  /** This method deletes all batch keys from localStorage. */
+  /** Deletes every batch key from localStorage. */
   clear(): Promise<void> {
     this.evict(this.keys());
     return Promise.resolve();
   }
 
-  /** This method does nothing. localStorage has no connection to close. */
+  /** Does nothing. localStorage has no connection to close. */
   close(): Promise<void> {
     return Promise.resolve();
   }
 
   /**
    * Writes a batch to localStorage.
-   * @param batch Batch to store.
-   * @param context Text that diagnostics reports when the write fails.
+   * @param batch The batch to store.
+   * @param context The text diagnostics reports if the write fails.
    * @returns True if the write succeeded.
    */
   private write(batch: LogBatch, context: string): boolean {
@@ -256,7 +256,7 @@ export class LocalStorageStorage implements StorageAdapter {
     return written === true;
   }
 
-  /** This method removes a quarter of the store to free quota. It counts the loss. */
+  /** Removes a quarter of the store to free quota, and counts the loss. */
   private evictForQuota(): void {
     const keys = this.keys();
     const result: PruneResult = { batches: 0, records: 0, reason: "quota" };
@@ -266,8 +266,8 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Picks the entries to evict. Entries without an action go first. An action is an audit fact.
-   * A corrupt entry has no action. It goes first.
+   * Picks the entries to evict. Entries without an action go first, because an action is an
+   * audit fact. A corrupt entry has no action, so it goes first too.
    * @param keys Batch keys, oldest first.
    * @param howMany Number of entries to evict.
    * @returns The picked entries.
@@ -281,8 +281,8 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Reads the entries one at a time. The eviction walk stops early. The later entries then stay
-   * unparsed.
+   * Reads the entries one at a time. The eviction walk stops early, so later entries are
+   * never parsed.
    * @param keys Batch keys.
    * @yields Each key with its batch.
    */
@@ -293,10 +293,10 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Removes entries. It reports them with their own reason.
-   * @param result Prune result of all rules.
-   * @param reason Rule that removes the entries.
-   * @param entries Entries to remove.
+   * Removes entries and reports them under their own reason.
+   * @param result The prune result across all rules.
+   * @param reason The rule that removes the entries.
+   * @param entries The entries to remove.
    */
   private drop(result: PruneResult, reason: PruneResult["reason"], entries: Entry[]): void {
     if (entries.length === 0) {
@@ -319,8 +319,8 @@ export class LocalStorageStorage implements StorageAdapter {
 
   /**
    * Reads and validates the stored batch at a key.
-   * @param key Storage key to read.
-   * @returns Validated LogBatch or null if missing or malformed.
+   * @param key The storage key to read.
+   * @returns The validated LogBatch, or null if it is missing or malformed.
    */
   private read(key: string): LogBatch | null {
     const raw = this.diagnostics.guard(
@@ -337,8 +337,8 @@ export class LocalStorageStorage implements StorageAdapter {
       "A stored batch is corrupt. The library removed it.",
       () => JSON.parse(raw) as unknown,
     );
-    // The guard above already reported a parse failure. A second report counts one corrupt
-    // entry twice.
+    // The guard above already reported a parse failure. A second report would count one
+    // corrupt entry twice.
     if (parsed === undefined) {
       return null;
     }
@@ -357,7 +357,7 @@ export class LocalStorageStorage implements StorageAdapter {
   /**
    * Finds the storage key that ends with the batch ID.
    * @param id Batch identifier.
-   * @returns Matching storage key string or null.
+   * @returns The matching storage key, or null.
    */
   private keyOf(id: string): string | null {
     return this.keys().find((key) => key.endsWith(`.${id}`)) ?? null;
@@ -388,8 +388,8 @@ export class LocalStorageStorage implements StorageAdapter {
   }
 
   /**
-   * Returns all batch storage keys in sorted order.
-   * @returns Sorted array of storage keys.
+   * Returns every batch storage key, sorted.
+   * @returns The sorted storage keys.
    */
   private keys(): string[] {
     return keysWithPrefix(this.prefix, this.diagnostics);

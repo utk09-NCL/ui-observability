@@ -2,8 +2,8 @@ import { counter, histogram } from "@utk09/ui-observability";
 import { type ReactElement, useState } from "react";
 import { LoggerProvider, ObservabilityErrorBoundary, useJourney, useLogger } from "./observability";
 
-// Module scope. A handle stays valid across configure() and shutdown(). The library sums the
-// values and sends one point for each attribute set at each interval.
+// Create metric handles at module scope. They stay valid across configure() and shutdown().
+// The library sums the values and sends one point per attribute set at every interval.
 const ordersSubmitted = counter("orders.submitted");
 const pricingLatency = histogram("pricing.latency", { unit: "ms" });
 
@@ -69,7 +69,7 @@ export function App(): ReactElement {
       <button
         data-observability-action="price-quotes"
         onClick={() => {
-          // 20 values give one histogram point at the next interval, not 20 records.
+          // These 20 values become one histogram point at the next interval, not 20 records.
           for (let i = 0; i < 20; i++) {
             pricingLatency.record(Math.round(Math.random() * 400), { venue: "LSE" });
           }

@@ -28,7 +28,7 @@ describe("diagnostics.records config", () => {
     expect(resolve("yes")).toBe(false);
     expect(handler.mock.calls.map(([event]) => event.message)).toEqual([
       "The library ignores the diagnostics.records entry 5. diagnostics.records must be true, false or a list of diagnostic codes.",
-      'diagnostics.records must be true, false or a list of diagnostic codes. The value is "yes". The library keeps the value in force.',
+      'diagnostics.records must be true, false or a list of diagnostic codes. The value is "yes". The library keeps the current value.',
     ]);
   });
 });
@@ -103,7 +103,7 @@ describe("diagnostics.records", () => {
     );
   });
 
-  it("builds a diagnostic record at once in defer mode", async () => {
+  it("builds a diagnostic record right away in defer mode", async () => {
     const memory = createMemoryTransport();
     configure({
       ...base,
@@ -135,7 +135,7 @@ describe("diagnostics.records", () => {
     expect(codes).toEqual([["config.reconfigured", "INFO"]]);
   });
 
-  it("gives no record for a diagnostic during the build of a diagnostic record", async () => {
+  it("builds no record for a diagnostic raised while building a diagnostic record", async () => {
     const memory = createMemoryTransport();
     configure({
       ...base,

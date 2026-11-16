@@ -1,19 +1,19 @@
 // src/transport/errors.ts
 //
-// This module classifies HTTP transport failures. It also parses the Retry-After header.
+// Classifies HTTP transport failures and parses the Retry-After header.
 
 import { MILLIS_PER_SECOND } from "../constants";
 
 /**
- * The failure kind sets the retry, backoff or drop behavior. The engine retries transient,
- * offline and timeout failures with backoff. A throttled failure waits for the server delay.
- * A too_large failure splits the batch. The engine drops a permanent failure. The server
- * never accepts that batch.
+ * The failure kind decides whether the engine retries, backs off or drops. Transient, offline
+ * and timeout failures are retried with backoff. A throttled failure waits for the server's
+ * delay, and a too_large failure splits the batch. A permanent failure is dropped, because the
+ * server will never accept that batch.
  */
 export type TransportFailureKind =
   "transient" | "throttled" | "too_large" | "permanent" | "timeout" | "offline";
 
-/** This error records a failed transport attempt, its failure kind and its metadata. */
+/** A failed transport attempt, with its failure kind and metadata. */
 export class TransportError extends Error {
   /**
    * @param kind Failure classification.
@@ -38,8 +38,8 @@ export class TransportError extends Error {
 
 /**
  * Parses an HTTP Retry-After value into a delay in milliseconds. The value
- * can be a number of seconds or an HTTP date. The function clamps a negative delay to zero.
- * A date in the past gives a negative delay.
+ * can be a number of seconds or an HTTP date. A date in the past gives a negative delay,
+ * which is clamped to zero.
  * @param header Raw Retry-After header string or null.
  * @returns Non-negative delay in milliseconds, or undefined if invalid or missing.
  */

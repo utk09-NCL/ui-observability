@@ -9,9 +9,9 @@ import { configure, getLogger, startJourney } from "../../src/index";
 const INGEST_ENDPOINT = "http://localhost:8787/v1/logs";
 
 /**
- * Queries a DOM element by selector, throwing if missing.
- * @param selector CSS selector string.
- * @returns Matched DOM element.
+ * Finds an element by selector and throws if it is missing.
+ * @param selector CSS selector.
+ * @returns The element.
  */
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
@@ -53,8 +53,8 @@ configure({
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console at its own level.
   console: "DEBUG",
-  // The cross-origin copy on port 5174 must trust its parent origin. Without it, it refuses the
-  // welcome of the parent and sends its own records.
+  // The cross-origin copy on port 5174 has to trust its parent's origin. Otherwise it refuses
+  // the parent's welcome and sends its own records.
   bus: { trustedOrigins: ["http://localhost:5173"] },
   onDiagnostic: (event) => {
     // bus.role_resolved carries the resolved role, which is the frame's readout.

@@ -6,7 +6,7 @@ import type { CaptureLogger } from "../capture/types";
 import { DURATION_PRECISION } from "../constants";
 
 /**
- * Calculates elapsed milliseconds rounded to configured precision.
+ * Calculates elapsed milliseconds, rounded to the configured precision.
  * @param startedAt Performance timestamp recorded at operation start.
  * @returns Elapsed duration in milliseconds.
  */
@@ -50,7 +50,7 @@ function fail(
   error: unknown,
   attributes?: Record<string, unknown>,
 ): void {
-  // Read the duration one time. The error record and the metric then give the same value.
+  // Read the duration once, so the error record and the metric report the same value.
   const duration = elapsed(startedAt);
   logger.error(`${label} failed`, error, {
     "action.duration_ms": duration,
@@ -80,7 +80,7 @@ export function timeSync<T>(
     finish(logger, label, elapsed(startedAt), "SUCCESS", attributes);
     return result;
   } catch (error) {
-    // Throw the error again. The caller keeps its control flow.
+    // Rethrow, so the caller keeps its control flow.
     fail(logger, label, startedAt, error, attributes);
     throw error;
   }
@@ -92,7 +92,7 @@ export function timeSync<T>(
  * @param label Metric name prefix.
  * @param fn Asynchronous function to execute.
  * @param attributes Optional contextual attributes.
- * @returns Promise that resolves to the result of the wrapped function.
+ * @returns A promise that resolves to the wrapped function's result.
  */
 export async function timeAsync<T>(
   logger: CaptureLogger,
@@ -106,7 +106,7 @@ export async function timeAsync<T>(
     finish(logger, label, elapsed(startedAt), "SUCCESS", attributes);
     return result;
   } catch (error) {
-    // Throw the error again. The caller keeps its control flow.
+    // Rethrow, so the caller keeps its control flow.
     fail(logger, label, startedAt, error, attributes);
     throw error;
   }

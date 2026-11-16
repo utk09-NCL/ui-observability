@@ -441,7 +441,7 @@ describe("bus capability and delivery boundaries", () => {
       "ui-observability.message.security-context",
     ]);
     expect(handlers.onRecords).not.toHaveBeenCalled();
-    // A direct child cannot publish owner control messages. Nothing answers them.
+    // A direct child can't publish owner control messages, so nothing answers them.
     reply.mockClear();
     bus.acceptDirect(
       { t: "ui-observability.message.sampling", from: "child", to: "host", rules: {} },
@@ -498,7 +498,7 @@ describe("bus capability and delivery boundaries", () => {
   });
 });
 
-// Control when the work completes. These tests do not wait for a retry timer.
+// The tests control when the work completes, so they never wait for a retry timer.
 describe("delivery cancellation and owner adoption", () => {
   it("rejects foreign or stopped transport sends and aborts HTTP already in flight", async () => {
     const { HttpTransport } = await import("../src/transport/http-transport");
@@ -583,11 +583,11 @@ describe("delivery cancellation and owner adoption", () => {
     runtime.context.set("user", "old");
     addBreadcrumb("old");
     counter("old").add(1);
-    // The first owner id keeps the context of the app. Those records had no other identity.
+    // The first owner id keeps the app's context, because those records had no other identity.
     expect(adopt("owner-A")).toBe(true);
     expect(runtime.config.securityContext.id).toBe("owner-A");
     expect(runtime.context.getAll()).toEqual({ user: "old" });
-    // A later owner id is a rotation. It clears the context of the old identity.
+    // A later owner id is a rotation, which clears the old identity's context.
     expect(adopt("owner-B")).toBe(true);
     expect(runtime.config.securityContext.id).toBe("owner-B");
     expect(runtime.context.getAll()).toEqual({});
@@ -867,7 +867,7 @@ describe("registered bus control traffic", () => {
       { t: "ui-observability.message.sampling", from: "owner", to: "host", rules: null },
       { ...source, peer: {} },
     );
-    // A configured forwarder uses announce(). It has no pending handshake promise.
+    // A configured forwarder uses announce(), so it has no pending handshake promise.
     bus["awaitingWelcome"] = null;
     bus["ownerId"] = null;
     receive(
@@ -1165,7 +1165,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
       from: "host",
       id: "B",
     });
-    // A view that forwards does not send on the OpenFin link.
+    // A view that forwards doesn't send on the OpenFin link.
     post.mockClear();
     bus["role"] = "forwarder";
     bus.rotateContext();
@@ -1195,7 +1195,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     expect(bus.isRegistered(crossOrigin, "https://orders.example")).toBe(true);
     detach();
     expect(bus.isRegistered(crossOrigin, "https://orders.example")).toBe(false);
-    // A realm without HTMLIFrameElement has no frame elements. The value is the window.
+    // A realm without HTMLIFrameElement has no frame elements, so the value is the window.
     vi.stubGlobal("HTMLIFrameElement", undefined);
     const peer = {} as Window;
     bus.registerFrame(peer, { origin: location.origin });
@@ -1235,7 +1235,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     link.close();
   });
 
-  it("measures each outbound record one time and fills a message to its byte limit", () => {
+  it("measures each outbound record once and fills a message to its byte limit", () => {
     const { bus, config } = create();
     const post = vi.fn();
     bus["upstream"] = { kind: "parent", post, close: vi.fn() };
@@ -1251,12 +1251,12 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     config.bus.maxMessageBytes = two;
     const stringify = vi.spyOn(JSON, "stringify");
     bus.sendRecords([record(), record(), record()]);
-    // One call for the empty envelope and one call for each record.
+    // One call for the empty envelope and one per record.
     expect(stringify).toHaveBeenCalledTimes(4);
     stringify.mockRestore();
     expect(post.mock.calls.map(([m]) => m.records.length)).toEqual([2, 1]);
 
-    // Without a byte limit, the bus does not encode the records.
+    // Without a byte limit, the bus doesn't encode the records.
     post.mockClear();
     config.bus.maxMessageBytes = 0;
     config.bus.maxRecordsPerMessage = 2;
@@ -1288,7 +1288,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
     const bare = memory();
     await bare.save(batch("A"));
     await bare.save(batch("B"));
-    // Own undefined properties hide the prototype methods. The type of bare stays MemoryStorage.
+    // Own undefined properties hide the prototype methods, and bare is still typed MemoryStorage.
     Object.assign(bare, { takeContext: undefined, countContext: undefined });
     const fallback = new ContextStorage(bare, { id: "A", isolation: true });
     expect((await fallback.take(5)).map((b) => b.id)).toEqual(["A"]);
@@ -1591,7 +1591,7 @@ describe("rotation delivery limits and early configuration", () => {
     await flush();
     getLogger("backlog").info("buffered in C");
     onDrop.mockClear();
-    // A context without a sender cannot take the stored batch. It stays parked under C.
+    // A context without a sender can't take the stored batch, so it stays parked under C.
     await rotateSecurityContext({ id: "D", delivery: {} }, { pending: "carry" });
     const parked = await rt()["memoryStorage"]!.take(10);
     expect(parked.map((b) => [b.routingContextId, b.records[0].body])).toEqual([
@@ -1619,14 +1619,14 @@ describe("rotation delivery limits and early configuration", () => {
     await vi.waitFor(() => {
       expect(hang).toHaveBeenCalled();
     });
-    // The record in flight cannot be removed. The new record has no space.
+    // The record in flight can't be removed, so the new record has no space.
     getLogger("orders").info("refused");
     await vi.waitFor(() => {
       expect(onDrop).toHaveBeenCalledWith(
         expect.objectContaining({ reason: "buffer_full", records: 1 }),
       );
     });
-    // Complete the request. Shutdown then does not wait for the request timeout.
+    // Complete the request so shutdown doesn't wait for the request timeout.
     release({ status: 204 });
   });
 
@@ -1730,7 +1730,7 @@ describe("rotation delivery limits and early configuration", () => {
       transport: createMemoryTransport().transport,
       securityContext: { id: "A" },
       onDrop,
-      // The sender masks forwarded action names. onDrop must report the masked name only.
+      // The sender masks forwarded action names, so onDrop must report only the masked name.
       redact: (r) => ({ ...r, body: "[masked]" }),
     });
     await flush();
@@ -1755,7 +1755,7 @@ describe("rotation delivery limits and early configuration", () => {
 describe("refused owner identity", () => {
   it("keeps the physical owner after a refused welcome and accepts its later matching id", () => {
     const { bus, handlers, config } = makeBus();
-    // This frame has the explicit id "A". It refuses each other owner id.
+    // This frame has the explicit id "A" and refuses every other owner id.
     handlers.onSecurityContext.mockImplementation((id: string) => id === config.securityContext.id);
     bus["role"] = "forwarder";
     bus["upstream"] = { kind: "parent", post: vi.fn(), close: vi.fn() };
@@ -1774,7 +1774,7 @@ describe("refused owner identity", () => {
     );
     expect(settle).not.toHaveBeenCalled();
     expect(bus["ownerId"]).toBe("owner");
-    // The owner rotates to the id of this frame. The frame takes the update from that owner only.
+    // The owner rotates to this frame's id. The frame takes the update from that owner only.
     bus["receive"](
       { t: "ui-observability.message.security-context", from: "owner", id: "A" },
       source,
@@ -1864,7 +1864,7 @@ describe("nested frames, carry timing and early encoding", () => {
       child,
     );
     expect(reply.mock.calls.map(([m]) => m.t)).toEqual(["ui-observability.message.welcome"]);
-    // The role is final. The children link and the direct child get the final id at once.
+    // The role is final, so the children link and the direct child get the final id right away.
     bus["awaitingWelcome"] = null;
     bus["announce"]();
     const final = { t: "ui-observability.message.security-context", from: "host", id: "A" };
@@ -1941,7 +1941,7 @@ describe("nested frames, carry timing and early encoding", () => {
     );
     release();
     await carrying;
-    // The same batch id replaced the old copy. The new destination starts with no attempts.
+    // The same batch id replaced the old copy, and the new destination starts with no attempts.
     const stored = await rt()["memoryStorage"]!.take(10);
     expect(stored.map((b) => [b.routingContextId, b.attempts])).toEqual([["B", 0]]);
     expect(rt().diagnostics.snapshot()["record.dropped_during_rotation"]).toBeUndefined();
@@ -2032,10 +2032,10 @@ describe("configurable click action attribute and namespaced locks", () => {
 });
 
 /**
- * Starts a child bus in this window. The owner bus acts as the runtime of a same-origin parent.
- * @param owner Bus of the parent.
- * @param config Resolved config of the child.
- * @param onSecurityContext Handler of the child for an owner id.
+ * Starts a child bus in this window, with the owner bus acting as a same-origin parent's runtime.
+ * @param owner The parent's bus.
+ * @param config The child's resolved config.
+ * @param onSecurityContext The child's handler for an owner id.
  * @returns The started child bus.
  */
 async function startDirectChild(
@@ -2092,7 +2092,7 @@ describe("rotation reach on the direct link", () => {
     owner.bus.destroy();
   });
 
-  it("sends a rotated id to a direct child at once", async () => {
+  it("sends a rotated id to a direct child right away", async () => {
     const owner = makeBus();
     const config = resolveConfig({ ...base, bus: { mode: "auto" } }, diag());
     const child = await startDirectChild(owner.bus, config, (id) => {
@@ -2105,7 +2105,7 @@ describe("rotation reach on the direct link", () => {
     owner.bus.rotateContext();
 
     expect(config.securityContext.id).toBe("C");
-    // The child sends with the new id. The owner does not refuse this first batch.
+    // The child sends with the new id, and the owner doesn't refuse this first batch.
     child.sendRecords([record()]);
     expect(owner.handlers.onRecords).toHaveBeenCalledTimes(1);
     child.destroy();
@@ -2140,7 +2140,7 @@ describe("rotation reach on the direct link", () => {
     hello(stays);
     expect(bus["directReplies"].has(removed)).toBe(false);
 
-    // The rotation drops the other children that cannot get the id.
+    // The rotation drops the other children that can't get the id.
     close(closesLate);
     unregister();
     bus["directReplies"].set(freed, { deref: () => undefined } as WeakRef<Receive>);

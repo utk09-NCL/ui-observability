@@ -18,8 +18,8 @@ const record = (body: string): LogRecord => ({
 });
 
 /**
- * Gives a policy getter with three records and no age limit.
- * @param over Settings over the base.
+ * Returns a policy getter with three records and no age limit.
+ * @param over Settings that override the base.
  * @returns The getter.
  */
 const policy =
@@ -65,7 +65,7 @@ describe("DebugBuffer", () => {
     expect(buffer.drain()).toEqual([]);
   });
 
-  it("gives no snapshot records while it is off or after maxAgeMs", () => {
+  it("returns no snapshot records while it is off or after maxAgeMs", () => {
     vi.useFakeTimers();
     let enabled = true;
     const buffer = new DebugBuffer(() => ({ enabled, maxRecords: 3, maxAgeMs: 1000 }));
@@ -124,7 +124,7 @@ describe("DebugBuffer", () => {
     expect(memory.records().map((one) => one.body)).toEqual(["failed"]);
   });
 
-  it("gives the kept records without taking them", () => {
+  it("returns the kept records without taking them", () => {
     const buffer = new DebugBuffer(policy());
     buffer.push(record("one"));
 
@@ -149,7 +149,7 @@ describe("DebugBuffer", () => {
 describe("debugBuffer in the runtime", () => {
   /**
    * Configures a runtime that sends to a memory transport.
-   * @param over Config values over the base.
+   * @param over Config values that override the base.
    * @returns The memory transport.
    */
   const start = (over: Partial<ObservabilityConfig> = {}) => {
@@ -167,7 +167,7 @@ describe("debugBuffer in the runtime", () => {
     return memory;
   };
 
-  /** Gives the body and the debug marker of each sent record. */
+  /** Returns the body and the debug marker of every sent record. */
   const sent = (memory: ReturnType<typeof createMemoryTransport>) =>
     memory.records().map((one) => [one.body, one.attributes["uiobs.debug_buffer"]]);
 

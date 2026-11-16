@@ -1,8 +1,8 @@
 // src/transport/exit-flush.ts
 //
-// This module flushes buffered batches on exit. It uses sendBeacon, a keepalive fetch or
-// emergency storage. It runs during unload. No code in it awaits. A hidden document
-// still runs. It gets a normal flush.
+// Flushes buffered batches on exit with sendBeacon, a keepalive fetch or emergency storage.
+// It runs during unload, so nothing in here awaits. A hidden document is still running, so it
+// gets a normal flush.
 
 import {
   BEACON_LIMIT_BYTES,
@@ -24,73 +24,73 @@ import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
-/** This type names the lifecycle event or manual action that starts an exit flush. */
+/** The lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
 /**
- * This type holds the answer of the browser to a beacon. `refused` means that the in-flight
- * budget is full. `unavailable` means that the host has no usable sendBeacon.
+ * The browser's answer to a beacon. `refused` means the in-flight budget is full.
+ * `unavailable` means the host has no usable sendBeacon.
  */
 type BeaconOutcome = "sent" | "refused" | "unavailable";
 
-/** This type reads navigator.sendBeacon without global DOM type assertions. */
+/** Lets us read navigator.sendBeacon without global DOM type assertions. */
 interface BeaconGlobal {
   navigator?: { sendBeacon?: (url: string, data: Blob) => boolean };
 }
 
-/** This interface lists the dependencies of ExitFlush. */
+/** Dependencies of ExitFlush. */
 export interface ExitFlushDeps {
-  /** This field holds the active configuration. */
+  /** The active configuration. */
   config: ResolvedConfig;
-  /** This field holds the diagnostics reporter. */
+  /** Diagnostics reporter. */
   diagnostics: Diagnostics;
-  /** This callback drains all buffered and unconfirmed records into one batch for each kind. */
+  /** Drains all buffered and unconfirmed records into one batch per kind. */
   drainForExit: () => LogBatch[];
   /**
-   * This callback runs a normal flush with headers, gzip and retry. A hidden document uses it.
-   * It does not touch an in-flight batch.
+   * Runs a normal flush with headers, gzip and retry. Used for a hidden document.
+   * It doesn't touch an in-flight batch.
    */
   flushAlive: () => void | Promise<void>;
   /**
-   * This callback gives the headers that the HTTP transport sent last, or undefined.
-   * sendBeacon cannot set a header. With headers, the exit flush uses a keepalive fetch.
+   * Returns the headers that the HTTP transport sent last, or undefined. sendBeacon can't set
+   * a header, so when there are headers the exit flush uses a keepalive fetch.
    */
   exitHeaders: () => Record<string, string> | undefined;
-  /** This callback receives the records that the exit flush loses. */
+  /** Receives the records that the exit flush loses. */
   onLoss?: LossReporter;
-  /** This callback sends the points of the open metric interval into the buffers. */
+  /** Pushes the open metric interval's points into the buffers. */
   beforeExit?: () => void;
 }
 
 /**
- * This class flushes pending telemetry on document unload. It uses sendBeacon, a keepalive
- * fetch or emergency storage.
+ * Flushes pending telemetry on document unload, with sendBeacon, a keepalive fetch or
+ * emergency storage.
  */
 export class ExitFlush {
-  /** This flag is true while the library listens for the unload events. */
+  /** True while we are listening for the unload events. */
   private installed = false;
 
-  /** Bytes of the keepalive fetches of the current exit flush. All batches share one budget. */
+  /** Bytes used by the current exit flush's keepalive fetches. All batches share one budget. */
   private keepaliveBytes = 0;
 
-  /** This listener flushes on visibilitychange when the document becomes hidden. */
+  /** Flushes on visibilitychange when the document becomes hidden. */
   private readonly onVisibility = (): void => {
     if (document.visibilityState === "hidden") {
       this.flush("hidden");
     }
   };
 
-  /** This listener flushes on the window pagehide event. */
+  /** Flushes on the window's pagehide event. */
   private readonly onPageHide = (): void => {
     this.flush("pagehide");
   };
 
-  /** This listener flushes on the document freeze event. */
+  /** Flushes on the document's freeze event. */
   private readonly onFreeze = (): void => {
     this.flush("freeze");
   };
 
-  /** This listener flushes on the OpenFin close-requested event. */
+  /** Flushes on the OpenFin close-requested event. */
   private readonly onOpenFinClose = (): void => {
     this.flush("openfin-close");
   };
@@ -100,7 +100,7 @@ export class ExitFlush {
    */
   constructor(private readonly deps: ExitFlushDeps) {}
 
-  /** This method attaches the unload listeners to the document, the window and OpenFin. */
+  /** Attaches the unload listeners to the document, the window and OpenFin. */
   install(): void {
     if (this.installed || typeof addEventListener === "undefined") {
       return;
@@ -125,7 +125,7 @@ export class ExitFlush {
     );
   }
 
-  /** This method removes all unload listeners and subscriptions. */
+  /** Removes all unload listeners and subscriptions. */
   uninstall(): void {
     if (!this.installed) {
       return;
@@ -150,22 +150,22 @@ export class ExitFlush {
   }
 
   /**
-   * Drains pending records synchronously. It sends them with a beacon, a
-   * keepalive fetch or emergency storage. A hidden document gets a normal flush. It never
-   * awaits and never throws. The caller is an unload listener.
+   * Drains pending records synchronously and sends them with a beacon, a keepalive fetch or
+   * emergency storage. A hidden document gets a normal flush. Never awaits and never throws,
+   * because the caller is an unload listener.
    * @param reason Reason code of the flush.
    */
   flush(reason: ExitReason): void {
     const { config, diagnostics } = this.deps;
 
-    // The drain below then takes the points of the open metric interval.
+    // Runs first, so that the drain below also takes the open metric interval's points.
     diagnostics.guard("pipeline.crashed", "The metric points before the exit flush failed.", () => {
       this.deps.beforeExit?.();
     });
 
-    // hidden fires at each tab switch. The document keeps running. A normal flush keeps the
-    // headers, gzip and the retry. A beacon has none of them. The in-flight batches complete
-    // by themselves. A take of them here sends the records again under a new id.
+    // hidden fires on every tab switch, and the document keeps running. A normal flush keeps
+    // the headers, gzip and the retry, none of which a beacon has. The in-flight batches
+    // complete on their own. Taking them here would send the records again under a new id.
     if (reason === "hidden") {
       this.flushAlive();
       return;
@@ -181,7 +181,7 @@ export class ExitFlush {
       return;
     }
 
-    // The fetches of an earlier flush are complete or lost. They do not use this budget.
+    // An earlier flush's fetches are complete or lost by now, so they don't use this budget.
     this.keepaliveBytes = 0;
 
     for (const batch of this.deps.drainForExit()) {
@@ -215,21 +215,21 @@ export class ExitFlush {
       return;
     }
 
-    // Save an oversized payload to the synchronous localStorage queue. localStorage is the
-    // only storage that accepts a write without await.
+    // An oversized payload goes to the synchronous localStorage queue, because localStorage
+    // is the only storage that accepts a write without an await.
     if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
       this.park(batch);
       return;
     }
 
-    // Send the batch ID and the reason as query parameters. sendBeacon cannot set headers.
+    // The batch ID and the reason go in query parameters, because sendBeacon can't set headers.
     url.searchParams.set(QUERY_PARAM_BATCH_ID, batch.id);
     url.searchParams.set(QUERY_PARAM_EXIT_REASON, reason);
 
     const target = url.toString();
 
-    // sendBeacon cannot set a header. An ingest server that needs the authorization header
-    // drops a beacon. Send the last headers with a keepalive fetch.
+    // sendBeacon can't set a header, and an ingest server that needs the authorization header
+    // drops a beacon. Send the last headers with a keepalive fetch instead.
     const custom = this.deps.exitHeaders();
     if (custom) {
       this.keepaliveFetch(target, batch, serialized.body, reason, () => {
@@ -241,8 +241,8 @@ export class ExitFlush {
       return;
     }
 
-    // A headers function has no cached result until a call gives one. The server refuses a
-    // beacon without the headers. The next page load sends the batch with them.
+    // A headers function has no cached result until it has been called once. The server refuses
+    // a beacon without the headers, so let the next page load send the batch with them.
     if (config.headers) {
       this.park(batch);
       return;
@@ -253,8 +253,8 @@ export class ExitFlush {
       return;
     }
 
-    // A refusal means the in-flight budget is full. A keepalive fetch uses the
-    // same budget and fails the same way. The document closes. No code retries the send.
+    // A refusal means the in-flight budget is full. A keepalive fetch uses the same budget and
+    // fails the same way, and with the document closing nothing would retry the send.
     if (outcome === "refused") {
       this.park(batch);
       return;
@@ -264,7 +264,7 @@ export class ExitFlush {
     this.keepaliveFetch(target, batch, serialized.body, reason, plain);
   }
 
-  /** Runs the normal flush of a hidden document. It reports a flush that throws or rejects. */
+  /** Runs a hidden document's normal flush, and reports it if it throws or rejects. */
   private flushAlive(): void {
     const { diagnostics } = this.deps;
     const message = "The flush of the hidden document failed.";
@@ -277,11 +277,11 @@ export class ExitFlush {
   }
 
   /**
-   * Gives the pending records to the exit hook of a custom transport. A page that closes cannot
-   * wait for the async transport. Without a hook, or when the hook refuses the batch, the batch
-   * goes to the emergency queue. The next page load sends it.
+   * Hands the pending records to a custom transport's exit hook, because a closing page can't
+   * wait for the async transport. Without a hook, or when the hook refuses the batch, the
+   * batch goes to the emergency queue and the next page load sends it.
    * @param reason Reason code of the flush.
-   * @param onExit Synchronous exit hook of the custom transport.
+   * @param onExit The custom transport's synchronous exit hook.
    */
   private flushCustom(reason: ExitReason, onExit: ExitTransport | undefined): void {
     const { config, diagnostics } = this.deps;
@@ -306,9 +306,9 @@ export class ExitFlush {
   }
 
   /**
-   * Keeps a batch for the next page load in the emergency queue in localStorage. With storage
-   * "memory" or "none", the app wants nothing on the device. The batch is then lost.
-   * @param batch Batch that the exit flush cannot send.
+   * Parks a batch in the localStorage emergency queue for the next page load. With storage
+   * "memory" or "none" the app wants nothing kept on the device, so the batch is lost.
+   * @param batch Batch that the exit flush can't send.
    */
   private park(batch: LogBatch): void {
     const { config, diagnostics, onLoss } = this.deps;
@@ -322,7 +322,7 @@ export class ExitFlush {
   }
 
   /**
-   * Serializes the exit batch. It reports a serializer that throws.
+   * Serializes the exit batch, and reports a serializer that throws.
    * @param batch Batch to serialize.
    * @param reason Reason code of the flush.
    * @returns The serialized batch, or undefined if the serializer threw.
@@ -365,42 +365,42 @@ export class ExitFlush {
    * Sends the payload as text/plain with navigator.sendBeacon.
    * @param url Target endpoint URL with query parameters.
    * @param body Serialized payload string.
-   * @returns The answer of the browser.
+   * @returns The browser's answer.
    */
   private beacon(url: string, body: string): BeaconOutcome {
     const outcome = this.deps.diagnostics.guard<BeaconOutcome>(
       "transport.http_error",
       "The sendBeacon call failed.",
       () => {
-        // Call sendBeacon on navigator to keep its receiver. A detached sendBeacon throws when
-        // called.
+        // Call sendBeacon on navigator so that it keeps its receiver. A detached sendBeacon
+        // throws when called.
         const nav = (globalThis as BeaconGlobal).navigator;
         if (!nav?.sendBeacon) {
           return "unavailable";
         }
 
-        // Use text/plain to prevent a CORS preflight during unload. A preflight during unload
-        // usually does not complete. The browser then drops the beacon without an error.
+        // Use text/plain to avoid a CORS preflight. During unload a preflight usually doesn't
+        // complete, and the browser then drops the beacon without an error.
         const accepted = nav.sendBeacon(url, new Blob([body], { type: CONTENT_TYPE_TEXT_PLAIN }));
         return accepted ? "sent" : "refused";
       },
     );
 
-    // A throw is not a refusal. The method is present but unusable. The keepalive fetch can
-    // still succeed.
+    // A throw isn't a refusal. It means the method is there but unusable, and the keepalive
+    // fetch can still succeed.
     return outcome ?? "unavailable";
   }
 
   /**
-   * Sends a fallback POST with fetch and `keepalive: true`. A keepalive request
-   * continues after the document closes. The browser cancels a plain fetch at page close.
-   * A failed fetch parks the batch in the emergency queue. The server drops a second copy by
-   * its batch id.
+   * Sends a fallback POST with fetch and `keepalive: true`. A keepalive request continues
+   * after the document closes, whereas the browser cancels a plain fetch at page close.
+   * A failed fetch parks the batch in the emergency queue, and the server drops a second copy
+   * by its batch id.
    * @param url Target endpoint URL.
    * @param batch Batch in the payload.
    * @param body Serialized payload string.
    * @param reason Reason code of the flush.
-   * @param headers Builds the request headers. Without custom headers, only a text/plain
+   * @param headers Builds the request headers. Without custom headers that is only a text/plain
    * content type. A header value outside ISO-8859-1 makes the Headers constructor throw.
    */
   private keepaliveFetch(
@@ -411,13 +411,14 @@ export class ExitFlush {
     headers: () => Headers,
   ): void {
     const { config, diagnostics } = this.deps;
-    // A rejection arrives only while the document is alive. The next page load sends the batch.
+    // A rejection only arrives while the document is alive, and the next page load then sends
+    // the batch.
     const park = (): void => {
       this.park(batch);
     };
 
-    // The browser rejects a fetch over the budget after the document closes. park() then does
-    // not run, and the batch is lost.
+    // The browser rejects a fetch over the budget after the document closes. By then park()
+    // doesn't run, and the batch is lost.
     const bytes = estimateBytes(body);
     if (this.keepaliveBytes + bytes > BEACON_LIMIT_BYTES) {
       park();

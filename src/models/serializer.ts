@@ -20,9 +20,8 @@ export interface LogSerializer {
   /** Serializer name used in configuration. */
   name: string;
   /**
-   * Serializes a batch of records to payload bytes.
-   * The transport calls it one time for each delivery attempt, not one time for each batch.
-   * Thus each retry encodes the records again.
+   * Serializes a batch of records to payload bytes. The transport calls it once per delivery
+   * attempt, not once per batch, so every retry encodes the records again.
    * @param records Batch records, in log order.
    * @returns Serialized batch ready for transport.
    */

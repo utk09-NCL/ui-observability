@@ -1,8 +1,7 @@
 // src/core/remote-rules.ts
 //
-// Validates the sampling rules from the ingest server and puts them in force.
-// The sender and the bus import this module.
-// The main bundle does not include it.
+// Validates the sampling rules from the ingest server and puts them into effect.
+// Imported by the sender and the bus. The main bundle doesn't include it.
 
 import {
   LEVEL_ORDER,
@@ -25,12 +24,12 @@ import {
   type RemoteUpdate,
 } from "./remote-sampling";
 
-/** Failure of one validation step. The message states the rule. */
+/** One validation step failed. The message states the rule. */
 class RuleError extends Error {}
 
 /**
- * Tests if a value is a rate.
- * @param value Value to test.
+ * Checks whether a value is a rate.
+ * @param value Value to check.
  * @returns True for a number from 0 to 1. NaN fails.
  */
 function isRate(value: unknown): value is number {
@@ -38,10 +37,10 @@ function isRate(value: unknown): value is number {
 }
 
 /**
- * Reads the header text as JSON.
+ * Parses the header text as JSON.
  * @param text Header text.
  * @returns The parsed value.
- * @throws RuleError when the text is too long or is not JSON.
+ * @throws RuleError when the text is too long or isn't JSON.
  */
 function parseText(text: string): unknown {
   if (text.length > REMOTE_SAMPLING_MAX_CHARS) {
@@ -62,7 +61,7 @@ function parseText(text: string): unknown {
  * Reads the namespace rates.
  * @param value Value of `rates`.
  * @returns The rates.
- * @throws RuleError when a rate is not valid.
+ * @throws RuleError when a rate is invalid.
  */
 function readRates(value: unknown): Record<string, number> {
   if (value === undefined) {
@@ -81,15 +80,15 @@ function readRates(value: unknown): Record<string, number> {
     throw new RuleError(rule);
   }
 
-  // fromEntries makes own properties. A "__proto__" key then cannot change the prototype.
+  // fromEntries creates own properties, so a "__proto__" key can't change the prototype.
   return Object.fromEntries(entries) as Record<string, number>;
 }
 
 /**
- * Reads the level for each namespace prefix.
+ * Reads the level for every namespace prefix.
  * @param value Value of `minLevels`.
  * @returns The levels.
- * @throws RuleError when a level is not valid.
+ * @throws RuleError when a level is invalid.
  */
 function readMinLevels(value: unknown): Record<string, LogLevel> {
   const rule = `minLevels must be an object with at most ${String(REMOTE_SAMPLING_MAX_RATES)} level names.`;
@@ -107,16 +106,15 @@ function readMinLevels(value: unknown): Record<string, LogLevel> {
     throw new RuleError(rule);
   }
 
-  // fromEntries makes own properties. A "__proto__" key then cannot change the prototype.
+  // fromEntries creates own properties, so a "__proto__" key can't change the prototype.
   return Object.fromEntries(entries) as Record<string, LogLevel>;
 }
 
 /**
  * Validates the rules. Sampling applies `remoteMaxRate` when it reads them.
  * @param value Parsed header value.
- * @param maxRate Highest rate that a remote rule can set.
  * @returns The rules and their TTL.
- * @throws RuleError when a field is not valid.
+ * @throws RuleError when a field is invalid.
  */
 function readRules(value: unknown): RemoteUpdate {
   if (!isObject(value)) {
@@ -185,10 +183,10 @@ function readRules(value: unknown): RemoteUpdate {
 }
 
 /**
- * Validates sampling rules from the server. A rule that is not valid rejects all the rules.
+ * Validates sampling rules from the server. One invalid rule rejects all of them.
  * @param raw Header text, or a parsed object from a custom transport or the bus.
  * @param diagnostics Diagnostics reporter.
- * @returns The rules and their TTL, or null if they are not valid.
+ * @returns The rules and their TTL, or null if they are invalid.
  */
 export function parseRemoteRules(raw: unknown, diagnostics: Diagnostics): RemoteUpdate | null {
   try {
@@ -207,8 +205,8 @@ export function parseRemoteRules(raw: unknown, diagnostics: Diagnostics): Remote
 }
 
 /**
- * Puts rules in force in the slot of the runtime. It makes the overlay for the first rules.
- * @param slot Slot of the runtime.
+ * Puts rules into effect in the runtime's slot. Creates the overlay for the first rules.
+ * @param slot The runtime's slot.
  * @param config Active configuration instance.
  * @param update Validated rules, or null when the upstream has no rules.
  */

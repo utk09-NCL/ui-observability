@@ -21,37 +21,37 @@ import {
 /** Base URL for the local mock ingest server. */
 const MOCK_SERVER = "http://localhost:8787";
 
-/** Target HTTP endpoint for log ingest requests. */
+/** Endpoint the log batches are posted to. */
 const INGEST_ENDPOINT = `${MOCK_SERVER}/v1/logs`;
 
-/** The page selects the transport before the delivery stack loads. */
+/** The page picks the transport before the delivery stack loads. */
 const workerEnabled = new URLSearchParams(location.search).get("worker") === "1";
 const transportWorker = workerEnabled
   ? () => new Worker(new URL("./transport-worker.ts", import.meta.url), { type: "module" })
   : undefined;
 
-/** Duration of each phase of the sample measure. */
+/** How long each phase of the sample measure lasts. */
 const MEASURE_PHASE_MS = 50;
 
-/** Number of log records generated in a single test burst. */
+/** Number of log records in one test burst. */
 const BURST_SIZE = 250;
 
-/** Time that the long frame button blocks the main thread, in milliseconds. */
+/** How long the long frame button blocks the main thread, in milliseconds. */
 const LONG_FRAME_MS = 300;
 
-/** Query parameter carrying the journey token to a second window. */
+/** Query parameter that carries the journey token to a second window. */
 const JOURNEY_PARAM = "__uiobs_journey";
 
-/** Number of spans that the profiler button measures. */
+/** How many spans the profiler button measures. */
 const PROFILER_SPANS = 10_000;
 
-/** Number of values that each measured sort orders. */
+/** How many values each measured sort orders. */
 const SORT_ROWS = 32;
 
 /**
- * Queries a DOM element by selector, throwing if missing.
- * @param selector CSS selector string.
- * @returns Matched DOM element.
+ * Finds an element by selector and throws if it is missing.
+ * @param selector CSS selector.
+ * @returns The element.
  */
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
@@ -61,7 +61,7 @@ const el = (selector: string): Element => {
   return found;
 };
 
-/** Diagnostic output container in the playground DOM. */
+/** The panel where diagnostics are shown. */
 const out = el("#diagnostics");
 
 /**
@@ -74,28 +74,28 @@ const note = (code: string, message: string): void => {
 };
 
 /**
- * Normalizes caught errors into string messages.
- * @param err Unknown caught error.
- * @returns Formatted message string.
+ * Turns a caught error into a message string.
+ * @param err Whatever was caught.
+ * @returns The message.
  */
 const toMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * Binds a click listener to a DOM element by ID.
- * @param id Element ID without prefix.
+ * Adds a click listener to the element with the given id.
+ * @param id Element id, without the "#".
  * @param fn Click callback.
  */
 const on = (id: string, fn: () => void): void => {
   el(`#${id}`).addEventListener("click", fn);
 };
 
-// A probe is valid before configure(). It measures nothing until the profiler checkbox turns
-// the profiler on.
+// You can create a probe before configure(). It measures nothing until the profiler checkbox
+// turns the profiler on.
 const sortProbe = profiler.probe("grid.sort", { sampleEvery: 1 });
 
-// Storage, transport, retry, the pipeline, the bus, the exit flush and every
-// capture module are built by this one call. The child frames load later, after
-// their registration. See the registration block below.
+// This one call builds storage, transport, retry, the pipeline, the bus, the exit flush and
+// every capture module. The child frames load later, once they are registered. See the
+// registration block below.
 configure({
   endpoint: INGEST_ENDPOINT,
   transportWorker,
@@ -106,7 +106,7 @@ configure({
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console from DEBUG up.
   console: "DEBUG",
-  // Reads sampling rules from the X-UiObs-Sampling header of the mock server.
+  // Reads sampling rules from the mock server's X-UiObs-Sampling header.
   sampling: { remote: true },
   capture: {
     errors: true,
@@ -124,9 +124,9 @@ configure({
     // which leaves the browser unable to resolve the bare specifier at runtime.
     webVitalsLoader: () => import("web-vitals"),
     longFrames: true,
-    // Records console.error and console.warn. console.info gives a breadcrumb.
+    // Records console.error and console.warn. console.info becomes a breadcrumb.
     console: ["error", "warn", "info"],
-    // Reports WARN ui.unclean_exit after a crash of the previous page of this tab.
+    // Reports WARN ui.unclean_exit when this tab's previous page crashed.
     uncleanExit: true,
     // Records performance.measure() calls whose names start with "playground.".
     userTiming: true,
@@ -137,8 +137,9 @@ configure({
   },
 });
 
-// By default, the bus accepts records only from a registered frame. Register each frame with its
-// exact origin. The child starts journeys and reads journeys and remote sampling, so grant those.
+// By default the bus only accepts records from registered frames, so register every frame with
+// its exact origin. The child starts journeys and reads journeys and remote sampling, so grant
+// those too.
 const frames = [...document.querySelectorAll<HTMLIFrameElement>("iframe[data-src]")];
 for (const frame of frames) {
   registerFrame(frame, {
@@ -147,8 +148,8 @@ for (const frame of frames) {
   });
 }
 
-// Load the frames after startup. Then the registrations are active. A frame that starts earlier
-// gets no owner and sends its own records.
+// Load the frames after startup, once the registrations are active. A frame that starts earlier
+// finds no owner and sends its own records.
 void flush().then(() => {
   for (const frame of frames) {
     frame.src = frame.dataset.src ?? "";
@@ -175,6 +176,18 @@ remoteCaptures.addEventListener("change", () => {
 const profilerEnabled = el("#profiler-enabled") as HTMLInputElement;
 profilerEnabled.addEventListener("change", () => {
   configure({ profiler: { enabled: profilerEnabled.checked } });
+});
+
+const replayEnabled = el("#replay-enabled") as HTMLInputElement;
+replayEnabled.addEventListener("change", () => {
+  configure({
+    replay: {
+      enabled: replayEnabled.checked,
+      endpoint: `${MOCK_SERVER}/v1/replay`,
+      // The app owns the recorder import. The library doesn't ship a recorder.
+      loader: () => import("@rrweb/record"),
+    },
+  });
 });
 
 on("server-timing", () => {
@@ -264,19 +277,19 @@ on("open-window", () => {
 });
 
 on("throw", () => {
-  // Triggers uncaught exception to test error auto-capture.
+  // An uncaught exception, to test error auto-capture.
   setTimeout(() => {
     throw new Error("uncaught from a timeout");
   });
 });
 
 on("reject", () => {
-  // Triggers unhandled rejection to test rejection auto-capture.
+  // An unhandled rejection, to test rejection auto-capture.
   void Promise.reject(new Error("nobody caught me"));
 });
 
 on("fetch-500", () => {
-  // Sends failing HTTP request to test network auto-capture.
+  // A failing HTTP request, to test network auto-capture.
   void fetch(`${MOCK_SERVER}/does-not-exist`)
     .then((res) => {
       note("playground.fetch_done", `mock server answered ${String(res.status)}`);
@@ -295,7 +308,7 @@ on("circular", () => {
 });
 
 on("long-frame", () => {
-  // Blocks the main thread. The long frame capture records ui.long_frame.duration.
+  // Blocks the main thread so the long frame capture records ui.long_frame.duration.
   const end = performance.now() + LONG_FRAME_MS;
   while (performance.now() < end) {
     // Wait.
@@ -303,7 +316,7 @@ on("long-frame", () => {
 });
 
 on("measure", () => {
-  // The user timing capture puts the measure into ui.user_timing.duration.
+  // The user timing capture records this measure as ui.user_timing.duration.
   performance.mark("playground.work.start");
   const end = performance.now() + 20;
   while (performance.now() < end) {
@@ -313,9 +326,9 @@ on("measure", () => {
 });
 
 on("profiler-run", () => {
-  // The probe times each sort. flush() sends the summary record, so the mock server prints it.
+  // The probe times every sort. flush() then sends the summary record so the mock server prints it.
   for (let i = 0; i < PROFILER_SPANS; i++) {
-    // Gives each span a different unsorted array. The probe times the sort only.
+    // A different unsorted array for every span. Only the sort itself is timed.
     const rows = Array.from({ length: SORT_ROWS }, (_, k) => (i * 31 + k * 17) % 97);
     const token = sortProbe.begin();
     rows.sort((a, b) => a - b);
@@ -338,7 +351,7 @@ on("console-error", () => {
 });
 
 on("burst", () => {
-  // Generates records exceeding batch capacity to verify buffer splitting.
+  // More records than one batch holds, to check that the buffer splits them.
   for (let i = 0; i < BURST_SIZE; i++) {
     // Rotates the trace id per record: sampling keys on it, so without this all
     // 250 share one key and a rate keeps or drops the whole burst.
@@ -358,12 +371,13 @@ on("burst", () => {
   );
 });
 
-/** Tracks whether the mock server sends sampling rules. */
+/** Whether the mock server is sending sampling rules. */
 let remoteSampling = false;
 
 on("remote-sampling", () => {
   remoteSampling = !remoteSampling;
-  // Keeps 10% of the "playground" records for one minute. The next accepted batch carries the rules.
+  // Keeps 10% of the "playground" records for one minute. The rules go out with the next
+  // accepted batch.
   const rules = remoteSampling ? '{"v":1,"ttlMs":60000,"rates":{"playground":0.1}}' : "";
   const control = `${MOCK_SERVER}/__sampling?rules=${encodeURIComponent(rules)}`;
 
@@ -386,7 +400,7 @@ on("queue", () => {
     });
 });
 
-/** Tracks mock server failure simulation state. */
+/** Whether the mock server is simulating failures. */
 let failing = false;
 
 on("offline", () => {

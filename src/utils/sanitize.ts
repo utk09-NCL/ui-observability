@@ -1,7 +1,7 @@
 // src/utils/sanitize.ts
 //
-// Converts arbitrary data into JSON-safe structures. It detects cycles and estimates
-// the byte size. It never throws. It never returns a circular structure.
+// Converts arbitrary data into JSON-safe structures, detecting cycles and estimating the byte
+// size. Never throws and never returns a circular structure.
 
 import {
   BYTES_PER_BOOLEAN,
@@ -36,26 +36,26 @@ export interface SanitizeLimits {
 }
 
 /**
- * Truncates a string to maximum character length while preserving UTF-16 surrogate pairs.
+ * Truncates a string to a maximum character length while preserving UTF-16 surrogate pairs.
  * @param value Target string.
  * @param max Maximum allowed character length.
- * @returns Truncated string with appended drop count suffix.
+ * @returns The truncated string, with a suffix that gives the dropped character count.
  */
 export function truncate(value: string, max: number): string {
   if (value.length <= max) {
     return value;
   }
 
-  // Avoids splitting UTF-16 surrogate pairs at truncation boundaries. slice works in
-  // code units. Half a pair serializes as U+FFFD.
+  // Don't split a UTF-16 surrogate pair at the cut. slice works in code units, and half a
+  // pair serializes as U+FFFD.
   const end = isHighSurrogate(value.charCodeAt(max - 1)) ? max - 1 : max;
   return `${value.slice(0, end)}… [truncated ${String(value.length - end)} chars]`;
 }
 
 /**
- * Tests if a UTF-16 code unit is a leading surrogate.
+ * Checks whether a UTF-16 code unit is a leading surrogate.
  * @param code UTF-16 character code.
- * @returns True if character is a high surrogate.
+ * @returns True if the character is a high surrogate.
  */
 function isHighSurrogate(code: number): boolean {
   return code >= HIGH_SURROGATE_MIN && code <= HIGH_SURROGATE_MAX;
@@ -97,7 +97,7 @@ interface WalkState {
   bytes: number;
   /** Count of values visited so far. */
   nodes: number;
-  /** Diagnostics reporter. It counts a value that throws during the walk. */
+  /** Diagnostics reporter. Counts a value that throws during the walk. */
   diagnostics: Diagnostics;
 }
 
@@ -105,7 +105,7 @@ interface WalkState {
  * Sanitizes arbitrary values into JSON-safe structures without throwing.
  * @param value Raw value to sanitize.
  * @param limits Configuration limits for depth, count, and character lengths.
- * @param diagnostics Diagnostics reporter. It counts a value that throws during the walk.
+ * @param diagnostics Diagnostics reporter. Counts a value that throws during the walk.
  * @returns JSON-safe sanitized value.
  */
 export function sanitize(
@@ -120,7 +120,7 @@ export function sanitize(
  * Sanitizes arbitrary values and calculates approximate serialized byte sizes.
  * @param value Raw value to sanitize.
  * @param limits Configuration limits.
- * @param diagnostics Diagnostics reporter. It counts a value that throws during the walk.
+ * @param diagnostics Diagnostics reporter. Counts a value that throws during the walk.
  * @returns SanitizeResult containing sanitized value and byte count.
  */
 export function sanitizeWithSize(
@@ -134,10 +134,10 @@ export function sanitizeWithSize(
 }
 
 /**
- * Adds string length and quotes overhead to size accumulator.
+ * Adds a string's length plus quote overhead to the size accumulator.
  * @param text Serialized string token.
  * @param state Byte size accumulator.
- * @returns Input text unchanged.
+ * @returns The input text, unchanged.
  */
 function counted(text: string, state: WalkState): string {
   state.bytes += estimateBytes(text) + BYTES_PER_QUOTED_STRING;
@@ -145,7 +145,7 @@ function counted(text: string, state: WalkState): string {
 }
 
 /**
- * Walks an object tree recursively. It replaces cyclic references, hostile getters, and
+ * Walks an object tree recursively, replacing cyclic references, hostile getters, and
  * invalid primitives.
  * @param value Target value to sanitize.
  * @param limits Truncation and depth limits.
@@ -162,8 +162,8 @@ function walk(
   state: WalkState,
 ): unknown {
   state.nodes++;
-  // The per-level limits do not bound a wide tree. 128 keys over 6 levels give 128^6
-  // values. The walk visits all of them synchronously on the main thread.
+  // The per-level limits don't bound a wide tree: 128 keys over 6 levels is 128^6 values, and
+  // the walk would visit all of them synchronously on the main thread.
   if (state.nodes > limits.maxNodes) {
     return counted("[MaxNodes]", state);
   }
@@ -205,10 +205,10 @@ function walk(
   state.bytes += BYTES_PER_CONTAINER;
 
   try {
-    // An Error from another realm fails instanceof. Its built-in tag still names an Error.
+    // An Error from another realm fails instanceof, but its built-in tag still names an Error.
     if (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]") {
       const error = value as Error;
-      // Keep the own fields of the error, for example a code or an HTTP status.
+      // Keep the error's own fields, for example a code or an HTTP status.
       const extra: Record<string, unknown> = {};
       let extraCount = 0;
       for (const key of Object.keys(error)) {
@@ -298,14 +298,14 @@ function walk(
     }
     return out;
   } catch (error) {
-    // Catch hostile getters and throwing proxies. A failure replaces one attribute,
-    // not the full record. Count the fault. A report on each attribute is noise.
+    // Catch hostile getters and throwing proxies. A failure replaces one attribute, not the
+    // whole record. Count the fault, because a report for every attribute would be noise.
     state.diagnostics.count("record.sanitize_failed");
     const name = error instanceof Error ? error.name : "error";
     return counted(`[Unserializable: ${name}]`, state);
   } finally {
-    // Remove the object from the ancestor set on unwind. If not, a repeated sibling
-    // shows as a cycle.
+    // Remove the object from the ancestor set on unwind, or a repeated sibling would show
+    // up as a cycle.
     seen.delete(value);
   }
 }

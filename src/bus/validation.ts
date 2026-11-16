@@ -7,7 +7,7 @@ import { isLogLevel, isLogRecord } from "../models/log-record";
 import { BUS_TYPE, SEVERITY_NUMBER } from "../constants";
 
 /**
- * Checks the fields required by each bus message type. unwrap() checks the envelope only.
+ * Checks the fields that each bus message type requires. unwrap() only checks the envelope.
  * @param value Message to check.
  * @returns True if the message has the required fields and values.
  */

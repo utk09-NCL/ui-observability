@@ -23,22 +23,22 @@ const record = (body: string): LogRecord => ({
   resource: { "service.name": "svc" },
 });
 
-/** A record of a span. */
+/** A span record. */
 const spanRecord = (): LogRecord => ({
   ...record("ui.start"),
   attributes: { "log.type": "span", "span.kind": "internal", "span.parent_id": "" },
 });
 
-/** A record of an aggregated counter point. */
+/** An aggregated counter point record. */
 const pointRecord = (): LogRecord => ({
   ...record("orders"),
   attributes: { "log.type": "metric", "metric.type": "counter", "metric.value": 1 },
 });
 
 /**
- * Listeners stay after a test. happy-dom gives one window to the whole file. Without this, a failed
- * assertion leaves an instance that flushes on the pagehide of the next test. `uninstall` is
- * idempotent. A test can still call it.
+ * Listeners outlive a test, because happy-dom gives the whole file one window. Without this, a
+ * failed assertion leaves an instance that flushes on the next test's pagehide. `uninstall` is
+ * idempotent, so a test can still call it.
  */
 const built: ExitFlush[] = [];
 
@@ -53,21 +53,21 @@ interface Options {
   config?: Partial<ObservabilityConfig>;
   /** Replaces the default drain, for the shapes a real pipeline cannot produce. */
   drain?: () => LogBatch | null;
-  /** Replaces the drain with one that gives several batches, one for each kind. */
+  /** Replaces the drain with one that returns several batches, one per kind. */
   batches?: () => LogBatch[];
-  /** Headers that the HTTP transport resolved last. */
+  /** The headers the HTTP transport resolved last. */
   headers?: Record<string, string>;
-  /** Replaces the normal flush of the pipeline. */
+  /** Replaces the pipeline's normal flush. */
   alive?: () => void | Promise<void>;
-  /** Receives the records that the exit flush loses. */
+  /** Receives the records the exit flush loses. */
   onLoss?: LossReporter;
   /** Sends the points of the open metric interval. */
   beforeExit?: () => void;
 }
 
 /**
- * The default drain empties a real array, as the pipeline does. A drain that gives null on the
- * second call also passes the "sends once" test. That drain does not test the code that stops the
+ * The default drain empties a real array, the way the pipeline does. A drain that returns null on
+ * the second call would also pass the "sends once" test without testing the code that stops the
  * double send.
  */
 function setup({
@@ -102,7 +102,7 @@ function setup({
           records: pending.splice(0),
         };
 
-  // The exit flush takes one batch for each kind. These tests give one batch or none.
+  // The exit flush takes one batch per kind. These tests give one batch or none.
   const drainForExit = vi.fn<() => LogBatch[]>(
     batches ??
       (() => {
@@ -140,7 +140,7 @@ const stubBeacon = (impl: (url: string, data: Blob) => boolean = () => true) => 
   return beacon;
 };
 
-/** The body is null by default. 204 is a null-body status. A Response with both throws. */
+/** The body defaults to null. 204 is a null-body status, and a Response with both throws. */
 const stubFetch = (
   impl: (url: string, init: RequestInit) => Promise<Response> = () =>
     Promise.resolve(new Response(null, { status: 204 })),
@@ -156,7 +156,7 @@ const stubFin = (me: unknown) => {
 };
 
 /**
- * Read the items by index. The Storage of happy-dom is a Proxy that does not enumerate its items.
+ * Reads the items by index, because happy-dom's Storage is a Proxy that doesn't enumerate them.
  */
 const emergencyKeys = () => {
   const keys: string[] = [];
@@ -171,7 +171,7 @@ const emergencyKeys = () => {
 
 describe("ExitFlush install", () => {
   it("runs a normal flush, not a beacon, when the document becomes hidden", () => {
-    // The document keeps running. A normal flush keeps the headers, gzip and the retry.
+    // The document keeps running, so a normal flush keeps the headers, gzip and the retry.
     const beacon = stubBeacon();
     const { flush, flushAlive, drainForExit } = setup({ records: [record("bye")] });
     flush.install();
@@ -351,9 +351,9 @@ describe("ExitFlush flush", () => {
     stubBeacon();
     const { flush, drainForExit, flushAlive } = setup({ records: [record("bye")] });
 
-    // hidden fires at each tab switch and each minimize. The document continues to run. Its sends
-    // in flight still complete. A take of them here sends the same records two times. The server
-    // cannot find the copy, because the id is new.
+    // hidden fires on every tab switch and every minimize. The document keeps running and its
+    // in-flight sends still complete. Taking them here would send the same records twice, and
+    // the server can't find the copy because the id is new.
     flush.flush("hidden");
 
     expect(flushAlive).toHaveBeenCalledOnce();
@@ -440,7 +440,7 @@ describe("ExitFlush flush", () => {
     expect(codes()).toContain("transport.serialize_failed");
   });
 
-  it("gives onLoss the batch that its serializer cannot encode", () => {
+  it("passes the batch its serializer cannot encode to onLoss", () => {
     stubBeacon();
     const onLoss = vi.fn<LossReporter>();
     const { flush } = setup({
@@ -568,7 +568,7 @@ describe("ExitFlush keepalive fallback", () => {
   });
 
   it("sends a keepalive fetch with the last headers, not a beacon, when headers is set", () => {
-    // sendBeacon cannot set a header. Without the authorization header, the server drops it.
+    // sendBeacon can't set a header, and without the authorization header the server drops it.
     const beacon = stubBeacon();
     const fetchMock = stubFetch();
 
@@ -608,9 +608,9 @@ describe("ExitFlush keepalive fallback", () => {
     expect(emergencyKeys()).toHaveLength(1);
   });
 
-  it("gives the full keepalive budget to each exit flush", () => {
-    // The requests of an earlier flush are complete. A page from the back-forward cache can
-    // flush again.
+  it("gives every exit flush the full keepalive budget", () => {
+    // An earlier flush's requests are complete, so a page from the back-forward cache can flush
+    // again.
     const fetchMock = stubFetch();
     const large = (): LogBatch => ({
       id: "b1",
@@ -695,7 +695,7 @@ describe("ExitFlush keepalive fallback", () => {
     await vi.waitFor(() => {
       expect(events.some((event) => event.message.includes("exit flush failed"))).toBe(true);
     });
-    // After shutdown(), the document is still alive. The next page load sends the batch.
+    // After shutdown(), the document is still alive, and the next page load sends the batch.
     expect(emergencyKeys()).toHaveLength(1);
   });
 
@@ -714,10 +714,10 @@ describe("ExitFlush keepalive fallback", () => {
 });
 
 describe("ExitFlush with a custom transport", () => {
-  /** A transport that the exit path must never call. A page that closes cannot await it. */
+  /** A transport the exit path must never call, because a closing page can't await it. */
   const transport = () => Promise.resolve({ status: 200 });
 
-  it("gives the batch to transportOnExit and sends no beacon", () => {
+  it("hands the batch to transportOnExit and sends no beacon", () => {
     const beacon = stubBeacon();
     const onExit = vi.fn<ExitTransport>(() => true);
     const { flush } = setup({
@@ -733,7 +733,7 @@ describe("ExitFlush with a custom transport", () => {
     expect(emergencyKeys()).toHaveLength(0);
   });
 
-  it("gives transportOnExit the kind of each batch", () => {
+  it("tells transportOnExit the kind of each batch", () => {
     const onExit = vi.fn<ExitTransport>(() => true);
     const { flush } = setup({
       config: {
@@ -793,7 +793,7 @@ describe("ExitFlush with a custom transport", () => {
   });
 
   it("runs a normal flush on hidden, also with transportOnExit", () => {
-    // The page keeps running after a tab switch. The async transport can still send.
+    // The page keeps running after a tab switch, so the async transport can still send.
     const onExit = vi.fn<ExitTransport>(() => true);
     const { flush, flushAlive } = setup({
       records: [record("bye")],

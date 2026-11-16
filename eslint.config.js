@@ -3,7 +3,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import tseslint from "typescript-eslint";
 
-// Permit an import that runs a module. Refuse an empty list of named imports.
+// Side-effect imports are fine. An empty list of named imports is not.
 const projectRules = {
   rules: {
     "no-empty-imports": {
@@ -187,8 +187,8 @@ export default defineConfig(
           ],
         },
       ],
-      // An Angular shell component holds a template and no members. Without this
-      // option no-extraneous-class rejects it and the fix is a filler field.
+      // An Angular shell component has a template and no members. Without this
+      // option, no-extraneous-class rejects it and the only fix is a filler field.
       "@typescript-eslint/no-extraneous-class": ["error", { allowWithDecorator: true }],
     },
   },

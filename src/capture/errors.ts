@@ -9,26 +9,26 @@ import type { Capture, CaptureContext } from "./types";
 
 /** Tracking metadata for a deduplicated error signature. */
 interface SeenError {
-  /** Time of the last report for the signature, in epoch milliseconds. */
+  /** When the signature was last reported, in epoch milliseconds. */
   at: number;
   /** Occurrences recorded since the last report. */
   count: number;
 }
 
-/** Message and deduplication key of a thrown value. */
+/** A thrown value's message and deduplication key. */
 interface Signature {
-  /** Message of the record. */
+  /** The record's message. */
   message: string;
   /** Deduplication key. */
   key: string;
 }
 
 /**
- * Reads the message and the deduplication key of a thrown value.
- * Duck typing reads an error from another realm. That error fails `instanceof Error`.
+ * Reads a thrown value's message and deduplication key.
+ * Duck typing lets it read an error from another realm, which fails `instanceof Error`.
  * @param value Thrown value or rejection reason.
  * @returns The signature.
- * @throws When a getter or the text form of the value throws. Call it inside a guard.
+ * @throws When a getter or the value's text form throws. Call it inside a guard.
  */
 function signatureOf(value: unknown): Signature {
   if (isErrorLike(value)) {
@@ -51,11 +51,11 @@ export class ErrorCapture implements Capture {
   /** Recently reported error signatures in LRU order. */
   private readonly seen = new Map<string, SeenError>();
 
-  /** Rate limit of this capture. Console noise has its own window and cannot use it. */
+  /** This capture's own rate limit. Console noise has a separate window and can't use it. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
-   * @param ctx Capture context containing configuration, diagnostics, logger, and breadcrumbs.
+   * @param ctx Capture context: configuration, diagnostics, logger and breadcrumbs.
    */
   constructor(private readonly ctx: CaptureContext) {}
 
@@ -66,7 +66,7 @@ export class ErrorCapture implements Capture {
     }
     this.installed = true;
 
-    // Uses capture phase to observe non-bubbling resource load errors.
+    // Resource load errors don't bubble, so listen in the capture phase.
     addEventListener("error", this.onError, true);
     addEventListener("unhandledrejection", this.onRejection);
   }
@@ -88,7 +88,7 @@ export class ErrorCapture implements Capture {
     const target = event.target as (HTMLElement & { src?: string; href?: string }) | null;
     const resourceUrl = target?.src ?? target?.href ?? "";
 
-    // Filters element-level resource load failures from script errors.
+    // An event from an element with a URL is a failed resource load, not a script error.
     if (
       target !== null &&
       target !== (globalThis as unknown as EventTarget) &&
@@ -98,8 +98,8 @@ export class ErrorCapture implements Capture {
         return;
       }
 
-      // A cache buster is noise. A signed URL is a credential.
-      // The record keeps neither unless you set fullUrls.
+      // A cache buster is noise and a signed URL is a credential, so the record keeps neither
+      // unless you set fullUrls.
       const url = recordedUrl(
         resourceUrl,
         this.ctx.config.capture.fullUrls,
@@ -154,10 +154,10 @@ export class ErrorCapture implements Capture {
   };
 
   /**
-   * Rate limits, deduplicates, and logs captured errors.
-   * @param source Originating capture event name.
-   * @param error Caught error instance or thrown value.
-   * @param extra Contextual error attributes.
+   * Rate limits, deduplicates and logs a captured error.
+   * @param source Name of the capture event it came from.
+   * @param error The caught error or thrown value.
+   * @param extra Extra error attributes for the record.
    */
   private report(source: string, error: unknown, extra: Record<string, unknown>): void {
     if (
@@ -173,8 +173,8 @@ export class ErrorCapture implements Capture {
     }
 
     const now = Date.now();
-    // A reason with no text form, for example a null-prototype object, gets an empty message.
-    // The record then uses the source as its message.
+    // A reason with no text form, for example a null-prototype object, gets an empty message,
+    // and the record then uses the source as its message.
     const { message, key } = this.ctx.diagnostics.guard(
       "capture.record_failed",
       "The library could not read the error reason. It records the error without its message.",
@@ -188,16 +188,16 @@ export class ErrorCapture implements Capture {
       return;
     }
 
-    // This is the number of occurrences that deduplication dropped since the last report.
-    // Without this count, many errors look like few errors.
+    // How many occurrences deduplication dropped since the last report. Without this count,
+    // many errors look like a few.
     const suppressed = previous ? previous.count - 1 : 0;
 
-    // Delete, then set, to move the key to the end of the map. The map stays in
-    // least-recently-reported order. The eviction below needs this order.
+    // Delete, then set, to move the key to the end of the map. That keeps the map in
+    // least-recently-reported order, which the eviction below relies on.
     this.seen.delete(key);
     this.seen.set(key, { at: now, count: 1 });
 
-    // A page can throw with a new message at each render, for example from a template literal
+    // A page can throw with a new message on every render, for example from a template literal
     // in a loop. Without this cap, the map grows until the document closes.
     if (
       this.ctx.config.capturePolicy.maxErrorSignatures > 0 &&
@@ -207,8 +207,8 @@ export class ErrorCapture implements Capture {
       this.seen.delete(oldest);
     }
 
-    // Give the original value to the logger. It converts the reason and keeps its data.
-    // Without a reason, the record still needs error.message and error.stack_trace.
+    // Hand the logger the original value, so it converts the reason and keeps its data.
+    // With no reason at all, the record still needs error.message and error.stack_trace.
     const reason = error === undefined ? new Error(message) : error;
     this.ctx.logger.error(message === "" ? source : message, reason, {
       ...extra,

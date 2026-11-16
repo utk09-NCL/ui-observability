@@ -31,7 +31,7 @@ function runtime(): ObservabilityRuntime {
 }
 
 /**
- * Configures the runtime and records each emitted record.
+ * Configures the runtime and collects every emitted record.
  * @param over Config values layered over the base.
  * @returns The emitted records.
  */
@@ -199,7 +199,7 @@ describe("error and fatal", () => {
 
   it("keeps the own fields of an Error as error.data", () => {
     const records = capture();
-    // An assigned name is an own field. It stays out of error.data.
+    // An assigned name is an own field, and it stays out of error.data.
     const failure = Object.assign(new Error("gateway"), {
       name: "GatewayError",
       code: "E42",
@@ -216,7 +216,7 @@ describe("error and fatal", () => {
   it("keeps only the string, number and boolean own fields of an error as error.data", () => {
     const records = capture();
     const log = getLogger("trading");
-    // An AxiosError has config, request and response as own fields. They hold the credentials.
+    // An AxiosError has config, request and response as own fields, and they hold the credentials.
     const axios = Object.assign(new Error("Request failed with status code 500"), {
       code: "ERR_BAD_RESPONSE",
       status: 500,

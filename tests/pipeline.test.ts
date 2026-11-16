@@ -56,8 +56,8 @@ const setup = (
   const storage = override ?? new MemoryStorage(limits);
   const nudge = vi.fn<() => void>();
 
-  // This stub takes the place of the classification of the engine. retry-engine.test.ts proves the
-  // split. Here, the stub only stores and nudges.
+  // This stub takes the place of the engine's classification. retry-engine.test.ts proves the
+  // split, so here the stub only stores and nudges.
   const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<void>>(async (failed) => {
     await storage.save(failed);
     nudge();
@@ -131,7 +131,7 @@ describe("LogPipeline", () => {
       metric: undefined,
     });
     expect(sent).toHaveLength(4);
-    // The pipeline copies the attributes. The record of the caller keeps no offset.
+    // The pipeline copies the attributes, so the caller's record keeps no offset.
     expect(span.attributes).not.toHaveProperty("uiobs.clock_offset_ms");
     pipeline.destroy();
   });
@@ -169,7 +169,7 @@ describe("LogPipeline", () => {
 
     const batches = pipeline.drainForExit();
 
-    // A mixed batch sends a metric to the endpoint of the logs.
+    // A mixed batch would send a metric to the logs endpoint.
     expect(batches.map((batch) => batch.records.map((one) => one.body))).toEqual([
       ["metric"],
       ["log"],
@@ -182,7 +182,7 @@ describe("LogPipeline", () => {
     const { pipeline, send } = setup();
     send.mockImplementation(() => new Promise<void>(() => undefined));
     pipeline.push(metric({ body: "metric in flight" }));
-    // The flush queues the batch. A queued batch counts as in flight.
+    // The flush queues the batch, and a queued batch counts as in flight.
     void pipeline.flushPending();
     pipeline.push(record({ body: "log" }));
 
@@ -209,8 +209,8 @@ describe("LogPipeline", () => {
   });
 
   it("counts the live delivery when it stores a batch the transport refused", async () => {
-    // A batch that the pipeline stores with zero attempts gets one request more than the
-    // maxAttempts limit. Each X-UiObs-Attempt header then shows one attempt too few.
+    // A batch stored with zero attempts would get one request more than the maxAttempts limit,
+    // and every X-UiObs-Attempt header would show one attempt too few.
     const { pipeline, send, storage, nudge, diagnostics } = setup();
     send.mockRejectedValueOnce(new Error("network"));
 
@@ -239,7 +239,7 @@ describe("LogPipeline", () => {
   });
 
   it("stores without spending an attempt while the server is throttling us", async () => {
-    // The pipeline sent nothing. No attempt counts against the batch.
+    // The pipeline sent nothing, so no attempt counts against the batch.
     const { pipeline, send, throttledForMs, storage, nudge, diagnostics } = setup();
     throttledForMs.mockReturnValue(5000);
 
@@ -288,8 +288,8 @@ describe("LogPipeline", () => {
   });
 
   it("contains a dispatch that rejects instead of stopping delivery", async () => {
-    // dispatch must never reject. If it rejects, the pipeline loses the batch and reports it. The
-    // records after it still go to the transport.
+    // dispatch must never reject. If it does, the pipeline loses the batch and reports it, and
+    // the records after it still go to the transport.
     const { pipeline, send, throttledForMs, diagnostics } = setup();
     throttledForMs.mockImplementationOnce(() => {
       throw new Error("clock gone");
@@ -366,8 +366,8 @@ describe("LogPipeline", () => {
   });
 
   it("leaves in-flight batches alone on an explicit flush", async () => {
-    // A send that never settles keeps a claimed batch unconfirmed. An explicit flush that takes it
-    // sends those records again under a new batch id. The server cannot match that id to the id
+    // A send that never settles keeps a claimed batch unconfirmed. An explicit flush that took it
+    // would send those records again under a new batch id, which the server can't match to the id
     // still in flight.
     const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
@@ -383,16 +383,16 @@ describe("LogPipeline", () => {
     void pipeline.flushPending();
     await vi.advanceTimersByTimeAsync(0);
 
-    // The flush sends no second copy. The batch stays in flight for the exit flush.
+    // The flush sends no second copy, and the batch stays in flight for the exit flush.
     expect(send).toHaveBeenCalledOnce();
     expect(pipeline.drainForExit()[0].records).toHaveLength(2);
     pipeline.destroy();
   });
 
   it("hands over batches that are claimed but not yet confirmed sent", async () => {
-    // These requests never settle. Each claimed batch stays between the claim and the network.
-    // Three batches form. MAX_CONCURRENT_REQUESTS lets two go in flight. It holds the third. A
-    // document that closes takes all of them.
+    // These requests never settle, so every claimed batch stays between the claim and the
+    // network. Three batches form. MAX_CONCURRENT_REQUESTS lets two go in flight and holds the
+    // third. A document that closes takes all of them.
     const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
@@ -412,7 +412,7 @@ describe("LogPipeline", () => {
   });
 
   it("does not hand over a batch that the transport sends with keepalive", async () => {
-    // A keepalive request continues after unload. A second copy under a new id is a duplicate.
+    // A keepalive request continues after unload, so a second copy under a new id is a duplicate.
     const { pipeline, send } = setup();
     send.mockImplementation((_batch, onKeepalive) => {
       onKeepalive?.();
@@ -463,7 +463,7 @@ describe("LogPipeline", () => {
   });
 
   it("counts the buffered and queued records as pending, and the dispatched records as in flight", async () => {
-    // Three batches of 2 form. Two go in flight. The pipeline holds the third in the queue.
+    // Three batches of 2 form. Two go in flight, and the pipeline holds the third in the queue.
     const { pipeline, send } = setup(undefined, {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
@@ -509,8 +509,8 @@ describe("LogPipeline", () => {
 
 describe("LogPipeline flushPending", () => {
   /**
-   * Makes a send that settles only when the test releases it.
-   * @returns The send and the release function of each call.
+   * Creates a send that only settles when the test releases it.
+   * @returns The send and the release function for every call.
    */
   function heldSend() {
     const releases: (() => void)[] = [];
@@ -524,9 +524,9 @@ describe("LogPipeline flushPending", () => {
   }
 
   /**
-   * Tracks if a promise settled.
+   * Tracks whether a promise settled.
    * @param work Promise to watch.
-   * @returns A function that tells if it settled.
+   * @returns A function that reports whether it settled.
    */
   function watch(work: Promise<void>): () => boolean {
     let settled = false;
@@ -543,7 +543,7 @@ describe("LogPipeline flushPending", () => {
 
     await pipeline.flushPending();
 
-    // A mixed batch sends a metric to the endpoint of the logs.
+    // A mixed batch would send a metric to the logs endpoint.
     expect(send.mock.calls.map(([batch]) => batch.records.map((one) => one.body))).toEqual([
       ["metric"],
       ["log"],
@@ -584,7 +584,7 @@ describe("LogPipeline flushPending", () => {
     const held = heldSend();
     send.mockImplementation(held.send);
 
-    // Two full batches take both slots. The third record stays in the buffer for the flush.
+    // Two full batches take both slots, and the third record stays in the buffer for the flush.
     for (let i = 0; i < 4; i++) {
       pipeline.push(record());
     }
@@ -615,7 +615,7 @@ describe("LogPipeline flushPending", () => {
     const held = heldSend();
     send.mockImplementation(held.send);
 
-    // Three full batches in one task. Two take the slots. The third waits in the queue.
+    // Three full batches in one task. Two take the slots, and the third waits in the queue.
     for (let i = 0; i < 6; i++) {
       pipeline.push(record());
     }
@@ -648,7 +648,7 @@ describe("LogPipeline flushPending", () => {
     pipeline.destroy();
   });
 
-  it("resolves at once with nothing buffered and nothing in flight", async () => {
+  it("resolves right away with nothing buffered and nothing in flight", async () => {
     const { pipeline, send } = setup();
 
     await pipeline.flushPending();

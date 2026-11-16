@@ -4,10 +4,10 @@ import { Diagnostics } from "../src/core/diagnostics";
 import type { OtelApi, OtelSpan } from "../src/models/config";
 import { newSpanId, newTraceId, type SpanHooks, TraceEngine } from "../src/utils/tracing";
 
-/** No throttle. A test can read a count back in the same tick as the report. */
+/** No throttle, so a test can read a count back in the same tick as the report. */
 const diagnostics = (): Diagnostics => new Diagnostics(vi.fn(), 0);
 
-/** Ids that the W3C specification accepts. They are constants here. Assertions can name them. */
+/** Ids the W3C specification accepts, kept as constants so assertions can name them. */
 const VALID_TRACE_ID = "a".repeat(32);
 const VALID_SPAN_ID = "b".repeat(16);
 
@@ -23,7 +23,7 @@ const activeSpan = (span: Span): void => {
   vi.spyOn(otelTrace, "getActiveSpan").mockReturnValue(span);
 };
 
-/** Makes an engine that loads the real API through an `otelLoader`. */
+/** Creates an engine that loads the real API through an `otelLoader`. */
 const loaded = async (
   reporter: Diagnostics = diagnostics(),
   maxAgeMs?: number,
@@ -33,7 +33,7 @@ const loaded = async (
   return engine;
 };
 
-/** A structural stand-in for the optional peer, so a test needs nothing installed. */
+/** A structural fake of the optional peer, so a test needs nothing installed. */
 const fakeApi = (span: OtelSpan | undefined): OtelApi => ({
   trace: { getActiveSpan: () => span },
   context: { active: () => ({}) },
@@ -42,8 +42,8 @@ const fakeApi = (span: OtelSpan | undefined): OtelApi => ({
 
 describe("newTraceId and newSpanId", () => {
   it("mint the widths the W3C format fixes, in lower-case hex", () => {
-    // Each type in this library accepts a trace id of twenty-eight characters. The backend drops it
-    // with no message.
+    // Every type in this library accepts a trace id of twenty-eight characters, and the backend
+    // silently drops it.
     expect(newTraceId()).toMatch(/^[0-9a-f]{32}$/);
     expect(newSpanId()).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -56,8 +56,8 @@ describe("newTraceId and newSpanId", () => {
 
 describe("TraceEngine.resolve", () => {
   it("keeps one trace id across consecutive records, and changes it on rotate", () => {
-    // This is the purpose of the module. With one id for each record, each trace in the backend has
-    // exactly one span. Correlation then does nothing, but it looks healthy.
+    // This is the point of the module. With one id per record, every trace in the backend has
+    // exactly one span, and correlation does nothing while looking healthy.
     const engine = new TraceEngine(diagnostics());
     const first = engine.resolve();
     const second = engine.resolve();
@@ -102,9 +102,8 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("falls back to the ambient trace when the active span reports an unusable context", async () => {
-    // A span that never started reports an all-zero id. If the engine passes it on, records go on a
-    // trace that correlates with nothing. That is worse than the ambient trace that the engine uses
-    // in its place.
+    // A span that never started reports an all-zero id. Passing it on would put records on a trace
+    // that correlates with nothing, which is worse than the ambient trace the engine uses instead.
     const engine = await loaded();
     const ambient = engine.resolve().traceId;
     activeSpan(
@@ -119,8 +118,8 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("falls back to the ambient trace and reports when reading the span throws", async () => {
-    // Another party registered the OTel API as a global. The engine guards it and does not trust
-    // it. A fault in it must cost the trace fields, not the record.
+    // Someone else registered the OTel API as a global, so the engine guards it rather than
+    // trusting it. A fault in it must cost the trace fields, not the record.
     const reporter = diagnostics();
     const engine = await loaded(reporter);
     const ambient = engine.resolve().traceId;
@@ -135,8 +134,8 @@ describe("TraceEngine.resolve", () => {
   });
 
   it("carries on when the OpenTelemetry package is not installed", async () => {
-    // The package is an optional peer. A consumer that did not ask for it must still get trace ids.
-    // The library must tell the consumer one time why the ids are its own.
+    // The package is an optional peer. A consumer that didn't ask for it must still get trace ids,
+    // and must be told once why the ids are the library's own.
     const reporter = diagnostics();
     const engine = new TraceEngine(reporter, undefined, () =>
       Promise.reject(new Error("Cannot find module '@opentelemetry/api'")),
@@ -231,8 +230,8 @@ describe("TraceEngine.rotate", () => {
 
 describe("TraceEngine.headers", () => {
   it("emits a W3C traceparent matching the context a record would carry", () => {
-    // This test finds this bug. An earlier design made a new id here. The header on the request
-    // matched no record. The log-to-backend correlation then did nothing with no sign.
+    // This is the bug the test exists to catch. An earlier design made a new id here, so the
+    // header on the request matched no record and log-to-backend correlation silently did nothing.
     const engine = new TraceEngine(diagnostics());
     const ctx = engine.resolve();
 
@@ -240,8 +239,8 @@ describe("TraceEngine.headers", () => {
   });
 
   it("prints trace-flags as two hex digits, keeping flags a boolean would discard", async () => {
-    // trace-flags is a bitfield. Its other bits also have definitions. A change to only sampled or
-    // not sampled passes each other test in this file.
+    // trace-flags is a bitfield, and its other bits are defined too. A change to only sampled or
+    // not sampled would pass every other test in this file.
     const engine = await loaded();
     activeSpan(
       spanReporting({
@@ -255,8 +254,8 @@ describe("TraceEngine.headers", () => {
   });
 
   it("leaves a header a host propagator wrote exactly as it found it", async () => {
-    // The propagator of the host knows tracestate, baggage and vendor headers that this library
-    // does not know. It goes first. The engine never replaces its answer.
+    // The host's propagator knows tracestate, baggage and vendor headers that this library
+    // doesn't. It goes first, and the engine never replaces its answer.
     const fromHost = `00-${"c".repeat(32)}-${"d".repeat(16)}-01`;
     vi.spyOn(propagation, "inject").mockImplementation((_context, carrier) => {
       (carrier as Record<string, string>).traceparent = fromHost;
@@ -298,7 +297,7 @@ describe("TraceEngine spans", () => {
   const parts = (headers: Record<string, string>): string[] =>
     headers.traceparent.split("-").slice(1);
 
-  it("ends the root span one time on rotate, with the cause of the start of the trace", () => {
+  it("ends the root span once on rotate, with the cause that started the trace", () => {
     const spans = hooks();
     const engine = new TraceEngine(diagnostics(), undefined, undefined, spans);
     const first = engine.resolve();
@@ -356,7 +355,7 @@ describe("TraceEngine spans", () => {
     expect(span).toBeUndefined();
   });
 
-  it("gives no span without span hooks, or with spans off", () => {
+  it("creates no span without span hooks, or with spans off", () => {
     const off: SpanHooks = { enabled: () => false, keeps: () => true, onEnd: vi.fn() };
 
     expect(new TraceEngine(diagnostics()).request().span).toBeUndefined();
@@ -365,7 +364,7 @@ describe("TraceEngine spans", () => {
     ).toBeUndefined();
   });
 
-  it("gives no span for a trace of the OpenTelemetry peer", async () => {
+  it("creates no span for a trace from the OpenTelemetry peer", async () => {
     const engine = new TraceEngine(
       diagnostics(),
       undefined,

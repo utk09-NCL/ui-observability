@@ -1,6 +1,6 @@
 // src/transport/serializers/otlp-traces.ts
 //
-// This module serializes span records as an OTLP/JSON ExportTraceServiceRequest. The transport
+// Serializes span records as an OTLP/JSON ExportTraceServiceRequest. The transport
 // uses it for a batch of span records.
 
 import { ATTR_LOG_TYPE, CONTENT_TYPE_JSON, SERIALIZER_NAME_OTLP, SPAN_KEYS } from "../../constants";
@@ -8,7 +8,7 @@ import type { LogRecord } from "../../models/log-record";
 import type { LogSerializer, SerializedBatch } from "../../models/serializer";
 import { groupByResource, groupByScope, toKeyValues } from "./otlp";
 
-/** OTLP SpanKind of each span kind of the library. */
+/** The OTLP SpanKind for each of the library's span kinds. */
 const SPAN_KIND = { internal: 1, client: 3 } as const;
 
 /** OTLP StatusCode ERROR. */
@@ -17,7 +17,7 @@ const STATUS_ERROR = 2;
 /** OTLP StatusCode UNSET. */
 const STATUS_UNSET = 0;
 
-/** Attribute keys that hold span fields. They are not span attributes. */
+/** Attribute keys that hold span fields, and so aren't span attributes. */
 const FIELD_KEYS = new Set<string>([ATTR_LOG_TYPE, ...Object.values(SPAN_KEYS)]);
 
 /**
@@ -47,7 +47,7 @@ function spanOf(record: LogRecord): Record<string, unknown> {
   return {
     traceId: record.traceId,
     spanId: record.spanId,
-    // A root span has no parent. Leave the field out.
+    // A root span has no parent, so leave the field out.
     ...(parent ? { parentSpanId: parent } : {}),
     ...(linkTraceId && linkSpanId
       ? {
@@ -65,9 +65,9 @@ function spanOf(record: LogRecord): Record<string, unknown> {
   };
 }
 
-/** This serializer writes span records as an OTLP/JSON ExportTraceServiceRequest. */
+/** Writes span records as an OTLP/JSON ExportTraceServiceRequest. */
 export const otlpTracesSerializer: LogSerializer = {
-  /** This field holds the format name. */
+  /** The format name. */
   name: SERIALIZER_NAME_OTLP,
 
   /**

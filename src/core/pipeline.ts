@@ -1,9 +1,9 @@
 // src/core/pipeline.ts
 //
-// This module buffers the log and metric streams. It makes batches. It delivers them.
+// Buffers the log, metric and trace streams, builds batches and delivers them.
 //
-// Each stream has its own buffer and flush timer. Thus the exit flush can take each
-// record that is not yet at the transport.
+// Every stream has its own buffer and flush timer, so the exit flush can take every record
+// that hasn't reached the transport yet.
 
 import {
   ATTR_CLOCK_OFFSET_MS,
@@ -29,13 +29,13 @@ import { ErrorCeiling } from "./sampling";
 /** Name of a pipeline stream. */
 export type StreamName = "logs" | "metrics" | "traces";
 
-/** Streams in the order of the exit batches. The logs get the beacon budget before the spans. */
+/** Streams in exit-batch order. The logs get the beacon budget before the spans. */
 const STREAM_ORDER: readonly StreamName[] = ["metrics", "logs", "traces"];
 
 /**
- * Gives the stream of a record. Each stream makes batches of one kind.
+ * Returns the stream for a record. Each stream builds batches of one kind.
  * @param record Record to evaluate.
- * @returns "metrics" for a metric, "traces" for a span, else "logs".
+ * @returns "metrics" for a metric, "traces" for a span, otherwise "logs".
  */
 function streamOf(record: LogRecord): StreamName {
   const type = record.attributes[ATTR_LOG_TYPE];
@@ -49,9 +49,9 @@ function streamOf(record: LogRecord): StreamName {
 
 /** Batching policy for one record stream. */
 export interface StreamOptions {
-  /** Maximum time in milliseconds that a partial batch waits before the pipeline sends it. */
+  /** Maximum time in milliseconds a partial batch waits before the pipeline sends it. */
   flushIntervalMs: number;
-  /** Maximum records in a batch. At this count, the pipeline sends the batch early. */
+  /** Maximum records in a batch. At this count the pipeline sends the batch early. */
   batchSize: number;
 }
 
@@ -59,7 +59,7 @@ export interface StreamOptions {
 interface Pending {
   /** Batch to deliver. */
   batch: LogBatch;
-  /** Resolves when the dispatch of the batch ends, or on destroy. */
+  /** Resolves when the batch's dispatch ends, or on destroy. */
   done: Promise<void>;
   /** Resolves `done`. */
   resolve: () => void;
@@ -83,9 +83,9 @@ class RecordStream {
   ) {}
 
   /**
-   * Adds a record to the buffer. At batchSize records, it closes the batch.
-   * Below batchSize, it starts the interval timer. Without the timer, a small batch
-   * waits for the next record. On a quiet page, the next record does not come.
+   * Adds a record to the buffer. At batchSize records it closes the batch, and below that
+   * it starts the interval timer. Without the timer a small batch would wait for the next
+   * record, which on a quiet page never comes.
    * @param record Record to enqueue.
    */
   add(record: LogRecord): void {
@@ -100,7 +100,7 @@ class RecordStream {
   }
 
   /**
-   * Removes and returns all buffered records. It also stops the flush timer.
+   * Removes and returns all buffered records, and stops the flush timer.
    * @returns Array of buffered records.
    */
   take(): LogRecord[] {
@@ -146,36 +146,36 @@ class RecordStream {
   }
 }
 
-/** Buffers the log and metric streams. It makes batches. It sends them over HTTP. */
+/** Buffers the log, metric and trace streams, builds batches and sends them over HTTP. */
 export class LogPipeline {
-  /** Buffer instances for logs and metrics streams. */
+  /** Buffer instances for the logs, metrics and traces streams. */
   private readonly streams: Record<StreamName, RecordStream>;
 
-  /** In-flight batches without delivery confirmation. The exit flush sends them again. */
+  /** In-flight batches with no delivery confirmation yet. The exit flush sends them again. */
   private readonly unconfirmed = new Map<string, LogBatch>();
 
   /** Closed batches waiting for a free dispatch slot. */
   private readonly queue: Pending[] = [];
 
-  /** Each batch in the queue or in flight. flushPending waits for them. destroy() resolves them. */
+  /** Every batch in the queue or in flight. flushPending waits on them, destroy() resolves them. */
   private readonly open = new Set<Pending>();
 
   /** Ceiling on the ERROR and FATAL records that bypass sampling. */
   private readonly ceiling = new ErrorCeiling();
 
-  /** Requests that have not completed. delivery.maxConcurrentRequests sets their limit. */
+  /** Requests that haven't completed. Capped by delivery.maxConcurrentRequests. */
   private inFlight = 0;
 
-  /** It is true when a pump is in the queue. One microtask then drains a burst. */
+  /** True while a pump is queued, so one microtask drains a whole burst. */
   private pumpScheduled = false;
 
   /** True after destroy() stops the pipeline. */
   private stopped = false;
-  /** Encoded byte count of each record in the buffers or requests. */
+  /** Encoded byte count of every record in the buffers or in requests. */
   private readonly held = new Map<LogRecord, number>();
   /** Total encoded bytes of the held records. */
   private heldBytes = 0;
-  /** True while the overflow storage operation has not completed. */
+  /** True while the overflow storage operation is still running. */
   private persisting = false;
 
   /**
@@ -190,8 +190,9 @@ export class LogPipeline {
   }
 
   /**
-   * Removes records that have not reached the transport. A request already sent cannot be removed.
-   * @returns True if the method removed a batch or a buffered group.
+   * Removes records that haven't reached the transport. A request that was already sent can't
+   * be removed.
+   * @returns True if a batch or a buffered group was removed.
    */
   private evict(): boolean {
     const pending = this.queue.shift();
@@ -222,8 +223,8 @@ export class LogPipeline {
   private admit(record: LogRecord): boolean {
     if (!this.policy) return true;
     const { maxPendingRecords, maxPendingBytes, overflow } = this.policy.buffering;
-    // Encode each record, also without a byte budget. A record that JSON cannot encode is dropped
-    // here alone. If not, the transport drops its whole batch.
+    // Encode every record, even without a byte budget. A record JSON can't encode is dropped
+    // here on its own. Otherwise the transport would drop its whole batch.
     let bytes: number;
     try {
       bytes = estimateBytes(JSON.stringify(record));
@@ -236,7 +237,7 @@ export class LogPipeline {
         (maxPendingRecords && this.held.size >= maxPendingRecords) ||
         (maxPendingBytes && this.heldBytes + bytes > maxPendingBytes),
       );
-    // A record larger than the byte budget never fits. Do not remove other records for it.
+    // A record larger than the byte budget never fits, so don't evict other records for it.
     const fits = !maxPendingBytes || bytes <= maxPendingBytes;
     while (fits && full() && overflow === "drop-oldest" && this.evict()) {
       /* Remove complete groups until the new record fits or no group remains. */
@@ -271,10 +272,10 @@ export class LogPipeline {
    * @param retry Retry engine for redelivering persisted batches.
    * @param diagnostics Diagnostics reporter.
    * @param streamOptions Batching policy per stream, from the batching config.
-   * @param routingContextId Gives the delivery context id of a new batch.
+   * @param routingContextId Returns the delivery context id for a new batch.
    * @param policy Active configuration instance.
-   * @param onLoss Receives the records that the pipeline loses.
-   * @param clockOffset Gives the clock offset for a new log or span record, if known.
+   * @param onLoss Receives the records the pipeline loses.
+   * @param clockOffset Returns the clock offset for a new log or span record, if known.
    */
   constructor(
     private readonly transport: BatchTransport,
@@ -315,11 +316,11 @@ export class LogPipeline {
 
   /**
    * Drains all buffered and unconfirmed in-flight records into exit batches in one step.
-   * Records already given to fetch go again under a new batch ID. The server cannot
-   * deduplicate them. Thus the exit flush can deliver duplicates. This is intentional.
-   * A closing document cannot confirm delivery.
-   * @returns One batch for each stream, metrics first. A stream with no records has no batch.
-   * A mixed batch sends a metric to the endpoint of the logs.
+   * Records already handed to fetch go out again under a new batch ID, and the server can't
+   * deduplicate them. So the exit flush can deliver duplicates. That is intentional: a
+   * closing document can't confirm delivery.
+   * @returns One batch per stream, metrics first. A stream with no records gets no batch.
+   * A mixed batch would send a metric to the logs endpoint.
    */
   drainForExit(): LogBatch[] {
     const inFlight = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
@@ -336,27 +337,27 @@ export class LogPipeline {
   }
 
   /**
-   * Sends the buffered records through the normal dispatch path. Then it waits for each
-   * batch in the queue and in flight. The throttle check and the concurrency limit apply.
-   * A direct send goes around both.
-   * @returns Promise that resolves when the pipeline sends or stores each batch, or on destroy.
+   * Sends the buffered records through the normal dispatch path, then waits for every batch
+   * in the queue and in flight. The throttle check and the concurrency limit apply. A direct
+   * send would bypass both.
+   * @returns Promise that resolves once every batch is sent or stored, or on destroy.
    */
   async flushPending(): Promise<void> {
-    // One batch for each stream. A mixed batch sends a metric to the endpoint of the logs.
-    // The claim does not take an in-flight batch. A second copy under a new ID is a duplicate
-    // that the server cannot remove.
+    // One batch per stream, because a mixed batch would send a metric to the logs endpoint.
+    // The claim leaves in-flight batches alone. A second copy under a new ID would be a
+    // duplicate the server can't remove.
     if (!this.stopped) {
       for (const name of STREAM_ORDER) {
         this.claim(this.streams[name]);
       }
     }
 
-    // A batch in the queue counts too. If not, the exit flush sends it again under a new id.
+    // Queued batches count too. Otherwise the exit flush would send them again under a new id.
     await Promise.all([...this.open].map((pending) => pending.done));
   }
 
   /**
-   * Counts the records that wait and the records in requests.
+   * Counts the waiting records and the records in requests.
    * @returns Records in the buffers and the queue, and records in dispatch.
    */
   counts(): { pending: number; inFlight: number } {
@@ -368,7 +369,7 @@ export class LogPipeline {
       return total;
     };
 
-    // Each batch in the queue is also in the open set.
+    // Every batch in the queue is also in the open set.
     const queued = records(this.queue);
 
     const buffered = STREAM_ORDER.reduce((total, name) => total + this.streams[name].size, 0);
@@ -386,7 +387,7 @@ export class LogPipeline {
     }
     this.queue.length = 0;
 
-    // destroy() drops each queued batch. Release each flushPending that waits for one.
+    // destroy() drops every queued batch, so release any flushPending waiting on one.
     for (const pending of this.open) {
       pending.resolve();
     }
@@ -416,10 +417,10 @@ export class LogPipeline {
   }
 
   /**
-   * Sorts a record into its stream. Sampling already ran. RecordBuilder samples a local
-   * record. The runtime samples a forwarded record. This method catches each fault.
-   * A record without `attributes` makes streamOf throw. An uncaught throw goes into the
-   * log call of the caller.
+   * Sorts a record into its stream. Sampling has already run: RecordBuilder samples a local
+   * record and the runtime samples a forwarded one. Every fault is caught here. A record
+   * without `attributes` makes streamOf throw, and an uncaught throw would land in the
+   * caller's log call.
    * @param record Record to sort.
    */
   private route(record: LogRecord): void {
@@ -427,8 +428,9 @@ export class LogPipeline {
       const name = streamOf(record);
       const stream = this.streams[name];
 
-      // Records at or above alwaysSampleFrom bypass sampling upstream. This ceiling is their
-      // only limit. A metric point or a span has the level INFO. A lost point gives a false sum.
+      // Records at or above alwaysSampleFrom bypass sampling upstream, so this ceiling is
+      // their only limit. Metric points and spans have level INFO, and a lost point gives a
+      // false sum.
       if (
         name === "logs" &&
         !this.ceiling.allow(
@@ -443,7 +445,8 @@ export class LogPipeline {
         return;
       }
 
-      // A changing value on a metric point starts a new series. Only logs and spans get it.
+      // A changing value on a metric point would start a new series, so only logs and spans
+      // get it.
       const offset = this.clockOffset();
       if (offset !== undefined && name !== "metrics") {
         record.attributes = { ...record.attributes, [ATTR_CLOCK_OFFSET_MS]: offset };
@@ -461,9 +464,9 @@ export class LogPipeline {
   }
 
   /**
-   * Drains a stream buffer into a new batch and queues the batch for dispatch.
-   * A timer or a flush calls it. An empty buffer gives no batch.
-   * Each `take` stops the timer that calls this method.
+   * Drains a stream buffer into a new batch and queues it for dispatch. Called by a timer
+   * or a flush. An empty buffer produces no batch. Every `take` stops the timer that calls
+   * this method.
    * @param stream Stream buffer to drain.
    */
   private claim(stream: RecordStream): void {
@@ -471,8 +474,8 @@ export class LogPipeline {
   }
 
   /**
-   * Queues a batch and schedules the pump on a microtask. An inline dispatch starts
-   * a fetch inside the log call of the application.
+   * Queues a batch and schedules the pump on a microtask. Dispatching inline would start
+   * a fetch inside the application's log call.
    * @param batch Batch ready for delivery, or null when the drain found no records.
    */
   private enqueue(batch: LogBatch | null): void {
@@ -516,7 +519,7 @@ export class LogPipeline {
   }
 
   /**
-   * Delivers one batch. It then frees the concurrency slot. It resolves the promise of the batch.
+   * Delivers one batch, then frees the concurrency slot and resolves the batch's promise.
    * @param pending Batch to deliver.
    */
   private async run(pending: Pending): Promise<void> {
@@ -541,15 +544,15 @@ export class LogPipeline {
   }
 
   /**
-   * Sends a batch over the HTTP transport. If the transport throttles or fails, it stores
-   * the batch.
+   * Sends a batch over the HTTP transport. Stores the batch if the transport is throttled
+   * or fails.
    * @param batch Batch to deliver.
    */
   private async dispatch(batch: LogBatch): Promise<void> {
     try {
-      // Store the batch while the transport throttles. A send here posts a batch each
-      // flush interval through the throttle. Do not change the attempt count.
-      // The pipeline sent nothing.
+      // Store the batch while the transport is throttled. Sending here would post a batch
+      // through the throttle every flush interval. Leave the attempt count alone, because
+      // nothing was sent.
       const throttledMs = this.transport.throttledForMs(batch);
       if (throttledMs > 0) {
         await this.store(batch);
@@ -566,15 +569,15 @@ export class LogPipeline {
       }
 
       try {
-        // A keepalive request continues after unload. The exit flush must not send it again.
-        // A failed send still goes to the retry engine from this batch reference.
+        // A keepalive request carries on after unload, so the exit flush must not send it
+        // again. A failed send still reaches the retry engine through this batch reference.
         await this.transport.send(batch, () => {
           this.unconfirmed.delete(batch.id);
         });
       } catch (error) {
         if (this.stopped) return;
-        // Increment the attempt count before the store. At 0, the batch exceeds
-        // STORAGE_LIMITS.maxAttempts by one. The attempt headers then report one too few.
+        // Increment the attempt count before storing. Left at 0, the batch would exceed
+        // STORAGE_LIMITS.maxAttempts by one and the attempt headers would report one too few.
         await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         this.diagnostics.report(
           "transport.http_error",
@@ -589,8 +592,8 @@ export class LogPipeline {
   }
 
   /**
-   * Stores a batch that the transport refused. The retry engine splits a 413 and
-   * drops a batch that the server does not accept.
+   * Stores a batch that the transport refused. The retry engine splits a 413 and drops a
+   * batch the server won't accept.
    * @param batch Batch to persist, with its attempt already counted.
    * @param error Failure thrown by the transport.
    */
@@ -605,8 +608,8 @@ export class LogPipeline {
   }
 
   /**
-   * Stores an undelivered batch. Then it starts the retry engine. A deadline limits the
-   * wait. A storage call that does not settle holds this dispatch slot. Two such calls
+   * Stores an undelivered batch, then starts the retry engine. A deadline caps the wait,
+   * because a storage call that never settles holds this dispatch slot, and two of them
    * stop the pipeline.
    * @param batch Batch to persist.
    */

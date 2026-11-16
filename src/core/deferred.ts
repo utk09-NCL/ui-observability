@@ -2,7 +2,7 @@ import { DEFER_IDLE_TIMEOUT_MS, DEFER_QUEUE_LIMIT } from "../constants";
 import { unrefTimer } from "../utils/unref";
 import type { Diagnostics } from "./diagnostics";
 
-/** Pending logger calls of one runtime. A stopped runtime releases each payload reference. */
+/** One runtime's pending logger calls. A stopped runtime releases every payload reference. */
 interface DeferredQueue {
   work: (() => void)[];
   diagnostics: Diagnostics;
@@ -27,7 +27,7 @@ function cancel(queue: DeferredQueue): void {
   queue.timer = undefined;
 }
 
-/** Schedules one idle callback. A timer supports browsers without the idle API. */
+/** Schedules one idle callback, or a timer in browsers without the idle API. */
 function schedule(owner: object, queue: DeferredQueue): void {
   if (typeof requestIdleCallback === "function" && typeof cancelIdleCallback === "function") {
     queue.idle = queue.diagnostics.guard(
@@ -88,7 +88,7 @@ function drain(owner: object, queue: DeferredQueue, deadline?: IdleDeadline): vo
   }
 }
 
-/** Queues a call without reading its payload. A full queue first builds its pending calls. */
+/** Queues a call without reading its payload. A full queue builds its pending calls first. */
 export function deferWrite(
   owner: object,
   work: () => void,
@@ -124,7 +124,7 @@ export function drainDeferred(owner: object): void {
   }
 }
 
-/** Releases calls that a hook queues during shutdown. Those calls have no built records. */
+/** Releases calls that a hook queues during shutdown. No records were built for them. */
 export function cancelDeferred(owner: object): void {
   const queue = queues.get(owner);
   if (queue) {

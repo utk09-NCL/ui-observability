@@ -91,7 +91,7 @@ describe("Sender emergency import", () => {
 
     const { sender } = await setup();
 
-    // The import calls nudge after the batch is in storage. Wait for the last step.
+    // The import calls nudge once the batch is in storage, so wait for that last step.
     await vi.waitFor(() => {
       expect(nudge).toHaveBeenCalled();
     });
@@ -126,9 +126,9 @@ describe("Sender stats", () => {
 
 describe("Sender clock offset", () => {
   /**
-   * Reads the clock offset attribute of the first record of one request.
+   * Reads the clock offset attribute from the first record of one request.
    * @param index Index of the request.
-   * @returns The offset in milliseconds, or undefined without the attribute.
+   * @returns The offset in milliseconds, or undefined when the attribute is missing.
    */
   const offsetOf = (index: number): number | undefined => {
     const body: any = JSON.parse(fetchMock.mock.calls[index][1].body as string);
@@ -138,7 +138,7 @@ describe("Sender clock offset", () => {
     return pair === undefined ? undefined : Number(pair.value.intValue);
   };
 
-  /** Answers each request with a Date header one minute ahead of this clock. */
+  /** Answers every request with a Date header one minute ahead of this clock. */
   const answerAhead = (): void => {
     fetchMock.mockImplementation(() => {
       const date = new Date(Date.now() + 60_000).toUTCString();
@@ -156,7 +156,7 @@ describe("Sender clock offset", () => {
     await sender.flush();
 
     expect(offsetOf(0)).toBeUndefined();
-    // The Date header has whole seconds. The offset is correct to about one second.
+    // The Date header has whole seconds, so the offset is only accurate to about one second.
     expect(Math.abs(offsetOf(1)! - 60_000)).toBeLessThanOrEqual(1000);
   });
 

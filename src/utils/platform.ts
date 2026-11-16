@@ -1,8 +1,8 @@
 // src/utils/platform.ts
 //
-// Detects host platform capabilities, OpenFin container metadata, and worker
-// execution realms. The module caches the result. The result does not change during
-// the life of a realm. A webview is also a browser. Test for a webview first.
+// Detects host platform capabilities, OpenFin container metadata, and worker execution
+// realms. The result is cached, because it doesn't change during the life of a realm. A
+// webview is also a browser, so test for a webview first.
 
 import {
   ANDROID_WEBVIEW_UA_PATTERN,
@@ -54,9 +54,9 @@ let cached: PlatformMetadata | null = null;
 type ScopeConstructor = abstract new (...args: never[]) => object;
 
 /**
- * Tests if globalThis is an instance of a specified global scope constructor.
+ * Checks whether globalThis is an instance of the given global scope constructor.
  * @param g Global scope object.
- * @param name Scope constructor name to check.
+ * @param name Name of the scope constructor to check.
  * @returns True if globalThis inherits from the named scope constructor.
  */
 function isGlobalScope(g: Global, name: string): boolean {
@@ -122,9 +122,9 @@ export function detectPlatform(diagnostics: Diagnostics): PlatformMetadata {
 }
 
 /**
- * Tests if a user agent string represents an embedded mobile webview.
+ * Checks whether a user agent string belongs to an embedded mobile webview.
  * @param ua User agent string.
- * @returns True if user agent matches Android or iOS webview signatures.
+ * @returns True if the user agent matches Android or iOS webview signatures.
  */
 function isWebView(ua: string): boolean {
   if (ANDROID_WEBVIEW_UA_PATTERN.test(ua)) {
@@ -136,8 +136,8 @@ function isWebView(ua: string): boolean {
 }
 
 /**
- * Tests if the current window is the top-level browsing context.
- * @param diagnostics Diagnostics reporter. It counts a blocked read of window.top.
+ * Checks whether the current window is the top-level browsing context.
+ * @param diagnostics Diagnostics reporter. Counts a blocked read of window.top.
  * @returns True if top-level, false if framed or inaccessible due to cross-origin boundaries.
  */
 export function isTopLevel(diagnostics: Diagnostics): boolean {
@@ -147,22 +147,22 @@ export function isTopLevel(diagnostics: Diagnostics): boolean {
   try {
     return window.self === window.top;
   } catch {
-    // A cross-origin parent blocks the read. That proves a frame. Count it. Do not report it.
+    // A cross-origin parent blocks the read, which proves a frame. Count it, but don't report it.
     diagnostics.count("platform.api_blocked");
     return false;
   }
 }
 
 /**
- * Retrieves the current document URL without caching.
- * @param diagnostics Diagnostics reporter. It counts a blocked read of location.href.
- * @returns Current location.href or empty string.
+ * Reads the current document URL without caching.
+ * @param diagnostics Diagnostics reporter. Counts a blocked read of location.href.
+ * @returns The current location.href, or an empty string.
  */
 export function currentUrl(diagnostics: Diagnostics): string {
   try {
     return typeof location !== "undefined" ? location.href : "";
   } catch {
-    // A sandbox can block the read. Count the fault. A report on each record is noise.
+    // A sandbox can block the read. Count the fault, because a report per record would be noise.
     diagnostics.count("platform.api_blocked");
     return "";
   }
@@ -172,11 +172,12 @@ export function currentUrl(diagnostics: Diagnostics): string {
 const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
 
 /**
- * Gives the form of a URL that the library records. It always removes the user info, which is a
- * credential. Without fullUrls, it also removes the query and the fragment.
+ * Returns the form of a URL that the library records. A transform's result is recorded as is,
+ * or "" if it throws or returns no string. Without a transform, the user info is always
+ * removed, because it is a credential, and without fullUrls the query and the fragment go too.
  * @param url Absolute or relative URL.
  * @param fullUrls Value of `capture.fullUrls`.
- * @param transform Value of `capture.urlTransform`. It replaces the default rule.
+ * @param transform Value of `capture.urlTransform`. Replaces the default rule.
  * @param diagnostics Diagnostics reporter for a transform that throws.
  * @returns The URL to record.
  */
@@ -191,7 +192,7 @@ export function recordedUrl(
       const value = transform(url);
       return typeof value === "string" ? value : "";
     } catch (error) {
-      // Report the fault. Without a report, each recorded URL is empty with no visible cause.
+      // Report the fault. Otherwise every recorded URL is empty with no visible cause.
       diagnostics?.report(
         "capture.record_failed",
         "capture.urlTransform threw an error. The library records an empty URL.",
@@ -206,8 +207,8 @@ export function recordedUrl(
 }
 
 /**
- * Drops the query string and fragment from a URL.
- * It cuts the string and does not parse a URL. A relative request target has no base URL.
+ * Drops the query string and fragment from a URL. Cuts the string instead of parsing it,
+ * because a relative request target has no base URL.
  * @param url Absolute or relative URL.
  * @returns The URL up to the first "?" or "#".
  */
@@ -218,7 +219,8 @@ export function stripUrlQuery(url: string): string {
 }
 
 /**
- * Tests if the browser can reach the network. A host without navigator.onLine counts as online.
+ * Checks whether the browser can reach the network. A host without navigator.onLine counts as
+ * online.
  * @returns False only when navigator.onLine is false.
  */
 export function isOnline(): boolean {

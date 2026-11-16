@@ -1,7 +1,7 @@
 // src/transport/serializers/otlp-metrics.ts
 //
-// This module serializes metric records as an OTLP/JSON ExportMetricsServiceRequest. The transport
-// uses it only for a batch of metric records when metricsEndpoint is set.
+// Serializes metric records as an OTLP/JSON ExportMetricsServiceRequest. The transport only
+// uses it for a batch of metric records when metricsEndpoint is set.
 
 import {
   CONTENT_TYPE_JSON,
@@ -17,7 +17,7 @@ import { groupByResource, toKeyValues } from "./otlp";
 /** OTLP AggregationTemporality DELTA. Each point holds the change since the previous point. */
 const DELTA = 1;
 
-/** OTLP field of each metric type. A type that is not a counter or a histogram is a gauge. */
+/** The OTLP field for each metric type. Anything that isn't a counter or a histogram is a gauge. */
 type MetricField = "sum" | "histogram" | "gauge";
 
 /** One OTLP data point. */
@@ -47,7 +47,7 @@ function numberOf(record: LogRecord, key: string): number | undefined {
 }
 
 /**
- * Tests if a value is a list of finite numbers.
+ * Checks whether a value is a list of finite numbers.
  * @param value Attribute value.
  * @returns True for a list of finite numbers.
  */
@@ -59,8 +59,8 @@ function isNumbers(value: unknown): value is number[] {
 }
 
 /**
- * Reads the point attributes that the call of the app gave. The context attributes of the record
- * stay out. A session id on each point makes a new series for each session.
+ * Reads the point attributes that the app passed in its call. The record's context attributes
+ * stay out, because a session id on every point would create a new series for every session.
  * @param record Metric record.
  * @returns The string, number and boolean attributes that `metric.attribute_keys` names.
  */
@@ -73,8 +73,8 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
   }
 
   for (const key of keys as unknown[]) {
-    // A key of the call can have the name of a metric field. That field holds the value of
-    // the library.
+    // A key from the app's call can have the same name as a metric field, and that field
+    // holds the library's value.
     const named = typeof key === "string" && !key.startsWith("metric.");
     const value: unknown = named ? record.attributes[key] : undefined;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -86,14 +86,14 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
 }
 
 /**
- * Builds the histogram fields of a point.
+ * Builds a point's histogram fields.
  * @param record Metric record.
- * @returns The fields, or null for a point that a record limit cut.
+ * @returns The fields, or null for a point that a record limit cut short.
  */
 function histogramOf(record: LogRecord): DataPoint | null {
   const count = numberOf(record, METRIC_KEYS.count);
 
-  // A logMetric histogram holds one value. It has one bucket and no boundaries.
+  // A logMetric histogram holds one value, so it has one bucket and no boundaries.
   if (count === undefined) {
     const value = numberOf(record, "metric.value");
     return value === undefined
@@ -111,12 +111,14 @@ function histogramOf(record: LogRecord): DataPoint | null {
   const bounds: unknown = record.attributes[METRIC_KEYS.bounds];
   const buckets: unknown = record.attributes[METRIC_KEYS.buckets];
 
-  // maxArrayLength can cut a list. A point with a cut list gives false buckets.
+  // The library always builds complete lists, but a record from elsewhere can have lists that
+  // don't line up, and a point built from those would report bogus buckets.
   if (!isNumbers(bounds) || !isNumbers(buckets) || buckets.length !== bounds.length + 1) {
     return null;
   }
 
-  // OTLP: a histogram with a negative value sets no sum. A backend reads the sum as a total.
+  // Per OTLP, a histogram with a negative value sets no sum, because a backend reads the sum
+  // as a total.
   const min = numberOf(record, METRIC_KEYS.min);
 
   return {
@@ -156,7 +158,7 @@ function pointOf(record: LogRecord, field: MetricField): DataPoint | null {
 
   return {
     attributes: toKeyValues(pointAttributes(record)),
-    // A logMetric record has no interval. Its point starts and ends at its time.
+    // A logMetric record has no interval, so its point starts and ends at its own time.
     startTimeUnixNano: typeof start === "string" ? start : record.timeUnixNano,
     timeUnixNano: record.timeUnixNano,
     ...values,
@@ -183,13 +185,13 @@ function metricOf({ name, unit, field, points }: MetricEntry): Record<string, un
   return { name, unit, [field]: data };
 }
 
-/** This serializer writes metric records as an OTLP/JSON ExportMetricsServiceRequest. */
+/** Writes metric records as an OTLP/JSON ExportMetricsServiceRequest. */
 export const otlpMetricsSerializer: LogSerializer = {
-  /** This field holds the format name. */
+  /** The format name. */
   name: SERIALIZER_NAME_OTLP,
 
   /**
-   * Groups the records by resource, then by metric name, type and unit. It drops a record
+   * Groups the records by resource, then by metric name, type and unit. Drops any record
    * without a valid value.
    * @param records Metric records to serialize.
    * @returns Serialized JSON payload.

@@ -22,7 +22,7 @@ const batch = (id: string, createdAt = Date.now(), records = 0): LogBatch => ({
   records: Array.from({ length: records }, () => ({}) as never),
 });
 
-/** A batch with one action record. Storage evicts it after each batch without an action. */
+/** A batch with one action record. Storage evicts it after every batch that has no action. */
 const actionBatch = (id: string, createdAt = Date.now()): LogBatch => ({
   id,
   createdAt,
@@ -31,7 +31,7 @@ const actionBatch = (id: string, createdAt = Date.now()): LogBatch => ({
 });
 
 /**
- * Collects the ids of the batches that a storage adapter drops.
+ * Collects the ids of the batches a storage adapter drops.
  * @returns The ids and the gap reporter that collects them.
  */
 const droppedIds = () => {
@@ -45,13 +45,13 @@ const droppedIds = () => {
 const quiet = () => new Diagnostics(vi.fn(), 0);
 
 /**
- * Takes the place of a request that fails. fake-indexeddb cannot make a real request fail. Each
- * driver method sends its failure through onerror.
+ * A fake request that fails. fake-indexeddb can't make a real request fail, and every driver
+ * method reports its failure through onerror.
  *
- * Build it inside mockImplementationOnce. Never give it as a mockReturnValueOnce argument. The
- * microtask below starts when the code builds the request. A request from setup time fires while
- * the test awaits a different step. That occurs long before promisify sets onerror. Nothing then
- * settles. The test times out.
+ * Build it inside mockImplementationOnce, never as a mockReturnValueOnce argument. The microtask
+ * below starts when the request is built, so a request built at setup time fires while the test
+ * awaits a different step, long before promisify sets onerror. Nothing then settles and the test
+ * times out.
  */
 const failingRequest = <T>(error: Error | null): IDBRequest<T> => {
   const request = { error, onsuccess: null, onerror: null } as unknown as IDBRequest<T>;
@@ -85,7 +85,7 @@ describe("storage factory", () => {
     await adapter.close();
   });
 
-  it("gives each batch that strategy none does not keep to the gap handler", async () => {
+  it("passes every batch that strategy none does not keep to the gap handler", async () => {
     const onGap = vi.fn<GapReporter>();
     const adapter = await createStorage("none", "db", limits, quiet(), onGap);
     const lost = batch("a", Date.now(), 2);
@@ -255,7 +255,7 @@ describe("MemoryStorage", () => {
   it("reports the expired batches and the evicted batches with their own reasons", async () => {
     const gaps: PruneResult[] = [];
     const s = new MemoryStorage(limits, (result) => gaps.push(result));
-    // save() prunes. A direct write puts both rules in one prune.
+    // save() prunes, so a direct write is what puts both rules in one prune.
     s["batches"].push(
       batch("old", Date.now() - 5000, 1),
       ...["a", "b", "c", "d"].map((id) => batch(id, Date.now(), 2)),
@@ -303,7 +303,7 @@ describe("LocalStorageStorage", () => {
   const make = (onGap?: GapReporter) => new LocalStorageStorage(lsLimits, quiet(), onGap);
 
   /**
-   * Writes an entry with the key format of the adapter. save() prunes. This write does not.
+   * Writes an entry in the adapter's key format. Unlike save(), this write doesn't prune.
    * @param stored Batch to write.
    */
   const put = (stored: LogBatch): void => {
@@ -339,7 +339,7 @@ describe("LocalStorageStorage", () => {
     const getItem = vi.spyOn(localStorage, "getItem");
     await s.save(batch("new", now, 2));
 
-    // A parse of each stored batch at each save blocks the main thread during an outage.
+    // Parsing every stored batch on every save would block the main thread during an outage.
     expect(getItem).toHaveBeenCalledTimes(1);
   });
 
@@ -357,7 +357,7 @@ describe("LocalStorageStorage", () => {
 
   it("returns oldest first even though the ids are random", async () => {
     // This is the regression test for the key format. With only the batch id as the key, the sort
-    // is a sort by random uuid. The test then passes or fails by chance.
+    // is a sort by random uuid, and the test passes or fails by chance.
     const s = make();
     const now = Date.now();
     await s.save(batch("zzz-oldest", now - 2000));
@@ -442,7 +442,7 @@ describe("LocalStorageStorage", () => {
 
   it("drops anything under our prefix that parses but is not a batch", async () => {
     // An older version of this library, or other code on the origin, wrote this entry. The adapter
-    // checks each field before it uses it.
+    // checks every field before using it.
     const s = make();
     const planted = {
       "ui-observability.batch.00000000000001.empty": "",
@@ -483,7 +483,7 @@ describe("LocalStorageStorage", () => {
     const key = "ui-observability.batch.00000000000007.zombie";
     localStorage.setItem(key, "not json");
 
-    // The adapter finds the key, because it still names an id. The entry has nothing to update.
+    // The adapter finds the key, because it still names an id, but the entry has nothing to update.
     await s.bumpAttempts("zombie", 3);
     await s.prune();
 
@@ -507,7 +507,7 @@ describe("LocalStorageStorage", () => {
     blocked.delete("setItem");
 
     expect(await s.count()).toBe(2);
-    // First the eviction. Then the batch that the adapter cannot write, even after the eviction.
+    // First the eviction, then the batch the adapter can't write even after the eviction.
     expect(gaps.at(-2)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
     expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 4, reason: "quota" });
   });
@@ -556,8 +556,8 @@ describe("LocalStorageStorage", () => {
     const gaps: PruneResult[] = [];
     const s = make((result) => gaps.push(result));
     await s.save(batch("b1", Date.now(), 2));
-    // This entry is the oldest by key. The quota eviction gets to it first. The test adds it after
-    // the save above. That save prunes old entries.
+    // This entry is the oldest by key, so the quota eviction reaches it first. The test adds it
+    // after the save above, because that save prunes old entries.
     localStorage.setItem("ui-observability.batch.00000000000001.corrupt", "not json");
 
     const setItem = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
@@ -605,8 +605,8 @@ describe("LocalStorageStorage", () => {
 });
 
 describe("IndexedDbStorage", () => {
-  // tests/setup.ts loads fake-indexeddb. The driver has a real store here. Each test uses a new
-  // database name, because the store stays after the adapter.
+  // tests/setup.ts loads fake-indexeddb, so the driver has a real store here. Every test uses a
+  // new database name, because the store outlives the adapter.
   const idbLimits = { maxBatches: 3, maxAgeMs: 60_000, maxAttempts: 5 };
   let counter = 0;
 
@@ -683,7 +683,7 @@ describe("IndexedDbStorage", () => {
     const takeOldest = vi.spyOn(storage["db"], "takeOldest");
     await storage.save(batch("new", now));
 
-    // A read of each stored batch at each save blocks the main thread during an outage.
+    // Reading every stored batch on every save would block the main thread during an outage.
     expect(takeOldest).not.toHaveBeenCalled();
     expect((await storage.take(10)).map((b) => b.id)).toEqual(["b1", "b2", "new"]);
     await storage.close();
@@ -706,7 +706,7 @@ describe("IndexedDbStorage", () => {
     const gaps: PruneResult[] = [];
     const { storage } = await make({}, vi.fn(), (result) => gaps.push(result));
     const now = Date.now();
-    // save() prunes. A direct write puts both rules in one prune.
+    // save() prunes, so a direct write is what puts both rules in one prune.
     await storage["db"].put(batch("old", now - 120_000, 1));
     for (let i = 0; i < 4; i++) {
       await storage["db"].put(batch(`b${String(i)}`, now - (4 - i) * 1000, 2));
@@ -765,7 +765,7 @@ describe("IndexedDbStorage", () => {
 
   it("reports no eviction when the disk is full and the store is empty", async () => {
     const { storage, handler } = await make();
-    // Other code on the origin can fill the quota. The store then has nothing to evict.
+    // Other code on the origin can fill the quota, and the store then has nothing to evict.
     vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
@@ -811,7 +811,7 @@ describe("IndexedDbStorage", () => {
     vi.spyOn(storage["db"], "put")
       .mockRejectedValueOnce(new Error("boom"))
       // Some stores reject with a value that is not an Error. `error.name` on a string gives
-      // undefined. It does not throw.
+      // undefined rather than throwing.
       .mockRejectedValueOnce("boom");
 
     await storage.save(batch("b1"));
@@ -824,7 +824,7 @@ describe("IndexedDbStorage", () => {
     await storage.close();
   });
 
-  it("gives a batch that a write error loses to the gap handler", async () => {
+  it("passes a batch lost to a write error to the gap handler", async () => {
     const onGap = vi.fn<GapReporter>();
     const { storage } = await make({}, vi.fn(), onGap);
     // Safari rejects put() with UnknownError after it loses the IndexedDB server.
@@ -904,7 +904,7 @@ describe("IdbDriver", () => {
   });
 
   it("adopts a database left by an earlier release rather than recreating its store", async () => {
-    // Dexie opened this database at ten times its declared version. An installation that upgrades
+    // Dexie opened this database at ten times its declared version, so an installation upgrading
     // from it is at native version 10, with data in it.
     const dbName = name();
     const legacy = await openLegacy(dbName);
@@ -950,7 +950,7 @@ describe("IdbDriver", () => {
     await driver.close();
   });
 
-  it("rejects with a stand-in when a request fails carrying no error", async () => {
+  it("rejects with a placeholder error when a request fails carrying no error", async () => {
     const driver = new IdbDriver(name());
     await driver.put(batch("b1"));
 

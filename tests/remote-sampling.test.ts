@@ -26,7 +26,7 @@ function reporter() {
 
 /**
  * Builds an overlay on a resolved config.
- * @param sampling Sampling options over remote on.
+ * @param sampling Sampling options layered over remote on.
  * @returns The overlay and its config.
  */
 function overlay(sampling: ObservabilityConfig["sampling"] = {}) {
@@ -175,7 +175,7 @@ describe("parseRemoteRules", () => {
 });
 
 describe("applyRemote", () => {
-  it("makes the overlay for the first rules, and keeps it for the next rules", () => {
+  it("creates the overlay for the first rules, and keeps it for the next rules", () => {
     const { config } = overlay();
     const slot: RemoteSlot = { sampling: null };
 
@@ -273,7 +273,7 @@ describe("RemoteSampling", () => {
 
     // The remote prefix lowers WARN to DEBUG.
     expect(sut.minLevelFor("trading.ticks.fx")).toBe("DEBUG");
-    // The remote ERROR does not raise the config level WARN.
+    // The remote ERROR doesn't raise the config's WARN level.
     expect(sut.minLevelFor("trading.orders")).toBe("WARN");
     expect(sut.minLevelFor("pricing")).toBe("INFO");
   });

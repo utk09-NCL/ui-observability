@@ -1,7 +1,7 @@
 // tests/profiler-runtime.test.ts
 //
-// These tests prove the wiring of the profiler core through the public API. A memory transport
-// gives the records. A stub clock makes each duration exact.
+// Tests for how the profiler core is wired up through the public API. A memory transport
+// collects the records, and a stubbed clock makes every duration exact.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TELEMETRY_SDK_VERSION } from "../src/constants";
@@ -26,19 +26,19 @@ import type { LogRecord } from "../src/models/log-record";
 import type { Probe } from "../src/models/metric";
 import { ecsSerializer } from "../src/transport/serializers/ecs";
 
-/** Global symbol of the profiler core of this library version. */
+/** Global symbol for this library version's profiler core. */
 const CORE_KEY = Symbol.for(`ui-observability.profiler@${TELEMETRY_SDK_VERSION}`);
 
-/** Global symbol of the runtime. */
+/** Global symbol for the runtime. */
 const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
 
-/** Name of the profiler summary record. */
+/** Name of the profiler's summary record. */
 const PROFILE = "ui.profile.duration";
 
-/** Name of the overhead attribute. Only a timer collect gives it. */
+/** The overhead attribute. Only a timer collect produces it. */
 const OVERHEAD = "profile.overhead_ns";
 
-/** Settings that give a runtime with no network and no capture. */
+/** Settings for a runtime with no network and no captures. */
 const base = {
   endpoint: null,
   serviceName: "svc",
@@ -49,7 +49,7 @@ const base = {
   diagnostics: { throttleMs: 0 },
 } as const;
 
-/** The parts of an OTLP metrics body that the tests read. */
+/** The parts of an OTLP metrics body the tests look at. */
 interface OtlpMetrics {
   resourceMetrics: {
     scopeMetrics: {
@@ -72,16 +72,16 @@ interface OtlpMetrics {
   }[];
 }
 
-/** Clock that a test sets by hand. */
+/** A clock the test sets by hand. */
 interface Clock {
-  /** Value of the next read, in milliseconds. */
+  /** What the next read returns, in ms. */
   now: number;
-  /** Value that each read adds after it. */
+  /** How much each read adds afterwards. */
   step: number;
 }
 
 /**
- * Replaces performance.now with a clock that the test sets by hand.
+ * Replaces performance.now with a clock the test sets by hand.
  * @returns The clock and the spy on performance.now.
  */
 function stubClock() {
@@ -96,9 +96,9 @@ function stubClock() {
 
 /**
  * Measures one span of a known length.
- * @param probe Probe to use.
- * @param clock Clock of the test.
- * @param ms Length of the span, in milliseconds.
+ * @param probe The probe to use.
+ * @param clock The test's clock.
+ * @param ms Span length in ms.
  */
 function span(probe: Probe, clock: Clock, ms: number): void {
   const token = probe.begin();
@@ -106,14 +106,14 @@ function span(probe: Probe, clock: Clock, ms: number): void {
   probe.end(token);
 }
 
-/** Replaces the timers. The clock of the profiler stays under the stub of the test. */
+/** Fakes the timers. The profiler's clock stays under the test's own stub. */
 function fakeTimers(): void {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 }
 
 /**
- * Makes a promise that the test opens by hand.
- * @returns The promise and its open function.
+ * Creates a promise the test resolves by hand.
+ * @returns The promise and the function that opens it.
  */
 function gate() {
   let open!: () => void;
@@ -125,7 +125,7 @@ function gate() {
 
 /**
  * Starts a runtime with a memory transport.
- * @param over Settings that replace the base settings.
+ * @param over Settings that override the base settings.
  * @returns The transport and the diagnostic events.
  */
 async function start(over: ObservabilityConfig = {}) {
@@ -144,8 +144,8 @@ async function start(over: ObservabilityConfig = {}) {
 }
 
 /**
- * Gives the profile records of a list.
- * @param records Records of a transport.
+ * Picks the profile records out of a list.
+ * @param records Records from a transport.
  * @returns The profile summary records.
  */
 function profiles(records: readonly LogRecord[]): LogRecord[] {
@@ -153,7 +153,7 @@ function profiles(records: readonly LogRecord[]): LogRecord[] {
 }
 
 /**
- * Gives the invalid configuration events of a list.
+ * Picks the invalid-configuration events out of a list.
  * @param events Diagnostic events.
  * @returns The events with the code config.invalid.
  */
@@ -162,8 +162,8 @@ function invalid(events: readonly DiagnosticEvent[]): DiagnosticEvent[] {
 }
 
 /**
- * Gives the profile records that a spy on emit saw.
- * @param emit Spy on the emit method of the runtime.
+ * Picks the profile records out of what an emit spy saw.
+ * @param emit Spy on the runtime's emit method.
  * @returns The profile summary records.
  */
 function emitted(emit: { mock: { calls: [LogRecord | null][] } }): LogRecord[] {
@@ -171,7 +171,7 @@ function emitted(emit: { mock: { calls: [LogRecord | null][] } }): LogRecord[] {
 }
 
 /**
- * Gives the runtime of the test.
+ * Returns the test's runtime.
  * @returns The runtime.
  */
 function runtime(): ObservabilityRuntime {
@@ -179,15 +179,15 @@ function runtime(): ObservabilityRuntime {
 }
 
 /**
- * Tests if the global symbol of the profiler core exists.
- * @returns True when a core exists.
+ * Checks whether the profiler core's global symbol exists.
+ * @returns True if there is a core.
  */
 function hasCore(): boolean {
   return CORE_KEY in globalThis;
 }
 
 beforeEach(() => {
-  // A core of an earlier test must not decide what this test sees.
+  // Don't let a core left over from an earlier test decide what this one sees.
   Reflect.deleteProperty(globalThis, CORE_KEY);
 });
 
@@ -201,11 +201,11 @@ afterEach(async () => {
 });
 
 describe("profiler.probe", () => {
-  it("gives the same probe for one name", () => {
+  it("returns the same probe for the same name", () => {
     expect(profiler.probe("grid.render")).toBe(profiler.probe("grid.render"));
   });
 
-  it("gives another probe for another name", () => {
+  it("returns a different probe for a different name", () => {
     expect(profiler.probe("grid.paint")).not.toBe(profiler.probe("grid.render"));
   });
 
@@ -330,7 +330,7 @@ describe("profile record", () => {
     ]);
   });
 
-  it("gives the profile record to a processor", async () => {
+  it("passes the profile record to a processor", async () => {
     const seen: Record<string, unknown>[] = [];
     const { memory } = await start({
       profiler: { enabled: true },
@@ -357,8 +357,8 @@ describe("profile record", () => {
 
   describe("with a redact hook that changes the record", () => {
     /**
-     * Sends one profile record through a redact hook. The hook changes three attributes.
-     * @returns The attributes of the record that the transport got.
+     * Sends one profile record through a redact hook that changes three attributes.
+     * @returns The attributes of the record the transport received.
      */
     async function redacted(): Promise<Record<string, unknown>> {
       const { memory } = await start({
@@ -469,7 +469,7 @@ describe("profiler off", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it("makes no global symbol while the profiler is off", async () => {
+  it("creates no global symbol while the profiler is off", async () => {
     await start();
     getLogger("app").info("log call");
     await flush();
@@ -478,7 +478,7 @@ describe("profiler off", () => {
     expect(hasCore()).toBe(false);
   });
 
-  it("makes the global symbol at the first probe", () => {
+  it("creates the global symbol at the first probe", () => {
     expect(hasCore()).toBe(false);
 
     profiler.probe("late");
@@ -486,7 +486,7 @@ describe("profiler off", () => {
     expect(hasCore()).toBe(true);
   });
 
-  it("makes the global symbol when the profiler turns on", async () => {
+  it("creates the global symbol when the profiler turns on", async () => {
     await start();
     expect(hasCore()).toBe(false);
 
@@ -547,7 +547,7 @@ describe("configure() and the profiler", () => {
     memory.clear();
 
     configure({ profiler: { enabled: true } });
-    // The span must begin after the clock value of the detach.
+    // The span has to begin after the detach's clock value.
     clock.now += 1;
     span(probe, clock, 8);
     await flush();
@@ -565,7 +565,7 @@ describe("clock tick of a profiler restart", () => {
     const { clock } = stubClock();
     const probe = profiler.probe("restart");
 
-    // The clock does not move between the turn on and the span. The span has the floor value.
+    // The clock doesn't move between switching on and the span, so the span starts at the floor.
     configure({ profiler: { enabled: false } });
     configure({ profiler: { enabled: true } });
     span(probe, clock, 3);
@@ -617,13 +617,13 @@ describe("interval timer", () => {
     expect(emitted(emit)).toHaveLength(2);
   });
 
-  it("gives the overhead value in a timer collect", async () => {
+  it("reports the overhead value in a timer collect", async () => {
     await start({ profiler: { enabled: true, flushIntervalMs: 1000 } });
     const { clock } = stubClock();
     const emit = vi.spyOn(runtime(), "emit");
     fakeTimers();
 
-    // A clock that ticks on each read gives a value. The collect sites below give none.
+    // A clock that ticks on every read produces a value. The collect sites below produce none.
     span(profiler.probe("tick"), clock, 3);
     clock.step = 0.01;
     await vi.advanceTimersByTimeAsync(1000);
@@ -642,7 +642,7 @@ describe("interval timer", () => {
     const create = Sender.create.bind(Sender);
     const hold = gate();
     const reached = gate();
-    // The new sender loads late. The runtime then stays in the rotation state.
+    // The new sender loads late, which keeps the runtime in the rotation state.
     vi.spyOn(Sender, "create").mockImplementation(async (deps) => {
       reached.open();
       await hold.promise;
@@ -654,7 +654,7 @@ describe("interval timer", () => {
     await reached.promise;
     expect((await getHealth()).status).toBe("rotating");
 
-    // The span must begin after the clock value of the reset of the rotation.
+    // The span has to begin after the clock value of the rotation's reset.
     clock.now += 1;
     span(probe, clock, 6);
     const timers = vi.getTimerCount();
@@ -675,8 +675,8 @@ describe("interval timer", () => {
     });
   });
 
-  // newSession() collects while the rotation flag is true. The core then keeps the point.
-  // The timer sends the point to the new destination after the rotation.
+  // newSession() collects while the rotation flag is set, so the core keeps the point. The
+  // timer then sends it to the new destination once the rotation is done.
   it("sends a span that ends while the old sender stops to the new destination", async () => {
     const old = gate();
     const reached = gate();
@@ -788,7 +788,8 @@ describe("profiler.maxProbes", () => {
 describe("limit report at a collect", () => {
   it("reports the limit at the next collect when another config.invalid event hides the attach report", async () => {
     const events: DiagnosticEvent[] = [];
-    // This test keeps the default of diagnostics.throttleMs. The throttle drops a second event of one code.
+    // This test keeps the default diagnostics.throttleMs, so a second event with the same code
+    // gets dropped.
     configure({
       endpoint: null,
       serviceName: "svc",
@@ -808,7 +809,7 @@ describe("limit report at a collect", () => {
     }
     vi.useFakeTimers({ toFake: ["Date"] });
 
-    // The change of maxProbes reports config.invalid. The attach report follows in the window.
+    // Changing maxProbes reports config.invalid, and the attach report follows in the same window.
     configure({ profiler: { enabled: true, maxProbes: 8 } });
 
     expect(invalid(events).map((event) => event.message)).toEqual([
@@ -827,7 +828,7 @@ describe("limit report at a collect", () => {
       "The app registered 3 probes. The profiler.maxProbes limit is 2. The probes above the limit do nothing.",
     ]);
 
-    // The report comes one time for each attach.
+    // The report comes once per attach.
     vi.setSystemTime(Date.now() + 1100);
     await flush();
 
@@ -835,7 +836,7 @@ describe("limit report at a collect", () => {
   });
   it("keeps the throttle window free for a later config.invalid event after the first limit report arrived", async () => {
     const events: DiagnosticEvent[] = [];
-    // This test keeps the default of diagnostics.throttleMs. The limit report arrives first.
+    // This test keeps the default diagnostics.throttleMs. The limit report arrives first.
     configure({
       endpoint: null,
       serviceName: "svc",
@@ -878,8 +879,9 @@ describe("limit report at a collect", () => {
 describe("collect sites", () => {
   describe.each(["flush()", "pagehide", "shutdown()"] as const)("at %s", (site) => {
     /**
-     * Measures one span and runs the collect site. The clock ticks, so a calibration gives a value.
-     * @returns The profile records that the transport and the exit transport got.
+     * Measures one span and runs the collect site. The clock ticks, so a calibration would
+     * produce a value.
+     * @returns The profile records the transport and the exit transport received.
      */
     async function sentAt(): Promise<LogRecord[]> {
       const exit = vi.fn<(request: TransportRequest) => boolean>(() => true);
@@ -903,7 +905,7 @@ describe("collect sites", () => {
       expect((await sentAt()).map((one) => one.attributes["metric.count"])).toEqual([1]);
     });
 
-    it("gives no overhead value", async () => {
+    it("reports no overhead value", async () => {
       expect((await sentAt())[0].attributes).not.toHaveProperty(OVERHEAD);
     });
   });
@@ -935,7 +937,7 @@ describe("collect sites", () => {
       { id: "new", delivery: { transport: next.transport } },
       { pending: "flush" },
     );
-    // The span must begin after the clock value of the reset of the rotation.
+    // The span has to begin after the clock value of the rotation's reset.
     clock.now += 1;
     span(probe, clock, 5);
     await flush();
@@ -961,7 +963,7 @@ describe("collect sites", () => {
       await flush();
       expect(profiles(memory.records())).toEqual([]);
 
-      // The reset zeroed the data. A new span then gives a count of one.
+      // The reset zeroed the data, so a new span gives a count of one.
       clock.now += 1;
       span(probe, clock, 4);
       await flush();
@@ -988,8 +990,8 @@ describe("collect sites", () => {
 describe("identity isolation", () => {
   /**
    * Measures a span that begins before a rotation and ends after it.
-   * @param over Settings that replace the base settings.
-   * @returns The records of the new destination.
+   * @param over Settings that override the base settings.
+   * @returns The records at the new destination.
    */
   async function acrossRotation(over: ObservabilityConfig) {
     const next = createMemoryTransport();
@@ -1067,7 +1069,7 @@ describe("shutdown() and the profiler", () => {
     await shutdown();
 
     const { memory } = await start({ profiler: { enabled: true } });
-    // The span must begin after the clock value of the detach.
+    // The span has to begin after the detach's clock value.
     clock.now += 1;
     span(probe, clock, 3);
     await flush();
@@ -1084,7 +1086,7 @@ describe("shutdown() and the profiler", () => {
     expect(detach).not.toHaveBeenCalled();
   });
 
-  it("makes no core at shutdown() while the profiler is off", async () => {
+  it("creates no core at shutdown() while the profiler is off", async () => {
     await start();
 
     await shutdown();
@@ -1095,9 +1097,9 @@ describe("shutdown() and the profiler", () => {
 
 describe("console-only runtime", () => {
   /**
-   * Makes a probe, measures one span and runs flush() and shutdown(). It reads the drop count.
-   * @param clock Clock of the test.
-   * @returns The count of points that had no destination.
+   * Creates a probe, measures one span, then runs flush() and shutdown() and reads the drop count.
+   * @param clock The test's clock.
+   * @returns How many points had no destination.
    */
   async function measureOnce(clock: Clock): Promise<number | undefined> {
     const probe = profiler.probe("grid.render");
@@ -1139,5 +1141,116 @@ describe("console-only runtime", () => {
 
     expect(runtime().platform.platform).toBe("node");
     expect(await measureOnce(clock)).toBe(1);
+  });
+});
+
+describe("profiler.time", () => {
+  it("calls the function with no span before configure()", () => {
+    expect(profiler.time("early", () => 3)).toBe(3);
+    expect(ObservabilityRuntime.current()).toBeNull();
+  });
+
+  it("times a function call and gives its result", async () => {
+    const { clock } = stubClock();
+    const { memory } = await start({ profiler: { enabled: true } });
+
+    const result = profiler.time("sum", () => {
+      clock.now += 4;
+      return 7;
+    });
+    await flush();
+
+    expect(result).toBe(7);
+    expect(profiles(memory.records()).map((record) => record.attributes)).toMatchObject([
+      { "profile.probe": "sum", "metric.count": 1, "metric.sum": 4, "profile.self_p99": 4 },
+    ]);
+  });
+
+  it("sends the report for a bad name to the current runtime", async () => {
+    const { events } = await start({ profiler: { enabled: true } });
+
+    expect(profiler.time("", () => "done")).toBe("done");
+
+    expect(invalid(events).map((event) => event.message)).toEqual([
+      "The probe name must be a string that is not empty. The probe does nothing.",
+    ]);
+  });
+});
+
+describe("span breadcrumb", () => {
+  it("adds a breadcrumb for a span that is longer than the threshold of its probe", async () => {
+    const { clock } = stubClock();
+    const { memory } = await start({ profiler: { enabled: true } });
+    const probe = profiler.probe("sort", { slowMs: 16 });
+
+    span(probe, clock, 16);
+    span(probe, clock, 50.4);
+    getLogger("app").error("failed", new Error("x"));
+    await flush();
+
+    const failed = memory.records().find((record) => record.body === "failed");
+    const crumbs = failed?.attributes.breadcrumbs as { category: string; message: string }[];
+    expect(crumbs.filter((crumb) => crumb.category === "profile")).toMatchObject([
+      { category: "profile", message: "sort 50 ms" },
+    ]);
+  });
+});
+
+describe("profiler observers", () => {
+  /**
+   * Returns the names of the installed capture modules once every chunk has loaded.
+   * @returns The names, in install order.
+   */
+  async function installed(): Promise<string[]> {
+    await vi.dynamicImportSettled();
+    await flush();
+    return runtime()["captures"].map((capture) => capture.name);
+  }
+
+  it("loads no observer for a profiler with no observer flag", async () => {
+    await start({ profiler: { enabled: true } });
+
+    expect(await installed()).toEqual([]);
+  });
+
+  it("loads no observer while the profiler is off", async () => {
+    await start({ profiler: { framePhases: true, framePacing: true } });
+
+    expect(await installed()).toEqual([]);
+  });
+
+  it("loads the frame phases and the frame pacing with their flags", async () => {
+    await start({ profiler: { enabled: true, framePhases: true, framePacing: true } });
+
+    await vi.waitFor(async () => {
+      expect(await installed()).toEqual(["frame-phases", "frame-pacing"]);
+    });
+  });
+
+  it("installs and removes an observer when configure() changes its flag", async () => {
+    await start({ profiler: { enabled: true } });
+
+    configure({ profiler: { framePacing: true } });
+    await vi.waitFor(async () => {
+      expect(await installed()).toEqual(["frame-pacing"]);
+    });
+
+    configure({ profiler: { framePacing: false, framePhases: true } });
+    await vi.waitFor(async () => {
+      expect(await installed()).toEqual(["frame-phases"]);
+    });
+  });
+
+  it("removes each observer when configure() turns the profiler off", async () => {
+    await start({ profiler: { enabled: true, framePhases: true, framePacing: true } });
+    await vi.waitFor(async () => {
+      expect(await installed()).toHaveLength(2);
+    });
+
+    configure({ profiler: { enabled: false } });
+
+    await vi.waitFor(async () => {
+      expect(await installed()).toEqual([]);
+    });
   });
 });

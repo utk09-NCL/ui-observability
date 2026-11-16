@@ -9,7 +9,7 @@ import type { LogLevel } from "../models/log-record";
 import { isLibraryConsole, runAsLibraryConsole } from "./library-console";
 import { type SanitizeLimits, sanitize } from "./sanitize";
 
-/** Maps log levels to corresponding console method names. */
+/** Maps each log level to its console method. */
 const METHOD: Record<LogLevel, "debug" | "info" | "warn" | "error"> = {
   TRACE: "debug",
   DEBUG: "debug",
@@ -24,7 +24,7 @@ export class ConsoleSink {
   /**
    * @param settings Console level and styles. A null level prints nothing.
    * @param diagnostics Diagnostics reporter.
-   * @param limits Size limits of the printed payload. They are the record limits.
+   * @param limits Size limits for the printed payload. Same as the record limits.
    */
   constructor(
     private settings: ResolvedConsole,
@@ -41,7 +41,7 @@ export class ConsoleSink {
   }
 
   /**
-   * Tests if a level clears the console threshold.
+   * Checks whether a level clears the console threshold.
    * @param level Severity level of the record.
    * @returns True if the sink prints this level.
    */
@@ -76,25 +76,25 @@ export class ConsoleSink {
     if (!this.accepts(level)) {
       return;
     }
-    // Guard against a missing console. Some worker realms do not define it.
+    // Guard against a missing console. Some worker realms don't define it.
     if (typeof console === "undefined") {
       return;
     }
 
-    // Guard against a loop. A host console wrapper can call the logger. The logger then prints again.
-    // The console capture also records inside this scope. Its line is already in devtools.
+    // Guard against a loop: a host console wrapper can call the logger, which would print again.
+    // The console capture also records inside this scope, and its line is already in devtools.
     if (isLibraryConsole()) {
       return;
     }
 
-    // Pass the namespace as a %s argument. Then a %o or %c in the namespace prints as text.
-    // The last %c resets the style. The message then prints in the default style.
+    // Pass the namespace as a %s argument, so a %o or %c in the namespace prints as text.
+    // The last %c resets the style, so the message prints in the default style.
     const prefix = `%c[%s]%c[${level}]%c`;
     const { styles } = this.settings;
     const method = METHOD[level];
 
-    // A host can replace console methods with methods that throw. The guard stops that
-    // error from breaking the log call of the caller.
+    // A host can replace console methods with ones that throw. The guard keeps that error
+    // from breaking the caller's log call.
     this.diagnostics.guard(
       "handler.threw",
       `The library could not print to console.${method}.`,
@@ -105,12 +105,12 @@ export class ConsoleSink {
           details.push(error);
         }
 
-        // Devtools keeps a reference to each logged object. A copy releases the caller's object.
+        // Devtools keeps a reference to every logged object. A copy releases the caller's object.
         if (payload !== undefined) {
           details.push(sanitize(payload, this.limits, this.diagnostics));
         }
 
-        // The console capture skips a call in this scope. It must not record a mirrored line.
+        // The console capture skips calls in this scope, so it doesn't record a mirrored line.
         runAsLibraryConsole(() => {
           console[method](
             prefix,

@@ -66,10 +66,7 @@ const metricBatch = (id: string): LogBatch => ({
 
 type Send = (batch: LogBatch) => Promise<void>;
 
-/**
- * What a stubbed lock manager gives back. It is a grant, or null for a lock that another context
- * holds.
- */
+/** What a stubbed lock manager hands back: a grant, or null for a lock another context holds. */
 type LockCallback = (lock: { name: string } | null) => Promise<unknown>;
 
 /** A real MemoryStorage, a stubbed transport, and an engine wired to both. */
@@ -104,7 +101,7 @@ const makeEngine = (
   return { engine, storage, send, handler };
 };
 
-/** A promise that the test resolves. The test can then hold a drain in the middle of a send. */
+/** A promise the test resolves, so it can hold a drain in the middle of a send. */
 const gate = () => {
   // The executor runs synchronously, so `open` is the real resolver by the time
   // this returns.
@@ -212,8 +209,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     engine.nudge();
     await tick(BASE_DELAY_MS);
-    // Use one millisecond, not zero. Fake timers move a zero-delay timer that a tick arms to the
-    // next millisecond. This prevents an infinite loop.
+    // Use one millisecond, not zero. Fake timers move a zero-delay timer armed inside a tick to
+    // the next millisecond, which prevents an infinite loop.
     await tick(1);
 
     expect(send).toHaveBeenCalledTimes(2);
@@ -235,8 +232,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     await tick(IDLE_DELAY_MS);
 
-    // Use the literal, not the constant that the test checks. An import of the constant passes with
-    // a typo.
+    // Use the literal, not the constant under test. Importing the constant would pass even with a
+    // typo in it.
     expect(take).toHaveBeenCalledWith(20);
     engine.stop();
   });
@@ -248,8 +245,8 @@ describe("RetryEngine delivery", () => {
     engine.start();
     await tick(IDLE_DELAY_MS * 2);
 
-    // An empty queue that advances the attempt counter backs off to a shorter, jittered delay. It
-    // then looks here more than two times.
+    // An empty queue that advanced the attempt counter would back off to a shorter, jittered
+    // delay and look here more than twice.
     expect(take).toHaveBeenCalledTimes(2);
     engine.stop();
   });
@@ -320,8 +317,8 @@ describe("RetryEngine failure handling", () => {
     await tick(BASE_DELAY_MS);
     expect(send).toHaveBeenCalledOnce();
 
-    // A jittered backoff is at most `baseDelayMs * 2`. A second send before this point shows that
-    // the engine ignored Retry-After.
+    // A jittered backoff is at most `baseDelayMs * 2`, so a second send before this point would
+    // show that the engine ignored Retry-After.
     await tick(retryAfterMs - 1);
     expect(send).toHaveBeenCalledOnce();
 
@@ -418,7 +415,7 @@ describe("RetryEngine with metricsEndpoint", () => {
   });
 
   it("sends no more batches of a failed kind in the same drain", async () => {
-    // The batches of one kind keep their order.
+    // Batches of one kind keep their order.
     const { engine, storage, send } = makeEngine({
       config: metricsConfig,
       send: (sent) =>
@@ -489,8 +486,8 @@ describe("RetryEngine splitting", () => {
 
     engine.start();
     engine.nudge();
-    // Three drains. 4 splits to 2x2. Those split to 4x1. Then the four send. A split does not back
-    // off. The nudge arms the first drain. Each drain after it arms the idle delay again.
+    // Three drains: 4 splits to 2x2, those split to 4x1, then the four send. A split doesn't back
+    // off. The nudge arms the first drain, and every drain after it re-arms the idle delay.
     await tick(BASE_DELAY_MS + IDLE_DELAY_MS * 2 + 1000);
 
     expect(await storage.count()).toBe(0);
@@ -523,7 +520,7 @@ describe("RetryEngine splitting", () => {
     engine.stop();
   });
 
-  it("gives onLoss each batch that it dead-letters or that the server rejects", async () => {
+  it("passes every batch it dead-letters or the server rejects to onLoss", async () => {
     const onLoss = vi.fn<LossReporter>();
     const { engine, storage } = makeEngine({
       onLoss,
@@ -628,8 +625,8 @@ describe("RetryEngine connectivity", () => {
       dispatchEvent(new Event("online"));
     }
 
-    // One arm at start. Then one arm and one clear for each event. A chain arms 21 times and clears
-    // none.
+    // One arm at start, then one arm and one clear per event. A chain would arm 21 times and
+    // clear none.
     expect(arm).toHaveBeenCalledTimes(21);
     expect(clear).toHaveBeenCalledTimes(20);
 
@@ -672,7 +669,7 @@ describe("RetryEngine reentrancy", () => {
     await tick(BASE_DELAY_MS);
     expect(send).toHaveBeenCalledOnce();
 
-    // The online handler arms its own timer. That is the one path that fires during a drain.
+    // The online handler arms its own timer, the one path that fires during a drain.
     dispatchEvent(new Event("online"));
     await tick(0);
     expect(send).toHaveBeenCalledOnce();

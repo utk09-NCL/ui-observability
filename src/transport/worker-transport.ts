@@ -122,7 +122,7 @@ class WorkerTransport extends StatusTransport {
         timeout ? "transport.timeout" : "transport.http_error",
         "The transport worker did not send its batch.",
       );
-      // An offline failure must not use a stored attempt. The HTTP path applies the same rule.
+      // An offline failure must not use up a stored attempt. The HTTP path applies the same rule.
       throw new TransportError(
         timeout ? "timeout" : isOnline() ? "transient" : "offline",
         "The transport worker did not send its batch.",
@@ -150,7 +150,7 @@ class WorkerTransport extends StatusTransport {
     return Math.max(super.throttledForMs(batch), this.http.throttledForMs(batch));
   }
 
-  /** Gives the last accepted send from either path. */
+  /** Returns the last accepted send from either path. */
   override lastSendAt(): number | null {
     const last = Math.max(super.lastSendAt() ?? -Infinity, this.http.lastSendAt() ?? -Infinity);
     return Number.isFinite(last) ? last : null;

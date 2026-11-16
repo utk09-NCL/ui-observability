@@ -1,8 +1,8 @@
 // tools/check-peer-imports.mjs
 //
-// Fails if a built file imports an optional peer by name. The Vite dev server resolves
-// each string-literal import. A consumer without the peer then gets an error.
-// Peers load only through the loaders that the consumer supplies.
+// Fails if a built file imports an optional peer by name. The Vite dev server resolves every
+// string-literal import, so a consumer without the peer would get an error.
+// Peers load only through the loaders the consumer supplies.
 
 import { readdirSync, readFileSync } from "node:fs";
 

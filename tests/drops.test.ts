@@ -31,7 +31,7 @@ const action = (name: string, journey?: string): LogRecord =>
 
 /**
  * Builds a reporter on a config with the given hook.
- * @param onDrop Hook of the config.
+ * @param onDrop The config's hook.
  * @returns The reporter, its config and its diagnostic events.
  */
 function setup(onDrop?: (summary: DropSummary) => void) {
@@ -108,7 +108,7 @@ describe("DropReporter", () => {
     const { reporter, config } = setup();
 
     reporter.add("expired", [log("a")]);
-    // A hook that arrives later gets nothing from the time before it.
+    // A hook added later gets nothing from the time before it.
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     config.onDrop = onDrop;
     await Promise.resolve();
@@ -131,7 +131,7 @@ describe("DropReporter", () => {
   });
 
   it("does not report a loss that the hook causes", async () => {
-    // A hook that logs can fill the buffer again. A report of that loss starts a loop.
+    // A hook that logs can fill the buffer again, and reporting that loss would start a loop.
     const hook: { again?: () => void } = {};
     const onDrop = vi.fn<(summary: DropSummary) => void>(() => {
       hook.again?.();
@@ -148,7 +148,7 @@ describe("DropReporter", () => {
     expect(onDrop).toHaveBeenCalledOnce();
   });
 
-  it("gives nothing when configure() removes the hook before the report", async () => {
+  it("reports nothing when configure() removes the hook before the report", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     const { reporter, config } = setup(onDrop);
 
@@ -186,8 +186,8 @@ describe("DropReporter", () => {
   });
 
   it("runs the hook inside the library request scope and the library console scope", async () => {
-    // A request or a console line of the hook must not become a record. That record can evict
-    // one more stored batch. The hook then runs again.
+    // A request or console line from the hook must not become a record. That record could evict
+    // one more stored batch, and the hook would run again.
     const scopes: boolean[] = [];
     const { reporter } = setup(() => {
       scopes.push(isLibraryRequest(), isLibraryConsole());

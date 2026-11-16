@@ -68,9 +68,38 @@ The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history
 
 The app supplies a trusted dedicated worker script. The worker receives resolved request headers and records after processors and redaction. It receives no header function or app hook. Use the same SDK version in the page and the worker.
 
+### Session Replay
+
+The session replay sends a copy of the DOM to `replay.endpoint`. It is off by default.
+
+- The recorder masks the text of each element and the value of each `input`, `textarea` and `select`, unless the app changes `replay.maskText` or `replay.maskInputs`. A password input is always masked. The text in an element with `data-observability-unmask` stays.
+- The mask has limits. An attribute value stays in clear text, for example `title`, `alt`, `placeholder`, `aria-label` and `data-*`. The `value` of a checkbox, a radio button, a button and an `<option>` stays. A URL in `href` or `src` keeps its query. The CSS text, the content of a `<meta>` element and a comment stay. A masked text keeps the length of each word.
+- The SDK removes the query of the page URL from a replay event unless `capture.fullUrls` is set. It masks a text that is directly in a shadow root, which the recorder does not mask in a mutation.
+- Page content can add `data-observability-unmask` only if the app puts user HTML into the page with its attributes. A `replay.maskSelectors` entry wins over the attribute.
+- A change of `replay.endpoint` or a new `replay.onSegment` function drops the buffer and the segments that wait. A change of only `replay.headers` keeps them. They then go out with the new headers. Isolation does not cover `replay.headers`. Call `stopReplay()` before such a change when the old events must not go out with the new headers.
+- A new `replay.recordOptions` object or a new plugin function starts a new recording and drops the buffer. An option of the old plugin then records no more events.
+- `redact` and `processors` do not apply to a replay event. `replay.recordOptions` accepts only options that do not turn off a mask.
+- An invalid `maskSelectors` or `blockSelectors` entry stops the replay.
+- The replay request has only `replay.headers`. The token of the log endpoint does not go to the replay endpoint. `credentials` applies, and its default sends no cookie.
+- `newSession()` and `rotateSecurityContext()` drop the replay buffer and start a new recording. `stopReplay()` stops the recorder and the request in flight. A later `configure()` and a remote capture switch do not start it again.
+- An error record starts at most `replay.uploadsPerWindow` uploads in each window. An upload has a fixed length of `replay.afterErrorMs`. Page content that causes errors cannot upload the full session.
+- The console plugin and the network plugin of the recorder record what the app gives them. The `transformRequest` tool skips each endpoint of the SDK and removes the query of a recorded URL. The SDK cannot mask a console argument, a header or a body.
+- The app decides what is legal to record.
+
+### Profiler
+
+The profiler sends the durations of app code to the ingest endpoint. It is off by default.
+
+- A probe name is a string of the app. It goes into each record as `profile.probe`, and into a breadcrumb for a slow span. Do not put personal data or a user id in a probe name. `processors` and `redact` apply to the `profile.*` attributes.
+- A hostile name or a hostile option cannot throw into the app. A name that is not a string gives a probe that does nothing. The library reads an option one time and catches a getter that throws.
+- The profiler keeps one core for each library version at a global symbol. Each script of the page can read that symbol and add durations, as it can call each other function of the library. See boundary 3.
+- `profiler.maxProbes` and the limit of 1024 names stop a page that makes probe names without end. The memory of the typed arrays is fixed at startup.
+- With `securityContext.isolation`, a rotation drops the profiler data and each open span. A span of the previous identity adds no value to the next identity.
+- `profiler.framePhases` and `profiler.framePacing` read only browser timing entries. They record no script URL and no element.
+
 ### Command Line Tool
 
-`uiobs doctor` runs on your machine, not in the page. It sends test batches only to the URL that you name. It follows no redirect. It sends no credentials and no `Authorization` header. A test record has `service.name: "uiobs-doctor"`.
+`uiobs doctor` runs on your machine, not in the page. It sends test batches only to the URL that you name. It follows no redirect. It sends no credentials and no `Authorization` header by default. It sends a custom header only when you give one with `--header`. A result line prints no header value. A usage report prints only the known words and a URL with no query and no user info. It refuses a URL with a user name or a password. A test record has `service.name: "uiobs-doctor"`. With `--replay`, it sends four test segments to the URL that you name. One segment has 5 MB. Each segment has `service.name: "uiobs-doctor"` and no page content.
 
 The handshake transfers a private message port. Jobs and results use only that port. Each message has a fixed protocol tag and the exact SDK version. The worker validates jobs before it uses their endpoints or headers. The main thread validates status codes and response hints. The worker limits active jobs to 64.
 

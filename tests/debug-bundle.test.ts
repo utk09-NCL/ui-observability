@@ -10,8 +10,8 @@ import {
 import type { ObservabilityConfig } from "../src/models/config";
 
 /**
- * Configures a runtime with an endpoint that holds a token. The memory transport sends.
- * @param over Config values over the base.
+ * Configures a runtime whose endpoint holds a token and which sends through the memory transport.
+ * @param over Config values that override the base.
  */
 const start = (over: Partial<ObservabilityConfig> = {}): void => {
   configure({
@@ -45,7 +45,7 @@ describe("collectDebugBundle", () => {
     ]);
     expect(bundle.debugBuffer.map((record) => record.body)).toEqual(["kept for the next error"]);
     expect(Date.parse(bundle.createdAt)).not.toBeNaN();
-    // The bundle survives JSON without a change.
+    // The bundle survives a JSON round trip unchanged.
     expect(JSON.parse(JSON.stringify(bundle))).toEqual(bundle);
   });
 
@@ -59,7 +59,7 @@ describe("collectDebugBundle", () => {
     expect(config.endpoint).toBe("https://ingest.example/v1/logs");
     expect(config.redact).toBe("[Function redact]");
     expect(config.transport).toEqual(expect.stringMatching(/^\[Function/));
-    // The library adds the endpoint to ignoreUrls. The token must not show there.
+    // The library adds the endpoint to ignoreUrls, and the token must not show up there.
     expect(capture.ignoreUrls).toEqual(["/health/", "https://ingest.example/v1/logs"]);
     expect(JSON.stringify(config)).not.toContain("token=abc");
     expect(JSON.stringify(config)).not.toContain("secret");
@@ -87,7 +87,7 @@ describe("collectDebugBundle", () => {
     expect(JSON.stringify(config)).not.toContain("abc");
   });
 
-  it("gives no breadcrumbs and no resource when redact drops the bundle record", async () => {
+  it("has no breadcrumbs and no resource when redact drops the bundle record", async () => {
     start({ redact: (record) => (record.body === "debug bundle" ? null : record) });
     addBreadcrumb("private step");
 

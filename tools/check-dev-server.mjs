@@ -1,9 +1,9 @@
 // tools/check-dev-server.mjs
 //
-// Fails if the Vite dev server cannot load the library without the optional peers. It starts Vite on
-// playground/console-only and transforms each module that the app reaches, dynamic imports included.
-// The playground plugin "forbid-optional-peers" fails a transform that imports a peer by name.
-// The production build does not run that analysis. Only this check finds the fault.
+// Fails if the Vite dev server can't load the library without the optional peers. It starts Vite
+// on playground/console-only and transforms every module the app reaches, dynamic imports
+// included. The playground's "forbid-optional-peers" plugin fails any transform that imports a
+// peer by name. The production build doesn't run that analysis, so only this check catches it.
 
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -13,10 +13,10 @@ const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 const ENTRY = "/src/main.ts";
 
 /**
- * Tests whether a module belongs to the app or to the library build. Other modules, such as the
- * Vite client, are outside the scope of this check.
- * @param file Absolute file path of the module, or null.
- * @returns True if the check must transform the module.
+ * Checks whether a module belongs to the app or to the library build. Anything else, such as
+ * the Vite client, is out of scope for this check.
+ * @param file Absolute path of the module's file, or null.
+ * @returns True if the check has to transform the module.
  */
 function inScope(file) {
   return file !== null && (file.startsWith(ROOT) || file.startsWith(DIST));

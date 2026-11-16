@@ -7,13 +7,13 @@ interface ServerTimingEntry {
   description: string;
 }
 
-/** Server duration entries and the server span that they name. */
+/** Server duration entries, plus the server span they name. */
 export interface ServerTiming {
   entries: ServerTimingEntry[];
   link?: { traceId: string; spanId: string };
 }
 
-/** Splits a header outside quoted strings. Escaped quotes do not end a string. */
+/** Splits a header on separators outside quoted strings. An escaped quote doesn't end a string. */
 function splitHeader(text: string, separator: string): string[] {
   const parts: string[] = [];
   let start = 0;
@@ -38,12 +38,12 @@ function splitHeader(text: string, separator: string): string[] {
   return parts;
 }
 
-/** Finds the header in an XHR header list. Chrome prints an error for a direct hidden read. */
+/** Finds the header in an XHR header list. Reading a hidden header directly logs a Chrome error. */
 export function xhrServerTiming(headers: string): string | null {
   return /^server-timing:(.*)$/im.exec(headers)?.[1] ?? null;
 }
 
-/** Reads bounded server duration entries. A missing header gives no entries. */
+/** Reads a bounded number of server duration entries. A missing header gives none. */
 export function readServerTiming(header: string | null): ServerTiming {
   const result: ServerTiming = { entries: [] };
   if (!header) {

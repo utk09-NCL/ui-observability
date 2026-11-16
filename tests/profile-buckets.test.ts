@@ -4,7 +4,7 @@ import { bucketOf, percentileOf, pointBuckets, upperOf } from "../src/core/profi
 const BUCKETS = 368;
 const MAX_US = 67_108_863;
 
-// The probe under test starts at this base. Other probes fill the arrays on each side.
+// The probe under test starts at this base. Other probes fill the array on either side of it.
 const BASE = BUCKETS;
 const NOISE = 9;
 
@@ -12,7 +12,7 @@ type Point = ReturnType<typeof pointBuckets>;
 
 const allIndexes = Array.from({ length: BUCKETS }, (_unused, i) => i);
 
-/** Makes three probes in one array. The probe at the base has the counts. The others have noise. */
+/** Builds three probes in one array. The one at the base has the counts, the others are noise. */
 function makeBuckets(counts: Record<number, number>, base = BASE): Uint32Array {
   const buckets = new Uint32Array(BUCKETS * 3).fill(NOISE);
 
@@ -24,7 +24,7 @@ function makeBuckets(counts: Record<number, number>, base = BASE): Uint32Array {
   return buckets;
 }
 
-/** Gives a count record for the buckets from first to last. */
+/** Builds a counts record for the buckets from first to last. */
 function rangeOf(first: number, last: number, countOf: (index: number) => number = () => 1) {
   const counts: Record<number, number> = {};
 
@@ -39,7 +39,7 @@ function totalOf(buckets: Uint32Array, base = BASE): number {
   return buckets.subarray(base, base + BUCKETS).reduce((sum, count) => sum + count, 0);
 }
 
-/** Checks the rules that each summary point follows. */
+/** Checks the rules every summary point has to follow. */
 function expectShape(point: Point, total: number, merge: number): void {
   const size = 2 ** merge;
 
@@ -106,7 +106,7 @@ describe("bucketOf", () => {
   });
 
   it("puts a value above the largest value in bucket 367", () => {
-    // A value of 2^32 shows that the clamp runs before the 32-bit math.
+    // 2^32 proves that the clamp runs before the 32-bit math.
     expect(bucketOf(2 ** 26)).toBe(367);
     expect(bucketOf(2 ** 30)).toBe(367);
     expect(bucketOf(2 ** 32)).toBe(367);
@@ -114,13 +114,13 @@ describe("bucketOf", () => {
 });
 
 describe("upperOf", () => {
-  it("gives the value itself as the bound of the buckets 0 to 15", () => {
+  it("returns the value itself as the bound for buckets 0 to 15", () => {
     for (let i = 0; i < 16; i++) {
       expect(upperOf(i)).toBe(i);
     }
   });
 
-  it("gives the largest value of a bucket as its bound", () => {
+  it("returns a bucket's largest value as its bound", () => {
     expect(upperOf(16)).toBe(16);
     expect(upperOf(31)).toBe(31);
     expect(upperOf(32)).toBe(33);
@@ -131,7 +131,7 @@ describe("upperOf", () => {
     expect(upperOf(352)).toBe(35_651_583);
   });
 
-  it("gives the largest value as the bound of bucket 367", () => {
+  it("returns the largest value as the bound of bucket 367", () => {
     expect(upperOf(367)).toBe(MAX_US);
   });
 
@@ -158,7 +158,7 @@ describe("upperOf", () => {
 });
 
 describe("percentileOf", () => {
-  // The count is 100. Bucket 5 holds 50 values, bucket 20 holds 40, bucket 100 holds 9.
+  // The count is 100: bucket 5 holds 50 values, bucket 20 holds 40 and bucket 100 holds 9.
   const buckets = makeBuckets({ 5: 50, 20: 40, 100: 9, 367: 1 });
 
   it.each([
@@ -169,7 +169,7 @@ describe("percentileOf", () => {
     { q: 0.9, expected: 20 },
     { q: 0.99, expected: 671 },
     { q: 1, expected: MAX_US },
-  ])("gives $expected microseconds for q = $q", ({ q, expected }) => {
+  ])("returns $expected microseconds for q = $q", ({ q, expected }) => {
     expect(percentileOf(buckets, BASE, 100, q)).toBe(expected);
   });
 
@@ -180,8 +180,9 @@ describe("percentileOf", () => {
     expect(percentileOf(own, BASE, 2, 1)).toBe(49);
   });
 
-  it("gives the bound of bucket 367 when the count is too large", () => {
-    // The probe holds 3 values. The count says 100. The next probe has counts and is not read.
+  it("returns the bound of bucket 367 when the count is too large", () => {
+    // The probe holds 3 values but the count claims 100. The next probe has counts too, and
+    // must not be read.
     const small = makeBuckets({ 5: 3 });
 
     expect(percentileOf(small, BASE, 100, 0.99)).toBe(MAX_US);
@@ -217,7 +218,7 @@ describe("pointBuckets", () => {
   });
 
   it("merges two buckets in each group when the range has 101 buckets", () => {
-    // The first bucket 11 is odd. The first group holds the buckets 10 and 11.
+    // The first bucket, 11, is odd, so the first group covers buckets 10 and 11.
     const buckets = makeBuckets(rangeOf(11, 111));
     const point = pointBuckets(buckets, BASE);
 

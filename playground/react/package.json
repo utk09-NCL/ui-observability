@@ -14,9 +14,20 @@
     "web-vitals": "catalog:react"
   },
   "devDependencies": {
+    "@rrweb/record": "catalog:react",
+    "@rrweb/rrweb-plugin-console-record": "catalog:react",
+    "@rrweb/rrweb-plugin-console-replay": "catalog:react",
+    "@rrweb/rrweb-plugin-network-record": "catalog:react",
+    "@rrweb/rrweb-plugin-network-replay": "catalog:react",
+    "@rrweb/rrweb-plugin-sequential-id-record": "catalog:react",
+    "@rrweb/rrweb-plugin-sequential-id-replay": "catalog:react",
+    "@rrweb/types": "catalog:react",
+    "@rrweb/utils": "catalog:react",
     "@types/react": "catalog:react",
     "@types/react-dom": "catalog:react",
     "@vitejs/plugin-react": "catalog:react",
+    "rrweb": "catalog:react",
+    "rrweb-player": "catalog:react",
     "typescript": "catalog:react",
     "vite": "catalog:react"
   }

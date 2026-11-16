@@ -14,9 +14,9 @@ import type { LogRecord } from "./log-record";
 export interface LogBatch {
   /** Application namespace that owns this stored batch. */
   readonly persistenceNamespace?: string;
-  /** Delivery context id. It does not change. With isolation, a batch without this id stays stored. */
+  /** Delivery context id. Never changes. With isolation, a batch without one stays stored. */
   readonly routingContextId?: string;
-  /** Deduplication key. It stays the same across retries and reloads. */
+  /** Deduplication key. Stays the same across retries and reloads. */
   id: string;
   /** Records to deliver, in log order. */
   records: LogRecord[];
@@ -27,13 +27,12 @@ export interface LogBatch {
 }
 
 /**
- * Tells if a value from storage has all fields of a batch. `keyOf` cannot match
- * an entry without `id` after delivery. The library then retries that entry with no
- * end, and the entry blocks each batch behind it. An entry without `attempts` counts
- * as NaN. That count never reaches `maxAttempts`. Thus the library never drops the
- * entry as a dead letter.
+ * Checks whether a value from storage has every field of a batch. `keyOf` can't match an entry
+ * without `id` after delivery, so that entry would be retried forever and block every batch
+ * behind it. An entry without `attempts` counts as NaN, which never reaches `maxAttempts`, so
+ * it would never be dropped as a dead letter.
  * @param value Parsed storage entry.
- * @returns True when each required field is present and has the correct type.
+ * @returns True when every required field is present and has the correct type.
  */
 export function isLogBatch(value: unknown): value is LogBatch {
   if (typeof value !== "object" || value === null) {
@@ -54,8 +53,8 @@ export function isLogBatch(value: unknown): value is LogBatch {
 }
 
 /**
- * Splits a batch that the server rejected as too large into two halves.
- * Each half gets a new id. Each half keeps the age and attempts of the original batch.
+ * Splits a batch that the server rejected as too large into two halves. Each half gets a new
+ * id but keeps the original batch's age and attempts.
  * @param batch The rejected batch.
  * @param diagnostics Diagnostics reporter for the new batch ids.
  * @returns Two batches, or `null` if a single record is already over the limit.
@@ -79,8 +78,8 @@ export function splitBatch(batch: LogBatch, diagnostics: Diagnostics): [LogBatch
 }
 
 /**
- * Reads one attribute of a record. A record from storage can be corrupt. It can be null or have
- * no attributes.
+ * Reads one attribute of a record. A record from storage can be corrupt, either null or
+ * missing its attributes.
  * @param record Record to read.
  * @param key Attribute key.
  * @returns The attribute value, or undefined for a corrupt record.
@@ -100,8 +99,8 @@ export function attributeOf(record: LogRecord, key: string): unknown {
 }
 
 /**
- * Tests if a record is an action. A corrupt record from storage is not an action.
- * @param record Record to test.
+ * Checks whether a record is an action. A corrupt record from storage is not an action.
+ * @param record Record to check.
  * @returns True for an action record.
  */
 export function isActionRecord(record: LogRecord): boolean {
@@ -109,7 +108,7 @@ export function isActionRecord(record: LogRecord): boolean {
 }
 
 /**
- * Returns the total record count of the batches.
+ * Counts the records across all batches.
  * @param batches Batches to measure.
  * @returns Total record count.
  */

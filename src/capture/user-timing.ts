@@ -1,13 +1,13 @@
 // src/capture/user-timing.ts
 //
-// Records the marks and measures of the app from the User Timing API. A measure goes into a
-// histogram. A mark adds a breadcrumb.
+// Records the app's marks and measures from the User Timing API. A measure goes into a
+// histogram, and a mark adds a breadcrumb.
 
 import type { InstrumentDef } from "../models/metric";
 import { recordedUrl } from "../utils/platform";
 import { type Capture, type CaptureContext, matchesAny } from "./types";
 
-/** Histogram of the measures of the app, in milliseconds. */
+/** Histogram of the app's measures, in milliseconds. */
 const USER_TIMING_DURATION: InstrumentDef = {
   name: "ui.user_timing.duration",
   kind: "histogram",
@@ -15,12 +15,12 @@ const USER_TIMING_DURATION: InstrumentDef = {
   boundaries: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000],
 };
 
-/** Observes the marks and measures of the app. */
+/** Observes the app's marks and measures. */
 export class UserTimingCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "userTiming";
 
-  /** Observer of the mark and measure entries. */
+  /** Observer for the mark and measure entries. */
   private observer: PerformanceObserver | undefined;
 
   /**
@@ -38,7 +38,7 @@ export class UserTimingCapture implements Capture {
     const first = !once.userTiming;
     once.userTiming = true;
 
-    // Older browsers have no supportedEntryTypes. The capture is then off.
+    // Older browsers have no supportedEntryTypes, and the capture stays off there.
     const supported: readonly string[] | undefined =
       typeof PerformanceObserver === "undefined"
         ? undefined
@@ -54,9 +54,16 @@ export class UserTimingCapture implements Capture {
     }
 
     this.observer = new PerformanceObserver((list) => {
-      this.record(list.getEntries());
+      // The browser calls this directly, so anything we throw is an uncaught error on the page.
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        "The library could not record a user timing entry.",
+        () => {
+          this.record(list.getEntries());
+        },
+      );
     });
-    // Buffered entries include the marks and measures before this chunk loads.
+    // Buffered entries include the marks and measures made before this chunk loaded.
     this.observer.observe({ type: "measure", buffered: first });
     if (supported.includes("mark")) {
       this.observer.observe({ type: "mark", buffered: first });
@@ -70,7 +77,7 @@ export class UserTimingCapture implements Capture {
   }
 
   /**
-   * Records the entries with a name that `userTimingInclude` selects.
+   * Records the entries whose name `userTimingInclude` selects.
    * @param entries Mark and measure entries.
    */
   private record(entries: PerformanceEntryList): void {
@@ -84,13 +91,13 @@ export class UserTimingCapture implements Capture {
         continue;
       }
 
-      // A name can hold a URL with a token. A third-party script can write any name.
+      // A third-party script can write any name, so a name can hold a URL with a token.
       const name = recordedUrl(entry.name, fullUrls);
       if (entry.entryType === "measure") {
         this.ctx.recordMetric(USER_TIMING_DURATION, entry.duration, { "user_timing.name": name });
       } else {
         this.ctx.breadcrumbs.push({
-          // A buffered entry reaches the observer late. The trail needs the time of the mark.
+          // A buffered entry reaches the observer late, and the trail needs the mark's own time.
           t: Math.round(performance.timeOrigin + entry.startTime),
           category: "event",
           message: name.slice(0, this.ctx.config.limits.maxBodyChars),

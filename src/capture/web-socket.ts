@@ -1,8 +1,8 @@
 // src/capture/web-socket.ts
 //
-// Records the open, close and error events of each WebSocket. It counts the messages by direction
-// and server. It never reads the content of a message. It is a capture plugin, and the runtime
-// loads it as a separate chunk.
+// Records the open, close and error events of every WebSocket, and counts messages by direction
+// and server. It never reads message content. This is a capture plugin, so the runtime loads it
+// as a separate chunk.
 
 import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConfig } from "../models/config";
@@ -17,31 +17,31 @@ import { matchesAny } from "./types";
 /** Name of the message counter. */
 const MESSAGES_METRIC = "ui.websocket.messages";
 
-/** Data of one WebSocket.send call. */
+/** The data argument of one WebSocket.send call. */
 type SendData = Parameters<WebSocket["send"]>[0];
 
-/** State of one install. A wrapper that stays after uninstall reads it and records nothing. */
+/** State of one install. A wrapper left behind after uninstall reads it and records nothing. */
 interface InstallState {
   /** False after uninstall. */
   active: boolean;
-  /** Tools of the plugin. */
+  /** The plugin's tools. */
   ctx: PluginContext;
-  /** Counter of the messages. */
+  /** Message counter. */
   messages: Counter;
-  /** Server host name of each tracked socket. */
+  /** Server host name of every tracked socket. */
   servers: WeakMap<WebSocket, string>;
-  /** Delivery context in force when each socket opened. */
+  /** The delivery context that was current when each socket opened. */
   contexts: WeakMap<WebSocket, string>;
   /** Active capture settings and isolation rule. */
   config: ResolvedConfig;
 }
 
 /**
- * Removes the user info, the query and the fragment from a socket URL. They can hold a token.
- * @param url Absolute URL of the socket.
+ * Strips the user info, query and fragment from a socket URL, since any of them can hold a token.
+ * @param url The socket's absolute URL.
  * @param config Active capture settings.
- * @param diagnostics Diagnostics reporter for a URL transform that throws.
- * @returns The URL to record and the host name of the server.
+ * @param diagnostics Diagnostics reporter, for a URL transform that throws.
+ * @returns The URL to record and the server's host name.
  */
 function socketTarget(
   url: string,
@@ -51,7 +51,7 @@ function socketTarget(
   const parsed = new URL(url);
 
   return {
-    // Ignore fullUrls. A browser cannot set a header on a socket. Thus apps often put a token in
+    // Ignore fullUrls. A browser can't set a header on a socket, so apps often put a token in
     // the query. Only urlTransform can record more of the URL.
     target: recordedUrl(url, false, config.capture.urlTransform, diagnostics),
     server: parsed.hostname,
@@ -59,15 +59,16 @@ function socketTarget(
 }
 
 /**
- * Counts one message of a tracked socket.
- * @param state State of the install that made the socket.
- * @param socket Socket of the message.
+ * Counts one message on a tracked socket.
+ * @param state State of the install that created the socket.
+ * @param socket The socket the message belongs to.
  * @param direction Direction of the message.
  */
 function count(state: InstallState, socket: WebSocket, direction: "transmit" | "receive"): void {
   const server = state.servers.get(socket);
 
-  // A send of the library, for example a custom transport, must not make the next send.
+  // Don't count the library's own sends, for example a custom transport's, or one send would
+  // cause the next.
   const own = direction === "transmit" && isLibraryRequest();
   if (
     !state.active ||
@@ -86,18 +87,18 @@ function count(state: InstallState, socket: WebSocket, direction: "transmit" | "
   state.messages.add(1, attributes);
 }
 
-/** Records the lifecycle and the message counts of each WebSocket that the app opens. */
+/** Records the lifecycle and message counts of every WebSocket the app opens. */
 export class WebSocketCapture implements CapturePlugin {
   /** Capture module identifier. */
   readonly name = "websocket";
 
-  /** Restores the WebSocket constructor. Undefined when the capture is not installed. */
+  /** Restores the WebSocket constructor. Undefined while the capture isn't installed. */
   private restore: (() => boolean) | undefined;
 
   /** State of the active install. */
   private state: InstallState | undefined;
 
-  /** Rate limit of the lifecycle records. A reconnect loop must not flood the pipeline. */
+  /** Rate limit for the lifecycle records, so a reconnect loop can't flood the pipeline. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /**
@@ -110,8 +111,8 @@ export class WebSocketCapture implements CapturePlugin {
   ) {}
 
   /**
-   * Replaces the WebSocket constructor with a subclass that tracks each socket.
-   * @param ctx Tools of the plugin.
+   * Replaces the WebSocket constructor with a subclass that tracks every socket.
+   * @param ctx The plugin's tools.
    */
   install(ctx: PluginContext): void {
     if (this.restore || typeof WebSocket === "undefined") {
@@ -138,17 +139,17 @@ export class WebSocketCapture implements CapturePlugin {
       (Original) =>
         class TrackedWebSocket extends Original {
           /**
-           * Keeps instanceof true for a socket that the app opened before the install.
+           * Keeps instanceof true for a socket the app opened before the install.
            * @param value Value to test.
-           * @returns True for each native socket.
+           * @returns True for every native socket.
            */
           static override [Symbol.hasInstance](value: unknown): boolean {
             return value instanceof Original;
           }
 
           /**
-           * @param url URL of the server.
-           * @param protocols Sub-protocols of the app.
+           * @param url The server's URL.
+           * @param protocols The app's sub-protocols.
            */
           constructor(url: string | URL, protocols?: string | string[]) {
             super(url, protocols);
@@ -157,7 +158,7 @@ export class WebSocketCapture implements CapturePlugin {
 
           /**
            * Sends the data, then counts one message. A send that throws counts nothing.
-           * @param data Data of the app. The library does not read it.
+           * @param data The app's data. We never read it.
            */
           override send(data: SendData): void {
             super.send(data);
@@ -167,13 +168,13 @@ export class WebSocketCapture implements CapturePlugin {
     );
   }
 
-  /** Restores the WebSocket constructor and stops each tracked socket from recording. */
+  /** Restores the WebSocket constructor and stops every tracked socket from recording. */
   uninstall(): void {
     if (this.state) {
       this.state.active = false;
     }
 
-    // Another script can wrap the constructor after the library. Keep its wrapper.
+    // Another script may have wrapped the constructor after us. Keep its wrapper.
     if (this.restore && !this.restore()) {
       this.diagnostics.report(
         "capture.install_failed",
@@ -186,21 +187,21 @@ export class WebSocketCapture implements CapturePlugin {
   }
 
   /**
-   * Adds the listeners that record the lifecycle and the received messages of one socket.
-   * @param socket New socket of the app.
-   * @param state State of the install that made the socket.
+   * Adds the listeners that record one socket's lifecycle and received messages.
+   * @param socket The app's new socket.
+   * @param state State of the install that created the socket.
    */
   private track(socket: WebSocket, state: InstallState): void {
     if (!state.active) {
       return;
     }
 
-    // A read here runs inside the constructor call of the app. A throw must not fail it.
+    // This read runs inside the app's constructor call, so a throw must not fail it.
     this.diagnostics.guard(
       "capture.record_failed",
       "The library could not track a WebSocket. The socket works without capture.",
       () => {
-        // ignoreUrls matches the full URL. A custom transport can send over its own socket.
+        // ignoreUrls matches the full URL. A custom transport may send over its own socket.
         if (matchesAny(socket.url, this.config.capture.ignoreUrls)) {
           return;
         }
@@ -248,8 +249,8 @@ export class WebSocketCapture implements CapturePlugin {
   }
 
   /**
-   * Tests if a lifecycle record can go out.
-   * @param state State of the install that made the socket.
+   * Checks whether a lifecycle record can go out.
+   * @param state State of the install that created the socket.
    * @returns False after uninstall, or when the window has no allowance left.
    */
   private allow(state: InstallState): boolean {

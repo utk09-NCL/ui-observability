@@ -1,29 +1,29 @@
 // src/capture/long-frames.ts
 //
-// Reports long animation frames. A long frame freezes the page with no user input.
-// INP does not show it, for example a grid that re-renders 5,000 rows.
+// Reports long animation frames. A long frame can freeze the page with no user input involved,
+// for example a grid that re-renders 5,000 rows, and INP never shows that.
 
 import { LONG_FRAME_THRESHOLD_MS } from "../constants";
 import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
 import type { Capture, CaptureContext } from "./types";
 
-/** Entry types that the capture observes, in order of preference. */
+/** The entry types this capture can observe, best first. */
 const FRAME_TYPES = ["long-animation-frame", "longtask"];
 
-/** One script of a long animation frame. Some DOM type versions do not declare it. */
+/** One script in a long animation frame. Some versions of the DOM types don't declare it. */
 interface FrameScript {
-  /** Run time of the script, in milliseconds. */
+  /** How long the script ran, in milliseconds. */
   duration: number;
-  /** Caller of the script, for example an event listener or a timer. */
+  /** What called the script, for example an event listener or a timer. */
   invoker?: string;
-  /** URL of the script source. */
+  /** URL of the script's source. */
   sourceURL?: string;
 }
 
-/** Long animation frame or long task. A long task has no blocking time and no scripts. */
+/** A long animation frame or a long task. A long task has no blocking time and no scripts. */
 interface FrameEntry extends PerformanceEntry {
-  /** Time that the frame blocked input, in milliseconds. */
+  /** How long the frame blocked input, in milliseconds. */
   blockingDuration?: number;
   /** Scripts that ran in the frame. */
   scripts?: FrameScript[];
@@ -31,7 +31,7 @@ interface FrameEntry extends PerformanceEntry {
 
 /**
  * Finds the script that ran longest in a frame.
- * @param scripts Scripts of the frame.
+ * @param scripts The frame's scripts.
  * @returns The longest script, or undefined if the frame has none.
  */
 function longestScript(scripts: FrameScript[] | undefined): FrameScript | undefined {
@@ -46,38 +46,38 @@ function longestScript(scripts: FrameScript[] | undefined): FrameScript | undefi
   return longest;
 }
 
-/** Records each long animation frame as a histogram metric and a breadcrumb. */
+/** Records every long animation frame as a histogram metric and a breadcrumb. */
 export class LongFrameCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "long-frames";
 
-  /** Active observer. Undefined when the capture is not installed. */
+  /** Active observer. Undefined while the capture isn't installed. */
   private observer: PerformanceObserver | undefined;
 
-  /** Rate limit of this capture. A frozen tab must not flood the pipeline. */
+  /** This capture's own rate limit, so a frozen tab can't flood the pipeline. */
   private readonly window: StormWindow = { start: 0, count: 0 };
 
   /** Minimum frame duration to record, in milliseconds. */
   private threshold = LONG_FRAME_THRESHOLD_MS;
 
   /**
-   * @param ctx Capture context containing configuration, diagnostics, logger, and breadcrumbs.
+   * @param ctx Capture context: configuration, diagnostics, logger and breadcrumbs.
    */
   constructor(private readonly ctx: CaptureContext) {}
 
-  /** Observes the best entry type that the browser supports. */
+  /** Observes the best entry type the browser supports. */
   install(): void {
     if (this.observer) {
       return;
     }
 
-    // Only the first install in a document reads buffered frames, or reports missing support.
-    // A reinstall after configure() then does not repeat them.
+    // Only the first install in a document reads buffered frames or reports missing support,
+    // so a reinstall after configure() doesn't repeat either.
     const { once } = this.ctx;
     const first = !once.longFrames;
     once.longFrames = true;
 
-    // Older browsers have no supportedEntryTypes. The capture is then off.
+    // Older browsers have no supportedEntryTypes, and the capture stays off there.
     const supported: readonly string[] | undefined =
       typeof PerformanceObserver === "undefined"
         ? undefined
@@ -98,12 +98,19 @@ export class LongFrameCapture implements Capture {
 
     this.threshold = this.readThreshold();
     this.observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        this.record(entry);
-      }
+      // The browser calls this directly, so anything we throw is an uncaught error on the page.
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        "The library could not record a long frame.",
+        () => {
+          for (const entry of list.getEntries()) {
+            this.record(entry);
+          }
+        },
+      );
     });
 
-    // Buffered frames include the first render, which runs before this chunk loads.
+    // Buffered frames include the first render, which happens before this chunk loads.
     this.observer.observe({ type, buffered: first });
   }
 
@@ -114,11 +121,11 @@ export class LongFrameCapture implements Capture {
   }
 
   /**
-   * Reads the threshold from the configuration. It reports a value that is not usable.
+   * Reads the threshold from the configuration and reports a value it can't use.
    * @returns Minimum frame duration to record, in milliseconds.
    */
   private readThreshold(): number {
-    const value: unknown = this.ctx.config.capture.longFrameThresholdMs;
+    const value: unknown = this.ctx.config.capture.longFrameMs;
 
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       return value;
@@ -126,7 +133,7 @@ export class LongFrameCapture implements Capture {
 
     this.ctx.diagnostics.report(
       "config.invalid",
-      `capture.longFrameThresholdMs must be a number of 0 or more. The library uses ${String(LONG_FRAME_THRESHOLD_MS)}.`,
+      `capture.longFrameMs must be a number of 0 or more. The library uses ${String(LONG_FRAME_THRESHOLD_MS)}.`,
     );
     return LONG_FRAME_THRESHOLD_MS;
   }
@@ -163,7 +170,7 @@ export class LongFrameCapture implements Capture {
 
     const script = longestScript(entry.scripts);
 
-    // A signed URL is a credential. Keep the query only if you set fullUrls.
+    // A signed URL is a credential. Only keep the query when fullUrls is on.
     const url = (value: string): string =>
       recordedUrl(
         value,
@@ -173,8 +180,8 @@ export class LongFrameCapture implements Capture {
       );
 
     if (script?.invoker) {
-      // The invoker of a script entry is the script URL. Other invokers, for example
-      // "IMG#hero.onload", contain a "#" that is not a fragment.
+      // A script entry's invoker is the script URL. Other invokers, for example
+      // "IMG#hero.onload", contain a "#" that isn't a fragment.
       const { invoker } = script;
       attrs["frame.script.invoker"] = invoker.includes("://") ? url(invoker) : invoker;
     }

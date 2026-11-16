@@ -1,22 +1,24 @@
 // src/models/drop.ts
 //
-// Types of the onDrop report. The library calls onDrop when it loses records that it built.
-// A record that sampling, minLevel or redact drops is not a loss.
+// Types for the onDrop report. The library calls onDrop when it loses records it has already
+// built. A record dropped by sampling, minLevel or redact is not a loss.
 
 import type { LogRecord } from "./log-record";
 
 /**
- * Cause of a loss.
- * - "buffer_full": a hold buffer before startup or before the sender loads is full.
- * - "expired", "over_capacity", "quota": storage removed stored batches. The reasons are
- *   `retention.maxAgeMs`, `retention.maxBatches` and the storage quota of the browser.
+ * Why records were lost.
+ * - "security_context": the delivery identity changed. The old identity's undelivered records
+ *   are removed unless the rotation keeps them, and so are records forwarded during the change.
+ * - "buffer_full": a hold buffer filled up before startup or before the sender loaded.
+ * - "expired", "over_capacity", "quota": storage removed stored batches because of
+ *   `retention.maxAgeMs`, `retention.maxBatches` or the browser's storage quota.
  * - "max_attempts": a stored batch reached `retention.maxAttempts`.
  * - "rejected": the server refused the batch permanently, or one record is too large for it.
  * - "unserializable": the serializer threw on the batch.
- * - "exit_queue_full": the exit queue in localStorage is full. It drops its oldest batch.
- * - "load_failed": the delivery code did not load, or shutdown() came first. The held records are
- *   lost.
- * - "not_stored": storage did not keep a batch after a failed send. The cause is a write error or
+ * - "exit_queue_full": the exit queue in localStorage is full, so it drops its oldest batch.
+ * - "load_failed": the delivery code failed to load, or shutdown() came first. The held records
+ *   are lost.
+ * - "not_stored": storage did not keep a batch after a failed send, because of a write error or
  *   `storage: "none"`.
  */
 export type LossReason =
@@ -33,15 +35,15 @@ export type LossReason =
   | "not_stored";
 
 /**
- * One report of lost records. The library joins the losses of one reason in one task.
- * Each list holds at most 20 different values.
+ * One report of lost records. Losses with the same reason in the same task are merged into one
+ * report. Each list holds at most 20 distinct values.
  */
 export interface DropSummary {
   /** Cause of the loss. */
   reason: LossReason;
   /** Number of lost records. */
   records: number;
-  /** Ids of the lost batches. A hold buffer loses records, not batches. Its list is empty. */
+  /** Ids of the lost batches. Empty for a hold buffer, which loses records, not batches. */
   batchIds: string[];
   /** Journey ids of the lost records. */
   journeyIds: string[];

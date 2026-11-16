@@ -16,8 +16,8 @@ const CLIENT_ID = "c".repeat(16);
 
 /**
  * Builds a span record.
- * @param attributes Attributes over the span type.
- * @param over Record fields over the base.
+ * @param attributes Attributes added on top of the span type.
+ * @param over Record fields that override the base.
  * @returns The record.
  */
 const span = (attributes: Record<string, unknown>, over: Partial<LogRecord> = {}): LogRecord => ({
@@ -33,7 +33,7 @@ const span = (attributes: Record<string, unknown>, over: Partial<LogRecord> = {}
   ...over,
 });
 
-/** The spans of the first resource and scope of one serialize call. */
+/** Spans from the first resource and scope of one serialize call. */
 const spans = (records: LogRecord[]): Record<string, unknown>[] =>
   (
     JSON.parse(otlpTracesSerializer.serialize(records).body) as {
@@ -55,7 +55,7 @@ const batchOf = (records: LogRecord[]): LogBatch => ({
 });
 
 describe("rootSpan and spanFields", () => {
-  it("name the root span by the cause of the start of the trace", () => {
+  it("name the root span after what started the trace", () => {
     const ended = { traceId: TRACE_ID, spanId: ROOT_ID, startedAt: 1000, endedAt: 2000 };
 
     expect(
@@ -141,7 +141,7 @@ describe("otlpTracesSerializer", () => {
     });
   });
 
-  it("gives each namespace of the span records its own scope", () => {
+  it("gives each span record namespace its own scope", () => {
     const payload = JSON.parse(
       otlpTracesSerializer.serialize([
         span({ "app.namespace": "uiobs.traces" }),

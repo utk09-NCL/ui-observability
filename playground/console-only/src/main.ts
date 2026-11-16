@@ -1,20 +1,20 @@
 // playground/console-only/src/main.ts
 //
-// Console-only consumer with no optional peer installed.
+// A console-only consumer with no optional peer installed.
 // The key list must stay empty.
 
 import { getLogger } from "./logger";
 
-/** Prefix of each storage key the library can write. */
+/** Prefix of every storage key the library can write. */
 const KEY_PREFIX = "ui-observability.";
 
-/** Module-scope logger. This line calls getLogger at module load. */
+/** Module-scope logger, so getLogger runs at module load. */
 const log = getLogger("board.hop");
 
 /**
- * Queries a DOM element by selector.
- * @param selector CSS selector string.
- * @returns Matched DOM element.
+ * Finds an element by selector.
+ * @param selector CSS selector.
+ * @returns The element.
  */
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
@@ -30,7 +30,7 @@ const el = (selector: string): Element => {
  * Lists the keys in a storage area that start with the library prefix.
  * @param area Storage area to read.
  * @param label Name shown in front of each key.
- * @returns One line for each matched key.
+ * @returns One line per matching key.
  */
 const listKeys = (area: Storage, label: string): string[] => {
   const lines: string[] = [];
@@ -46,7 +46,7 @@ const listKeys = (area: Storage, label: string): string[] => {
   return lines;
 };
 
-/** Writes the library keys of localStorage and sessionStorage into the page. */
+/** Shows the library's localStorage and sessionStorage keys on the page. */
 const renderKeys = (): void => {
   const lines = [
     ...listKeys(localStorage, "localStorage"),
@@ -57,8 +57,8 @@ const renderKeys = (): void => {
 };
 
 /**
- * Binds a click listener to a button. The listener refreshes the key list after the callback.
- * @param id Element ID without prefix.
+ * Adds a click listener to a button and refreshes the key list after the callback runs.
+ * @param id Element id, without the "#".
  * @param fn Click callback.
  */
 const on = (id: string, fn: () => void): void => {

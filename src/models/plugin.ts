@@ -1,54 +1,54 @@
 // src/models/plugin.ts
 //
-// Public types of a capture plugin. A plugin gets a small context. No internal type of the
-// library becomes public.
+// Public types for a capture plugin. A plugin gets a small context, so none of the library's
+// internal types become public.
 
 import type { OneLogger } from "../core/logger";
 import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./metric";
 
-/** Tools that the library gives to a capture plugin. */
+/** Tools the library hands to a capture plugin. */
 export interface PluginContext {
-  /** Logger for the namespace `uiobs.capture.<plugin name>`. */
+  /** Logger for the `uiobs.capture.<plugin name>` namespace. */
   logger: OneLogger;
   /**
-   * Gives a counter. It is the same as `counter()`.
+   * Returns a counter. Same as `counter()`.
    * @param name Metric name.
    * @param options Unit of the values.
    * @returns The counter.
    */
   counter(name: string, options?: InstrumentOptions): Counter;
   /**
-   * Gives a histogram. It is the same as `histogram()`.
+   * Returns a histogram. Same as `histogram()`.
    * @param name Metric name.
    * @param options Unit of the values and the bucket boundaries.
    * @returns The histogram.
    */
   histogram(name: string, options?: HistogramOptions): Histogram;
   /**
-   * Adds a breadcrumb with the category `custom`. It is the same as `addBreadcrumb()`.
+   * Adds a breadcrumb with the category `custom`. Same as `addBreadcrumb()`.
    * @param message Description of the event.
    * @param data Optional metadata.
    */
   addBreadcrumb(message: string, data?: Record<string, unknown>): void;
   /**
-   * Runs a function. The network capture does not record a request that the function starts
-   * synchronously, and does not add `traceparent` to it. Use it for the requests of the plugin.
+   * Runs a function. The network capture doesn't record any request the function starts
+   * synchronously, and doesn't add `traceparent` to it. Use it for the plugin's own requests.
    * @param fn Function that starts the request.
-   * @returns The return value of the function.
+   * @returns The function's return value.
    */
   ownRequest<T>(fn: () => T): T;
 }
 
-/** Capture module from the app. The library installs it with the built-in capture modules. */
+/** Capture module supplied by the app. The library installs it alongside the built-in ones. */
 export interface CapturePlugin {
-  /** Name of the plugin. Its logger namespace and its diagnostic messages use it. */
+  /** Plugin name, used in its logger namespace and its diagnostic messages. */
   readonly name: string;
   /**
    * Starts the capture. A later `configure()` that changes the capture section calls
-   * `uninstall()`, then calls `install()` again.
-   * @param ctx Tools of the plugin.
+   * `uninstall()` and then `install()` again.
+   * @param ctx The plugin's tools.
    */
   install(ctx: PluginContext): void;
-  /** Stops the capture. Restore each function that the plugin replaced. */
+  /** Stops the capture. Restore every function the plugin replaced. */
   uninstall(): void;
 }

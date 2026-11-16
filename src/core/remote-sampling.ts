@@ -1,8 +1,8 @@
 // src/core/remote-sampling.ts
 //
-// Holds the sampling rules from the ingest server for their TTL. The rules are an overlay.
-// The library does not write them into the config. A later configure() and the TTL then stay simple.
-// Only the lazy chunks import this class. The main bundle imports the types.
+// Holds the sampling rules from the ingest server for their TTL. The rules are an overlay
+// and are never written into the config, which keeps a later configure() and the TTL simple.
+// Only the lazy chunks import this class. The main bundle imports just the types.
 
 import { LEVEL_ORDER, REMOTE_SAMPLING_VERSION } from "../constants";
 import type { RemoteCaptureFlag, ResolvedConfig } from "../models/config";
@@ -11,15 +11,15 @@ import { levelFor, longestPrefix } from "./sampling";
 
 /** Sampling rules from the ingest server, after validation. */
 export interface RemoteRules {
-  /** Rate when no namespace rate matches. Without it, the config rate applies. */
+  /** Rate used when no namespace rate matches. Without it, the config rate applies. */
   defaultRate?: number;
-  /** Rate for each namespace prefix. They apply over the config rates. */
+  /** Rate per namespace prefix. These apply on top of the config rates. */
   rates: Record<string, number>;
-  /** Temporary capture switches. Each context applies its own allowlist. */
+  /** Temporary capture switches. Every context applies its own allowlist. */
   capture?: Partial<Record<RemoteCaptureFlag, boolean>>;
-  /** Lowest level that the library sends. It can only lower `minLevel`. */
+  /** Lowest level the library sends. Can only lower `minLevel`. */
   minLevel?: LogLevel;
-  /** Lowest level for each namespace prefix. It can only lower the level of the config. */
+  /** Lowest level per namespace prefix. Can only lower the config's level. */
   minLevels?: Record<string, LogLevel>;
 }
 
@@ -27,19 +27,19 @@ export interface RemoteRules {
 export interface RemoteUpdate {
   /** Validated rules. */
   rules: RemoteRules;
-  /** Time that the rules stay in force, in milliseconds. */
+  /** How long the rules stay in effect, in milliseconds. */
   ttlMs: number;
 }
 
-/** Rules in the shape of the header. A context sends them to a forwarder over the bus. */
+/** Rules in the header's shape. A context sends them to a forwarder over the bus. */
 export interface RemoteWire extends RemoteRules {
   /** Rules version. */
   v: typeof REMOTE_SAMPLING_VERSION;
-  /** Time that the rules stay in force, in milliseconds. */
+  /** How long the rules stay in effect, in milliseconds. */
   ttlMs: number;
 }
 
-/** Slot of the runtime for the overlay. The sender or the bus fills it when the first rules arrive. */
+/** The runtime's overlay slot. The sender or the bus fills it when the first rules arrive. */
 export interface RemoteSlot {
   /** Overlay, or null before the first rules. */
   sampling: RemoteSampling | null;
@@ -47,15 +47,15 @@ export interface RemoteSlot {
   changed?: () => void;
 }
 
-/** Remote sampling rules in force for this context. */
+/** The remote sampling rules in effect for this context. */
 export class RemoteSampling {
-  /** Rules in force, or null. */
+  /** Current rules, or null. */
   private rules: RemoteRules | null = null;
 
-  /** Time that the rules arrived, in epoch milliseconds. */
+  /** When the rules arrived, in epoch milliseconds. */
   private receivedAt = 0;
 
-  /** Time that the rules end, in epoch milliseconds. */
+  /** When the rules end, in epoch milliseconds. */
   private until = 0;
 
   /**
@@ -64,7 +64,7 @@ export class RemoteSampling {
   constructor(private readonly config: ResolvedConfig) {}
 
   /**
-   * Puts new rules in force. They replace the rules in force.
+   * Puts new rules into effect, replacing the current ones.
    * @param update Validated rules and their TTL, or null when the upstream has no rules.
    */
   apply(update: RemoteUpdate | null): void {
@@ -81,7 +81,7 @@ export class RemoteSampling {
   }
 
   /**
-   * Returns the rules in force.
+   * Returns the current rules.
    * @returns The rules, or null after the TTL or when `sampling.remote` is off.
    */
   current(): RemoteRules | null {
@@ -91,8 +91,8 @@ export class RemoteSampling {
 
     const now = Date.now();
 
-    // Drop the rules when remote sampling is off. Turning it on again must not bring them back.
-    // Guard against a clock that moves back. The rules then stay longer than their TTL.
+    // Drop the rules when remote sampling is off, so turning it on again can't bring them back.
+    // Also guard against a clock that moves back, which would keep the rules past their TTL.
     if (!this.config.sampling.remote || now < this.receivedAt || now >= this.until) {
       this.rules = null;
       return null;
@@ -102,10 +102,11 @@ export class RemoteSampling {
   }
 
   /**
-   * Returns the lowest level that the library sends for a namespace. A remote prefix level wins
-   * over the remote `minLevel`. A remote level applies only when it is lower than the config level.
+   * Returns the lowest level the library sends for a namespace. A remote prefix level wins
+   * over the remote `minLevel`, and a remote level applies only when it is lower than the
+   * config level.
    * @param namespace Target application namespace.
-   * @returns The lower of the remote level and the config level of the namespace.
+   * @returns The lower of the remote level and the namespace's config level.
    */
   minLevelFor(namespace: string): LogLevel {
     const local = levelFor(namespace, this.config);
@@ -116,8 +117,8 @@ export class RemoteSampling {
   }
 
   /**
-   * Returns the rules in force in the shape of the header, with the remaining TTL.
-   * @returns The rules, or null if no rules are in force.
+   * Returns the current rules in the header's shape, with the remaining TTL.
+   * @returns The rules, or null if none are in effect.
    */
   wire(): RemoteWire | null {
     const rules = this.current();

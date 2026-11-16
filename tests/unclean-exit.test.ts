@@ -112,7 +112,7 @@ describe("UncleanExitCapture", () => {
     capture.uninstall();
   });
 
-  it("reads the previous marker one time for each document", () => {
+  it("reads the previous marker once per document", () => {
     const { capture, warn } = setup();
     capture.install();
     capture.uninstall();
@@ -230,7 +230,7 @@ describe("UncleanExitCapture", () => {
     const refuse = (): never => {
       throw new Error("SecurityError");
     };
-    // clear() serves the afterEach hook. Vitest restores the global before the next test only.
+    // clear() is for the afterEach hook. Vitest only restores the global before the next test.
     vi.stubGlobal("sessionStorage", {
       getItem: () => null,
       setItem: refuse,
@@ -263,7 +263,7 @@ describe("capture.uncleanExit in the runtime", () => {
       capture: { errors: false, rejections: false, uncleanExit: true },
     });
 
-    // The capture loads later. It replaces the old marker with the marker of this page.
+    // The capture loads later and replaces the old marker with this page's marker.
     await vi.waitFor(() => {
       expect(marker()).not.toMatchObject({ sessionId: "session-old" });
     });

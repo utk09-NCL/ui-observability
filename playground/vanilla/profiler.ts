@@ -1,135 +1,134 @@
 // playground/vanilla/profiler.ts
 //
-// Overhead benchmark of the profiler. Three modes time one begin() and end() pair. The baseline
-// mode times a plain loop with a counter and has no pair. No capture runs on this page. The sender,
-// the profiler timer and the calibration can still run between two runs. A timed loop is
-// synchronous. None of them interrupts it. Each number belongs to this browser and machine.
+// Overhead benchmark for the profiler. Three modes time a begin()/end() pair, and a baseline
+// mode times a plain counting loop with no pair. No capture runs on this page. The sender, the
+// profiler timer and the calibration can still run between runs, but a timed loop is synchronous
+// so none of them can interrupt it. The numbers only mean something for this browser and machine.
 
 import { configure, createMemoryTransport, flush, profiler } from "../../src/index";
 
-/** Default number of measured runs of each mode. */
+/** Measured runs per mode, by default. */
 const DEFAULT_RUNS = 101;
 
-/** Default number of pairs in one run. */
+/** Pairs per run, by default. */
 const DEFAULT_PAIRS = 500_000;
 
-/** Largest number of runs that the page accepts. */
+/** Most runs the page accepts. */
 const MAX_RUNS = 10_000;
 
-/** Largest number of pairs in one run that the page accepts. */
+/** Most pairs per run the page accepts. */
 const MAX_PAIRS = 50_000_000;
 
-/** A mode with fewer clock ticks in its p50 run gets the mark low resolution. */
+/** A mode whose p50 run spans fewer clock ticks than this is flagged as low resolution. */
 const LOW_RESOLUTION_TICKS = 100;
 
-/** Number of characters of a refused text that the page shows. */
+/** How much of a rejected input the page echoes back. */
 const SHOWN_TEXT_LENGTH = 20;
 
-/** Hosts that can receive the report, besides the host of the page. */
+/** Hosts the report may be sent to, besides the page's own. */
 const REPORT_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
-/** Runs of each mode that the result ignores. */
+/** Runs per mode that are thrown away as warmup. */
 const WARMUP_RUNS = 3;
 
-/** Interval of the profiler timer in milliseconds. The library permits no smaller value. */
+/** Profiler timer interval in ms. The library doesn't allow anything shorter. */
 const FLUSH_INTERVAL_MS = 1000;
 
-/** Extra wait after one interval, so that the timer collect has finished. */
+/** Extra wait after an interval, so the timer's collect has definitely finished. */
 const TIMER_MARGIN_MS = 250;
 
-/** Spans that give the profiler data for the last timer collect. */
+/** Spans that give the profiler something to send on the last timer collect. */
 const OVERHEAD_SPANS = 1000;
 
-/** The sampleEvery value of the sampled mode. */
+/** sampleEvery for the sampled mode. */
 const SAMPLED_EVERY = 64;
 
-/** Clock edges that the tick search waits for. */
+/** How many clock edges the tick search waits for. */
 const TICK_EDGES = 50;
 
-/** Longest time of the tick search, in milliseconds. */
+/** Time limit for the tick search, in ms. */
 const TICK_BUDGET_MS = 200;
 
-/** Longest wait for the report request, in milliseconds. */
+/** Time limit for the report request, in ms. */
 const REPORT_TIMEOUT_MS = 5000;
 
-/** Nanoseconds in one millisecond. */
 const NS_PER_MS = 1e6;
 
-/** Name of the profiler summary record. */
+/** Name of the profiler's summary record. */
 const PROFILE_RECORD = "ui.profile.duration";
 
-/** Attribute that holds the calibrated cost of one pair. */
+/** Attribute with the calibrated cost of one pair. */
 const OVERHEAD_KEY = "profile.overhead_ns";
 
-/** The four modes, in measurement order. */
+/** The four modes, in the order they are measured. */
 type Mode = "baseline" | "off" | "on" | "sampled";
 
-/** Percentiles and maximum of a list of runs. */
+/** Percentiles and max over a list of runs. */
 interface Spread {
   p50: number;
   p99: number;
   max: number;
 }
 
-/** Result of one mode. */
+/** Result for one mode. */
 interface ModeResult {
   mode: Mode;
   runs: number;
   /** Nanoseconds per pair. */
   nsPerPair: Spread;
-  /** The p50 run time divided by the clock tick, or null when the page saw no tick. */
+  /** p50 run time divided by the clock tick, or null if the page never saw a tick. */
   ticksPerRun: number | null;
 }
 
-/** Result of the whole benchmark. It is the JSON of the page. */
+/** The whole benchmark result. This is the JSON the page prints. */
 interface BenchResult {
   userAgent: string;
   crossOriginIsolated: boolean;
-  /** Smallest non-zero step of performance.now(), in milliseconds. */
+  /** Smallest non-zero step of performance.now(), in ms. */
   clockTickMs: number | null;
-  /** The smallest difference in nanoseconds per pair that one run can show. */
+  /** Smallest difference in ns per pair that a single run can resolve. */
   nsStep: number | null;
   runs: number;
   pairs: number;
   warmupRuns: number;
-  /** Value of profile.overhead_ns from the library, or null when no record has it. */
+  /** profile.overhead_ns as reported by the library, or null if no record has it. */
   libraryOverheadNs: number | null;
   baselineChecksum: number;
-  /** Codes of the diagnostic events that the library reported during the run. */
+  /** Codes of the diagnostics the library reported during the run. */
   diagnostics: string[];
   modes: ModeResult[];
 }
 
-/** One mode, with the state of the profiler and the loop that it times. */
+/** One mode: the profiler state it needs and the loop it times. */
 interface BenchCase {
   mode: Mode;
   profilerOn: boolean;
   loop: (pairs: number) => void;
 }
 
-/** Name, default and upper limit of a count that the page reads. The lower limit is 1. */
+/** Name, default and upper limit for a count the page reads. The lower limit is always 1. */
 interface CountRule {
   name: string;
   fallback: number;
   max: number;
 }
 
-/** A count in force and the note about a text that the page refused. */
+/** The count in effect, plus a note if the page rejected what was typed. */
 interface Count {
   value: number;
   note: string | null;
 }
 
-/** Target of the report and the note about a value that the page ignored. */
+/** Where the report goes, plus a note if the page ignored the value. */
 interface ReportTarget {
   url: string | null;
   note: string | null;
 }
 
 /**
- * Queries a DOM element by selector, throwing if missing.
- * @param selector CSS selector string.
- * @returns Matched DOM element.
+ * Finds an element by selector and throws if it isn't there.
+ * @param selector CSS selector.
+ * @returns The element.
  */
 const el = (selector: string): Element => {
   const found = document.querySelector(selector);
@@ -140,16 +139,16 @@ const el = (selector: string): Element => {
 };
 
 /**
- * Normalizes caught errors into string messages.
- * @param err Unknown caught error.
- * @returns Formatted message string.
+ * Turns a caught error into a message.
+ * @param err Whatever was caught.
+ * @returns The message.
  */
 const toMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * Waits for a time.
- * @param ms Time in milliseconds. Zero gives the event loop one turn.
- * @returns A promise that resolves after the time.
+ * Waits.
+ * @param ms Time in ms. Zero just yields to the event loop for one turn.
+ * @returns A promise that resolves after the wait.
  */
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -171,11 +170,11 @@ const RUNS_RULE: CountRule = { name: "runs", fallback: DEFAULT_RUNS, max: MAX_RU
 const PAIRS_RULE: CountRule = { name: "pairs", fallback: DEFAULT_PAIRS, max: MAX_PAIRS };
 
 /**
- * Reads a count. The text must give a safe integer from 1 to the limit of the rule. Text such as
- * 500_000 gives NaN. A prefix parse would read it as 500. The page refuses it.
- * @param text Text of an input or of a URL parameter. Null means that the parameter is absent.
- * @param rule The rule of the count.
- * @returns The value in force and a note when the page refused the text.
+ * Reads a count. The text has to be a safe integer between 1 and the rule's limit. Something
+ * like 500_000 parses to NaN and is rejected. A prefix parse would have quietly read it as 500.
+ * @param text Text from an input or a URL parameter. Null means the parameter isn't there.
+ * @param rule The rule for this count.
+ * @returns The value in effect, plus a note if the text was rejected.
  */
 function readCount(text: string | null, rule: CountRule): Count {
   if (text === null) {
@@ -197,10 +196,10 @@ function readCount(text: string | null, rule: CountRule): Count {
 }
 
 /**
- * Checks the report parameter. A report can leave the page only for the host of the page or for
- * a local host. Another target would receive the user agent text of the visitor.
- * @param text Text of the report parameter. Null means that the parameter is absent.
- * @returns The target, or null and a note when the page ignored the value.
+ * Checks the report parameter. The report may only go to the page's own host or to a local
+ * one, because any other target would receive the visitor's user agent string.
+ * @param text Text of the report parameter. Null means the parameter isn't there.
+ * @returns The target, or null and a note if the value was ignored.
  */
 function readReportUrl(text: string | null): ReportTarget {
   if (text === null) {
@@ -241,13 +240,13 @@ const urlRuns = readCount(params.get("runs"), RUNS_RULE);
 const urlPairs = readCount(params.get("pairs"), PAIRS_RULE);
 const reportTarget = readReportUrl(params.get("report"));
 
-/** Notes about the URL parameters that the page refused. The page shows them at each start. */
+/** Notes about rejected URL parameters. The page shows them on every start. */
 const urlNotes = [urlRuns.note, urlPairs.note, reportTarget.note];
 
-/** The memory transport keeps each record in the page. The loop uses no network. */
+/** The memory transport keeps every record in the page, so the loop never touches the network. */
 const memory = createMemoryTransport();
 
-/** Codes of the diagnostic events of the library. */
+/** Diagnostic codes the library reported. */
 const diagnostics = new Set<string>();
 
 configure({
@@ -278,7 +277,7 @@ configure({
   },
   profiler: { enabled: true, flushIntervalMs: FLUSH_INTERVAL_MS },
   onDiagnostic: (event) => {
-    // Each later configure() call reports config.reconfigured. It is not a fault.
+    // Every later configure() call reports config.reconfigured. That one isn't a fault.
     if (event.code !== "config.reconfigured") {
       diagnostics.add(event.code);
     }
@@ -289,12 +288,12 @@ const offProbe = profiler.probe("bench.off");
 const onProbe = profiler.probe("bench.on", { sampleEvery: 1 });
 const sampledProbe = profiler.probe("bench.sampled", { sampleEvery: SAMPLED_EVERY });
 
-/** Sum of the baseline loop. The page prints it. Without this use, the JIT can remove the loop. */
+/** Sum from the baseline loop. The page prints it, otherwise the JIT could drop the loop. */
 let checksum = 0;
 
 /**
- * Runs the loop of the baseline mode. It has no probe.
- * @param pairs Number of loop turns.
+ * The baseline loop. No probe.
+ * @param pairs Number of iterations.
  */
 function baselineLoop(pairs: number): void {
   let sum = 0;
@@ -304,8 +303,8 @@ function baselineLoop(pairs: number): void {
   checksum = (checksum + sum) | 0;
 }
 
-// Each mode has its own loop. A shared loop has one call site for three probes. The JIT can then
-// optimise the first mode more than the later modes.
+// Each mode gets its own loop. A shared loop would have one call site for three probes, and the
+// JIT could then optimise the first mode harder than the ones after it.
 
 /**
  * Runs pairs on a probe while the profiler is off.
@@ -319,7 +318,7 @@ function offLoop(pairs: number): void {
 }
 
 /**
- * Runs pairs on a probe that measures each span.
+ * Runs pairs on a probe that measures every span.
  * @param pairs Number of pairs.
  */
 function onLoop(pairs: number): void {
@@ -330,7 +329,7 @@ function onLoop(pairs: number): void {
 }
 
 /**
- * Runs pairs on a probe that measures one span of each 64 spans.
+ * Runs pairs on a probe that measures one span in 64.
  * @param pairs Number of pairs.
  */
 function sampledLoop(pairs: number): void {
@@ -340,7 +339,7 @@ function sampledLoop(pairs: number): void {
   }
 }
 
-/** The modes, in measurement order. The baseline is first, because the other modes need its p50. */
+/** The modes in the order they are measured. Baseline goes first: the others need its p50. */
 const CASES: readonly BenchCase[] = [
   { mode: "baseline", profilerOn: true, loop: baselineLoop },
   { mode: "off", profilerOn: false, loop: offLoop },
@@ -349,9 +348,9 @@ const CASES: readonly BenchCase[] = [
 ];
 
 /**
- * Gives the value at a percentile with the nearest-rank rule.
+ * Nearest-rank percentile.
  * @param sorted Values in ascending order.
- * @param p Percentile from 1 to 100.
+ * @param p Percentile, 1 to 100.
  * @returns The value at that rank.
  */
 function percentile(sorted: readonly number[], p: number): number {
@@ -360,8 +359,8 @@ function percentile(sorted: readonly number[], p: number): number {
 }
 
 /**
- * Gives the p50, the p99 and the maximum of a list.
- * @param values Values of the runs of one mode.
+ * Returns the p50, p99 and max of a list.
+ * @param values One mode's runs.
  * @returns The three values.
  */
 function summarize(values: readonly number[]): Spread {
@@ -374,9 +373,9 @@ function summarize(values: readonly number[]): Spread {
 }
 
 /**
- * Rounds each value of a spread.
+ * Rounds every value in a spread.
  * @param spread The spread.
- * @returns The new spread, rounded to three decimals.
+ * @returns A new spread, rounded to three decimals.
  */
 function roundSpread(spread: Spread): Spread {
   return {
@@ -388,7 +387,7 @@ function roundSpread(spread: Spread): Spread {
 
 /**
  * Times one run.
- * @param loop The loop of a mode.
+ * @param loop A mode's loop.
  * @param pairs Number of pairs in the run.
  * @returns Nanoseconds per pair.
  */
@@ -400,12 +399,12 @@ function timeRun(loop: (pairs: number) => void, pairs: number): number {
 }
 
 /**
- * Warms up and then measures one mode. It yields to the event loop after each run.
+ * Warms up one mode, then measures it. Yields to the event loop after every run.
  * @param item The mode.
  * @param runs Number of measured runs.
- * @param pairs Number of pairs in each run.
- * @param progress Shows a progress text.
- * @returns Nanoseconds per pair of each measured run.
+ * @param pairs Number of pairs per run.
+ * @param progress Shows progress text.
+ * @returns Nanoseconds per pair, one value per measured run.
  */
 async function measureCase(
   item: BenchCase,
@@ -431,8 +430,8 @@ async function measureCase(
 }
 
 /**
- * Finds the smallest non-zero step of the clock.
- * @returns The step in milliseconds, or null if the clock showed no step in the time budget.
+ * Finds the clock's smallest non-zero step.
+ * @returns The step in ms, or null if the clock never stepped within the time limit.
  */
 function observeTick(): number | null {
   const stop = performance.now() + TICK_BUDGET_MS;
@@ -456,9 +455,9 @@ function observeTick(): number | null {
 }
 
 /**
- * Reads the overhead that the library calibrated. Only a timer collect gives it, so the page
- * waits for one timer flush.
- * @returns Value of profile.overhead_ns, or null if no record has it.
+ * Reads the overhead the library calibrated. Only a timer collect produces it, so this waits
+ * for one timer flush.
+ * @returns The profile.overhead_ns value, or null if no record has it.
  */
 async function readOverhead(): Promise<number | null> {
   memory.clear();
@@ -477,10 +476,10 @@ async function readOverhead(): Promise<number | null> {
 }
 
 /**
- * Runs the four modes and reads the library overhead.
- * @param runs Number of measured runs of each mode.
- * @param pairs Number of pairs in each run.
- * @param progress Shows a progress text.
+ * Runs the four modes and reads the library's overhead.
+ * @param runs Number of measured runs per mode.
+ * @param pairs Number of pairs per run.
+ * @param progress Shows progress text.
  * @returns The result.
  */
 async function runBenchmark(
@@ -521,10 +520,10 @@ async function runBenchmark(
 }
 
 /**
- * Appends one row to a table section.
- * @param parent Head or body of a table.
+ * Appends a row to a table section.
+ * @param parent The table's head or body.
  * @param tag Cell tag.
- * @param cells Text of each cell.
+ * @param cells Text for each cell.
  */
 function addRow(parent: HTMLElement, tag: "th" | "td", cells: readonly string[]): void {
   const row = parent.appendChild(document.createElement("tr"));
@@ -534,10 +533,10 @@ function addRow(parent: HTMLElement, tag: "th" | "td", cells: readonly string[])
 }
 
 /**
- * Replaces the content of a table.
+ * Replaces a table's content.
  * @param table The table.
- * @param head Text of each head cell.
- * @param rows Text of each body cell.
+ * @param head Text for each header cell.
+ * @param rows Text for each body cell.
  */
 function fillTable(
   table: HTMLTableElement,
@@ -553,7 +552,7 @@ function fillTable(
 }
 
 /**
- * Shows the result as two tables and as JSON.
+ * Renders the result as two tables and as JSON.
  * @param result The result.
  * @returns The JSON text.
  */
@@ -597,18 +596,18 @@ function showResult(result: BenchResult): string {
 }
 
 /**
- * Shows a text in the status line.
- * @param text The text.
+ * Sets the status line.
+ * @param text The text to show.
  */
 function setStatus(text: string): void {
   statusLine.textContent = text;
 }
 
 /**
- * Sends the JSON as a plain text POST request. It has no custom header, so it needs no preflight.
- * @param url Target of the report.
+ * POSTs the JSON as plain text. No custom headers, so there is no preflight.
+ * @param url Where the report goes.
  * @param json The JSON text.
- * @returns A text for the status line.
+ * @returns Text for the status line.
  */
 async function sendReport(url: string, json: string): Promise<string> {
   try {
@@ -619,17 +618,17 @@ async function sendReport(url: string, json: string): Promise<string> {
     });
     return "The report request completed.";
   } catch (error) {
-    // A server on another port without a CORS header also gives this error. The server still
-    // receives the body.
+    // A server on another port without CORS headers also ends up here, even though it did
+    // receive the body.
     return `The report request failed. ${toMessage(error)}`;
   }
 }
 
 /**
- * Shows the values in force and each note about a refused value.
- * @param runs Number of runs in force.
- * @param pairs Number of pairs in force.
- * @param inputNotes Notes about the text of the inputs.
+ * Shows the values in effect, along with a note for each value that was rejected.
+ * @param runs Number of runs in effect.
+ * @param pairs Number of pairs in effect.
+ * @param inputNotes Notes about what was typed into the inputs.
  */
 function showSettings(runs: number, pairs: number, inputNotes: readonly (string | null)[]): void {
   const notes = [...urlNotes, ...inputNotes].filter((note): note is string => note !== null);
@@ -639,7 +638,7 @@ function showSettings(runs: number, pairs: number, inputNotes: readonly (string 
   ].join(" ");
 }
 
-/** Tracks a running benchmark. A second start while it runs does nothing. */
+/** True while a benchmark is running. Starting again in the meantime does nothing. */
 let running = false;
 
 /** Runs the benchmark, shows the result and sends the report. */

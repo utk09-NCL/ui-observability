@@ -4,10 +4,10 @@ import { vi } from "vitest";
 export type StorageMethod = "getItem" | "setItem" | "removeItem" | "key";
 
 /**
- * A localStorage on a Map. A switch makes one method throw.
+ * A localStorage backed by a Map, with a switch that makes one method throw.
  *
- * The test replaces the whole global. It does not spy on it. The Storage of happy-dom is a Proxy. A
- * spy on `Storage.prototype` never runs. The real method answers. The test then shows no failure.
+ * The test replaces the whole global instead of spying on it. happy-dom's Storage is a Proxy, so a
+ * spy on `Storage.prototype` never runs. The real method answers and the test shows no failure.
  *
  * @returns The set of blocked methods. Add one to make it throw SecurityError.
  */
@@ -41,7 +41,7 @@ export const useFakeLocalStorage = (): Set<StorageMethod> => {
       check("removeItem");
       store.delete(key);
     },
-    // This method is necessary. The shared afterEach calls clear() on this stub.
+    // Needed because the shared afterEach calls clear() on this stub.
     clear(): void {
       store.clear();
     },

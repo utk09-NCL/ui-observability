@@ -12,7 +12,7 @@ import type { TransportRequest } from "../src/models/config";
 
 /**
  * Builds a transport request with one record.
- * @param body Body of the record.
+ * @param body The record's body.
  * @returns The request.
  */
 const request = (body: string): TransportRequest => ({
@@ -84,7 +84,7 @@ describe("createMemoryTransport", () => {
 
 describe("createMemoryTransport through the public API", () => {
   it("receives a record that a test logs and flushes, with no endpoint and no fetch", async () => {
-    // This is the pattern from the README. It uses the public API only.
+    // The pattern from the README, using only the public API.
     vi.stubGlobal("fetch", vi.fn());
     const memory = createMemoryTransport();
     configure({

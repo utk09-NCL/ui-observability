@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // bin/uiobs.mjs
 //
-// Runs the command line tool of the package. The code is in dist/doctor.js.
+// Runs the package's command line tool. The code lives in dist/doctor.js.
 
 import { main } from "../dist/doctor.js";
 

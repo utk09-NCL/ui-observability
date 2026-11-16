@@ -35,8 +35,8 @@ describe("truncate", () => {
   });
 
   it("never cuts a surrogate pair in half", () => {
-    // In "ab😀cd", the emoji uses code units 2 and 3. A cut at 3 leaves a lone high surrogate. A
-    // lone surrogate is not a character.
+    // In "ab😀cd", the emoji takes code units 2 and 3. Cutting at 3 leaves a lone high surrogate,
+    // which is not a character.
     const cut = truncate("ab😀cd", 3);
 
     expect(cut).toBe("ab… [truncated 4 chars]");
@@ -228,7 +228,7 @@ describe("sanitize errors", () => {
   });
 
   it("keeps the own fields of an Error as data", () => {
-    // An assigned name is an own field. It stays out of data.
+    // An assigned name is an own field, and it stays out of data.
     const err = Object.assign(new Error("failed"), {
       name: "GatewayError",
       code: "E42",
@@ -315,9 +315,9 @@ describe("sanitize DOM nodes", () => {
   });
 
   it("falls back to NODE when a node-like object has no nodeName", () => {
-    // A node from another realm, or behind a proxy, can pass instanceof without the properties of a
-    // DOM node. A plain object is sufficient. `instanceof` reads Symbol.hasInstance from the right
-    // operand. This test needs no class for Node.
+    // A node from another realm, or behind a proxy, can pass instanceof without having a DOM
+    // node's properties. A plain object is enough, because `instanceof` reads Symbol.hasInstance
+    // from the right operand, so this test needs no class for Node.
     const foreignNode = { [Symbol.hasInstance]: () => true };
     vi.stubGlobal("Node", foreignNode);
 
@@ -367,7 +367,7 @@ describe("sanitize node budget", () => {
   };
 
   it("stops walking once the total node budget is spent", () => {
-    // The limits for each level cannot limit this. 4 keys at 4 levels give 340 nodes. The real
+    // The per-level limits can't bound this. 4 keys at 4 levels give 340 nodes, and the real
     // limits are 128 keys at 6 levels.
     const budget: SanitizeLimits = {
       ...limits,
@@ -407,8 +407,8 @@ describe("sanitize node budget", () => {
 
     const { bytes } = sanitizeWithSize(wide(4, 12), budget, quiet);
 
-    // 12 keys at 4 levels give 22k nodes. The shipped limits accept 128 keys at 6 levels. With the
-    // bound, the walk and the byte estimate stay small.
+    // 12 keys at 4 levels give 22k nodes, and the shipped limits accept 128 keys at 6 levels. With
+    // the bound, the walk and the byte estimate stay small.
     expect(bytes).toBeLessThan(2000);
   });
 });

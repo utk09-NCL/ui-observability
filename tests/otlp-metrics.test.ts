@@ -103,7 +103,7 @@ describe("otlpMetricsSerializer", () => {
   });
 
   it("marks a sum with a negative value as not monotonic", () => {
-    // A logMetric counter has no check of its sign.
+    // Nothing checks the sign of a logMetric counter.
     const [metric] = metrics([counterPoint(-1)]);
 
     expect(metric.sum.isMonotonic).toBe(false);
@@ -232,7 +232,7 @@ describe("otlpMetricsSerializer", () => {
     expect(keys).toEqual(["a", "b", "c"]);
   });
 
-  it("gives a point no attributes when the record names no keys", () => {
+  it("writes a point without attributes when the record names no keys", () => {
     const point = record({ "metric.type": "gauge", "metric.value": 1, venue: "LSE" });
 
     expect(metrics([point])[0].gauge.dataPoints[0].attributes).toEqual([]);
@@ -272,7 +272,7 @@ describe("batchKind", () => {
 });
 
 describe("serializeBatch", () => {
-  it("gives a metrics batch the OTLP metrics format and a logs batch the log format", () => {
+  it("writes a metrics batch in the OTLP metrics format and a logs batch in the log format", () => {
     const resolved = config({ metricsEndpoint: "https://x/v1/metrics" });
     const diagnostics = new Diagnostics(vi.fn(), 0);
 

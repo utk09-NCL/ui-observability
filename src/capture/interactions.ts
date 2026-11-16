@@ -1,6 +1,6 @@
 // src/capture/interactions.ts
 //
-// Captures clicks and in-page navigations as breadcrumbs and trace boundaries. It also finds
+// Captures clicks and in-page navigations as breadcrumbs and trace boundaries. Also detects
 // rage clicks and dead clicks.
 
 import {
@@ -18,14 +18,14 @@ import { patch } from "../utils/patch";
 import { recordedUrl } from "../utils/platform";
 import type { Capture, CaptureContext } from "./types";
 
-/** Links that open elsewhere. The page gives no visible response, and the click is not dead. */
+/** Links that open elsewhere. The page shows no response, but the click isn't dead. */
 const LEAVING_LINKS = 'a[target="_blank"], a[download]';
 
 /**
- * Generates a short CSS selector for an element. The order of preference is test ID, ID,
- * aria-label, then class names.
+ * Builds a short CSS selector for an element. Prefers the test ID, then the ID, then the
+ * aria-label, then the class names.
  * @param element Target DOM element.
- * @returns Generated CSS selector string.
+ * @returns The selector.
  */
 function describeElement(element: Element): string {
   const tag = element.tagName.toLowerCase();
@@ -44,7 +44,7 @@ function describeElement(element: Element): string {
   }
 
   // Read the class through getAttribute. On an SVG element, `className` is an
-  // SVGAnimatedString, and a slice of it throws.
+  // SVGAnimatedString, and slicing it throws.
   const classAttribute = element.getAttribute("class")?.trim() ?? "";
   if (classAttribute === "") {
     return tag;
@@ -55,10 +55,10 @@ function describeElement(element: Element): string {
 }
 
 /**
- * The two History members that this module replaces. The type declares them as
- * properties, not methods, to keep the original functions unbound. With a bound
- * copy, uninstall restores a different function than the one it replaced.
- * Each install cycle also adds one more bind over the previous bind.
+ * The two History members this module replaces. They are declared as properties, not
+ * methods, so the original functions stay unbound. With a bound copy, uninstall would
+ * restore a different function from the one it replaced, and every install cycle would
+ * stack one more bind on top of the last.
  */
 interface HistoryMethods {
   pushState: (this: History, ...args: never[]) => void;
@@ -66,14 +66,14 @@ interface HistoryMethods {
 }
 
 /**
- * Returns the History object with a type that holds its methods unbound.
+ * Returns the History object, typed so that its methods stay unbound.
  * @returns The global history.
  */
 function historyMethods(): HistoryMethods {
   return history;
 }
 
-/** Captures user click interactions and single-page navigation transitions. */
+/** Captures user clicks and single-page navigations. */
 export class InteractionCapture implements Capture {
   /** Capture module identifier. */
   readonly name = "interactions";
@@ -81,24 +81,24 @@ export class InteractionCapture implements Capture {
   /** Prevents duplicate listener registration. */
   private installed = false;
 
-  /** Restore functions of the history wrappers. */
+  /** Restore functions for the history wrappers. */
   private readonly restores: (() => void)[] = [];
 
-  /** Tracked URL prior to the latest navigation event. */
+  /** The URL before the latest navigation. */
   private lastUrl = "";
 
-  /** Element of the current click burst, and the times of its clicks. */
+  /** The element of the current click burst, and when each of its clicks happened. */
   private burst: { target: Element | null; times: number[]; reported: boolean } = {
     target: null,
     times: [],
     reported: false,
   };
 
-  /** Stops the dead click check that runs now. */
+  /** Stops the dead click check that is running now. */
   private stopDeadCheck: (() => void) | undefined;
 
   /**
-   * @param ctx Capture context containing configuration, diagnostics, logger, breadcrumbs, and tracing.
+   * @param ctx Capture context: configuration, diagnostics, logger, breadcrumbs and tracing.
    */
   constructor(private readonly ctx: CaptureContext) {}
 
@@ -111,7 +111,7 @@ export class InteractionCapture implements Capture {
     this.lastUrl = location.href;
 
     if (this.ctx.config.capture.interactions) {
-      // The capture phase sees a click before a page handler can stop propagation.
+      // In the capture phase we see the click before a page handler can stop propagation.
       addEventListener("click", this.onClick, true);
     }
     if (this.ctx.config.capture.navigation) {
@@ -122,7 +122,7 @@ export class InteractionCapture implements Capture {
   }
 
   /**
-   * Removes interaction listeners and restores each history method that still holds the
+   * Removes the interaction listeners and restores every history method that still holds our
    * wrapper. A wrapper that another script wrapped again stays in place and records nothing.
    */
   uninstall(): void {
@@ -143,7 +143,7 @@ export class InteractionCapture implements Capture {
     this.burst = { target: null, times: [], reported: false };
   }
 
-  /** Rotates trace context and records a click breadcrumb. */
+  /** Rotates the trace context and records a click breadcrumb. */
   private readonly onClick = (event: Event): void => {
     if (this.ctx.isActive?.() === false) return;
     const target = event.target;
@@ -153,7 +153,7 @@ export class InteractionCapture implements Capture {
     const ignore =
       options.ignoreSelector === undefined ? "[data-observability-ignore]" : options.ignoreSelector;
     if (ignore && target.closest(ignore)) return;
-    // An absent or empty attribute gives "". The message is then "unknown-click".
+    // A missing or empty attribute gives "", and the message is then "unknown-click".
     const attribute = options.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;
     const action = target.closest(`[${attribute}]`)?.getAttribute(attribute) ?? "";
     const message = (action || "unknown-click").slice(0, this.ctx.config.limits.maxBodyChars);
@@ -182,9 +182,9 @@ export class InteractionCapture implements Capture {
   };
 
   /**
-   * Counts the clicks on one element. It records `ui.rage_click` one time in each burst.
+   * Counts the clicks on one element and records `ui.rage_click` once per burst.
    * @param target Clicked element.
-   * @param action Action name of the click.
+   * @param action The click's action name.
    * @param options Interaction options.
    */
   private countRage(target: Element, action: string, options: InteractionOptions): void {
@@ -193,7 +193,8 @@ export class InteractionCapture implements Capture {
     const count = options.rageClickCount ?? RAGE_CLICK_COUNT;
     const times =
       this.burst.target === target ? this.burst.times.filter((t) => now - t < windowMs) : [];
-    // A burst ends when no click stays in the window. Clicks that slide through it give no event.
+    // A burst only ends once no click is left in the window, so clicks that keep sliding
+    // through it don't fire a second event.
     const reported = times.length > 0 && this.burst.reported;
     times.push(now);
     const reached = times.length >= count;
@@ -205,9 +206,9 @@ export class InteractionCapture implements Capture {
   }
 
   /**
-   * Watches the page after a click on a control. With no DOM change, no navigation and no scroll
-   * in `deadClickMs`, it records `ui.dead_click`. One check runs at a time.
-   * @param action Action name of the click.
+   * Watches the page after a click on a control. If there's no DOM change, navigation or scroll
+   * within `deadClickMs`, it records `ui.dead_click`. Only one check runs at a time.
+   * @param action The click's action name.
    * @param options Interaction options.
    */
   private watchDead(action: string, options: InteractionOptions): void {
@@ -230,7 +231,7 @@ export class InteractionCapture implements Capture {
     addEventListener("scroll", respond, { capture: true, passive: true });
 
     const stop = (): void => {
-      // stop reads timer, which the code declares after stop. stop runs only after that line.
+      // timer is declared after stop, but stop can only run once that line has executed.
       clearTimeout(timer);
       observer.disconnect();
       removeEventListener("scroll", respond, true);
@@ -245,7 +246,7 @@ export class InteractionCapture implements Capture {
     this.stopDeadCheck = stop;
   }
 
-  /** On a URL change, rotates the trace context. It also records a breadcrumb and an event. */
+  /** On a URL change, rotates the trace context and records a breadcrumb and an event. */
   private readonly onNavigate = (): void => {
     const from = this.lastUrl;
     const to = location.href;
@@ -255,8 +256,8 @@ export class InteractionCapture implements Capture {
     this.lastUrl = to;
     if (this.ctx.isActive?.() === false) return;
 
-    // The comparison above uses the full URL. A change to the query only is a navigation.
-    // The record does not keep the query unless you set fullUrls.
+    // The comparison above uses the full URL, so a query-only change still counts as a
+    // navigation. The record doesn't keep the query unless you set fullUrls.
     const full = this.ctx.config.capture.fullUrls;
     const { urlTransform } = this.ctx.config.capture;
     const fromUrl = recordedUrl(from, full, urlTransform, this.ctx.diagnostics);
@@ -269,8 +270,9 @@ export class InteractionCapture implements Capture {
       message: `${fromUrl} -> ${toUrl}`,
     });
 
-    // The event carries only the previous URL. The record builder adds the current URL as
-    // `page.url`. A new URL in `url.full` makes a navigation look like an HTTP request.
+    // The event carries only the previous URL, and the record builder adds the current one as
+    // `page.url`. Putting the new URL in `url.full` would make a navigation look like an HTTP
+    // request.
     this.ctx.logger.logEvent("NAVIGATION", { "page.url.previous": fromUrl });
   };
 
@@ -280,11 +282,11 @@ export class InteractionCapture implements Capture {
       return;
     }
 
-    // Wrap the instance, not History.prototype. A read from the prototype skips a patch
+    // Wrap the instance, not History.prototype. Reading from the prototype would skip a patch
     // that a router installed on the instance. patch keeps the originals unbound.
     const target = historyMethods();
     const onNavigate = this.onNavigate;
-    // Uninstall clears the flag. A wrapper that stays in place then only calls the original.
+    // Uninstall clears the flag, so a wrapper that stays in place only calls the original.
     let active = true;
 
     const restorePushState = patch(
@@ -293,8 +295,8 @@ export class InteractionCapture implements Capture {
       (original) =>
         function (this: History, ...args: never[]): void {
           original.apply(this, args);
-          // Queue the handler. The browser updates location.href after the call returns.
-          // A synchronous read gives the previous URL as the new URL.
+          // Queue the handler. The browser only updates location.href after the call returns,
+          // so a synchronous read would report the previous URL as the new one.
           if (active) {
             queueMicrotask(onNavigate);
           }

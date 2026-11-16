@@ -1,8 +1,8 @@
 // src/utils/identity.ts
 //
-// Makes and keeps the session, tab, and context correlation identifiers. In a
-// sandboxed iframe and in private mode, Storage throws instead of returning null.
-// An unguarded read breaks the library at import.
+// Creates and keeps the session, tab, and context correlation identifiers. In a sandboxed
+// iframe and in private mode, Storage throws instead of returning null, so an unguarded read
+// would break the library at import.
 
 import {
   BYTE_VALUE_COUNT,
@@ -53,14 +53,14 @@ export interface IdentityStores {
   session(): KeyValueStore;
 }
 
-/** Stores that write to the browser. The `identity: "storage"` option uses them. */
+/** Stores that write to the browser. Used by the `identity: "storage"` option. */
 export const BROWSER_STORES: IdentityStores = {
   local: () => localStorage,
   session: () => sessionStorage,
 };
 
 /**
- * Creates stores that keep values in memory only. The `identity: "memory"` option uses them.
+ * Creates stores that keep values in memory only. Used by the `identity: "memory"` option.
  * @returns Stores that write nothing to the browser.
  */
 export function memoryStores(): IdentityStores {
@@ -81,8 +81,8 @@ export function memoryStores(): IdentityStores {
 }
 
 /**
- * Generates a random lowercase hexadecimal string of the specified byte length.
- * It uses crypto.getRandomValues when it is available. If not, it uses Math.random.
+ * Generates a random lowercase hexadecimal string of the given byte length. Uses
+ * crypto.getRandomValues when it is available, and Math.random otherwise.
  * @param byteLength Number of random bytes to generate.
  * @returns Hexadecimal string of length byteLength * 2.
  */
@@ -99,9 +99,9 @@ export function randomHex(byteLength: number): string {
 }
 
 /**
- * Generates a unique identifier string using crypto.randomUUID or randomHex fallback.
- * @param diagnostics Diagnostics reporter. It counts a blocked crypto.randomUUID call.
- * @returns UUID or random hex identifier.
+ * Generates a unique identifier with crypto.randomUUID, falling back to randomHex.
+ * @param diagnostics Diagnostics reporter. Counts a blocked crypto.randomUUID call.
+ * @returns A UUID or a random hex identifier.
  */
 export function newId(diagnostics: Diagnostics): string {
   try {
@@ -109,20 +109,20 @@ export function newId(diagnostics: Diagnostics): string {
       return crypto.randomUUID();
     }
   } catch {
-    // A sandbox can block crypto.randomUUID with a SecurityError. The method exists,
-    // but the call throws. Count the fault. A report on each id is noise.
+    // A sandbox can block crypto.randomUUID with a SecurityError: the method exists but the
+    // call throws. Count the fault, because a report for every id would be noise.
     diagnostics.count("platform.api_blocked");
   }
   return randomHex(ID_BYTE_LENGTH);
 }
 
 /**
- * Reads a value from the local or session store. Reports a storage error to diagnostics.
+ * Reads a value from the local or session store, reporting any storage error to diagnostics.
  * @param stores Identity stores.
  * @param store Storage target ("local" or "session").
  * @param key Storage key.
  * @param diagnostics Diagnostics reporter.
- * @returns Stored string value or null if unreadable or absent.
+ * @returns The stored string, or null if it is unreadable or absent.
  */
 function safeRead(
   stores: IdentityStores,
@@ -138,11 +138,12 @@ function safeRead(
 }
 
 /**
- * Writes a key-value pair to the local or session store. Reports a storage error to diagnostics.
+ * Writes a key-value pair to the local or session store, reporting any storage error to
+ * diagnostics.
  * @param stores Identity stores.
  * @param store Storage target ("local" or "session").
  * @param key Storage key.
- * @param value String value to store.
+ * @param value The string value to store.
  * @param diagnostics Diagnostics reporter.
  */
 function safeWrite(
@@ -162,10 +163,11 @@ function safeWrite(
 }
 
 /**
- * Reads the session id in the local store. It reports a record that is not valid JSON.
+ * Reads the session id from the local store. Reports a record that isn't valid JSON.
  * @param stores Identity stores.
  * @param diagnostics Diagnostics reporter.
  * @param now Epoch time in milliseconds.
+ * @param idleMs Idle time after which the session expires, in milliseconds. 0 means never.
  * @returns The stored id, or undefined when it is absent or expired.
  */
 function liveSession(
@@ -194,10 +196,10 @@ function liveSession(
 }
 
 /**
- * Resolves or initializes session, tab, and context identifiers for the active realm.
+ * Resolves or initializes the session, tab, and context identifiers for the active realm.
  * @param diagnostics Diagnostics reporter.
  * @param stores Identity stores.
- * @returns Populated Identity object.
+ * @returns The populated Identity object.
  */
 export function resolveIdentity(
   diagnostics: Diagnostics,
@@ -236,9 +238,9 @@ export function persistTabId(
 }
 
 /**
- * Writes the last-seen timestamp of the session. `SESSION_TOUCH_MS` sets the throttle.
- * The instance keeps the throttle state, not the module. Two runtimes in one document
- * must not block the session writes of each other.
+ * Writes the session's last-seen timestamp, throttled by `SESSION_TOUCH_MS`. The throttle
+ * state lives on the instance, not the module, so two runtimes in one document don't block
+ * each other's session writes.
  */
 export class SessionTouch {
   /** Epoch milliseconds of the last write this instance made. */
@@ -256,8 +258,8 @@ export class SessionTouch {
   ) {}
 
   /**
-   * Writes the session activity time to the local store. It writes one time in each throttle window.
-   * @param sessionId Active session identifier.
+   * Writes the session activity time to the local store, at most once per throttle window.
+   * @param sessionId The active session identifier.
    */
   touch(sessionId: string): void {
     const now = Date.now();
@@ -266,8 +268,8 @@ export class SessionTouch {
       return;
     }
 
-    // Another tab can hold a newer session, for example after newSession(). Do not write the old
-    // id back. A reload would then resume the old session.
+    // Another tab can hold a newer session, for example after newSession(). Don't write the old
+    // id back, or a reload would resume the old session.
     const stored = liveSession(this.stores, this.diagnostics, now, this.idleMs);
     if (stored !== undefined && stored !== sessionId) {
       this.lastTouchAt = now;
@@ -278,7 +280,7 @@ export class SessionTouch {
   }
 
   /**
-   * Reads the live session id in the local store.
+   * Reads the live session id from the local store.
    * @returns The stored session id, or undefined if no session is live.
    */
   stored(): string | undefined {
@@ -286,8 +288,8 @@ export class SessionTouch {
   }
 
   /**
-   * Writes a new session id to the local store now. The throttle does not apply.
-   * @param sessionId New session identifier.
+   * Writes a new session id to the local store right away, bypassing the throttle.
+   * @param sessionId The new session identifier.
    */
   restart(sessionId: string): void {
     this.write(sessionId, Date.now());

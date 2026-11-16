@@ -33,11 +33,11 @@ export interface WorkerResponse {
   compressionFailed?: boolean;
 }
 
-/** A worker failure has no app exception text. */
+/** A worker failure never carries app exception text. */
 export type WorkerResult =
   WorkerResponse | { failure: "serialize" | "network" | "timeout" | "protocol" };
 
-/** Makes a versioned message for the private channel. */
+/** Builds a versioned message for the private channel. */
 export function workerMessage(
   type: string,
   fields: Record<string, unknown> = {},
@@ -45,19 +45,19 @@ export function workerMessage(
   return { ...fields, p: TRANSPORT_WORKER_PROTOCOL, v: TELEMETRY_SDK_VERSION, t: type };
 }
 
-/** Tests the protocol and the exact library version. */
+/** Checks the protocol and the exact library version. */
 export function isWorkerMessage(value: unknown): value is Record<string, unknown> {
   return (
     isObject(value) && value.p === TRANSPORT_WORKER_PROTOCOL && value.v === TELEMETRY_SDK_VERSION
   );
 }
 
-/** Tests a finite nonnegative hint. */
+/** Checks for a finite nonnegative hint. */
 function isHint(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
-/** Tests a nullable response header. */
+/** Checks for a nullable response header. */
 function isHeader(value: unknown): boolean {
   return value === undefined || value === null || typeof value === "string";
 }

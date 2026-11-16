@@ -16,7 +16,7 @@ const log = getLogger("blotter.grid", {
 export function mount(el: HTMLElement): void {
   const button = document.createElement("button");
   button.textContent = "load positions";
-  // Click capture records this name. It records no button text by default.
+  // Click capture records this name. By default it doesn't record the button text.
   button.dataset.observabilityAction = "load-positions";
   button.addEventListener("click", () => {
     log.logAction("POSITIONS_LOAD", { rows: 512 });

@@ -1,8 +1,7 @@
 // src/transport/http-transport.ts
 //
-// This module serializes, compresses and sends log batches over HTTP. It classifies each
-// failure, reports it and throws it. The caller that owns storage decides what happens to a
-// rejected batch.
+// Serializes, compresses and sends log batches over HTTP. Every failure is classified,
+// reported and thrown. The caller that owns storage decides what happens to a rejected batch.
 
 import {
   BEACON_LIMIT_BYTES,
@@ -33,30 +32,30 @@ import { parseRetryAfter, TransportError } from "./errors";
 import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
-/** Advice for a 401 or a 403 answer of an HTTP send, on the main thread or in the worker. */
+/** Advice for an HTTP send answered with a 401 or a 403, on the main thread or in the worker. */
 export const CREDENTIAL_ADVICE =
   "In a cross-origin iframe, the session cookie is a third-party cookie. The browser " +
   "often blocks it. Forward the records to the platform document. As an alternative, " +
   "issue the cookie with the Partitioned attribute.";
 
-/** Body of one request. It is text or gzip bytes. */
+/** Body of one request, either text or gzip bytes. */
 type RequestBody = string | Uint8Array<ArrayBuffer>;
 
-/** This type reads document.visibilityState without global DOM type assertions. */
+/** Lets us read document.visibilityState without global DOM type assertions. */
 interface DocumentGlobal {
   document?: { visibilityState?: string };
 }
 
 /**
- * This class sends serialized log batches over HTTP. It resolves headers, applies gzip
- * compression and classifies errors.
+ * Sends serialized log batches over HTTP. Resolves headers, applies gzip compression and
+ * classifies errors.
  */
 export class HttpTransport extends StatusTransport {
   /**
-   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint. A traces batch goes to
-   * tracesEndpoint. A batch without an endpoint goes nowhere.
+   * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint and a traces batch
+   * to tracesEndpoint. A batch without an endpoint goes nowhere.
    * @param batch Batch to send.
-   * @param onKeepalive Runs when a request of the batch starts with keepalive.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
   async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
@@ -79,21 +78,21 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Gives the headers for the exit flush. A closing document cannot await headers().
-   * @returns The static headers, the headers that the function in force gave last, or undefined.
+   * Returns the headers for the exit flush, because a closing document can't await headers().
+   * @returns The static headers, the last result of the current headers function, or undefined.
    */
   lastHeaders(): Record<string, string> | undefined {
     return lastHeaders(this, this.config);
   }
 
   /**
-   * Serializes, encodes and sends a batch. It throws a classified TransportError
+   * Serializes, encodes and sends a batch. Throws a classified TransportError
    * on failure.
    * @param batch Batch to deliver.
-   * @param kind Kind of the batch. The caller reads it with the endpoint.
-   * @param endpoint Ingest URL. The caller reads it one time. A reconfigure during the send
-   * cannot change it.
-   * @param onKeepalive Runs when a request of the batch starts with keepalive.
+   * @param kind Kind of the batch. The caller reads it together with the endpoint.
+   * @param endpoint Ingest URL. The caller reads it once, so a reconfigure during the send
+   * can't change it.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
    */
   private async post(
     batch: LogBatch,
@@ -110,7 +109,7 @@ export class HttpTransport extends StatusTransport {
     let response = await this.attempt(batch, endpoint, serialized, onKeepalive);
     this.assertContext(batch);
 
-    // A token can expire between two calls of headers(). Send one time more with new
+    // A token can expire between two headers() calls, so send once more with fresh
     // headers. A second 401 or 403 drops the batch.
     if (this.rejectsCredentials(response.status) && typeof this.config.headers === "function") {
       resetHeaders(this);
@@ -119,7 +118,7 @@ export class HttpTransport extends StatusTransport {
     }
 
     if (response.ok) {
-      // The server must list each header in Access-Control-Expose-Headers. If not, it is null.
+      // The server must list each header in Access-Control-Expose-Headers, or it reads as null.
       const { headers } = response;
       this.accept(kind, headers.get(HEADER_SAMPLING), headers.get(HEADER_DATE));
       return;
@@ -138,7 +137,7 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Tests if a status rejects the credentials.
+   * Checks whether a status rejects the credentials.
    * @param status HTTP status code.
    * @returns True for 401 and 403.
    */
@@ -147,8 +146,8 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Resolves the headers, encodes the body and sends one request. One deadline covers the
-   * three steps. Without it, a headers() that never settles holds a dispatch slot forever.
+   * Resolves the headers, encodes the body and sends one request. One deadline covers all
+   * three steps, otherwise a headers() that never settles holds a dispatch slot forever.
    * @param batch Batch to deliver.
    * @param endpoint Ingest URL.
    * @param serialized Serialized batch.
@@ -164,7 +163,7 @@ export class HttpTransport extends StatusTransport {
   ): Promise<Response> {
     const deadline = Date.now() + this.config.delivery.requestTimeoutMs;
 
-    // Headers ignores the case of header names. A config header cannot duplicate a header below.
+    // Headers ignores case in header names, so a config header can't duplicate one set below.
     const headers = new Headers(await this.before(this.resolveHeaders(), deadline, endpoint));
     headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
     headers.set(HEADER_BATCH_ID, batch.id);
@@ -176,7 +175,8 @@ export class HttpTransport extends StatusTransport {
       headers.set(HEADER_CONTENT_ENCODING, ENCODING_GZIP);
     }
 
-    // A keepalive request continues after unload. The exit flush must not send the batch again.
+    // A keepalive request continues after unload, so the exit flush must not send the batch
+    // again.
     const keepalive = this.keepalive(body);
     if (keepalive) {
       onKeepalive?.();
@@ -187,10 +187,10 @@ export class HttpTransport extends StatusTransport {
 
   /**
    * Waits for a step until the deadline.
-   * @param work Step to wait for. It does not reject. Only the deadline rejects here.
+   * @param work Step to wait for. It never rejects, so only the deadline rejects here.
    * @param deadline Epoch time in milliseconds at which the request times out.
    * @param endpoint Ingest URL of the request, for the timeout report.
-   * @returns Promise that resolves to the value of the step.
+   * @returns Promise that resolves to the step's value.
    * @throws TransportError of kind "timeout" at the deadline.
    */
   private async before<T>(work: Promise<T>, deadline: number, endpoint: string): Promise<T> {
@@ -217,10 +217,10 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Compresses the serialized payload when the config sets gzip. The payload size must
-   * be at or above the threshold.
+   * Compresses the serialized payload when the config sets gzip and the payload is at or
+   * above the threshold.
    * @param text Serialized payload string.
-   * @returns Promise that resolves to original string or compressed byte array.
+   * @returns Promise that resolves to the original string or the compressed byte array.
    */
   private async encodeBody(text: string): Promise<RequestBody> {
     const { config } = this;
@@ -238,7 +238,7 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Sends the HTTP POST request with a timeout. It maps network errors to
+   * Sends the HTTP POST request with a timeout, and maps network errors to
    * TransportError.
    * @param endpoint Ingest URL.
    * @param headers HTTP request headers.
@@ -262,7 +262,7 @@ export class HttpTransport extends StatusTransport {
     };
     this.cancellation.signal.addEventListener("abort", cancel, { once: true });
     if (this.cancellation.signal.aborted) controller.abort();
-    // The fetch gets the rest of the time after the headers and the encoding.
+    // The fetch gets whatever time is left after the headers and the encoding.
     const timer = setTimeout(
       () => {
         controller.abort();
@@ -281,7 +281,7 @@ export class HttpTransport extends StatusTransport {
           signal: controller.signal,
           cache: "no-store",
           keepalive,
-          // The OS can stop a hidden page soon. Do not delay its keepalive send.
+          // The OS can stop a hidden page soon, so don't delay its keepalive send.
           priority: keepalive ? "auto" : config.delivery.priority,
         }),
       );
@@ -300,8 +300,9 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Tests if a send uses keepalive. A mobile OS can stop a hidden page with no pagehide.
-   * A keepalive request continues after that. The browser limits the keepalive bodies in flight.
+   * Checks whether a send uses keepalive. A mobile OS can stop a hidden page without a
+   * pagehide, and a keepalive request continues after that. The browser limits the keepalive
+   * bodies in flight.
    * @param body Request body string or byte array.
    * @returns True for a hidden document and a body of BEACON_LIMIT_BYTES or less.
    */
@@ -331,9 +332,9 @@ export class HttpTransport extends StatusTransport {
   }
 
   /**
-   * Resolves the configured static or dynamic request headers. It keeps the headers that
-   * headers() gave, for the exit flush.
-   * @returns Promise that resolves to resolved header map.
+   * Resolves the configured static or dynamic request headers, and keeps what headers()
+   * returned for the exit flush.
+   * @returns Promise that resolves to the header map.
    */
   private async resolveHeaders(): Promise<Record<string, string>> {
     return resolveHeaders(this, this.config, this.diagnostics);

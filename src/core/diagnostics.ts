@@ -1,7 +1,6 @@
 // src/core/diagnostics.ts
 //
-// This module reports internal errors of the library. It limits the emit rate.
-// It counts every event.
+// Reports the library's internal errors. Emits are rate limited, but every event is counted.
 
 import { DIAGNOSTIC_THROTTLE_MS, LIBRARY_LOG_PREFIX } from "../constants";
 import { runAsLibraryConsole } from "../utils/library-console";
@@ -61,7 +60,7 @@ export type DiagnosticCode =
 export interface DiagnosticEvent {
   /** Diagnostic fault code. */
   code: DiagnosticCode;
-  /** Description for a person to read. */
+  /** Human-readable description. */
   message: string;
   /** Structured context metadata. */
   detail?: Record<string, unknown>;
@@ -69,24 +68,24 @@ export interface DiagnosticEvent {
   cause?: unknown;
   /** Event timestamp in epoch milliseconds. */
   at: number;
-  /** Total count of this code since startup. It includes rate-limited occurrences. */
+  /** Total count of this code since startup, including rate-limited occurrences. */
   count: number;
 }
 
 /** Consumer callback for receiving rate-limited diagnostic events. */
 export type DiagnosticHandler = (event: DiagnosticEvent) => void;
 
-/** Reports internal errors. It limits the dispatch rate but counts every event. */
+/** Reports internal errors. Dispatch is rate limited, but every event is counted. */
 export class Diagnostics {
   /** Running occurrence counts per diagnostic code. */
   private readonly counters = new Map<DiagnosticCode, number>();
 
-  /** Timestamp of last emitted event per code in epoch milliseconds. */
+  /** Timestamp of the last emitted event per code, in epoch milliseconds. */
   private readonly lastEmitted = new Map<DiagnosticCode, number>();
 
   /**
-   * @param handler Optional diagnostic event listener callback.
-   * @param throttleMs Minimum duration in milliseconds between emitted events for a single code.
+   * @param handler Optional listener for diagnostic events.
+   * @param throttleMs Minimum time in milliseconds between emitted events for one code.
    * @param consoleFallback True to print a fixed warning if the diagnostic handler throws.
    */
   constructor(
@@ -106,7 +105,7 @@ export class Diagnostics {
   }
 
   /**
-   * Updates or removes the active diagnostic event handler.
+   * Replaces or removes the active diagnostic event handler.
    * @param handler New diagnostic event handler.
    */
   setHandler(handler?: DiagnosticHandler): void {
@@ -114,9 +113,9 @@ export class Diagnostics {
   }
 
   /**
-   * Increments the count for a code. It does not call the handler.
+   * Increments the count for a code without calling the handler.
    * @param code Diagnostic code to increment.
-   * @param by Increment delta.
+   * @param by Amount to add.
    * @returns New total for the code.
    */
   count(code: DiagnosticCode, by = 1): number {
@@ -126,13 +125,13 @@ export class Diagnostics {
   }
 
   /**
-   * Increments the counter for the code. It sends the event to the handler when the
-   * throttle window has passed. It never throws.
+   * Bumps the counter for the code and, once the throttle window has passed, sends the event
+   * to the handler. Never throws.
    * @param code Diagnostic code.
    * @param message Event description.
    * @param detail Optional structured metadata.
    * @param cause Caught error instance or reason.
-   * @returns False when the throttle dropped the event.
+   * @returns False if the throttle dropped the event.
    */
   report(
     code: DiagnosticCode,
@@ -163,16 +162,16 @@ export class Diagnostics {
       return true;
     }
     try {
-      // The console capture skips a console call of the handler. Without the scope, the line
-      // gives a record, and a failed send of that record gives a new diagnostic.
+      // Console capture skips anything the handler logs inside this scope. Without the scope,
+      // the line becomes a record, and a failed send of that record raises a new diagnostic.
       runAsLibraryConsole(() => {
         handler(event);
       });
     } catch (_handlerError) {
-      // Increment the counter directly. A call to report() recurses when the handler throws.
+      // Bump the counter directly. Calling report() here would recurse when the handler throws.
       this.count("handler.threw");
       if (this.consoleFallback && typeof console !== "undefined") {
-        // The console capture skips a call in this scope.
+        // Console capture skips calls made in this scope.
         runAsLibraryConsole(() => {
           // eslint-disable-next-line no-console -- Fallback sink when diagnostic handler throws.
           console.warn(`${LIBRARY_LOG_PREFIX} The onDiagnostic handler threw an error.`);
@@ -184,11 +183,12 @@ export class Diagnostics {
   }
 
   /**
-   * Executes a synchronous function and reports any thrown error to diagnostics.
+   * Runs a synchronous function and reports anything it throws to diagnostics.
    * @param code Diagnostic code to report on throw.
-   * @param message ASD-STE100 sentence that states the failure. The handler gets it as the event message.
-   * @param fn Function to execute.
-   * @returns Function return value, or undefined on throw.
+   * @param message ASD-STE100 sentence that states the failure. The handler receives it as the
+   *   event message.
+   * @param fn Function to run.
+   * @returns The function's return value, or undefined if it threw.
    */
   guard<T>(code: DiagnosticCode, message: string, fn: () => T): T | undefined {
     try {
@@ -200,11 +200,12 @@ export class Diagnostics {
   }
 
   /**
-   * Executes an asynchronous function and reports any rejected promise to diagnostics.
+   * Runs an asynchronous function and reports a rejected promise to diagnostics.
    * @param code Diagnostic code to report on rejection.
-   * @param message ASD-STE100 sentence that states the failure. The handler gets it as the event message.
-   * @param fn Async function to execute.
-   * @returns Promise that resolves to the return value, or undefined on rejection.
+   * @param message ASD-STE100 sentence that states the failure. The handler receives it as the
+   *   event message.
+   * @param fn Async function to run.
+   * @returns Promise that resolves to the return value, or to undefined on rejection.
    */
   async guardAsync<T>(
     code: DiagnosticCode,
@@ -220,7 +221,7 @@ export class Diagnostics {
   }
 
   /**
-   * Returns a copy of all cumulative diagnostic event counts since initialization.
+   * Returns a copy of the cumulative diagnostic counts since initialization.
    * @returns Map of diagnostic codes to occurrence counts.
    */
   snapshot(): Record<string, number> {

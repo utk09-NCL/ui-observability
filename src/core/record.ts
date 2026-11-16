@@ -1,8 +1,8 @@
 // src/core/record.ts
 //
-// This module builds structured log records from ambient context, journey data, trace
-// context and resource attributes. It never throws to the caller.
-// The builder caches the resource block. Call invalidateResource after a change to its inputs.
+// Builds structured log records from ambient context, journey data, trace context and
+// resource attributes. Never throws to the caller.
+// The builder caches the resource block, so call invalidateResource after its inputs change.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -61,10 +61,10 @@ import type { Journey, JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
 import { levelFor, shouldSampleInput } from "./sampling";
 
-/** Prefix of the error fields. An oversized error record keeps them. */
+/** Prefix of the error fields, which an oversized error record keeps. */
 const ERROR_ATTR_PREFIX = "error.";
 
-/** Index keys that an oversized record keeps in the form that redact gave them. */
+/** Index keys that an oversized record keeps as redact left them. */
 const REDACTABLE_INDEX_KEYS = [ATTR_PAGE_URL, ATTR_JOURNEY_ID, ATTR_JOURNEY_NAME] as const;
 
 /** Injected dependencies required by RecordBuilder. */
@@ -87,13 +87,13 @@ export interface RecordBuilderDeps {
   identity: Identity;
   /** Detected host platform metadata. */
   platform: PlatformMetadata;
-  /** Slot of the sampling rules from the ingest server. */
+  /** Slot for the sampling rules from the ingest server. */
   remote: RemoteSlot;
   /** Keeps the records that minLevel or sampling drops, for the next error. */
   debug?: DebugBuffer;
 }
 
-/** Size limits for each record. The builder applies them after sanitize and after redact. */
+/** Per-record size limits. The builder applies them after sanitize and after redact. */
 export interface RecordLimits extends SanitizeLimits {
   /** Max record body length, in characters. */
   maxBodyChars: number;
@@ -113,7 +113,7 @@ type RecordHook = (record: LogRecord) => LogRecord | null;
 /** Stage of a consumer hook. */
 type HookStage = "processor" | "redact";
 
-/** Message subject and drop code of each hook stage. */
+/** Message subject and drop code for each hook stage. */
 const HOOK_STAGES = {
   processor: { label: "A processor", code: "record.dropped_by_processor" },
   redact: { label: "The redact hook", code: "record.dropped_by_redact" },
@@ -123,7 +123,7 @@ const HOOK_STAGES = {
 export interface BuildResult {
   /** Completed record, or null when the builder drops it. */
   record: LogRecord | null;
-  /** Reason for the drop. It is absent when the builder built a record. */
+  /** Reason for the drop. Absent when a record was built. */
   dropped?: DropReason;
 }
 
@@ -151,19 +151,19 @@ export interface BuildInput {
   /** Call-site payload attributes. */
   payload?: Record<string, unknown>;
   /**
-   * Fields that the library builds with a fixed size bound, for example the buckets of a point.
-   * The record limits do not cut them. They override a payload key of the same name.
+   * Fields the library builds with a fixed size bound, for example a point's buckets.
+   * The record limits don't trim them, and they override a payload key of the same name.
    */
   fixed?: Record<string, unknown>;
-  /** True for a point of a counter or histogram. Sampling keeps it. */
+  /** True for a counter or histogram point. Sampling keeps it. */
   aggregated?: boolean;
-  /** Trace IDs of a span. Without them, the builder reads the active trace. */
+  /** A span's trace IDs. Without them the builder reads the active trace. */
   trace?: TraceContext;
-  /** Metadata of the call before the deferred build. */
+  /** The call's metadata, captured before the deferred build. */
   snapshot?: RecordSnapshot;
 }
 
-/** Keys of the fields that the library builds for a metric point or a span. */
+/** Keys of the fields the library builds for a metric point or a span. */
 const FIXED_KEYS: readonly string[] = [
   "metric.name",
   "metric.unit",
@@ -174,10 +174,10 @@ const FIXED_KEYS: readonly string[] = [
 ];
 
 /**
- * Reads the fields that the library built in another context. A hook of the sender cannot change
- * them, and the limits cannot cut them.
- * @param attributes Attributes of a forwarded record.
- * @returns The fields that the record has.
+ * Reads the fields that the library built in another context. The sender's hooks can't change
+ * them, and the limits can't trim them.
+ * @param attributes A forwarded record's attributes.
+ * @returns Those fields that the record has.
  */
 function fixedOf(attributes: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -204,17 +204,17 @@ export class RecordBuilder {
    */
   constructor(private readonly deps: RecordBuilderDeps) {}
 
-  /** Clears the cached resource attributes. The next build computes them again. */
+  /** Clears the cached resource attributes, so the next build computes them again. */
   invalidateResource(): void {
     this.resourceCache = null;
   }
 
   /**
-   * Checks if logging is on and the level is at or above the minimum level of the namespace.
-   * The minimum level does not apply to an action or a metric.
+   * Checks whether logging is on and the level is at or above the namespace's minimum level.
+   * The minimum level doesn't apply to an action or a metric.
    * @param level Target log severity level.
    * @param namespace Logger namespace. `minLevels` can set its level.
-   * @param type Record type. Without it, the check applies the minimum level.
+   * @param type Record type. Without it, the minimum level applies.
    * @returns True if the library builds a record of this level and type.
    */
   isEnabled(level: LogLevel, namespace: string, type?: LogType): boolean {
@@ -236,8 +236,8 @@ export class RecordBuilder {
 
   /**
    * Keeps a record that minLevel or sampling dropped, when the debug buffer is on. The privacy
-   * hooks run now. An error record of this context sends the kept record later.
-   * @param input Input of the dropped record.
+   * hooks run now, and an error record from this context sends the kept record later.
+   * @param input The dropped record's input.
    */
   private keepForDebug(input: BuildInput): void {
     const { config, debug } = this.deps;
@@ -252,10 +252,10 @@ export class RecordBuilder {
   }
 
   /**
-   * Builds a structured LogRecord from the input. It sanitizes attributes and applies size limits.
+   * Builds a structured LogRecord from the input, sanitizing attributes and applying size limits.
    * @param input Logger call input parameters.
    * @param forConsole True to skip delivery sampling and level checks. Privacy hooks still run.
-   * @returns The record, or null with the reason of the drop.
+   * @returns The record, or null with the reason for the drop.
    */
   build(input: BuildInput, forConsole = false): BuildResult {
     const { config, diagnostics, tracing, journey, sequence, limits, remote } = this.deps;
@@ -270,7 +270,7 @@ export class RecordBuilder {
     const activeJourney = input.snapshot ? input.snapshot.journey : journey.current();
 
     // Sample delivery records before the attribute walk. A record for the console or a
-    // breadcrumb skips this check. The privacy hooks process that record, but do not send it.
+    // breadcrumb skips this check: the privacy hooks still process it, but it is never sent.
     const sampled = shouldSampleInput(
       {
         level: input.level,
@@ -290,7 +290,7 @@ export class RecordBuilder {
     }
 
     const seq = sequence.next();
-    // The query and fragment can contain tokens and user input. The path groups records.
+    // The query and fragment can contain tokens and user input. The path is what groups records.
     const url = input.snapshot?.url ?? currentUrl(diagnostics);
     const pageUrl = config.metadata.pageUrl
       ? recordedUrl(url, config.capture.fullUrls, config.capture.urlTransform, diagnostics)
@@ -309,8 +309,8 @@ export class RecordBuilder {
       const fromPayload = sanitizeWithSize(input.payload ?? {}, limits, diagnostics);
       bytes = fromContext.bytes + fromProvider.bytes + fromScope.bytes + fromPayload.bytes;
 
-      // Merge in increasing precedence. The provider overrides the context. Scope overrides the
-      // provider. Payload overrides scope.
+      // Merge in increasing precedence: the provider overrides the context, scope overrides
+      // the provider, and payload overrides scope.
       attributes = {
         ...asAttributes(fromContext.value),
         ...asAttributes(fromProvider.value),
@@ -327,11 +327,11 @@ export class RecordBuilder {
       attributes = { [ATTR_SANITIZE_FAILED]: true };
     }
 
-    // A cut bucket list makes the serializer drop the point.
+    // A trimmed bucket list would make the serializer drop the point.
     Object.assign(attributes, input.fixed);
 
-    // Set reserved attributes after the payload merge. If they merge first, a payload key
-    // named journey.id replaces the ID that correlates the records.
+    // Set reserved attributes after the payload merge. If they went first, a payload key
+    // named journey.id would replace the ID that correlates the records.
     attributes[ATTR_LOG_TYPE] = input.type;
     attributes[ATTR_LOG_SEQ] = seq;
     attributes[ATTR_APP_NAMESPACE] = input.namespace;
@@ -376,9 +376,9 @@ export class RecordBuilder {
       ({ record, bytes } = outcome);
     }
 
-    // Drop the caller attributes when their size exceeds maxRecordBytes. Keep the index keys.
-    // A search cannot find a record without journey.id and trace_id. Keep the error fields,
-    // then the breadcrumbs if they fit. They tell why the record exists.
+    // Drop the caller attributes when they exceed maxRecordBytes, but keep the index keys:
+    // a search can't find a record without journey.id and trace_id. Keep the error fields,
+    // then the breadcrumbs if they fit, because they say why the record exists.
     if (bytes > limits.maxRecordBytes) {
       diagnostics.report(
         "record.truncated",
@@ -394,7 +394,7 @@ export class RecordBuilder {
         [ATTR_ATTRIBUTES_BYTES]: bytes,
       };
 
-      // Read these keys after redact. The hook can remove a token from page.url.
+      // Read these keys after redact, because the hook can remove a token from page.url.
       for (const key of REDACTABLE_INDEX_KEYS) {
         if (key in record.attributes) {
           kept[key] = record.attributes[key];
@@ -407,7 +407,7 @@ export class RecordBuilder {
         }
       }
 
-      // error.data can be large. Drop it first, before the other error fields.
+      // error.data can be large, so drop it first, before the other error fields.
       let keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
       if (keptBytes > limits.maxRecordBytes && ATTR_ERROR_DATA in kept) {
         Reflect.deleteProperty(kept, ATTR_ERROR_DATA);
@@ -432,7 +432,7 @@ export class RecordBuilder {
 
   /**
    * Runs the redact hook on a record from another context. A child context without redact
-   * forwards raw records. The sender is the last privacy gate.
+   * forwards raw records, so the sender is the last privacy gate.
    * @param record Forwarded record.
    * @returns The record to deliver, or null when the hook drops it.
    */
@@ -448,11 +448,11 @@ export class RecordBuilder {
   }
 
   /**
-   * Runs the hooks in order. Then it sanitizes and measures the attributes again.
+   * Runs the hooks in order, then sanitizes and measures the attributes again.
    * @param record Built record.
    * @param stages Hooks and their stages.
-   * @param fixed Fields that the library builds. The hooks cannot change them.
-   * @returns The record and the size of its attributes, or the reason of the drop.
+   * @param fixed Fields the library builds. The hooks can't change them.
+   * @returns The record and the size of its attributes, or the reason for the drop.
    */
   private applyHooks(
     record: LogRecord,
@@ -469,12 +469,12 @@ export class RecordBuilder {
       current = outcome;
     }
 
-    // A hook can change the attributes in place or replace them. A cycle, a hostile getter or a
-    // BigInt from a hook throws at serialization. The transport then loses the batch.
+    // A hook can change the attributes in place or replace them. A cycle, a hostile getter or
+    // a BigInt from a hook would throw at serialization, and the transport would lose the batch.
     const { diagnostics, limits } = this.deps;
     const remeasured = sanitizeWithSize(current.attributes, limits, diagnostics);
     const attributes = asAttributes(remeasured.value);
-    // The limits must not cut the fields that the library builds.
+    // The limits must not trim the fields the library builds.
     Object.assign(attributes, fixed);
 
     return { record: { ...current, attributes }, bytes: remeasured.bytes };
@@ -485,18 +485,18 @@ export class RecordBuilder {
    * @param hook Processor or redact hook.
    * @param stage Stage of the hook.
    * @param record Record before the hook.
-   * @returns The record after the hook, or the reason of the drop.
+   * @returns The record after the hook, or the reason for the drop.
    */
   private runHook(hook: RecordHook, stage: HookStage, record: LogRecord): LogRecord | DropReason {
     const { diagnostics } = this.deps;
     const { label, code } = HOOK_STAGES[stage];
 
-    // A plain JavaScript hook can edit the record in place without a return value.
+    // A plain JavaScript hook can edit the record in place and return nothing.
     let changed: unknown;
     try {
       changed = hook(record);
     } catch (error) {
-      // Drop the record. A record that the hook did not clean must not leave the page.
+      // Drop the record. A record the hook didn't clean must not leave the page.
       diagnostics.report(
         code,
         `${label} threw an error. The library dropped the record.`,
@@ -514,7 +514,7 @@ export class RecordBuilder {
     const candidate: unknown = changed ?? record;
 
     if (!isLogRecord(candidate)) {
-      // The hook changed the record in place. The library has no intact copy.
+      // The hook changed the record in place, so we have no intact copy.
       if (candidate === record) {
         diagnostics.report(
           "record.dropped_malformed",
@@ -523,7 +523,7 @@ export class RecordBuilder {
         return "malformed";
       }
 
-      // A plain JavaScript hook can return a string or a Promise. The record did not pass the hook.
+      // A plain JavaScript hook can return a string or a Promise. The record didn't pass the hook.
       diagnostics.report(
         code,
         `${label} returned a value that is not a record. The library dropped the record.`,
@@ -532,7 +532,7 @@ export class RecordBuilder {
     }
 
     if (!isLogLevel(candidate.severityText)) {
-      // An unknown level has no severity number. The serializer cannot map it.
+      // An unknown level has no severity number, so the serializer can't map it.
       diagnostics.report(
         "record.dropped_malformed",
         `${label} set a severityText that is not a log level. The library dropped the record.`,
@@ -540,13 +540,13 @@ export class RecordBuilder {
       return "malformed";
     }
 
-    // The hook can change severityText. Keep the number in step with the text.
+    // The hook can change severityText, so keep the number in step with the text.
     return { ...candidate, severityNumber: SEVERITY_NUMBER[candidate.severityText] };
   }
 
   /**
-   * Calls the contextProvider of the config. A provider that throws or gives a value that is not
-   * an object adds nothing. The record is still built. undefined means no attributes.
+   * Calls the config's contextProvider. A provider that throws or returns something that isn't
+   * an object adds nothing, and the record is still built. undefined means no attributes.
    * @returns The attributes from the provider, or an empty object.
    */
   private provided(): unknown {
@@ -565,7 +565,7 @@ export class RecordBuilder {
           return {};
         }
 
-        // A promise is an object. Its fields are not attributes.
+        // A promise is an object, but its fields aren't attributes.
         return isObject(given) && typeof given.then !== "function" ? given : null;
       },
     );

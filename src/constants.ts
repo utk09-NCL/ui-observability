@@ -1,7 +1,7 @@
 // src/constants.ts
 //
-// Defines all limits, thresholds, timing windows, storage keys, patterns, and
-// defaults that the library uses.
+// Every limit, threshold, timing window, storage key, pattern and default the
+// library uses.
 
 import type { ConsoleStyles, ResolvedConfig } from "./models/config";
 import type { LogLevel, LogType } from "./models/log-record";
@@ -19,8 +19,8 @@ export const LIBRARY_LOG_PREFIX = "[ui-observability]";
 // ----------------------------------
 
 /**
- * Throttle window for each diagnostic code, in milliseconds. It limits how often an error
- * loop calls the handler.
+ * Throttle window per diagnostic code, in milliseconds. Limits how often an error
+ * loop can call the handler.
  */
 export const DIAGNOSTIC_THROTTLE_MS = 1000;
 
@@ -34,10 +34,10 @@ export const SESSION_ID_KEY = "ui-observability.session";
 /** `sessionStorage` key for the tab id. */
 export const TAB_ID_KEY = "ui-observability.tab";
 
-/** sessionStorage key of the marker of a page that is alive. A clean close removes it. */
+/** sessionStorage key for a live page's marker. A clean close removes it. */
 export const ALIVE_KEY = "ui-observability.alive";
 
-/** Interval of the updates of the alive marker, in milliseconds. */
+/** How often the alive marker is updated, in milliseconds. */
 export const ALIVE_UPDATE_MS = 30_000;
 
 /** Session idle timeout, in milliseconds. */
@@ -141,24 +141,24 @@ export const LEVEL_ORDER: Record<LogLevel, number> = SEVERITY_NUMBER;
 // Attribute and resource keys
 // ----------------------------------
 //
-// Attribute and resource key names that records carry in the payload. The names
-// follow OpenTelemetry conventions. The `uiobs.` prefix marks the fields of this library.
+// The attribute and resource key names records carry in the payload. They follow the
+// OpenTelemetry conventions, and the `uiobs.` prefix marks this library's own fields.
 
 /** Record kind attribute key. */
 export const ATTR_LOG_TYPE = "log.type";
 
-/** Record sequence number in its context. It starts at 1. */
+/** A record's sequence number within its context. Starts at 1. */
 export const ATTR_LOG_SEQ = "log.seq";
 
 /** Logger namespace attribute key. */
 export const ATTR_APP_NAMESPACE = "app.namespace";
 
-/** Document URL when the library built the record. */
+/** The document URL at the time the record was built. */
 export const ATTR_PAGE_URL = "page.url";
 
 /**
- * HTTP request URL attribute key. Network capture sets it. Do not reuse `ATTR_PAGE_URL`.
- * The page URL overwrites the request target under that key.
+ * HTTP request URL attribute key, set by network capture. Don't reuse `ATTR_PAGE_URL` for it,
+ * because the page URL overwrites the request target under that key.
  * @see {@link ATTR_PAGE_URL}
  */
 export const ATTR_URL_FULL = "url.full";
@@ -175,14 +175,14 @@ export const ATTR_JOURNEY_PARENT_ID = "journey.parent_id";
 /** Marks a record whose attributes failed to sanitize. */
 export const ATTR_SANITIZE_FAILED = "uiobs.sanitize_failed";
 
-/** Own fields of an Error reason, or the whole reason when it is not an Error. */
+/** An Error reason's own fields, or the whole reason when it isn't an Error. */
 export const ATTR_ERROR_DATA = "error.data";
 
-/** Breadcrumb history of an error record. */
+/** An error record's breadcrumb history. */
 export const ATTR_BREADCRUMBS = "breadcrumbs";
 
 /**
- * Marks a record when the library drops its attributes because they exceed the byte budget.
+ * Marks a record whose attributes were dropped for exceeding the byte budget.
  * @see {@link ATTR_ATTRIBUTES_BYTES}
  */
 export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
@@ -193,13 +193,13 @@ export const ATTR_ATTRIBUTES_DROPPED = "uiobs.attributes_dropped";
  */
 export const ATTR_ATTRIBUTES_BYTES = "uiobs.attributes_bytes";
 
-/** Server time minus client time, in milliseconds, from the Date header of an accepted answer. */
+/** Server time minus client time, in milliseconds, from an accepted answer's Date header. */
 export const ATTR_CLOCK_OFFSET_MS = "uiobs.clock_offset_ms";
 
-/** Marks a record that the debug buffer kept until an error. */
+/** Marks a record the debug buffer held until an error. */
 export const ATTR_DEBUG_BUFFER = "uiobs.debug_buffer";
 
-/** Half the resolution of the HTTP Date header. It centers the error of the clock offset. */
+/** Half the HTTP Date header's resolution. Centers the clock offset's error. */
 export const DATE_HEADER_HALF_STEP_MS = 500;
 
 /** Application name resource key. */
@@ -257,7 +257,7 @@ export const RESOURCE_OPENFIN_NAME = "openfin.name";
 export const TELEMETRY_SDK_NAME = "@utk09/ui-observability";
 
 /**
- * Value of `telemetry.sdk.version`. The build writes the version of package.json here.
+ * Value of `telemetry.sdk.version`. The build writes the package.json version here.
  * @see {@link RESOURCE_TELEMETRY_SDK_VERSION}
  */
 export const TELEMETRY_SDK_VERSION = __UIOBS_VERSION__;
@@ -280,12 +280,12 @@ export const SERIALIZER_NAME_ECS = "ecs";
 
 /**
  * ECS `log.level` names that differ from the lowercase severity text. ECS spells
- * the warning level in full. All other levels match in lowercase.
+ * the warning level out in full, and every other level matches in lowercase.
  * @see {@link SERIALIZER_NAME_ECS}
  */
 export const ECS_LEVEL_NAMES: Partial<Record<LogLevel, string>> = { WARN: "warning" };
 
-/** ECS version of the documents. The Elastic ECS logging libraries write this version. */
+/** The ECS version of the documents, the same one the Elastic ECS logging libraries write. */
 export const ECS_VERSION = "8.10.0";
 
 /** Content type for an OTLP/JSON body. */
@@ -377,7 +377,7 @@ export const MILLIS_PER_SECOND = 1000;
 /** Max exit payload size, in bytes (`sendBeacon`/`fetch(keepalive)` shared budget). */
 export const BEACON_LIMIT_BYTES = 60_000;
 
-/** Content type for an exit payload. It is CORS-safelisted and does not cause a preflight. */
+/** Content type for an exit payload. CORS-safelisted, so it doesn't trigger a preflight. */
 export const CONTENT_TYPE_TEXT_PLAIN = "text/plain;charset=UTF-8";
 
 /**
@@ -399,13 +399,13 @@ export const BATCH_STORAGE_KEY_PREFIX = "ui-observability.batch.";
 /** Zero-padded digit width for the creation time in a batch key. */
 export const BATCH_KEY_TIME_WIDTH = 14;
 
-/** localStorage key prefix for a batch that exit flush stores. */
+/** localStorage key prefix for a batch stored by the exit flush. */
 export const EMERGENCY_STORAGE_KEY_PREFIX = "ui-observability.emergency.";
 
 /** Maximum number of exit batches in the emergency queue. */
 export const EMERGENCY_MAX_ENTRIES = 20;
 
-/** Key that the library writes to test if localStorage accepts writes. */
+/** Key we write to check whether localStorage accepts writes. */
 export const STORAGE_PROBE_KEY = "ui-observability.probe";
 
 /** Fraction of the store to evict on a quota error (1 in N). */
@@ -415,13 +415,14 @@ export const QUOTA_EVICTION_DIVISOR = 4;
 export const QUOTA_EXCEEDED_ERROR = "QuotaExceededError";
 
 /**
- * Native IndexedDB version. Version 11 replaced Dexie. Version 12 adds the context index.
- * Dexie opened this database at ten times its declared version. A version below 11 makes
- * open() fail with VersionError for an existing installation. Then no code can read its batches.
+ * Native IndexedDB version. Version 11 replaced Dexie, and version 12 adds the context index.
+ * Dexie opened this database at ten times its declared version, so a version below 11 makes
+ * open() fail with VersionError on an existing installation, and then nothing can read its
+ * batches.
  */
 export const INDEXEDDB_SCHEMA_VERSION = 12;
 
-/** IndexedDB object store that holds batches. Dexie set this name before the library removed it. */
+/** IndexedDB object store that holds the batches. The name dates from Dexie, since removed. */
 export const INDEXEDDB_STORE_NAME = "batches";
 
 /** Index on the batch store that orders reads by creation time. */
@@ -472,34 +473,34 @@ export const JOURNEY_STORAGE_KEY = "ui-observability.journey";
 export const JOURNEY_TOKEN_NAME_MAX_CHARS = 64;
 
 /**
- * Max length of a journey id from startJourney(), in characters. The token of a journey with this
- * id and a full name stays below the token limit.
+ * Max length of a journey id from startJourney(), in characters. A journey with an id this long
+ * and a full-length name still gets a token below the token limit.
  * @see {@link JOURNEY_TOKEN_MAX_CHARS}
  */
 export const JOURNEY_ID_MAX_CHARS = 64;
 
 /**
- * Accepted journey id from startJourney(): letters, digits, "_", ".", ":" and "-". Each character
- * is one byte in UTF-8. A multibyte id makes the token larger than its limit.
+ * Accepted journey id from startJourney(): letters, digits, "_", ".", ":" and "-". Every
+ * character is one byte in UTF-8. A multibyte id would push the token over its limit.
  */
 export const JOURNEY_ID_PATTERN = new RegExp(`^[\\w.:-]{1,${String(JOURNEY_ID_MAX_CHARS)}}$`);
 
 /**
- * Time that the start of a journey token can be ahead of this clock, in milliseconds. Two machines
- * can disagree on the time. A token further ahead never expires.
+ * How far ahead of this clock a journey token's start time can be, in milliseconds. Two machines
+ * can disagree on the time, but a token further ahead than this would never expire.
  */
 export const JOURNEY_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * Max whole-token length, in characters. It rejects an oversized token. It does not
- * validate the token content.
+ * Max whole-token length, in characters. This only rejects an oversized token. It doesn't
+ * validate the token's content.
  * @see {@link JOURNEY_TOKEN_NAME_MAX_CHARS}
  */
 export const JOURNEY_TOKEN_MAX_CHARS = 256;
 
 /**
- * Time to wait for `fin.me.getOptions()`, in milliseconds. After this time, the
- * runtime continues without a seeded journey.
+ * How long to wait for `fin.me.getOptions()`, in milliseconds. After that, the
+ * runtime carries on without a seeded journey.
  * @see {@link OPENFIN_JOURNEY_CUSTOM_DATA_KEY}
  */
 export const OPENFIN_OPTIONS_TIMEOUT_MS = 2000;
@@ -564,7 +565,7 @@ export const BREADCRUMB_MIN_CAPACITY = 1;
 // Sampling
 // ----------------------------------
 //
-// FNV-1a hash constants. The sampler uses them to change a sampling key into a
+// FNV-1a hash constants. The sampler uses them to turn a sampling key into a
 // stable 0-1 fraction.
 
 /** FNV-1a 32-bit offset basis. */
@@ -577,8 +578,8 @@ export const FNV_PRIME = 0x01000193;
 export const UINT32_MAX = 0xffffffff;
 
 /**
- * Types that minLevel does not drop. An action is an audit fact. A metric and a span are measurements.
- * The remote rate cap for records below minLevel does not apply to them.
+ * Types that minLevel never drops. An action is an audit fact, and a metric or a span is a
+ * measurement. The remote rate cap for records below minLevel doesn't apply to them either.
  */
 export const LEVEL_BYPASS_TYPES: readonly LogType[] = ["action", "metric", "span"];
 
@@ -603,9 +604,9 @@ export const LOG_TYPE_SPAN: LogType = "span";
 export const BUS_PROTOCOL = "ui-observability/2";
 
 /**
- * Type tag of each bus message. Every frame must use the same values. The prefix makes a message
- * easy to identify in a postMessage log. The envelope tag BUS_PROTOCOL still separates the bus
- * from other traffic.
+ * Type tag for every bus message. Every frame must use the same values. The prefix makes a
+ * message easy to spot in a postMessage log, but it is still the BUS_PROTOCOL envelope tag that
+ * separates the bus from other traffic.
  */
 export const BUS_TYPE = {
   hello: "ui-observability.message.hello",
@@ -622,16 +623,16 @@ export const BUS_TYPE = {
 /** Global window property key used to locate a same-origin runtime instance. */
 export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
 
-/** Global key of the runtime that shutdown() stopped. Calls go to it until the next configure(). */
+/** Global key for the runtime shutdown() stopped. Calls go to it until the next configure(). */
 export const RUNTIME_STOPPED_KEY = "ui-observability.stopped";
 
-/** Global symbol key of the library request scope count. All library copies on a page share it. */
+/** Global symbol key for the library request scope count, shared by every copy on the page. */
 export const LIBRARY_REQUEST_KEY = "ui-observability.request-scope";
 
-/** Global symbol key of the library console scope count. All library copies on a page share it. */
+/** Global symbol key for the library console scope count, shared by every copy on the page. */
 export const LIBRARY_CONSOLE_KEY = "ui-observability.console-scope";
 
-/** Global symbol key of the count of custom transport calls that wait for an answer. */
+/** Global symbol key for the number of custom transport calls still waiting for an answer. */
 export const TRANSPORT_CALL_KEY = "ui-observability.transport-calls";
 
 // ----------------------------------
@@ -645,19 +646,19 @@ export const ERROR_STORM_MAX_PER_WINDOW = 20;
 export const ERROR_STORM_WINDOW_MS = 10_000;
 
 /**
- * Max ERROR and FATAL records that the pipeline admits in each storm window.
- * It is a safety limit for a render loop. It does not shape normal traffic.
- * ERROR and FATAL records skip sampling. A direct logger.error call has no other limit.
+ * Max ERROR and FATAL records the pipeline admits per storm window. This is a safety limit for
+ * a render loop, not a way to shape normal traffic. ERROR and FATAL records skip sampling, so a
+ * direct logger.error call has no other limit.
  */
 export const ERROR_CEILING_MAX_PER_WINDOW = 500;
 
-/** Default minimum duration of a long frame that the library records, in milliseconds. */
+/** Default minimum duration for a long frame to be recorded, in milliseconds. */
 export const LONG_FRAME_THRESHOLD_MS = 100;
 
-/** Maximum long frames recorded in each storm window. A frozen tab cannot flood the pipeline. */
+/** Maximum long frames recorded per storm window, so a frozen tab can't flood the pipeline. */
 export const LONG_FRAME_MAX_PER_WINDOW = 20;
 
-/** Maximum WebSocket events recorded in each storm window. A reconnect loop cannot flood the pipeline. */
+/** Max WebSocket events recorded per storm window, so a reconnect loop can't flood the pipeline. */
 export const WEBSOCKET_MAX_PER_WINDOW = 20;
 
 /** Maximum character length of a console breadcrumb message. */
@@ -666,32 +667,32 @@ export const CONSOLE_BREADCRUMB_MAX_CHARS = 200;
 /** Maximum distinct error signatures tracked for deduplication before LRU eviction. */
 export const MAX_TRACKED_ERROR_SIGNATURES = 200;
 
-/** Maximum character length retained from clicked element text in breadcrumbs. */
+/** Maximum characters of a clicked element's text kept in a breadcrumb. */
 export const CLICK_TEXT_MAX_CHARS = 50;
 
-/** Attribute that names a click action when the app sets no other attribute. */
+/** Attribute that names a click action, unless the app configures a different one. */
 export const ACTION_ATTRIBUTE_DEFAULT = "data-observability-action";
 
-/** Clicks on one element that make a rage click, by default. */
+/** How many clicks on one element make a rage click, by default. */
 export const RAGE_CLICK_COUNT = 3;
 
-/** Time in which the clicks of a rage click occur, in milliseconds, by default. */
+/** The time window a rage click's clicks must fall within, in milliseconds, by default. */
 export const RAGE_CLICK_WINDOW_MS = 1000;
 
-/** Wait for a visible response to a click before it counts as a dead click, in milliseconds. */
+/** How long to wait for a visible response before a click counts as dead, in milliseconds. */
 export const DEAD_CLICK_MS = 1000;
 
-/** Controls whose click must give a visible response. Only these get a dead click check. */
+/** Controls that should respond visibly to a click. Only these get a dead click check. */
 export const DEAD_CLICK_CONTROLS =
   'a, button, summary, input[type="button"], input[type="submit"], input[type="reset"], [role="button"], [role="link"], [role="menuitem"], [role="tab"]';
 
-/** Maximum character length retained from an aria-label attribute in generated selectors. */
+/** Maximum characters of an aria-label kept in a generated selector. */
 export const ARIA_LABEL_MAX_CHARS = 40;
 
-/** Maximum class names included per element in generated CSS selectors. */
+/** Maximum class names per element in a generated CSS selector. */
 export const SELECTOR_MAX_CLASSES = 2;
 
-/** Default CSS of the console prefix. The colors are readable on light and dark devtools. */
+/** Default CSS for the console prefix. The colors are readable in light and dark devtools. */
 export const CONSOLE_DEFAULT_STYLES: Readonly<Required<ConsoleStyles>> = {
   namespace: "color:#888",
   TRACE: "color:#888;font-weight:bold",
@@ -702,48 +703,48 @@ export const CONSOLE_DEFAULT_STYLES: Readonly<Required<ConsoleStyles>> = {
   FATAL: "color:#d32f2f;font-weight:bold",
 };
 
-/** Scaling factor for rounding duration measurements to three decimal places. */
+/** Scaling factor for rounding a duration to three decimal places. */
 export const DURATION_PRECISION = 1000;
 
 // ----------------------------------
 // Runtime
 // ----------------------------------
 
-/** Minimum duration in milliseconds between storage gap warning reports. */
+/** Minimum time between storage gap warning reports, in milliseconds. */
 export const GAP_REPORT_THROTTLE_MS = 60_000;
 
-/** Default namespace for telemetry records emitted by auto-capture modules. */
+/** Default namespace for records the auto-capture modules emit. */
 export const CAPTURE_NAMESPACE = "uiobs.capture";
 
-/** Default namespace for telemetry records emitted by storage subsystems. */
+/** Default namespace for records the storage subsystems emit. */
 export const STORAGE_NAMESPACE = "uiobs.storage";
 
-/** Namespace of the records that `diagnostics.records` gives. */
+/** Namespace for the records `diagnostics.records` produces. */
 export const DIAGNOSTICS_NAMESPACE = "uiobs.diagnostics";
 
-/** Measurement unit that the library uses when the call gives no unit. */
+/** The measurement unit used when a call doesn't give one. */
 export const DEFAULT_METRIC_UNIT = "count";
 
-/** Namespace of the points that the counter and histogram instruments give. */
+/** Namespace for the points the counter and histogram instruments produce. */
 export const METRIC_NAMESPACE = "uiobs.metrics";
 
-/** Maximum attribute sets of one instrument in one interval. More sets go to one overflow set. */
+/** Maximum attribute sets per instrument per interval. Any more go into one overflow set. */
 export const METRIC_MAX_SERIES = 100;
 
-/** Maximum bucket boundaries of one histogram. More boundaries make a large point. */
+/** Maximum bucket boundaries per histogram. More than that makes for a large point. */
 export const METRIC_MAX_BOUNDARIES = 50;
 
-/** Attribute of the overflow set. OpenTelemetry uses the same key. */
+/** Attribute on the overflow set. OpenTelemetry uses the same key. */
 export const ATTR_METRIC_OVERFLOW = "otel.metric.overflow";
 
-/** Default histogram boundaries. They are the OpenTelemetry default boundaries. */
+/** Default histogram boundaries, the same as OpenTelemetry's defaults. */
 export const METRIC_DEFAULT_BOUNDARIES: readonly number[] = [
   0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000,
 ];
 
 /**
- * Attribute keys of an aggregated metric point. The OTLP metrics serializer reads them.
- * Sampling keeps each record with a start time. A sample of a sum gives a false sum.
+ * Attribute keys on an aggregated metric point, read by the OTLP metrics serializer.
+ * Sampling keeps every record that has a start time, because sampling a sum gives a false sum.
  */
 export const METRIC_KEYS = {
   start: "metric.start_time_unix_nano",
@@ -756,28 +757,28 @@ export const METRIC_KEYS = {
   buckets: "metric.bucket_counts",
 } as const;
 
-/** Precision bits of the profiler histogram. Each power of two has 16 sub-buckets. */
+/** Precision of the profiler histogram: 2^4 = 16 sub-buckets per power of two. */
 export const PROFILE_SUB_BITS = 4;
 
-/** Buckets of one profiler probe. This is 16 for 0 to 15 us and 16 for each exponent 4 to 25. */
+/** Buckets per probe: 16 for 0 to 15 us, then 16 for each exponent from 4 to 25. */
 export const PROFILE_BUCKETS = 368;
 
-/** Largest profiler duration in microseconds (2^26 - 1). A larger value goes in the last bucket. */
+/** Largest tracked duration in microseconds (2^26 - 1). Larger values go in the last bucket. */
 export const PROFILE_MAX_US = 67_108_863;
 
-/** Maximum buckets in one profiler summary record. More buckets make a large payload. */
+/** Cap on the buckets in one profiler summary record, to keep the payload small. */
 export const PROFILE_POINT_BUCKETS = 100;
 
-/** Default interval of the profiler summary records, in milliseconds. */
+/** Default interval between profiler summary records, in ms. */
 export const PROFILER_FLUSH_INTERVAL_MS = 10_000;
 
-/** Default maximum probes. The runtime sets the limit at startup. */
+/** Default probe limit. The runtime fixes the limit at startup. */
 export const PROFILER_MAX_PROBES = 64;
 
-/** Metric name of the profiler summary records. */
+/** Metric name for profiler summary records. */
 export const PROFILE_METRIC_NAME = "ui.profile.duration";
 
-/** Attribute keys of the profiler summary records. */
+/** Attribute keys on profiler summary records. */
 export const PROFILE_KEYS = {
   probe: "profile.probe",
   sampleEvery: "profile.sample_every",
@@ -785,24 +786,51 @@ export const PROFILE_KEYS = {
   p90: "profile.p90",
   p99: "profile.p99",
   overhead: "profile.overhead_ns",
+  selfP99: "profile.self_p99",
+  framePhase: "profile.frame_phase",
 } as const;
 
-/** Maximum registered probe names. It is the maximum of profiler.maxProbes. */
+/** How deep spans can nest and still get a self time. Going deeper drops the frames below. */
+export const PROFILER_STACK_DEPTH = 32;
+
+/** How many recent spans the profiler keeps for linking to long animation frames. */
+export const PROFILER_RING_SPANS = 256;
+
+/** Shortest span, in ms, that gets linked to a long animation frame. */
+export const PROFILER_LINK_MIN_MS = 1;
+
+/** Metric name for long animation frame phases, reported per probe in the frame. */
+export const PROFILE_FRAME_METRIC_NAME = "ui.profile.frame.duration";
+
+/** Probe name for frame pacing. Each value is the time between two frames. */
+export const PROFILE_FRAME_PROBE = "frame.interval";
+
+/** Reported when the library can't read an instrument's options. */
+export const INSTRUMENT_OPTIONS_FAULT =
+  "The library could not read the options of an instrument. The library uses the defaults.";
+
+/** Ambient attribute that ties every record to the session replay recording. */
+export const REPLAY_ID_KEY = "replay.id";
+
+/** Put this attribute on an element to leave its text unmasked in session replay. */
+export const REPLAY_UNMASK_ATTRIBUTE = "data-observability-unmask";
+
+/** Hard cap on registered probe names, and so the upper bound for profiler.maxProbes. */
 export const PROFILER_PROBE_LIMIT = 1024;
 
-/** Global symbol key of the profiler core. Copies of one library version share the core. */
+/** Global symbol key for the profiler core. Copies of the same library version share the core. */
 export const PROFILER_GLOBAL_KEY = "ui-observability.profiler";
 
-/** Minimum window of the profiler overhead measurement, in milliseconds. */
+/** Minimum window for the profiler's overhead measurement, in ms. */
 export const PROFILER_CALIBRATION_MS = 2;
 
-/** Maximum begin() and end() pairs of the profiler overhead measurement. */
+/** Cap on begin()/end() pairs in the profiler's overhead measurement. */
 export const PROFILER_CALIBRATION_PAIRS = 100_000;
 
 /** Namespace of the span records. */
 export const TRACE_NAMESPACE = "uiobs.traces";
 
-/** Attribute keys of the span fields of a span record. The traces serializer reads them. */
+/** Attribute keys for the span fields on a span record, read by the traces serializer. */
 export const SPAN_KEYS = {
   kind: "span.kind",
   parentId: "span.parent_id",
@@ -817,10 +845,10 @@ export const SPAN_KEYS = {
 // Configuration
 // ----------------------------------
 
-/** Protocol of the private transport worker channel. */
+/** Protocol for the private transport worker channel. */
 export const TRANSPORT_WORKER_PROTOCOL = "ui-observability.transport/1";
 
-/** Type tags of the private transport worker messages. */
+/** Type tags for the private transport worker messages. */
 export const TRANSPORT_WORKER_TYPE = {
   connect: "connect",
   ready: "ready",
@@ -829,7 +857,7 @@ export const TRANSPORT_WORKER_TYPE = {
   cancel: "cancel",
 } as const;
 
-/** Refusal of the worker entry. A constant keeps the protocol code out of the main chunk. */
+/** The worker entry's refusal message. A constant keeps the protocol code out of the main chunk. */
 export const TRANSPORT_WORKER_REFUSAL = {
   p: TRANSPORT_WORKER_PROTOCOL,
   v: TELEMETRY_SDK_VERSION,
@@ -840,13 +868,13 @@ export const TRANSPORT_WORKER_REFUSAL = {
 /** Maximum requests in one transport worker. */
 export const TRANSPORT_WORKER_MAX_JOBS = 64;
 
-/** Maximum wait for idle time before the deferred logger builds its records. */
+/** Longest the deferred logger waits for idle time before it builds its records. */
 export const DEFER_IDLE_TIMEOUT_MS = 1000;
 
-/** Maximum pending payload references of one runtime. A full queue builds its records first. */
+/** Maximum pending payload references per runtime. A full queue builds its records first. */
 export const DEFER_QUEUE_LIMIT = 1000;
 
-/** Default minimum duration of a slow resource event, in milliseconds. */
+/** Default minimum duration for a slow resource event, in milliseconds. */
 export const RESOURCE_SLOW_MS = 1000;
 
 /** Response header with server duration entries. */
@@ -856,7 +884,7 @@ export const SERVER_TIMING_HEADER = "Server-Timing";
 export const SERVER_TIMING_MAX_CHARS = 4096;
 export const SERVER_TIMING_MAX_ENTRIES = 32;
 
-/** Capture switches that a remote rule can change. Privacy controls stay local. */
+/** Capture switches a remote rule can change. Privacy controls stay local. */
 export const REMOTE_CAPTURE_FLAGS = [
   "errors",
   "rejections",
@@ -893,19 +921,19 @@ export const SAMPLING_RATE_MAX = 1;
  */
 export const SAMPLING_RATE_FALLBACK = 1;
 
-/** Version of the remote sampling rules that the library accepts. */
+/** The remote sampling rules version this library accepts. */
 export const REMOTE_SAMPLING_VERSION = 1;
 
 /** Maximum length of the sampling header, in characters. */
 export const REMOTE_SAMPLING_MAX_CHARS = 4096;
 
-/** Maximum time that remote sampling rules stay in force, in milliseconds. */
+/** Longest that remote sampling rules stay in effect, in milliseconds. */
 export const REMOTE_SAMPLING_MAX_TTL_MS = 60 * 60 * 1000;
 
 /** Maximum namespace rates in one set of remote sampling rules. */
 export const REMOTE_SAMPLING_MAX_RATES = 100;
 
-/** Time between two requests of a forwarder for the remote sampling rules, in milliseconds. */
+/** How often a forwarder asks for the remote sampling rules, in milliseconds. */
 export const REMOTE_SAMPLING_POLL_MS = 30_000;
 
 /**
@@ -949,6 +977,7 @@ export const CONFIG_SECTIONS = [
   "capture",
   "debugBuffer",
   "profiler",
+  "replay",
 ] as const;
 
 /**
@@ -975,6 +1004,7 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
   capture: ["webVitalsLoader", "urlTransform"],
   debugBuffer: [],
   profiler: [],
+  replay: [],
 };
 
 /** Console mirroring level used when a consumer passes `console: true`. */
@@ -992,8 +1022,8 @@ export const LOG_BATCH_SIZE = 100;
 
 /**
  * Max time a partial metric batch waits before the pipeline sends it, in milliseconds.
- * Metric batches wait longer than log batches. Metrics have a higher volume, and no
- * caller waits for them.
+ * Metric batches wait longer than log batches because metrics have a higher volume and
+ * no caller is waiting for them.
  */
 export const METRIC_FLUSH_INTERVAL_MS = 10_000;
 
@@ -1007,7 +1037,7 @@ export const MAX_CONCURRENT_REQUESTS = 2;
 // HTTP transport
 // ----------------------------------
 
-/** Max time for one ingest request, in milliseconds. Then the transport aborts and retries it. */
+/** Max time for one ingest request, in milliseconds. The transport then aborts and retries it. */
 export const REQUEST_TIMEOUT_MS = 15_000;
 
 /** Min payload size to compress, in bytes. */
@@ -1028,8 +1058,8 @@ export const STORAGE_LIMITS: StorageLimits = {
 };
 
 /**
- * Max time for one storage call, in milliseconds. Then the library treats the call as failed.
- * A call that does not settle keeps a dispatch slot or the drain flag.
+ * Max time for one storage call, in milliseconds. After that the call counts as failed, because
+ * a call that never settles would hold on to a dispatch slot or the drain flag.
  */
 export const STORAGE_DEADLINE_MS = 10_000;
 
@@ -1037,7 +1067,7 @@ export const STORAGE_DEADLINE_MS = 10_000;
 // Retry backoff
 // ----------------------------------
 
-/** First backoff step, in milliseconds. Each attempt doubles it. */
+/** First backoff step, in milliseconds. Doubles with every attempt. */
 export const RETRY_BASE_DELAY_MS = 2000;
 
 /** Backoff ceiling, in milliseconds. */
@@ -1050,7 +1080,7 @@ export const RETRY_IDLE_DELAY_MS = 30_000;
 // Journey lifetime
 // ----------------------------------
 
-/** Max time a journey stays open, in milliseconds. Then the library treats it as abandoned. */
+/** Max time a journey stays open, in milliseconds. After that it counts as abandoned. */
 export const JOURNEY_MAX_AGE_MS = 30 * 60 * 1000;
 
 /** True if the journey ends for all contexts when the owning context closes. */
@@ -1072,18 +1102,18 @@ export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
 /** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
 export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
-/** Max records that are not actions in one hold buffer. A full buffer drops the oldest. */
+/** Max non-action records in one hold buffer. A full buffer drops the oldest. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
 
-/** Max action records in one hold buffer. Actions have their own cap. A log storm cannot push one out. */
+/** Max action records in one hold buffer. Their own cap means a log storm can't push one out. */
 export const BUS_MAX_BOOT_BUFFER_ACTIONS = 2000;
 
-/** Max different values in each list of an onDrop summary. */
+/** Max distinct values in each list of an onDrop summary. */
 export const DROP_SUMMARY_MAX_ITEMS = 20;
 
 /**
- * Max characters of an untrusted message type in a diagnostic detail. The sender sets the text.
- * The longest BUS_TYPE value has 41 characters. Each valid type then fits.
+ * Max characters of an untrusted message type in a diagnostic detail, since the sender controls
+ * that text. The longest BUS_TYPE value is 41 characters, so every valid type fits.
  */
 export const BUS_TYPE_DETAIL_MAX_CHARS = 48;
 
@@ -1094,17 +1124,14 @@ export const BUS_TYPE_DETAIL_MAX_CHARS = 48;
 /** Breadcrumbs kept as context for the next error. */
 export const MAX_BREADCRUMBS = 50;
 
-/**
- * Time window in which the library counts identical errors but does not send them again,
- * in milliseconds.
- */
+/** How long identical errors are counted without being sent again, in milliseconds. */
 export const ERROR_DEDUPE_MS = 5000;
 
 // ----------------------------------
 // Per-record size caps
 // ----------------------------------
 
-/** Size caps for every record. The library applies them after sanitize and after redact. */
+/** Size caps for every record, applied after sanitize and after redact. */
 export const RECORD_LIMITS = {
   maxBodyChars: 4096,
   maxAttributeChars: 8192,
@@ -1121,9 +1148,9 @@ export const RECORD_LIMITS = {
 // ----------------------------------
 
 /**
- * Default runtime config before the consumer calls `configure()`. It excludes `serializer`.
- * `resolveConfig` supplies that default to prevent a circular import.
- * It comes after the constants that it reads. A const cannot be read before its line.
+ * The default runtime config, before the consumer calls `configure()`. `serializer` is left
+ * out, because `resolveConfig` supplies that default to avoid a circular import.
+ * This sits below the constants it reads, since a const can't be read before its own line.
  * @see {@link ResolvedConfig}
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
@@ -1148,6 +1175,33 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     enabled: false,
     flushIntervalMs: PROFILER_FLUSH_INTERVAL_MS,
     maxProbes: PROFILER_MAX_PROBES,
+    framePhases: false,
+    framePacing: false,
+  },
+  replay: {
+    enabled: false,
+    mode: "onError",
+    endpoint: "",
+    requireConsent: false,
+    bufferMs: 60_000,
+    maxBufferBytes: 10_000_000,
+    afterErrorMs: 5000,
+    uploadsPerWindow: 3,
+    batchSize: 200,
+    batchBytes: 512_000,
+    flushIntervalMs: 2000,
+    maxQueueBytes: 20_000_000,
+    maxAttempts: 3,
+    maskText: true,
+    maskInputs: true,
+    recordCanvas: false,
+    maskSelectors: [],
+    blockSelectors: [],
+    loader: null,
+    onSegment: null,
+    headers: null,
+    plugins: [],
+    recordOptions: {},
   },
   persistence: { namespace: "", requestPersistent: false },
   diagnostics: { throttleMs: 1000, consoleFallback: false, records: false },
@@ -1228,7 +1282,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     navigation: false,
     webVitals: false,
     longFrames: false,
-    longFrameThresholdMs: LONG_FRAME_THRESHOLD_MS,
+    longFrameMs: LONG_FRAME_THRESHOLD_MS,
     console: false,
     fullUrls: false,
     ignoreUrls: [],

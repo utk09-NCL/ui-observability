@@ -1,7 +1,6 @@
 // src/core/runtime.ts
 //
-// This runtime coordinates the subsystems. It manages their lifecycles, the configuration
-// and the routing of records.
+// Coordinates the subsystems. Manages their lifecycles, the configuration and record routing.
 
 import type { Bus } from "../bus/bus";
 import type { Receive, WorkerLike } from "../bus/links";
@@ -21,6 +20,7 @@ import {
   TELEMETRY_SDK_VERSION,
   TRACE_FLAGS_SAMPLED,
   TRACE_NAMESPACE,
+  INSTRUMENT_OPTIONS_FAULT,
 } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { BusMessage, BusRole } from "../models/bus";
@@ -83,10 +83,10 @@ import { sampleKey, shouldSample } from "./sampling";
 import type { Sender } from "./sender";
 import { rootSpan, type SpanData, spanFields } from "./spans";
 
-/** Constructor of one capture module. */
+/** Constructor for a capture module. */
 type CaptureClass = new (ctx: CaptureContext) => Capture;
 
-/** Import of each capture module. Each import makes a separate chunk. */
+/** The import for each capture module. Each one is its own chunk. */
 const CAPTURE_LOADERS = {
   errors: async (): Promise<CaptureClass> => (await import("../capture/errors")).ErrorCapture,
   network: async (): Promise<CaptureClass> => (await import("../capture/network")).NetworkCapture,
@@ -106,25 +106,40 @@ const CAPTURE_LOADERS = {
     (await import("../capture/resource-timing")).ResourceTimingCapture,
   lifecycle: async (): Promise<CaptureClass> =>
     (await import("../capture/lifecycle")).LifecycleCapture,
+  framePhases: async (): Promise<CaptureClass> =>
+    (await import("../capture/profiler-frames")).FramePhasesCapture,
+  framePacing: async (): Promise<CaptureClass> =>
+    (await import("../capture/profiler-frames")).FramePacingCapture,
+  replay: async (): Promise<CaptureClass> => (await import("../capture/replay")).ReplayCapture,
 };
 
-/** Name of one capture module. */
+/** Name of a capture module. */
 type CaptureName = keyof typeof CAPTURE_LOADERS;
 
-/** Constructor of the WebSocket capture plugin. */
+/** The parts of the session replay capture the runtime calls. */
+interface ReplayControl extends Capture {
+  /** Loads the recorder and starts it. */
+  start(): Promise<void>;
+  /** Stops the recorder and drops whatever hasn't been sent. */
+  stop(): void;
+  /** Drops the buffer and, if the recorder was running, starts a fresh recording. */
+  reset(): void;
+}
+
+/** Constructor for the WebSocket capture plugin. */
 type WebSocketClass = new (diagnostics: Diagnostics, config: ResolvedConfig) => CapturePlugin;
 
-/** Id of each plugin object. A new plugin object then changes the capture key. */
+/** An id per plugin object, so a new plugin object changes the capture key. */
 const pluginIds = new WeakMap<object, number>();
 
-/** Last plugin id that pluginId() gave. */
+/** The last id pluginId() handed out. */
 let lastPluginId = 0;
 
 /**
- * Gives the id of a plugin object. The capture key must not hold the plugin. A plugin can hold
- * a cycle, and JSON.stringify then throws.
- * @param plugin Plugin of the app.
- * @returns The id of the object.
+ * Returns a plugin object's id. The capture key can't hold the plugin itself, because a
+ * plugin can contain a cycle and JSON.stringify would throw.
+ * @param plugin The app's plugin.
+ * @returns The object's id.
  */
 function pluginId(plugin: object): number {
   let id = pluginIds.get(plugin);
@@ -137,19 +152,19 @@ function pluginId(plugin: object): number {
   return id;
 }
 
-/** Global symbol key of the singleton runtime. All federated bundles share it. */
+/** Global symbol key for the singleton runtime. All federated bundles share it. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
-/** Global symbol key of the runtime that shutdown() stopped. */
+/** Global symbol key for the runtime that shutdown() stopped. */
 const STOPPED_KEY = Symbol.for(RUNTIME_STOPPED_KEY);
 
-/** Config sections that the delivery stack reads one time, when it loads. */
+/** Config sections the delivery stack reads once, when it loads. */
 const SENDER_SECTIONS = ["batching", "retention"] as const;
 
-/** Config sections that a later configure() cannot change. */
+/** Config sections a later configure() can't change. */
 type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 
-/** Delivery settings that a rotation resets when the update omits them. */
+/** Delivery settings a rotation resets when the update leaves them out. */
 const DELIVERY_RESET = {
   endpoint: null,
   metricsEndpoint: "",
@@ -161,10 +176,10 @@ const DELIVERY_RESET = {
   transportWorker: undefined,
 } as const;
 
-/** Delivery settings that configure() cannot change while isolation is on. */
+/** Delivery settings configure() can't change while isolation is on. */
 const ROUTING_KEYS = Object.keys(DELIVERY_RESET) as (keyof typeof DELIVERY_RESET)[];
 
-/** Diagnostic codes that report a normal event, not a fault. Their records have the level INFO. */
+/** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
   "bus.role_resolved",
   "config.reconfigured",
@@ -174,10 +189,11 @@ const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
 ]);
 
 /**
- * Makes a text key of the capture section. A later configure() reinstalls the capture
- * modules only when the key changes. A reinstall unpatches and patches each host function.
+ * Builds a text key for the capture section. A later configure() reinstalls the capture
+ * modules only when the key changes, because a reinstall unpatches and repatches every host
+ * function.
  * @param capture Capture section.
- * @returns The key. A function and a RegExp give a fixed text.
+ * @returns The key. A function or a RegExp becomes fixed text.
  */
 function captureKey(capture: CaptureOptions): string {
   return JSON.stringify({
@@ -192,10 +208,10 @@ function captureKey(capture: CaptureOptions): string {
 }
 
 /**
- * Cuts the URL fields of a diagnostic detail. Their query can hold a key. onDiagnostic stays local
- * and keeps them.
- * @param detail Detail of a diagnostic event.
- * @returns The detail for a record.
+ * Trims the URL fields of a diagnostic detail, because their query can hold a key.
+ * onDiagnostic stays local and keeps them.
+ * @param detail A diagnostic event's detail.
+ * @returns The detail to put in a record.
  */
 function recordDetail(detail: unknown): unknown {
   if (!isObject(detail)) {
@@ -215,7 +231,7 @@ function recordDetail(detail: unknown): unknown {
 
 /**
  * Removes the delivery settings from a configuration. A console-only runtime must not send
- * or join a bus. The runtime of the other version does both.
+ * or join a bus, because the other version's runtime does both.
  * @param input Consumer configuration options.
  * @returns The options with no endpoint, no transport and bus mode "off".
  */
@@ -233,9 +249,9 @@ function consoleOnly(input: Partial<ObservabilityConfig>): Partial<Observability
 }
 
 /**
- * Tests if a configuration names a destination.
+ * Checks whether a configuration names a destination.
  * @param input Consumer configuration options.
- * @returns True with an endpoint, a signal endpoint or a transport.
+ * @returns True if it has an endpoint, a signal endpoint or a transport.
  */
 function sends(input: Partial<ObservabilityConfig>): boolean {
   return (
@@ -248,9 +264,9 @@ function sends(input: Partial<ObservabilityConfig>): boolean {
 }
 
 /**
- * Tests if a runtime on a global key comes from this version of the library.
- * @param runtime Runtime on the global key. A runtime before 0.9.0 has no sdkVersion.
- * @returns True if this copy can call the methods of the runtime.
+ * Checks whether a runtime on a global key comes from this version of the library.
+ * @param runtime Runtime on the global key. A runtime older than 0.9.0 has no sdkVersion.
+ * @returns True if this copy can call the runtime's methods.
  */
 function ownVersion(runtime: ObservabilityRuntime): boolean {
   return runtime.sdkVersion === TELEMETRY_SDK_VERSION;
@@ -258,38 +274,39 @@ function ownVersion(runtime: ObservabilityRuntime): boolean {
 
 /** Manages subsystem lifecycles, bus coordination and record delivery. */
 export class ObservabilityRuntime {
-  /** True while the runtime changes the security context. */
+  /** True while the security context is changing. */
   private rotating = false;
   /**
-   * True while this runtime has the profiler core attached. Without it, each configure() starts
-   * the sampling again, and a runtime with the profiler off makes the core and its global symbol.
+   * True while this runtime has the profiler core attached. Tracking it keeps configure() from
+   * restarting the sampling every time, and keeps a runtime with the profiler off from ever
+   * creating the core and its global symbol.
    */
   private profilerOn = false;
-  /** True while the runtime collects the last records of the old context. */
+  /** True while the old context's last records are being collected. */
   private closingContext = false;
   /** Version of another SDK copy that owns the page runtime, or null. */
   private mismatchVersion: string | null = null;
-  /** True if the configured context id differs from the owner context id. */
+  /** True if the configured context id differs from the owner's context id. */
   private contextMismatch = false;
-  /** Current context change. Shutdown waits for this promise. */
+  /** The context change in progress. Shutdown waits for this promise. */
   private rotation?: Promise<void>;
   /** Memory store kept for later context changes. */
   private memoryStorage?: StorageAdapter;
-  /** State of the request for persistent storage. getHealth() reports it. */
+  /** State of the persistent storage request. getHealth() reports it. */
   private storagePersistence: StoragePersistence = "off";
-  /** True while a diagnostic record goes out. A diagnostic during that time gives no record. */
+  /** True while a diagnostic record goes out. Diagnostics raised meanwhile produce no record. */
   private recordingDiagnostic = false;
-  /** Logger of the records that diagnostics.records gives. */
+  /** Logger for the records that diagnostics.records produces. */
   private readonly diagnosticLogger = new OneLogger(() => this, DIAGNOSTICS_NAMESPACE);
-  /** Records that minLevel or sampling dropped. An error of this context sends them first. */
+  /** Records that minLevel or sampling dropped. An error in this context sends them first. */
   private readonly debugBuffer = new DebugBuffer(() => this.config.debugBuffer);
   /** True if the app supplied a context id at startup. */
   private explicitSecurityContext: boolean;
-  /** True after this forwarder takes a context id from its owner. */
+  /** True once this forwarder has taken a context id from its owner. */
   private ownerAdopted = false;
 
   /**
-   * Checks if a security context change is in progress.
+   * Checks whether a security context change is in progress.
    * @returns True until the current change completes.
    */
   isRotating(): boolean {
@@ -297,22 +314,22 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Locks or unlocks configuration at the request of the app. Other code of this origin can
-   * call this method. The lock does not control access.
+   * Locks or unlocks configuration when the app asks. Any other code on this origin can call
+   * this too, so the lock is not access control.
    * @param locked True to refuse changes through configure().
    */
   setConfigurationLocked(locked: boolean): void {
     if (typeof locked === "boolean") this.config.lockConfiguration = locked;
   }
   /**
-   * Runtime of this copy of the library when another version owns the page runtime.
+   * This copy's runtime when another version of the library owns the page runtime.
    * It stays off the global key.
    */
   private static local: ObservabilityRuntime | null = null;
 
   /**
-   * Library version of this runtime. Another copy reads it from the global key.
-   * Two versions with one runtime call methods that the other version does not have.
+   * This runtime's library version. Another copy reads it from the global key, because two
+   * versions sharing one runtime would call methods the other version doesn't have.
    */
   readonly sdkVersion: string = TELEMETRY_SDK_VERSION;
 
@@ -328,10 +345,10 @@ export class ObservabilityRuntime {
   /** Identity context containing session, tab, and context identifiers. */
   readonly identity: Identity;
 
-  /** Stores for identity and journey keys. The runtime sets them at startup. */
+  /** Stores for identity and journey keys, set at startup. */
   private readonly stores: IdentityStores;
 
-  /** Identity strategy that the runtime used to make the stores. */
+  /** The identity strategy the stores were built with. */
   private readonly identityBuiltAs: IdentityStrategy;
 
   /** Throttled writer of the session's last-seen timestamp. */
@@ -355,7 +372,7 @@ export class ObservabilityRuntime {
   /** Record builder assembling structured log records. */
   readonly builder: RecordBuilder;
 
-  /** Slot of the remote sampling rules. The sender or the bus fills it. */
+  /** Slot for the remote sampling rules. The sender or the bus fills it. */
   private readonly remote: RemoteSlot = {
     sampling: null,
     changed: () => {
@@ -363,14 +380,29 @@ export class ObservabilityRuntime {
     },
   };
 
-  /** Count of delivery identity changes. The first id of a context is not a change. */
+  /** Number of delivery identity changes. A context's first id doesn't count as a change. */
   private identityEpoch = 0;
 
-  /** Timer that restores the local capture switches after the remote TTL. */
+  /** Session replay's hook. It gets every ERROR and FATAL record. */
+  private errorHook: ((record: LogRecord) => void) | undefined;
+
+  /**
+   * True after startReplay(), false after stopReplay(), undefined until either is called. The
+   * app's last choice survives a reinstall of the capture modules.
+   */
+  private replayConsent: boolean | undefined;
+
+  /** The installed session replay capture. */
+  private replay: ReplayControl | undefined;
+
+  /** Timer that restores the local capture switches once the remote TTL ends. */
   private remoteCaptureTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Settings of the current capture load or install. */
   private installedCaptureKey = "";
+
+  /** The replay settings the running replay capture was built with. */
+  private replayBuiltKey = "";
 
   /** Console sink for local developer output. */
   readonly console: ConsoleSink;
@@ -382,24 +414,27 @@ export class ObservabilityRuntime {
   private readonly meter: Meter;
 
   /**
-   * Cross-realm communication bus. It is null until its chunk loads.
-   * In bus.mode "off", it loads only when a child frame or a worker needs it.
+   * Cross-realm communication bus. Null until its chunk loads. In bus.mode "off", it loads
+   * only when a child frame or a worker needs it.
    */
   private bus: Bus | null = null;
 
-  /** Load and construction of the bus. It is undefined until the first need. */
+  /** Promise for the bus load and construction. Undefined until first needed. */
   private busBuilt?: Promise<Bus | null>;
 
-  /** Load and start of the bus. It is undefined until the first need. */
+  /** Promise for the bus load and start. Undefined until first needed. */
   private busLoad?: Promise<Bus | null>;
 
-  /** Storage strategy of the adapter. The runtime sets it when the build starts. */
+  /** The adapter's storage strategy, set when the build starts. */
   private storageBuiltAs?: StorageStrategy;
 
-  /** Delivery stack. The runtime sets it in the sender role with an endpoint, after the chunk loads. */
+  /**
+   * Delivery stack. Set in the sender role with an endpoint or a custom transport, once the
+   * chunk has loaded.
+   */
   private sender?: Sender;
 
-  /** Load of the delivery stack. It is undefined when nothing loads. A record then has no destination. */
+  /** The delivery stack load. Undefined when nothing loads, so records have no destination. */
   private senderLoad?: Promise<void>;
 
   /** Records that arrive while the delivery stack loads. */
@@ -410,10 +445,10 @@ export class ObservabilityRuntime {
   /** Active auto-capture instrumentation modules. */
   private readonly captures: Capture[] = [];
 
-  /** Count of capture installs. An install that a later install replaced stops after its load. */
+  /** Number of capture installs. An install replaced by a later one stops after its load. */
   private captureGeneration = 0;
 
-  /** Capture work that a rebuild of the capture modules must not repeat. */
+  /** Capture work that rebuilding the capture modules must not repeat. */
   private readonly captureOnce: CaptureOnce = {
     webVitals: false,
     navigationTiming: false,
@@ -422,21 +457,21 @@ export class ObservabilityRuntime {
     userTiming: false,
   };
 
-  /** Queue buffering records created before bus role resolution. */
+  /** Holds records created before the bus role is resolved. */
   private readonly bootBuffer = new HoldBuffer((record) => {
     this.dropHeld(record);
   });
 
-  /** Batch buffer staging records for microtask forwarding. */
+  /** Records staged for forwarding on the next microtask. */
   private forwardBuffer: LogRecord[] = [];
 
   /** True if a microtask drain of the forward buffer is pending. */
   private forwardScheduled = false;
 
-  /** True if startup has decided the bus role. A sender load waits for it. */
+  /** True once startup has decided the bus role. A sender load waits for it. */
   private roleResolved = false;
 
-  /** Resolves when startup releases the boot records. flush() waits for it. init() sets it. */
+  /** Resolves when startup releases the boot records. Set by init(), awaited by flush(). */
   private started: Promise<void> = Promise.resolve();
 
   /** True if asynchronous initialization is complete. */
@@ -445,30 +480,30 @@ export class ObservabilityRuntime {
   /** True if shutdown stopped the runtime. */
   private destroyed = false;
 
-  /** Timestamp of the last reported storage gap warning in epoch milliseconds. */
+  /** When the last storage gap warning was reported, in epoch milliseconds. */
   private lastGapAt = 0;
 
-  /** Record limits of the builder and the console. The first configure() of the app sets them. */
+  /** Record limits for the builder and the console. The app's first configure() sets them. */
   private readonly limits: ResolvedConfig["limits"];
 
-  /** Lifetime rules of the journey engine. The first configure() of the app sets the age. */
+  /** Lifetime rules for the journey engine. The app's first configure() sets the age. */
   private readonly journeyOptions: JourneyOptions;
 
-  /** False in a runtime that an early log call started. The first configure() then sets limits. */
+  /** False in a runtime started by an early log call. The first configure() then sets limits. */
   private tunablesLocked = true;
 
   /**
-   * True for a console-only runtime. It sends nothing, joins no bus and installs no capture.
-   * Another version of the library on the page, or a server, makes it console-only.
+   * True for a console-only runtime, which sends nothing, joins no bus and installs no capture.
+   * That happens next to another version of the library on the page, or on a server.
    */
   private readonly degraded: boolean;
 
-  /** True after the report of a destination on a server. The runtime reports it one time. */
+  /** True once a destination on a server has been reported. It is reported only once. */
   private serverReported = false;
 
   /**
-   * Ends the root span of a forwarder when its document unloads. The exit flush ends it only in
-   * the sender. Without this, the client spans of a frame or a view have no parent.
+   * Ends a forwarder's root span when its document unloads. The exit flush only ends it in the
+   * sender, so without this the client spans of a frame or a view have no parent.
    */
   private readonly onPageHide = (): void => {
     drainDeferred(this);
@@ -488,7 +523,7 @@ export class ObservabilityRuntime {
     this.diagnostics = new Diagnostics(input.onDiagnostic);
 
     this.platform = detectPlatform(this.diagnostics);
-    // A server has no page to capture and no storage. It writes to the console only.
+    // A server has no page to capture and no storage, so it only writes to the console.
     this.degraded = mismatch || this.onServer();
     this.config = resolveConfig(this.allowed(input), this.diagnostics);
     this.explicitSecurityContext = Boolean(input.securityContext?.id);
@@ -512,7 +547,7 @@ export class ObservabilityRuntime {
       this.config.correlation.sessionIdleMs,
     );
     this.breadcrumbs = new BreadcrumbBuffer(this.config.capturePolicy.breadcrumbs);
-    // Sample a span by its trace. The whole trace stays or goes.
+    // Sample a span by its trace, so the whole trace stays or goes.
     const keeps = (traceId: string): boolean =>
       sampleKey(traceId, this.config.sampling.defaultRate);
     this.tracing = new TraceEngine(
@@ -529,9 +564,9 @@ export class ObservabilityRuntime {
         },
       },
     );
-    // Do not await. Without OTel, records use the ambient trace. The library loses no record.
+    // Don't await. Without OTel, records use the ambient trace and nothing is lost.
     void this.tracing.loadOtel();
-    // The startup values stay. A later configure() cannot change the limits or the journey age.
+    // The startup values stick. A later configure() can't change the limits or the journey age.
     this.limits = { ...this.config.limits };
     this.console = new ConsoleSink(this.config.console, this.diagnostics, this.limits);
     this.drops = new DropReporter(this.config, this.diagnostics);
@@ -569,15 +604,15 @@ export class ObservabilityRuntime {
       this.diagnostics,
       this.config.metrics,
     );
-    // The record builder exists now. A diagnostic can become a record.
+    // The record builder exists now, so a diagnostic can become a record.
     this.diagnostics.setHandler(this.diagnosticHandler());
     this.syncProfiler();
   }
 
   /**
-   * Gives the handler of the diagnostics. With diagnostics.records, it also sends each event
-   * as a record.
-   * @returns The handler, or undefined without onDiagnostic and without diagnostic records.
+   * Returns the diagnostics handler. With diagnostics.records, it also sends every event as
+   * a record.
+   * @returns The handler, or undefined with no onDiagnostic and no diagnostic records.
    */
   private diagnosticHandler(): DiagnosticHandler | undefined {
     if (this.config.diagnostics.records === false) {
@@ -592,7 +627,7 @@ export class ObservabilityRuntime {
 
   /**
    * Sends a diagnostic event as a record when diagnostics.records selects its code.
-   * A diagnostic during that send gives no record. That stops a loop.
+   * A diagnostic raised during that send produces no record, which stops a loop.
    * @param event Diagnostic event.
    */
   private recordDiagnostic(event: DiagnosticEvent): void {
@@ -618,16 +653,16 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Adds a breadcrumb from app code. It copies the data now. A later change of the object of the
-   * app then does not change the trail.
-   * @param message Description of the event. A JavaScript caller can pass a value that is not a
-   * string. The library converts it.
+   * Adds a breadcrumb from app code. The data is copied now, so a later change to the app's
+   * object doesn't change the trail.
+   * @param message Description of the event. A JavaScript caller can pass a non-string, which
+   * is converted.
    * @param data Optional metadata.
    */
   addBreadcrumb(message: unknown, data?: Record<string, unknown>): void {
     if (this.rotating || this.destroyed) return;
-    // A message with a toString() that throws, or a data getter that throws, must not throw
-    // into the call of the app.
+    // A message whose toString() throws, or a data getter that throws, must not throw into
+    // the app's call.
     this.diagnostics.guard(
       "record.sanitize_failed",
       "The library could not add the breadcrumb.",
@@ -649,23 +684,25 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Adds a value to a counter or a histogram. The meter sends one point at each interval.
-   * @param def Definition of the instrument.
+   * Adds a value to a counter or a histogram. The meter sends one point per interval.
+   * @param def The instrument's definition.
    * @param value Value to add.
-   * @param attributes Attribute set of the value.
+   * @param attributes The value's attribute set.
    */
   recordMetric(def: InstrumentDef, value: number, attributes?: MetricAttributes): void {
-    // Guard against a value after shutdown. Its interval timer would outlive the runtime.
+    // Guard against a value after shutdown, whose interval timer would outlive the runtime.
     if (!this.destroyed && !this.rotating) {
       this.meter.record(def, value, attributes);
     }
   }
 
   /**
-   * Starts a timed operation. A shutdown or a new delivery identity before its end drops its values.
+   * Starts a timed operation. Its values are dropped if the runtime has shut down or a rotation
+   * is running when it ends. With `securityContext.isolation`, a new delivery identity before
+   * the end drops them too.
    * @param name Operation name.
-   * @param attributes Attribute set of each histogram point.
-   * @returns The handle of the operation.
+   * @param attributes Attribute set for every histogram point.
+   * @returns The operation's handle.
    */
   startMeasure(name: string, attributes?: MetricAttributes): Measure {
     const epoch = this.identityEpoch;
@@ -679,7 +716,14 @@ export class ObservabilityRuntime {
       () => ({ ...attributes }),
     );
 
-    return createMeasure(name, copied ?? {}, this.tracing.request().span, {
+    // The name's toString() can throw. If it does, the measure gets an empty name.
+    const label = this.diagnostics.guard(
+      "record.sanitize_failed",
+      "The library could not read the name of the measure.",
+      () => "".concat(name),
+    );
+
+    return createMeasure(label ?? "", copied ?? {}, this.tracing.request().span, {
       metric: (def, value, points) => {
         if (current()) {
           this.recordMetric(def, value, points);
@@ -694,8 +738,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Builds and emits the record of one span. The console does not print it. minLevel does not
-   * drop it. The trace engine sampled the trace before the span existed.
+   * Builds and emits the record for one span. The console doesn't print it and minLevel
+   * doesn't drop it. The trace engine already sampled the trace before the span existed.
    * @param span The span data.
    */
   private recordSpan(span: SpanData): void {
@@ -716,10 +760,10 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Builds and emits the record of one aggregated point. The console does not print it.
+   * Builds and emits the record for one aggregated point. The console doesn't print it.
    * @param name Metric name.
-   * @param attributes Attributes of the call. The record limits apply to them.
-   * @param fields Metric fields of the point. The record limits do not cut them.
+   * @param attributes The call's attributes. The record limits apply to them.
+   * @param fields The point's metric fields. The record limits don't truncate them.
    */
   private emitPoint(
     name: string,
@@ -739,8 +783,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Turns the profiler on or off from profiler.enabled. A switch to off first sends the points
-   * that wait. Without that collect, the switch drops them.
+   * Turns the profiler on or off to match profiler.enabled. Before switching off it sends the
+   * points that are waiting, because the switch would otherwise drop them.
    */
   private syncProfiler(): void {
     const { enabled } = this.config.profiler;
@@ -756,7 +800,7 @@ export class ObservabilityRuntime {
       return;
     }
 
-    // The profiler points use the path of the meter points. The hooks and the transports apply.
+    // Profiler points take the same path as meter points, so hooks and transports apply.
     const sink: ProfilerSink = {
       capacity: this.config.profiler.maxProbes,
       intervalMs: () => this.config.profiler.flushIntervalMs,
@@ -764,15 +808,37 @@ export class ObservabilityRuntime {
         this.emitPoint(name, attributes, fields);
       },
       diagnostics: this.diagnostics,
-      // The same rule as emit(). The first collect of a rotation still goes to the old sender.
+      // Same rule as emit(): the first collect of a rotation still goes to the old sender.
       ready: () => !this.rotating || this.closingContext,
+      outlier: (name, ms) => {
+        this.breadcrumbs.push({
+          t: Date.now(),
+          category: "profile",
+          message: `${name} ${String(Math.round(ms))} ms`,
+        });
+      },
     };
     core.attach(sink);
   }
 
   /**
-   * Sends the open interval of the meter and the profiler. The profiler does not calibrate here.
-   * The flush and the exit path then stay short and synchronous.
+   * Gives or withdraws consent for session replay, and starts or stops the recorder if the
+   * capture is installed.
+   * @param consent True starts the recorder, false stops it.
+   */
+  setReplay(consent: boolean): void {
+    this.replayConsent = consent;
+
+    if (consent) {
+      void this.replay?.start();
+    } else {
+      this.replay?.stop();
+    }
+  }
+
+  /**
+   * Sends the open interval of the meter and the profiler. The profiler doesn't calibrate here,
+   * which keeps flush and the exit path short and synchronous.
    */
   private collectPoints(): void {
     this.meter.collect();
@@ -782,8 +848,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Starts a new identity epoch. With isolation, the profiler also drops its data and its open
-   * spans. A span of the old identity then adds no value to the new identity.
+   * Starts a new identity epoch. With isolation on, the profiler also drops its data and open
+   * spans, so a span from the old identity can't add to the new one.
    */
   private advanceIdentity(): void {
     this.identityEpoch++;
@@ -795,8 +861,8 @@ export class ObservabilityRuntime {
   /**
    * Checks the source policy before a direct child link opens.
    * @param source Child window.
-   * @param origin Origin of the child window.
-   * @returns True if the bus permits this source.
+   * @param origin The child window's origin.
+   * @returns True if the bus allows this source.
    */
   readonly busCanAccept = (source: Window, origin: string): boolean =>
     this.bus?.isRegistered(source, origin) ?? false;
@@ -805,14 +871,14 @@ export class ObservabilityRuntime {
    * Receives direct messages from same-origin child frames.
    * @param message Inbound bus message.
    * @param reply Direct response callback.
-   * @param source Window of the child frame.
+   * @param source The child frame's window.
    */
   readonly busAccept = (message: BusMessage, reply: Receive, source?: Window): void => {
     if (this.destroyed) {
       return;
     }
 
-    // Messages wait for the bus in arrival order. A promise runs its callbacks in order.
+    // Messages wait for the bus in arrival order, because a promise runs its callbacks in order.
     void this.ensureBus().then((bus) => {
       if (!bus || this.destroyed) {
         return;
@@ -829,7 +895,7 @@ export class ObservabilityRuntime {
   };
 
   /**
-   * Returns the runtime on the global key of this realm. Another copy of the library can own it.
+   * Returns the runtime on this realm's global key. Another copy of the library can own it.
    * @returns Pinned runtime instance or null.
    */
   private static pinned(): ObservabilityRuntime | null {
@@ -840,8 +906,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Returns the local runtime of this copy. Without one, it returns the pinned runtime.
-   * A pinned runtime of another version gives null. A log call then starts the local runtime.
+   * Returns this copy's local runtime, or the pinned runtime if there is none. A pinned
+   * runtime from another version returns null, and a log call then starts the local runtime.
    * @returns Active runtime instance or null.
    */
   static current(): ObservabilityRuntime | null {
@@ -856,7 +922,7 @@ export class ObservabilityRuntime {
 
   /**
    * Returns the runtime that shutdown() stopped, until the next configure().
-   * A stopped runtime of another version gives null.
+   * A stopped runtime from another version returns null.
    * @returns Stopped runtime instance or null.
    */
   static stopped(): ObservabilityRuntime | null {
@@ -871,8 +937,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Tests if shutdown() stopped this runtime.
-   * @returns True after destroy() starts.
+   * Checks whether shutdown() stopped this runtime.
+   * @returns True once destroy() starts.
    */
   isDestroyed(): boolean {
     return this.destroyed;
@@ -887,7 +953,7 @@ export class ObservabilityRuntime {
   static configure(input: Partial<ObservabilityConfig>, implicit = false): ObservabilityRuntime {
     const local = ObservabilityRuntime.local;
     if (local && !local.destroyed) {
-      // The local runtime stays console-only. React StrictMode calls configure() two times.
+      // The local runtime stays console-only. React StrictMode calls configure() twice.
       local.reconfigure(input);
       return local;
     }
@@ -895,7 +961,7 @@ export class ObservabilityRuntime {
 
     const pinned = ObservabilityRuntime.pinned();
     if (pinned) {
-      // A runtime before 0.9.0 has no sdkVersion. It is also another version.
+      // A runtime older than 0.9.0 has no sdkVersion, which also counts as another version.
       if (!ownVersion(pinned)) {
         return ObservabilityRuntime.startDegraded(input, pinned.sdkVersion);
       }
@@ -907,7 +973,7 @@ export class ObservabilityRuntime {
     }
 
     const runtime = new ObservabilityRuntime(input);
-    // The first configure() of the app sets the limits of a default runtime.
+    // The app's first configure() sets the limits of a default runtime.
     runtime.tunablesLocked = !implicit;
     (globalThis as Record<symbol, unknown>)[RUNTIME_KEY] = runtime;
     Reflect.deleteProperty(globalThis, STOPPED_KEY);
@@ -916,10 +982,10 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Starts a console-only runtime next to the runtime of another version. It sends nothing,
-   * joins no bus and installs no capture. The other version keeps the page runtime.
+   * Starts a console-only runtime next to another version's runtime. It sends nothing, joins
+   * no bus and installs no capture. The other version keeps the page runtime.
    * @param input Consumer configuration options.
-   * @param found sdkVersion of the pinned runtime. A runtime before 0.9.0 has none.
+   * @param found The pinned runtime's sdkVersion. A runtime older than 0.9.0 has none.
    * @returns The local runtime.
    */
   private static startDegraded(
@@ -964,12 +1030,12 @@ export class ObservabilityRuntime {
     }
     drainDeferred(this);
     const accepted = this.keepDestination(this.keepRouting(this.allowed(input)));
-    // The first configure() after an implicit start is the startup of the app. Its id is explicit.
+    // The first configure() after an implicit start is the app's startup, so its id is explicit.
     if (!this.tunablesLocked && accepted.securityContext?.id) {
       this.explicitSecurityContext = true;
     }
     for (const key of ["correlation", "persistence"] as const) {
-      // The sender reads the namespace when it loads. Before that, the first configure() can set it.
+      // The sender reads the namespace when it loads. Until then, the first configure() can set it.
       if (key === "persistence" && !this.tunablesLocked && this.senderLoad === undefined) {
         continue;
       }
@@ -985,7 +1051,7 @@ export class ObservabilityRuntime {
     this.keepStartupTunables(next);
     const { redact, processors } = this.config;
     applyResolvedConfig(this.config, next);
-    // A kept record has only the hooks of its log call. New hooks must not miss it.
+    // A kept record only saw the hooks from its own log call. New hooks must not miss it.
     if (this.config.redact !== redact || this.config.processors !== processors) {
       this.debugBuffer.clear();
     }
@@ -1000,11 +1066,12 @@ export class ObservabilityRuntime {
     this.console.update(this.config.console);
     this.keepBuiltStorage();
     this.keepBuiltIdentity();
-    // The handler and the resource are current now. A point and a diagnostic use them.
+    // The handler and the resource are up to date now, and points and diagnostics use both.
     this.syncProfiler();
 
-    // Reinstall only on a change. A reinstall unpatches and patches each host function.
-    // A stale capture load stops at its generation check. A reinstall is safe at any time.
+    // Reinstall only on a change, because a reinstall unpatches and repatches every host
+    // function. A stale capture load stops at its generation check, so a reinstall is safe
+    // at any time.
     this.refreshCaptures();
 
     if (this.roleResolved) {
@@ -1015,7 +1082,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Tests if the runtime runs on a server, for example Node during server-side rendering.
+   * Checks whether the runtime is on a server, for example Node during server-side rendering.
    * @returns True on Node.
    */
   private onServer(): boolean {
@@ -1023,10 +1090,10 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Removes the delivery settings from the input of a console-only runtime. On a server, it
-   * reports a destination one time.
+   * Removes the delivery settings from a console-only runtime's input. On a server, it
+   * reports a destination once.
    * @param input Consumer configuration options.
-   * @returns The options that the runtime accepts.
+   * @returns The options the runtime accepts.
    */
   private allowed(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
     if (!this.degraded) {
@@ -1054,8 +1121,8 @@ export class ObservabilityRuntime {
       return input;
     }
 
-    // Compare resolved values. An unset endpoint keeps the endpoint in force. It is not a change.
-    // A separate reporter prevents a second count of the diagnostics of the real resolve.
+    // Compare resolved values. An unset endpoint keeps the current endpoint, so it isn't a
+    // change. A separate reporter keeps the real resolve's diagnostics from being counted twice.
     const probe = resolveConfig(input, new Diagnostics(), this.config);
     const refused: string[] = ROUTING_KEYS.filter(
       (key) => !sameConfig(probe[key], this.config[key]),
@@ -1087,17 +1154,17 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Restores the startup tunables in the next config. A part of the runtime reads each tunable
-   * one time. A later change has no effect. The runtime then refuses it.
-   * @param next Resolved config of a later configure() call.
+   * Restores the startup tunables in the next config. Each tunable is read once by some part
+   * of the runtime, so a later change would have no effect and is refused.
+   * @param next The resolved config from a later configure() call.
    */
   private keepStartupTunables(next: ResolvedConfig): void {
     if (this.senderLoad !== undefined) {
       this.keepSections(next, SENDER_SECTIONS);
     }
 
-    // An early log call starts a runtime with defaults. The first configure() of the app sets
-    // the limits and the journey age of that runtime.
+    // An early log call starts a runtime with defaults. The app's first configure() sets that
+    // runtime's limits and journey age.
     if (!this.tunablesLocked) {
       this.tunablesLocked = true;
       Object.assign(this.limits, next.limits);
@@ -1129,9 +1196,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Refuses a change of config sections. It restores the values in force in the next config.
-   * @param next Resolved config of a later configure() call.
-   * @param sections Sections that cannot change.
+   * Refuses a change to config sections by restoring the current values in the next config.
+   * @param next The resolved config from a later configure() call.
+   * @param sections Sections that can't change.
    */
   private keepSections(next: ResolvedConfig, sections: readonly StartupSection[]): void {
     for (const section of sections) {
@@ -1141,7 +1208,7 @@ export class ObservabilityRuntime {
 
       this.diagnostics.report(
         "config.invalid",
-        `${section} cannot change after startup. The values in force stay.`,
+        `${section} cannot change after startup. The current values stay.`,
         { requested: next[section] },
       );
       Object.assign(next, { [section]: this.config[section] });
@@ -1149,9 +1216,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Restores the storage strategy of the built adapter. The runtime reads all other keys
-   * live. It builds the adapter only one time. A new adapter strands the batches in the
-   * old adapter. That loss is worse than a refused change.
+   * Restores the built adapter's storage strategy. Every other key is read live, but the
+   * adapter is built only once. A new adapter would strand the batches in the old one, and
+   * that loss is worse than a refused change.
    */
   private keepBuiltStorage(): void {
     const built = this.storageBuiltAs;
@@ -1170,7 +1237,7 @@ export class ObservabilityRuntime {
 
   /**
    * Refuses a change that leaves the built delivery stack with no destination.
-   * Without a destination, the retry engine removes each stored batch as delivered.
+   * Without one, the retry engine removes every stored batch as if it were delivered.
    * @param input Partial configuration to merge.
    * @returns Input without the refused changes.
    */
@@ -1180,14 +1247,14 @@ export class ObservabilityRuntime {
     }
 
     let accepted = input;
-    // The stack selects its transport one time. A rotation can select another transport.
+    // The stack picks its transport once. A rotation can pick another one.
     for (const key of ["transport", "transportWorker"] as const) {
       const addsOrRemoves =
         key in input && (input[key] === undefined) !== (this.config[key] === undefined);
       if (addsOrRemoves) {
         this.diagnostics.report(
           "config.invalid",
-          `You cannot add or remove ${key} after the delivery stack loads. The transport in force stays.`,
+          `You cannot add or remove ${key} after the delivery stack loads. The current transport stays.`,
         );
         accepted = { ...accepted };
         Reflect.deleteProperty(accepted, key);
@@ -1199,9 +1266,9 @@ export class ObservabilityRuntime {
     if (removesEndpoint && this.config.transport === undefined) {
       this.diagnostics.report(
         "config.invalid",
-        "You cannot remove the endpoint after the delivery stack loads. The endpoint in force stays.",
+        "You cannot remove the endpoint after the delivery stack loads. The current endpoint stays.",
       );
-      // An undefined endpoint keeps the endpoint in force, and keeps it in ignoreUrls.
+      // An undefined endpoint keeps the current endpoint, and keeps it in ignoreUrls.
       accepted = { ...accepted, endpoint: undefined };
     }
 
@@ -1209,8 +1276,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Restores the identity strategy from startup. The ids exist from startup.
-   * A later change cannot move them to another store.
+   * Restores the identity strategy from startup. The ids have existed since startup, and a
+   * later change can't move them to another store.
    */
   private keepBuiltIdentity(): void {
     const built = this.identityBuiltAs;
@@ -1229,21 +1296,24 @@ export class ObservabilityRuntime {
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
   private async init(): Promise<void> {
-    // A console-only runtime never forwards. Node has no addEventListener.
+    // A console-only runtime never forwards, and Node has no addEventListener.
     if (!this.degraded) {
       addEventListener("pagehide", this.onPageHide);
     }
 
-    // Start the capture imports now. They download in parallel with the bus and the sender.
+    // Start the capture imports now so they download in parallel with the bus and the sender.
     const captures = this.installCaptures();
 
-    // Set before the first await. A flush() directly after configure() then waits for it.
+    // Set before the first await, so a flush() right after configure() waits for it.
     this.started = this.boot();
     await this.started;
     await captures;
   }
 
-  /** Resolves the bus role, loads the delivery stack and releases the boot records. It never rejects. */
+  /**
+   * Resolves the bus role, loads the delivery stack and releases the boot records.
+   * Never rejects.
+   */
   private async boot(): Promise<void> {
     try {
       const journeyReady = this.journey.bootstrap();
@@ -1263,15 +1333,15 @@ export class ObservabilityRuntime {
         error,
       );
     } finally {
-      // Release the boot records before the captures load. The exit flush can then find them.
+      // Release the boot records before the captures load, so the exit flush can find them.
       this.ready = true;
       this.releaseBootBuffer();
     }
   }
 
   /**
-   * Starts the load of the bus one time.
-   * @returns Promise that resolves to the started bus, or null if it did not load.
+   * Starts the bus load once.
+   * @returns Promise that resolves to the started bus, or null if it didn't load.
    */
   private ensureBus(): Promise<Bus | null> {
     this.busLoad ??= this.startBus();
@@ -1279,8 +1349,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Loads and constructs the bus one time. It does not call start().
-   * @returns Promise that resolves to the constructed bus, or null if it did not load.
+   * Loads and constructs the bus once. Does not call start().
+   * @returns Promise that resolves to the constructed bus, or null if it didn't load.
    */
   private constructBus(): Promise<Bus | null> {
     this.busBuilt ??= this.buildBus();
@@ -1288,8 +1358,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Starts the constructed bus. It never rejects.
-   * @returns Promise that resolves to the started bus, or null if it did not load or start.
+   * Starts the constructed bus. Never rejects.
+   * @returns Promise that resolves to the started bus, or null if it didn't load or start.
    */
   private async startBus(): Promise<Bus | null> {
     const bus = await this.constructBus();
@@ -1313,12 +1383,12 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Imports and constructs the bus. It never rejects. */
+  /** Imports and constructs the bus. Never rejects. */
   private async buildBus(): Promise<Bus | null> {
     try {
       const { Bus } = await import("../bus/bus");
 
-      // Guard against a shutdown during the load. A bus on a destroyed runtime leaks its links.
+      // A shutdown can happen during the load, and a bus on a destroyed runtime leaks its links.
       if (this.destroyed) {
         return null;
       }
@@ -1341,8 +1411,9 @@ export class ObservabilityRuntime {
             }
             this.contextMismatch = false;
             if (this.config.securityContext.id !== id) {
-              // The first owner id keeps the startup records and the context of the app. Those
-              // records had no other identity. A later change retires them, also before ready.
+              // The first owner id keeps the startup records and the app's context, because
+              // those records had no other identity. A later change retires them, even before
+              // ready.
               if (this.ownerAdopted) {
                 drainDeferred(this);
                 this.drops.add("security_context", [
@@ -1353,17 +1424,18 @@ export class ObservabilityRuntime {
                 this.forwardBuffer = [];
                 this.context.clear();
                 this.breadcrumbs.clear();
-                // collect() removes the open measurements. emit() refuses them during this reset.
+                // collect() removes the open measurements, and emit() refuses them during this
+                // reset.
                 const rotating = this.rotating;
                 this.rotating = true;
                 this.collectPoints();
-                // The profiler keeps its data while emit() refuses. The data of the old owner
-                // must not go to the new owner.
+                // The profiler holds on to its data while emit() refuses records. Don't let the
+                // old owner's data reach the new owner.
                 if (this.profilerOn) {
                   profilerCore().reset();
                 }
-                // A same-origin owner stores its new session before it sends the new id. Use that
-                // session. Without it, each frame starts a different session.
+                // A same-origin owner stores its new session before it sends the new id, so use
+                // that session. Otherwise every frame starts a different session.
                 const shared = this.sessionTouch.stored();
                 this.resetSession(
                   shared !== undefined && shared !== this.identity.sessionId
@@ -1372,7 +1444,7 @@ export class ObservabilityRuntime {
                 );
                 this.rotating = rotating;
                 this.advanceIdentity();
-                // The rules of the old owner must not apply to the new identity.
+                // The old owner's rules must not apply to the new identity.
                 this.remote.sampling = null;
                 this.refreshCaptures();
               }
@@ -1419,7 +1491,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Loads the delivery stack if this context is the sender and has an endpoint.
+   * Loads the delivery stack if this context is the sender and has a destination, that is an
+   * endpoint or a custom transport.
    * @returns Promise that resolves when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
@@ -1431,15 +1504,15 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Tests if the config names a destination for the records.
-   * @returns True with an endpoint or a custom transport.
+   * Checks whether the config names a destination for the records.
+   * @returns True if it has an endpoint or a custom transport.
    */
   private hasDestination(): boolean {
     return Boolean(this.config.endpoint) || this.config.transport !== undefined;
   }
 
   /**
-   * Starts the load of the delivery stack one time.
+   * Starts the delivery stack load once.
    * @returns Promise that resolves when the load completes or fails.
    */
   private loadSender(): Promise<void> {
@@ -1447,7 +1520,10 @@ export class ObservabilityRuntime {
     return this.senderLoad;
   }
 
-  /** Imports and builds the delivery stack. It then moves the held records into it. It never rejects. */
+  /**
+   * Imports and builds the delivery stack, then moves the held records into it.
+   * Never rejects.
+   */
   private async buildSender(): Promise<void> {
     this.storageBuiltAs = this.config.storage;
 
@@ -1483,7 +1559,7 @@ export class ObservabilityRuntime {
 
       this.sender = sender;
     } catch (error) {
-      // Clear the load. A later configure() can then try again.
+      // Clear the load so a later configure() can try again.
       this.senderLoad = undefined;
       this.diagnostics.report(
         "pipeline.crashed",
@@ -1515,9 +1591,60 @@ export class ObservabilityRuntime {
       unrefTimer(this.remoteCaptureTimer);
     }
 
-    if (captureKey(this.effectiveCapture()) !== this.installedCaptureKey) {
+    if (this.captureState(this.effectiveCapture()) !== this.installedCaptureKey) {
       void this.installCaptures();
     }
+  }
+
+  /**
+   * Serializes the current capture settings and profiler observers into one string. When the
+   * string changes, the captures are reinstalled.
+   * @param settings Current capture settings.
+   * @returns The string.
+   */
+  private captureState(settings: CaptureOptions): string {
+    const { enabled, framePhases, framePacing } = this.config.profiler;
+
+    return `${captureKey(settings)}${String(enabled && framePhases)}${String(enabled && framePacing)}${this.replayState(settings)}`;
+  }
+
+  /**
+   * Serializes what the replay recorder reads when it starts. The replay capture has its own
+   * key because a restart drops the buffer, so an unrelated capture change must not cause one.
+   * The other replay values are read on use and apply without a restart.
+   * @param settings Current capture settings.
+   * @returns The string. Empty while replay is off, so a replay change then installs nothing.
+   */
+  private replayState(settings: CaptureOptions): string {
+    const { replay } = this.config;
+
+    if (!replay.enabled) {
+      return "";
+    }
+
+    // Functions and recordOptions go in by identity: a function doesn't stringify, and the
+    // app's recordOptions can have a cycle or a throwing getter. The endpoint and onSegment are
+    // in, so a buffer never goes to a destination it wasn't recorded for. fullUrls and
+    // ignoreUrls are in because the kept capture reads them from its install-time settings,
+    // and a buffer recorded with full URLs must not survive the app turning them off.
+    // replay.headers stays out, so a refreshed token doesn't drop the buffer.
+    return JSON.stringify([
+      replay.loader && pluginId(replay.loader),
+      replay.onSegment && pluginId(replay.onSegment),
+      pluginId(replay.recordOptions),
+      replay.endpoint,
+      replay.requireConsent,
+      replay.mode,
+      replay.maskText,
+      replay.maskInputs,
+      replay.maskSelectors,
+      replay.blockSelectors,
+      replay.recordCanvas,
+      replay.bufferMs,
+      replay.plugins.map(pluginId),
+      settings.fullUrls,
+      settings.ignoreUrls.map(String),
+    ]);
   }
 
   /** Returns local capture settings with the permitted remote switches. */
@@ -1537,7 +1664,7 @@ export class ObservabilityRuntime {
     return settings;
   }
 
-  /** Loads, builds and installs the enabled capture modules. It never rejects. */
+  /** Loads, builds and installs the enabled capture modules. Never rejects. */
   private async installCaptures(): Promise<void> {
     // A console-only runtime next to another version patches nothing. The other version does.
     if (this.degraded) {
@@ -1546,8 +1673,21 @@ export class ObservabilityRuntime {
 
     const generation = ++this.captureGeneration;
     const settings = this.effectiveCapture();
-    this.installedCaptureKey = captureKey(settings);
+    this.installedCaptureKey = this.captureState(settings);
+    const replayKey = this.replayState(settings);
+
+    // The recorder reads the live config whenever it starts, and newSession() or startReplay()
+    // can restart it at any time. So once any install has asked for different settings, the
+    // running recorder may no longer match the key it was built with, and it is never kept.
+    if (replayKey !== this.replayBuiltKey) {
+      this.replayBuiltKey = "";
+    }
+
+    // A running recorder whose start settings didn't change stays as it is. Reinstalling it
+    // would drop the buffer, and with it the "before" of the next error.
+    const kept = replayKey !== "" && replayKey === this.replayBuiltKey ? this.replay : undefined;
     const names: CaptureName[] = [];
+    const { profiler } = this.config;
 
     if (settings.errors || settings.rejections || settings.resourceErrors) {
       names.push("errors");
@@ -1564,7 +1704,7 @@ export class ObservabilityRuntime {
     if (settings.longFrames) {
       names.push("longFrames");
     }
-    // An empty list wraps nothing. Do not load the chunk for it.
+    // An empty list wraps nothing, so don't load the chunk for it.
     const consoleOn = Array.isArray(settings.console)
       ? settings.console.length > 0
       : settings.console;
@@ -1588,19 +1728,30 @@ export class ObservabilityRuntime {
     if (settings.lifecycle) {
       names.push("lifecycle");
     }
+    // The profiler's observers share one chunk, and it only loads with the profiler on.
+    if (profiler.enabled && profiler.framePhases) {
+      names.push("framePhases");
+    }
+    if (profiler.enabled && profiler.framePacing) {
+      names.push("framePacing");
+    }
+    if (this.config.replay.enabled && !kept) {
+      names.push("replay");
+    }
 
     const [classes, WebSocketCapture] = await Promise.all([
       Promise.all(names.map((name) => this.loadCapture(name))),
       settings.webSocket ? this.loadWebSocket() : undefined,
     ]);
 
-    // Guard against a later install or a shutdown during the load. A stale capture leaks its listeners.
+    // Guard against a later install or a shutdown during the load. A stale capture would
+    // leak its listeners.
     if (generation !== this.captureGeneration || this.destroyed) {
       return;
     }
 
-    // Swap the old set for the new set in one synchronous step. No interval runs without capture.
-    this.uninstallCaptures();
+    // Swap the old set for the new one in one synchronous step, leaving no gap without capture.
+    this.uninstallCaptures(kept);
 
     const ctx: CaptureContext = {
       isActive: () => !this.destroyed && !this.rotating,
@@ -1617,13 +1768,31 @@ export class ObservabilityRuntime {
         this.recordSpan(span);
       },
       sessionId: () => this.identity.sessionId,
+      onError: (hook) => {
+        this.errorHook = hook;
+      },
+      setContext: (key, value) => {
+        if (value === undefined) {
+          this.context.remove(key);
+        } else {
+          this.context.set(key, value);
+        }
+      },
+      replayConsent: () => this.replayConsent,
     };
 
-    for (const CaptureModule of classes) {
+    classes.forEach((CaptureModule, index) => {
       if (CaptureModule) {
-        this.captures.push(new CaptureModule(ctx));
+        const capture = new CaptureModule(ctx);
+        this.captures.push(capture);
+
+        // Find the replay capture by its loader, not by its name. A plugin could use that name.
+        if (names[index] === "replay") {
+          this.replay = capture as ReplayControl;
+          this.replayBuiltKey = replayKey;
+        }
       }
-    }
+    });
 
     const plugins = WebSocketCapture
       ? [...settings.plugins, new WebSocketCapture(this.diagnostics, ctx.config)]
@@ -1644,22 +1813,32 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Uninstalls the active capture modules. */
-  private uninstallCaptures(): void {
+  /**
+   * Uninstalls the active capture modules.
+   * @param kept A replay capture that stays installed, if there is one.
+   */
+  private uninstallCaptures(kept?: ReplayControl): void {
     for (const capture of this.captures) {
-      this.diagnostics.guard(
-        "capture.install_failed",
-        `The library could not uninstall the ${capture.name} capture.`,
-        () => {
-          capture.uninstall();
-        },
-      );
+      if (capture !== kept) {
+        this.diagnostics.guard(
+          "capture.install_failed",
+          `The library could not uninstall the ${capture.name} capture.`,
+          () => {
+            capture.uninstall();
+          },
+        );
+      }
     }
     this.captures.length = 0;
+    this.replay = kept;
+
+    if (kept) {
+      this.captures.push(kept);
+    }
   }
 
   /**
-   * Imports the WebSocket capture plugin. A failed import reports and skips it.
+   * Imports the WebSocket capture plugin. A failed import is reported and skipped.
    * @returns Promise that resolves to the class, or undefined if the import failed.
    */
   private loadWebSocket(): Promise<WebSocketClass | undefined> {
@@ -1671,8 +1850,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Wraps a plugin as a capture module. The plugin gets public tools only.
-   * @param plugin Plugin of the app, or a built-in plugin.
+   * Wraps a plugin as a capture module. The plugin only gets public tools.
+   * @param plugin The app's plugin, or a built-in one.
    * @returns The capture module.
    */
   private pluginCapture(plugin: CapturePlugin): Capture {
@@ -1680,10 +1859,13 @@ export class ObservabilityRuntime {
     const record: RecordMetric = (def, value, attributes) => {
       this.recordMetric(def, value, attributes);
     };
+    const fault = (error: unknown): void => {
+      this.diagnostics.report("config.invalid", INSTRUMENT_OPTIONS_FAULT, undefined, error);
+    };
     const ctx: PluginContext = {
       logger: new OneLogger(() => this, `${CAPTURE_NAMESPACE}.${name}`),
-      counter: (metric, options = {}) => makeCounter(metric, options, record),
-      histogram: (metric, options = {}) => makeHistogram(metric, options, record),
+      counter: (metric, options = {}) => makeCounter(metric, options, record, fault),
+      histogram: (metric, options = {}) => makeHistogram(metric, options, record, fault),
       addBreadcrumb: (message, data) => {
         this.addBreadcrumb(message, data);
       },
@@ -1702,7 +1884,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Imports one capture module. A failed import reports and skips that module only.
+   * Imports one capture module. A failed import is reported and skips only that module.
    * @param name Capture module name.
    * @returns Promise that resolves to the class, or undefined if the import failed.
    */
@@ -1725,7 +1907,7 @@ export class ObservabilityRuntime {
       return () => undefined;
     }
 
-    // Attach on construction. The worker's handshake can time out while the bus starts.
+    // Attach on construction, because the worker's handshake can time out while the bus starts.
     void this.constructBus().then((bus) => {
       if (!bus || this.destroyed || cancelled) {
         return;
@@ -1739,7 +1921,7 @@ export class ObservabilityRuntime {
         },
       );
 
-      // Start the bus in bus.mode "off", where startup did not start it.
+      // In bus.mode "off" startup didn't start the bus, so start it now.
       void this.ensureBus();
     });
     return () => {
@@ -1776,10 +1958,10 @@ export class ObservabilityRuntime {
       return;
     }
 
-    // The points of the open interval and the root span go out with the final flush.
+    // The open interval's points and the root span go out with the final flush.
     drainDeferred(this);
     this.collectPoints();
-    // After shutdown(), a probe reads no clock until the next configure().
+    // After shutdown() probes stop reading the clock until the next configure().
     if (this.profilerOn) {
       this.profilerOn = false;
       profilerCore().detach();
@@ -1796,26 +1978,26 @@ export class ObservabilityRuntime {
 
     this.uninstallCaptures();
 
-    // Sender.destroy awaits a normal flush, then runs the exit flush. The records hold
-    // their journey already. The journey and the bus can stop first.
+    // Sender.destroy awaits a normal flush, then runs the exit flush. The records already
+    // hold their journey, so the journey and the bus can stop first.
     const closing = this.sender?.destroy();
     this.journey.destroy();
-    // A record in the forward buffer waits for its microtask. The bus takes it before it stops.
+    // A record in the forward buffer waits for its microtask, so the bus takes it before it stops.
     this.sendForwarded();
     this.bus?.destroy();
-    // The delivery stack did not load before shutdown(). The held records are lost.
+    // The delivery stack didn't load before shutdown(), so the held records are lost.
     this.drops.add("load_failed", this.pendingRecords.take());
     await closing;
-    // A load in progress destroys its own stack. shutdown() resolves only after that.
+    // A load in progress destroys its own stack, and shutdown() resolves only after that.
     await this.senderLoad;
     await this.rotation?.catch(() => undefined);
     await this.memoryStorage?.close();
 
-    // A local runtime must not remove the runtime of the other version from the global key.
+    // A local runtime must not remove the other version's runtime from the global key.
     if (ObservabilityRuntime.pinned() === this) {
       Reflect.deleteProperty(globalThis, RUNTIME_KEY);
       // Calls after shutdown() go to this runtime and do nothing.
-      // A new default runtime drops the settings of the app.
+      // A new default runtime would drop the app's settings.
       (globalThis as Record<symbol, unknown>)[STOPPED_KEY] = this;
     }
   }
@@ -1835,6 +2017,11 @@ export class ObservabilityRuntime {
     const error = record.severityText === "ERROR" || record.severityText === "FATAL";
     const records = error ? [...this.debugBuffer.drain(), record] : [record];
 
+    // Session replay uploads its buffer on an error. The hook has its own guard.
+    if (error) {
+      this.errorHook?.(record);
+    }
+
     for (const one of records) {
       if (this.ready) {
         this.route(one);
@@ -1845,8 +2032,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Sends a record to the forward buffer or to the local pipeline. The bus role selects
-   * the path.
+   * Sends a record to the forward buffer or to the local pipeline, depending on the bus role.
    * @param record Log record to route.
    */
   private route(record: LogRecord): void {
@@ -1869,7 +2055,7 @@ export class ObservabilityRuntime {
       return;
     }
 
-    // Console-only mode has no destination. Count the drop. If not, no counter shows the loss.
+    // Console-only mode has no destination. Count the drop, otherwise no counter shows the loss.
     if (!this.senderLoad) {
       this.diagnostics.count("record.dropped_no_destination");
       // After a failed load, the config has a destination but no delivery stack.
@@ -1883,7 +2069,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Counts a record that a full hold buffer drops. It gives the record to the onDrop report.
+   * Counts a record dropped by a full hold buffer and passes it to the onDrop report.
    * @param record Dropped record.
    */
   private dropHeld(record: LogRecord): void {
@@ -1908,7 +2094,7 @@ export class ObservabilityRuntime {
     });
   }
 
-  /** Gives the records of the forward buffer to the bus. */
+  /** Hands the forward buffer's records to the bus. */
   private sendForwarded(): void {
     const records = this.forwardBuffer;
     this.forwardBuffer = [];
@@ -1918,9 +2104,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Validates, samples and queues records from child frames or workers.
-   * A forwarded record arrives built. This is the first point in this context where
-   * sampling can run. RecordBuilder samples a local record.
+   * Validates, samples and queues records from child frames or workers. A forwarded record
+   * arrives already built, so this is the first point in this context where sampling can run.
+   * Local records are sampled by RecordBuilder.
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
@@ -1935,7 +2121,7 @@ export class ObservabilityRuntime {
         this.diagnostics.count("record.dropped_malformed");
         continue;
       }
-      // A debug buffer record explains an error. Its key would give the same sampling drop again.
+      // A debug buffer record explains an error. Sampling by its key would drop it again.
       if (
         record.attributes[ATTR_DEBUG_BUFFER] !== true &&
         !shouldSample(record, this.config, this.remote.sampling?.current() ?? null)
@@ -1944,15 +2130,16 @@ export class ObservabilityRuntime {
         continue;
       }
 
-      // A child context without redact forwards raw records. The sender is the last gate.
+      // A child context without redact forwards raw records, so the sender is the last gate.
       const redacted = this.builder.redactForwarded(record);
       if (redacted) {
         accepted.push(redacted);
       }
     }
 
-    // Records that arrive while the context changes belong to neither identity. Report the loss
-    // after sampling and redact. onDrop must not get action names or journey ids that redact masks.
+    // Records that arrive while the context changes belong to neither identity. Report the
+    // loss after sampling and redact, so onDrop never gets action names or journey ids that
+    // redact masks.
     if (this.rotating) {
       this.drops.add("security_context", accepted);
       return;
@@ -1963,10 +2150,10 @@ export class ObservabilityRuntime {
     }
   }
 
-  /** Flushes the startup records. It adds the active journey to records without a journey. */
+  /** Flushes the startup records, adding the active journey to records that have none. */
   private releaseBootBuffer(): void {
     const buffered = this.bootBuffer.take();
-    // A hook already saw each record. A key added now does not pass redact.
+    // The hooks have already seen every record, so a key added now would bypass redact.
     const { processors, redact } = this.config;
     const journey = processors.length === 0 && redact === undefined ? this.journey.current() : null;
 
@@ -1980,8 +2167,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Gives lost records to the onDrop report.
-   * @param reason Cause of the loss.
+   * Passes lost records to the onDrop report.
+   * @param reason Why they were lost.
    * @param records Lost records.
    * @param batchIds Ids of the lost batches.
    */
@@ -1990,8 +2177,8 @@ export class ObservabilityRuntime {
   };
 
   /**
-   * Gives the evicted batches to the onDrop report. It also emits a warning record. A throttle
-   * limits the warning records.
+   * Passes the evicted batches to the onDrop report and emits a warning record. The warning
+   * records are throttled.
    * @param result Storage prune summary metrics.
    * @param dropped The evicted batches.
    */
@@ -2018,7 +2205,7 @@ export class ObservabilityRuntime {
     );
   };
 
-  /** Makes and stores a new tab ID after a tab ID collision. */
+  /** Creates and stores a new tab ID after a tab ID collision. */
   private regenerateTabId(): void {
     const fresh = newId(this.diagnostics);
     this.diagnostics.report(
@@ -2033,9 +2220,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Starts a new session in this context. It sends the open metric points, starts a new trace,
-   * ends the active journey and clears the breadcrumbs. Other tabs read the new id at their next
-   * startup.
+   * Starts a new session in this context. Sends the open metric points, starts a new trace,
+   * ends the active journey and clears the breadcrumbs. Other tabs pick up the new id at
+   * their next startup.
    */
   newSession(): void {
     if (this.destroyed) {
@@ -2047,17 +2234,19 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Closes the work of the old session and starts the given session.
+   * Closes the old session's work and starts the given session.
    * @param sessionId Id of the session to start.
    */
   private resetSession(sessionId: string): void {
-    // Close the work of the old session first. Its points and its root span keep the old id.
+    // Close the old session's work first, so its points and root span keep the old id.
     this.collectPoints();
     this.tracing.rotate("explicit");
     this.journey.end();
-    // A shared machine: the next user must not see the trail of the previous user.
+    // On a shared machine, the next user must not see the previous user's trail.
     this.breadcrumbs.clear();
     this.debugBuffer.clear();
+    // The replay buffer still shows the previous user's page. Drop it and start a new recording.
+    this.replay?.reset();
 
     (this.identity as { sessionId: string }).sessionId = sessionId;
     this.sessionTouch.restart(sessionId);
@@ -2065,9 +2254,10 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Changes the delivery context in one operation. A second change must wait for this change.
+   * Changes the delivery context in one operation. A second call while this one is running is
+   * rejected.
    * @param update New identity, delivery settings and context attributes.
-   * @param options Rule for records of the old context and the flush deadline.
+   * @param options What to do with the old context's records, and the flush deadline.
    * @returns Promise that resolves when the change completes. Invalid settings reject it.
    */
   rotateSecurityContext(
@@ -2100,9 +2290,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Checks new settings, stops old delivery and starts the new context.
+   * Checks the new settings, stops the old delivery and starts the new context.
    * @param update New identity, delivery settings and attributes.
-   * @param pending Rule for the old records.
+   * @param pending What to do with the old records.
    * @param timeoutMs Maximum wait for an old-context flush, in milliseconds.
    * @returns Promise that resolves when the context change completes.
    */
@@ -2121,10 +2311,10 @@ export class ObservabilityRuntime {
     const nextId = update.id ?? newId(this.diagnostics);
     if (nextId === previous)
       throw new Error("A rotation requires a different security-context id.");
-    // Check the new settings before the old sender stops. Invalid settings keep the old sender.
+    // Check the new settings before the old sender stops, so invalid settings keep the old sender.
     const delivery = { ...DELIVERY_RESET, ...update.delivery };
     const before = this.diagnostics.snapshot()["config.invalid"] ?? 0;
-    // The base has no old delivery values. An invalid new value cannot fall back to an old one.
+    // The base has no old delivery values, so an invalid new value can't fall back to an old one.
     const next = resolveConfig(
       this.allowed({ ...delivery, securityContext: { id: nextId } }),
       this.diagnostics,
@@ -2132,11 +2322,11 @@ export class ObservabilityRuntime {
     );
     if ((this.diagnostics.snapshot()["config.invalid"] ?? 0) !== before)
       throw new Error("Invalid delivery settings for the next security context.");
-    // Copy the context now. A getter that throws then rejects before the old sender stops.
+    // Copy the context now, so a throwing getter rejects before the old sender stops.
     const context = update.context ? Object.fromEntries(Object.entries(update.context)) : undefined;
 
-    // The base above has no endpoints. Remove the old endpoints from the ignore list here.
-    // If they stay, network capture ignores calls to the old destination.
+    // The base above has no endpoints, so remove the old endpoints from the ignore list here.
+    // If they stayed, network capture would ignore calls to the old destination.
     const oldUrls = new Set<unknown>([
       this.config.endpoint,
       this.config.metricsEndpoint,
@@ -2170,9 +2360,9 @@ export class ObservabilityRuntime {
     if (pending !== "retain" && pending !== "carry") {
       this.drops.add("security_context", [...live, ...stored]);
     }
-    // Keep a lock change that the app made during the rotation.
+    // Keep a lock change the app made during the rotation.
     next.lockConfiguration = this.config.lockConfiguration;
-    // Replace all delivery settings together. Do not keep old credentials or signal endpoints.
+    // Replace all delivery settings together. Don't keep old credentials or signal endpoints.
     applyResolvedConfig(this.config, next);
     this.advanceIdentity();
     this.remote.sampling = null;
@@ -2184,8 +2374,8 @@ export class ObservabilityRuntime {
     this.builder.invalidateResource();
     await this.syncSender();
     this.bus?.rotateContext();
-    // New calls go to the new sender. A long carry then drops no logger call, and the report below
-    // can give a record.
+    // New calls go to the new sender from here, so a long carry drops no logger call and the
+    // report below can produce a record.
     this.rotating = false;
     if (pending === "carry") {
       await this.carry(live, retired.stored);
@@ -2196,31 +2386,31 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Moves the records of the old context into the new context.
+   * Moves the old context's records into the new context.
    * @param live Records that were in memory. They go through the live buffer.
    * @param stored Batches that were stored. The new sender stores them again.
-   * @returns Promise that resolves when the stored batches are stored again.
+   * @returns Promise that resolves once the stored batches are stored again.
    */
   private async carry(live: LogRecord[], stored: LogBatch[]): Promise<void> {
     for (const record of live) {
       this.route(record);
     }
 
-    // The live buffer does not take the stored backlog. It would exceed the buffer budget.
-    // Without a new sender, the stored batches stay parked under the old id. Nothing is lost.
+    // The live buffer doesn't take the stored backlog, which would exceed the buffer budget.
+    // Without a new sender, the stored batches stay parked under the old id and nothing is lost.
     if (this.sender) {
       await this.sender.adopt(stored, this.config.securityContext.id);
     }
   }
 
   /**
-   * Collects the state of this runtime for a support ticket. The app decides where to send it.
+   * Collects this runtime's state for a support ticket. The app decides where to send it.
    * @param health Health snapshot from the facade, with the logger cache counts.
    * @returns Promise that resolves to the JSON-safe bundle.
    */
   async debugBundle(health: ObservabilityHealth): Promise<DebugBundle> {
     const { configSummary } = await import("./debug-bundle");
-    // Build the breadcrumbs as a record. The privacy hooks then run, as in an error record.
+    // Build the breadcrumbs as a record so the privacy hooks run, as they do for an error record.
     const { record } = this.builder.build(
       {
         level: "INFO",
@@ -2249,7 +2439,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Reads the state of this runtime. It does not wait for startup or the sender to load.
+   * Reads this runtime's state. Doesn't wait for startup or for the sender to load.
    * @returns State, delivery counts and policies. The facade adds the logger cache counts.
    */
   async health(): Promise<Omit<ObservabilityHealth, "loggerCache">> {
@@ -2309,11 +2499,12 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Reads the delivery state of this context.
+   * Reads this context's delivery state.
    * @returns Promise that resolves to the counts and the time of the last accepted send.
    */
   async stats(): Promise<DeliveryStats> {
-    // queueDepth() waits for a loading delivery stack. The held records are then in the pipeline.
+    // queueDepth() waits for a loading delivery stack. By then the held records are in the
+    // pipeline.
     const stored = await this.queueDepth();
     const delivery = this.sender?.stats() ?? { pending: 0, inFlight: 0, lastSendAt: null };
     const held = this.bootBuffer.length + this.pendingRecords.length + this.forwardBuffer.length;
@@ -2322,8 +2513,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Removes stored records of one context or all contexts in the application namespace.
-   * @param scope Part of storage to clear.
+   * Removes the stored records for one context, or for all contexts in the application
+   * namespace.
+   * @param scope Which part of storage to clear.
    * @returns Promise that resolves when removal completes.
    */
   async clearPersisted(scope: "context" | "namespace"): Promise<void> {
@@ -2381,14 +2573,15 @@ export class ObservabilityRuntime {
 
   /**
    * Flushes all pending records in the pipeline or forward buffer.
-   * @returns Promise that resolves when the library sends or hands off the queued records.
+   * @returns Promise that resolves once the queued records are sent or handed off.
    */
   async flush(): Promise<void> {
     drainDeferred(this);
     this.collectPoints();
 
-    // A record logged during startup waits in the boot buffer. Without this wait, flush() misses it.
-    // After startup, do not wait. The handover of the forward buffer then stays synchronous.
+    // A record logged during startup waits in the boot buffer, and flush() would miss it
+    // without this wait. After startup, don't wait, so the forward buffer handover stays
+    // synchronous.
     if (!this.ready) {
       await this.started;
     }
@@ -2404,8 +2597,8 @@ export class ObservabilityRuntime {
 }
 
 /**
- * Compares resolved settings without JSON conversion. Functions keep their object identity.
- * The seen map stops a cycle from causing a repeated comparison.
+ * Compares resolved settings without JSON conversion. Functions are compared by identity.
+ * The seen map keeps a cycle from causing repeated comparisons.
  * @param a First value.
  * @param b Second value.
  * @param seen Object pairs already compared.

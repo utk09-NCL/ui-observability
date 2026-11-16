@@ -91,10 +91,10 @@ interface LocationWithAncestors {
 }
 
 /**
- * Builds the message for an ignored message from an untrusted origin.
+ * Builds the diagnostic text for something we ignored from an untrusted origin.
  * @param origin Origin of the sender.
  * @param what What the bus ignored, for example "a message".
- * @returns The message. A sandboxed sender gets the fix for its frame.
+ * @returns The text. For a sandboxed sender it includes the fix for its frame.
  */
 function untrustedText(origin: string, what: string): string {
   if (origin === OPAQUE_ORIGIN) {
@@ -105,8 +105,8 @@ function untrustedText(origin: string, what: string): string {
 }
 
 /**
- * Reads the origin of the parent frame. A cross-origin parent does not give its location.
- * @returns The origin, or null when the browser does not give it.
+ * Reads the parent frame's origin. A cross-origin parent doesn't expose its location.
+ * @returns The origin, or null when the browser doesn't reveal it.
  */
 function parentOrigin(): string | null {
   const ancestors = (location as LocationWithAncestors).ancestorOrigins;
@@ -114,8 +114,9 @@ function parentOrigin(): string | null {
     return ancestors.item(0);
   }
 
-  // Firefox has no ancestorOrigins. The referrer of a frame is the page that loaded it.
-  // A Referrer-Policy of no-referrer gives "". The caller reports an unknown origin.
+  // Firefox has no ancestorOrigins, so use the referrer, which for a frame is the page that
+  // loaded it. A Referrer-Policy of no-referrer gives "", and the caller then reports an
+  // unknown origin.
   const referrer = document.referrer;
   if (referrer === "") {
     return null;
@@ -178,13 +179,13 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
 }
 
 /**
- * Creates a postMessage link to a parent window on a trusted origin. Records hold user data.
- * A page on another origin that frames this app must not get them.
+ * Creates a postMessage link to a parent window on a trusted origin. Records hold user data,
+ * so a page on another origin that frames this app must not get them.
  * @param receive Callback for incoming parent messages.
- * @param trustedOrigins Origins of a parent that can get the records, in addition to this origin.
+ * @param trustedOrigins Parent origins that may receive the records, in addition to this origin.
  * @param diagnostics Diagnostics reporter.
  * @returns Link to the parent window, or null at the top level or with an untrusted parent.
- * With null, this context sends its own records.
+ * When it is null, this context sends its own records.
  */
 export function createParentLink(
   receive: Receive,
@@ -195,7 +196,7 @@ export function createParentLink(
     return null;
   }
 
-  // A sandboxed frame has an opaque origin. No parent can list it in its own trust list.
+  // A sandboxed frame has an opaque origin, which no parent can put in its trust list.
   const self = location.origin;
   if (self === OPAQUE_ORIGIN) {
     diagnostics.report(
@@ -219,7 +220,7 @@ export function createParentLink(
     return null;
   }
 
-  // Report each untrusted origin one time. A hostile parent can send many messages.
+  // Report every untrusted origin only once, because a hostile parent can send many messages.
   const reported = new Set<string>();
 
   const onMessage = (event: MessageEvent): void => {
@@ -232,7 +233,8 @@ export function createParentLink(
     if (!trusted.has(event.origin)) {
       if (!reported.has(event.origin)) {
         reported.add(event.origin);
-        // The parent sets message.t. Keep it out of the message text. Cut it in the detail.
+        // The parent controls message.t, so keep it out of the message text and truncate it
+        // in the detail.
         diagnostics.report("bus.untrusted_origin", untrustedText(event.origin, "a message"), {
           origin: event.origin,
           type: message.t.slice(0, BUS_TYPE_DETAIL_MAX_CHARS),
@@ -278,16 +280,16 @@ export function createChildrenLink(
     return null;
   }
 
-  // A sandboxed page has the opaque origin "null". Each sandboxed child also has it.
+  // A sandboxed page has the opaque origin "null", and so does every sandboxed child.
   const trusted = new Set([location.origin, ...trustedOrigins]);
   trusted.delete(OPAQUE_ORIGIN);
 
-  // The map keeps the origin of each source.
-  // A child that navigates must not get the ids of its previous origin.
+  // Remembers every source's origin, so a child that navigates doesn't get the ids of its
+  // previous origin.
   const sources = new Map<MessageEventSource, string>();
 
   /**
-   * Posts one message to one child. It removes a child that is closed or no longer permitted.
+   * Posts one message to one child, and forgets a child that is closed or no longer permitted.
    * @param source Child window.
    * @param origin Last known origin of the child.
    * @param message Message to send.
@@ -318,7 +320,7 @@ export function createChildrenLink(
     if (!message) {
       return;
     }
-    // A nested frame also receives the messages of its parent. The parent link owns them.
+    // A nested frame also receives its parent's messages here. Those belong to the parent link.
     if (window.parent !== window && event.source === window.parent) {
       return;
     }
@@ -335,7 +337,8 @@ export function createChildrenLink(
     if (source) {
       sources.set(source, origin);
     }
-    // Answer only the asking child. A broadcast lets one child use up the budget of each sibling.
+    // Answer only the child that asked. A broadcast would let one child use up every
+    // sibling's budget.
     receive(message, {
       link: "children",
       origin,
@@ -435,7 +438,7 @@ export function createOpenFinLink(
   }
   if (!appUuid) {
     // publish() sends to every subscriber on the runtime. Without a uuid scope,
-    // this link shares the bus of this app with all other apps.
+    // this link would share this app's bus with every other app.
     diagnostics.report(
       "openfin.unavailable",
       "OpenFin gives no application uuid. The InterApplicationBus link stays closed.",
@@ -443,8 +446,8 @@ export function createOpenFinLink(
     return null;
   }
 
-  // The topic and the subscriber identity both contain the uuid. The topic keeps
-  // messages of this app from other apps. The identity rejects messages from other apps.
+  // The uuid goes into both the topic and the subscriber identity. The topic keeps this app's
+  // messages away from other apps, and the identity rejects messages that come from them.
   const scoped = `${topic}.${appUuid}`;
 
   void diagnostics.guardAsync(

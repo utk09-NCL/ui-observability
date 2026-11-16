@@ -9,14 +9,15 @@ describe("Sequence", () => {
   });
 
   it("starts at one rather than zero, so a lost sequence cannot look like a real one", () => {
-    // Keep zero as the clear unset value. A record with a real sequence of zero then looks the same
-    // as a record with no sequence.
+    // Zero stays reserved as the obvious unset value. Otherwise a record with a real sequence of
+    // zero would look the same as a record with no sequence.
     expect(new Sequence().next()).toBe(1);
   });
 
   it("counts per instance, so two runtimes do not punch holes in each other's run", () => {
-    // A hole in a sequence looks the same as a record that the network lost. This field exists to
-    // answer that one question. Shared module state between two runtimes puts holes in both.
+    // A hole in a sequence looks exactly like a record the network lost, and answering that one
+    // question is why this field exists. Module state shared between two runtimes would put holes
+    // in both.
     const a = new Sequence();
     const b = new Sequence();
 

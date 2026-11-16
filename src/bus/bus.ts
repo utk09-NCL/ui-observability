@@ -37,7 +37,7 @@ import {
 
 /** Handshake timing for a forwarder waiting on an owner. */
 export interface HandshakeOptions {
-  /** Maximum time that a forwarder waits for an owner to answer, in milliseconds. */
+  /** How long a forwarder waits for an owner to answer, in milliseconds. */
   timeoutMs: number;
   /** Attempts allowed before a cross-origin forwarder promotes itself to sender. */
   maxAttempts: number;
@@ -51,7 +51,7 @@ export const HANDSHAKE_OPTIONS: HandshakeOptions = {
 
 /** Callbacks for handling records and journey events from connected realms. */
 export interface BusHandlers {
-  /** Adopts the delivery context of the owner. False refuses a different identity. */
+  /** Adopts the owner's delivery context. Returning false refuses a different identity. */
   onSecurityContext?: (id: string) => boolean;
   /** Processes records forwarded from child contexts. */
   onRecords: (records: LogRecord[]) => void;
@@ -61,7 +61,7 @@ export interface BusHandlers {
   onJourneyRequest: () => Journey | null;
   /** Runs when two windows use the same tab identifier. */
   onTabConflict: () => void;
-  /** Slot of the runtime for the remote sampling rules. The bus reads it and fills it. */
+  /** The runtime's slot for the remote sampling rules. The bus both reads and fills it. */
   remote: RemoteSlot;
 }
 
@@ -79,12 +79,12 @@ export class Bus {
   private readonly rates = new WeakMap<object, { start: number; count: number }>();
   /** Message counts for each named source or link in the current rate window. */
   private readonly channelRates = new Map<string, { start: number; count: number }>();
-  /** Reply of each same-origin child on the direct link. A weak reply frees a navigated frame. */
+  /** Each same-origin direct child's reply. Held weakly so a navigated frame can be freed. */
   private readonly directReplies = new Map<Window, WeakRef<Receive>>();
 
   /**
-   * Checks if this source can receive a control message. A window can read a message
-   * even when its address names another window.
+   * Checks whether this source may receive a control message. A window can read a message
+   * even when it is addressed to another window.
    * @param message Control message to send.
    * @param peer Window or worker that receives the message.
    * @returns True if the source has the required permission.
@@ -105,7 +105,7 @@ export class Bus {
    * @returns Function that removes this registration.
    */
   registerFrame(frame: HTMLIFrameElement | Window, options: FrameOptions): () => void {
-    // Use instanceof, not "in". The "in" operator throws on a cross-origin window.
+    // Use instanceof here, because the "in" operator throws on a cross-origin window.
     const element = typeof HTMLIFrameElement === "undefined" ? undefined : HTMLIFrameElement;
     const source = element && frame instanceof element ? frame.contentWindow : frame;
     if (!source || new URL(options.origin).origin !== options.origin || options.origin === "null")
@@ -127,7 +127,8 @@ export class Bus {
   isRegistered(source: object | null, origin: string): boolean {
     if (!source) return false;
     const registration = this.sources.get(source);
-    // A registration binds its exact origin under each policy. It needs no trustedOrigins entry.
+    // A registration is bound to its exact origin under every policy, so it needs no
+    // trustedOrigins entry.
     if (registration) {
       return registration.origin === origin;
     }
@@ -145,7 +146,7 @@ export class Bus {
    * own context.
    */
   rotateContext(): void {
-    // Only the owner sends on the OpenFin link. Without this message, each view keeps the old id.
+    // Only the owner sends on the OpenFin link. Without this message every view keeps the old id.
     this.passContext(this.role === "sender");
   }
 
@@ -168,8 +169,8 @@ export class Bus {
   }
 
   /**
-   * Sends a security context message to each same-origin child on the direct link.
-   * It drops a child that is closed, freed or no longer permitted.
+   * Sends a security context message to every same-origin child on the direct link, dropping
+   * any child that is closed, freed or no longer permitted.
    * @param message Security context message.
    */
   private postToDirectChildren(message: BusMessage): void {
@@ -187,10 +188,10 @@ export class Bus {
   }
 
   /**
-   * Keeps the reply of a direct child for the next context id. It drops each closed child.
-   * A removed frame then does not keep its document in memory.
-   * @param peer Window of the child.
-   * @param reply Reply callback of the child.
+   * Keeps a direct child's reply callback for the next context id. Closed children are dropped
+   * along the way, so a removed frame doesn't keep its document in memory.
+   * @param peer The child's window.
+   * @param reply The child's reply callback.
    */
   private keepDirectReply(peer: Window, reply: Receive): void {
     for (const known of this.directReplies.keys()) {
@@ -202,7 +203,7 @@ export class Bus {
     this.directReplies.set(peer, new WeakRef(reply));
   }
 
-  /** Current bus role. The default is "sender". */
+  /** Current bus role. Defaults to "sender". */
   private role: BusRole = "sender";
   /** Upstream forwarding link, or null when acting as sender. */
   private upstream: Link | null = null;
@@ -214,11 +215,11 @@ export class Bus {
   private isOpenFinProvider = false;
   /** Timer that asks the upstream owner for the remote sampling rules. */
   private rulesPoll: ReturnType<typeof setInterval> | undefined;
-  /** True after destroy(). A handshake that ends later must not start a timer. */
+  /** True after destroy(), so a handshake that finishes later doesn't start a timer. */
   private destroyed = false;
-  /** Context id of the owner that answered the handshake. Null with no handshake. */
+  /** Context id of the owner that answered the handshake. Null if there was no handshake. */
   private ownerId: string | null = null;
-  /** Transport identity of the owner from the handshake. */
+  /** The owner's transport identity, taken from the handshake. */
   private ownerPeer?: object | string;
   /** Active handshake state awaiting welcome response. */
   private awaitingWelcome: {
@@ -324,7 +325,7 @@ export class Bus {
     this.role = welcomed ? "forwarder" : "sender";
     this.upstream = welcomed ? candidate : null;
     if (!welcomed) {
-      // OpenFin link remains open for control messages.
+      // The OpenFin link stays open for control messages.
       if (candidate !== this.openFinLink) {
         candidate.close();
       }
@@ -359,7 +360,8 @@ export class Bus {
       routingContextId: this.config.securityContext.id || undefined,
     });
 
-    // Measure each record one time. A message is the empty envelope, its records and the commas.
+    // Measure every record once. A message is the empty envelope plus its records and the
+    // commas between them.
     const envelope = size(message([]));
     let chunk: LogRecord[] = [];
     let bytes = envelope;
@@ -409,18 +411,18 @@ export class Bus {
       return;
     }
 
-    // A rotation sends the new id with this reply. The child then does not send a stale batch.
+    // A rotation sends the new id through this reply, so the child doesn't send a stale batch.
     if (peer) {
       this.keepDirectReply(peer, reply);
     }
 
-    // A direct link has no channel from the parent to the child. The parent answers here. The
-    // forwarder rule in routeMessage() refuses a sampling question on a direct link.
+    // A direct link has no channel from parent to child, so the parent answers here. The
+    // forwarder rule in routeMessage() would refuse a sampling question on a direct link.
     if (message.t === BUS_TYPE.samplingRequest) {
       reply(this.rulesAnswer(message.from), plain);
       return;
     }
-    // A context that waits for its own owner has no final id. It sends no id.
+    // While this context still waits for its own owner it has no final id, so it sends none.
     if (
       message.t === BUS_TYPE.records &&
       !this.awaitingWelcome &&
@@ -458,7 +460,7 @@ export class Bus {
   }
 
   /**
-   * Sends journey state changes over each link of the journey scope.
+   * Sends journey state changes over every link in the journey scope.
    * @param journey Active journey or null if ended.
    */
   broadcastJourney(journey: Journey | null): void {
@@ -498,7 +500,7 @@ export class Bus {
     }
   }
 
-  /** Sends a journey message over each link of the journey scope. */
+  /** Sends a journey message over every link in the journey scope. */
   private postJourney(message: BusMessage): void {
     for (const link of this.allLinks()) {
       if (this.journeyLink(link.kind)) {
@@ -509,8 +511,9 @@ export class Bus {
 
   /** Routes incoming messages to registered handlers or upstream targets. */
   private readonly receive = (message: BusMessage, source: MessageSource): void => {
-    // A message on the direct link here is an answer from the parent. acceptDirect() takes the
-    // messages of a direct child. Thus only the children and worker links carry child traffic.
+    // Anything arriving here on the direct link is an answer from the parent, because
+    // acceptDirect() handles a direct child's messages. That leaves only the children and worker
+    // links carrying child traffic.
     const child = source.link === "children" || source.link === "worker";
     if (this.acceptsMessage(message, source, child)) {
       this.routeMessage(message, source);
@@ -533,8 +536,8 @@ export class Bus {
     try {
       accepted = this.passesChecks(message, source, child);
     } catch {
-      // A value that JSON cannot encode, or a non-finite number under strict validation.
-      // The count below reports this rejection.
+      // Either a value JSON can't encode or a non-finite number under strict validation.
+      // The count below reports the rejection.
       accepted = false;
     }
 
@@ -545,12 +548,13 @@ export class Bus {
   }
 
   /**
-   * Runs the source, budget, shape and permission checks. Each check returns false, not an error.
-   * A flood of rejected messages then makes no stack traces.
+   * Runs the source, budget, shape and permission checks. A failed check returns false instead
+   * of throwing, so a flood of rejected messages builds no stack traces. Only the JSON encoding
+   * can throw, and acceptsMessage catches that.
    * @param message Message from the source.
    * @param source Link and identity of the source.
    * @param child True if the source is a child of this context.
-   * @returns True if the message passes each check.
+   * @returns True if the message passes every check.
    */
   private passesChecks(message: BusMessage, source: MessageSource, child: boolean): boolean {
     const { bus } = this.config;
@@ -585,7 +589,7 @@ export class Bus {
       this.channelRates.set(key, rate);
     }
 
-    // Count with no limit when the limit is 0. The window of a named source then stays current.
+    // A limit of 0 still counts, just without a cap, so a named source's window stays current.
     if (!countInWindow(rate, bus.maxMessagesPerSecond || Infinity, 1000)) {
       return false;
     }
@@ -631,7 +635,7 @@ export class Bus {
       return false;
     }
 
-    // Under the registered policy, broadcast is a control channel. It carries no records.
+    // Under the registered policy, broadcast is a control channel only and carries no records.
     return !(
       bus.sourcePolicy === "registered" &&
       source.link === "broadcast" &&
@@ -640,7 +644,7 @@ export class Bus {
   }
 
   /**
-   * Gives an accepted message to its handler or the upstream link.
+   * Hands an accepted message to its handler or to the upstream link.
    * @param message Message that passed the source and shape checks.
    * @param source Link and identity of the source.
    */
@@ -652,8 +656,8 @@ export class Bus {
     switch (message.t) {
       case BUS_TYPE.hello:
         if (this.canOwn(source.link)) {
-          // A context that waits for its own owner has only a temporary id. Send no id then.
-          // announce() sends the final id when the role is known.
+          // While this context still waits for its own owner, its id is only temporary, so send
+          // none. announce() sends the final id once the role is known.
           this.answer(source, {
             t: BUS_TYPE.welcome,
             from: this.contextId,
@@ -674,7 +678,7 @@ export class Bus {
           this.awaitingWelcome?.link === source.link ||
           (this.upstream?.kind === source.link && this.ownerId === null)
         ) {
-          // Keep the owner. Only it can set the journey of this context on a shared link.
+          // Remember the owner. On a shared link, only the owner may set this context's journey.
           this.ownerId = message.from;
           this.ownerPeer = source.peer;
           const before = this.config.securityContext.id;
@@ -683,8 +687,8 @@ export class Bus {
             this.handlers.onSecurityContext?.(message.routingContextId) === false
           )
             break;
-          // A child of this context can hold the old id. Send it the id of the owner. During a
-          // handshake the role can still be "sender". Do not send on the OpenFin link here.
+          // Our children may still hold the old id, so pass the owner's id on to them. During a
+          // handshake the role can still be "sender", so don't send on the OpenFin link here.
           if (this.config.securityContext.id !== before) {
             this.passContext(false);
           }
@@ -727,7 +731,7 @@ export class Bus {
 
       case BUS_TYPE.journeyRequest: {
         const current = this.handlers.onJourneyRequest();
-        // Address the answer. On a shared link, each other context ignores it.
+        // Address the answer, so that every other context on a shared link ignores it.
         if (current && this.journeyLink(source.link)) {
           this.answer(source, {
             t: BUS_TYPE.journey,
@@ -740,8 +744,9 @@ export class Bus {
       }
 
       case BUS_TYPE.samplingRequest:
-        // A forwarder answers only its own children. A sibling on its upstream link asks too.
-        // A sibling answer on OpenFin gives N squared messages, and a stale copy can win.
+        // A forwarder answers only its own children, although siblings on its upstream link ask
+        // too. Siblings answering each other on OpenFin would mean N squared messages, and a
+        // stale copy could win.
         if (
           this.role === "forwarder" ? source.link !== this.upstream?.kind : this.canOwn(source.link)
         ) {
@@ -756,9 +761,8 @@ export class Bus {
         break;
 
       case BUS_TYPE.tab:
-        // A collision applies only to two different contexts on the broadcast channel.
-        // The id comparison selects one context of the pair.
-        // Without it, both contexts report the conflict and rename.
+        // Only two different contexts on the broadcast channel can collide. The id comparison
+        // picks one of the pair, otherwise both would report the conflict and rename.
         if (
           source.link === "broadcast" &&
           message.tabId === this.tabId &&
@@ -771,7 +775,7 @@ export class Bus {
   }
 
   /**
-   * Answers the source of a message. A link that can address one source sends to it only.
+   * Answers whoever sent a message. A link that can address a single source sends to it only.
    * @param source Link and identity of the source.
    * @param message Answer to send.
    */
@@ -784,10 +788,10 @@ export class Bus {
   }
 
   /**
-   * Tells if records from a link can go upstream. Records that go back on
-   * their arrival link return to their sender. A direct link is an exception.
-   * Each direct link is one call into one parent. Thus two direct links in a
-   * chain are different links.
+   * Checks whether records from a link can go upstream. Records sent back out on the link
+   * they arrived on would return to their sender. A direct link is the exception, because
+   * each one is a single call into one parent, so two direct links in a chain are
+   * different links.
    * @param link Kind of the link the records arrived on.
    * @returns True if the relay is safe.
    */
@@ -795,9 +799,10 @@ export class Bus {
     return link === "direct" || link !== this.upstream?.kind;
   }
 
-  /** Returns true if this context can be the owner of the given link type. */
+  /** Checks whether this context can own the given link type. */
   private canOwn(link: LinkKind): boolean {
-    // A forwarder that knows its owner owns its own children. It relays their records upstream.
+    // A forwarder that knows its owner also owns its own children and relays their records
+    // upstream.
     const owner = this.role === "sender" || this.ownerId !== null;
     if (!owner) {
       return false;
@@ -808,7 +813,7 @@ export class Bus {
     return OWNED.includes(link);
   }
 
-  /** Finds if this context is the OpenFin platform provider. */
+  /** Works out whether this context is the OpenFin platform provider. */
   private resolveOpenFinProvider(): boolean {
     const configured = this.config.bus.openFinRole;
     if (configured !== "auto") {
@@ -830,13 +835,14 @@ export class Bus {
     return this.isCrossOriginFrame() ? "retry" : "promote";
   }
 
-  /** Tests if a cross-origin boundary blocks access to the parent window. */
+  /** Checks whether a cross-origin boundary blocks access to the parent window. */
   private isCrossOriginFrame(): boolean {
     if (typeof window === "undefined" || window.parent === window) {
       return false;
     }
     try {
-      // A cross-origin parent throws on this read. Lint rejects a bare property read.
+      // A cross-origin parent throws on this read. It goes through Reflect.get because lint
+      // rejects a bare property read.
       Reflect.get(window.parent, "location");
       return false;
     } catch {
@@ -886,8 +892,8 @@ export class Bus {
         const accepted = this.isRegistered(source, origin);
         if (!accepted) {
           this.diagnostics.count("bus.rejected_message");
-          // A registered window that speaks from another origin is also untrusted. Without this
-          // report, a registration with a wrong origin stops the frame with no named cause.
+          // A registered window speaking from another origin is untrusted too. Without this
+          // report, a registration with the wrong origin silences the frame with no named cause.
           const registered = source !== null && this.sources.has(source);
           const trusted =
             origin === location.origin || this.config.bus.trustedOrigins.includes(origin);
@@ -917,9 +923,9 @@ export class Bus {
   }
 
   /**
-   * Executes a hello/welcome handshake over candidate link.
+   * Runs a hello/welcome handshake over the candidate link.
    * @param candidate Upstream link candidate.
-   * @returns True if welcome response arrived before timeout.
+   * @returns True if the welcome arrived before the timeout.
    */
   private handshake(candidate: Link): Promise<boolean> {
     return new Promise((resolve) => {
@@ -936,8 +942,8 @@ export class Bus {
       };
 
       this.awaitingWelcome = { link: candidate.kind, settle: finish };
-      // finish reads timer, which the code declares after finish. This order is safe.
-      // finish can run only after the post below. The timer exists at that time.
+      // finish reads timer, which is declared after it. That's safe, because finish can only
+      // run after the post below, and by then the timer exists.
       const timer = setTimeout(() => {
         finish(false);
       }, this.handshakeOptions.timeoutMs);
@@ -957,13 +963,13 @@ export class Bus {
       this.upstream.post({ t: BUS_TYPE.hello, from: this.contextId, tabId: this.tabId });
     this.postJourney({ t: BUS_TYPE.journeyRequest, from: this.contextId });
     this.pollRules();
-    // The role is final now. A child welcomed during the handshake got no id. Send it the final id.
+    // The role is final now. Children welcomed during the handshake got no id, so send it now.
     this.passContext(false);
   }
 
   /**
-   * Resolves the journey scope. "auto" gives "origin" in OpenFin and "tab" in a browser.
-   * @returns The scope in force.
+   * Resolves the journey scope. "auto" becomes "origin" in OpenFin and "tab" in a browser.
+   * @returns The scope in effect.
    */
   private journeyScope(): ResolvedScope {
     const { scope } = this.config.journey;
@@ -976,8 +982,8 @@ export class Bus {
   }
 
   /**
-   * Tests if a link carries journey messages in the scope in force.
-   * Only "origin" uses the broadcast link. That link reaches each tab of the origin.
+   * Checks whether a link carries journey messages in the current scope.
+   * Only "origin" uses the broadcast link, which reaches every tab on the origin.
    * @param link Link kind.
    * @returns True if the link carries journey messages.
    */
@@ -991,11 +997,11 @@ export class Bus {
   }
 
   /**
-   * Tests if this context adopts a journey message.
+   * Checks whether this context adopts a journey message.
    * @param message Journey message.
    * @param source Link and origin of the message.
-   * @returns True for a message on a journey link, to this context, from an accepted sender.
-   * In "tab" scope, only the owner of a forwarder is an accepted sender.
+   * @returns True for a message on a journey link, addressed to this context, from an accepted
+   * sender. In "tab" scope, the only accepted sender is a forwarder's owner.
    */
   private acceptsJourney(
     message: Extract<BusMessage, { t: typeof BUS_TYPE.journey }>,
@@ -1017,7 +1023,7 @@ export class Bus {
   }
 
   /**
-   * Tests if a message comes from the upstream owner of this forwarder.
+   * Checks whether a message comes from this forwarder's upstream owner.
    * @param from Context id of the sender.
    * @param link Link kind of the message.
    * @returns True for the upstream link and, after a handshake, the owner that answered it.
@@ -1031,7 +1037,7 @@ export class Bus {
   }
 
   /**
-   * Parses a journey payload from another realm and gives it to the runtime.
+   * Parses a journey payload from another realm and hands it to the runtime.
    * @param payload Journey, or null when the journey ended.
    */
   private applyJourney(payload: unknown): void {
@@ -1054,7 +1060,7 @@ export class Bus {
   }
 
   /**
-   * Builds the answer to a sampling question. Null rules end the copy of the forwarder.
+   * Builds the answer to a sampling question. Null rules clear the forwarder's copy.
    * @param to Context id of the forwarder that asked.
    * @returns The answer.
    */
@@ -1065,18 +1071,19 @@ export class Bus {
   }
 
   /**
-   * Tests if this context accepts sampling rules from a source.
+   * Checks whether this context accepts sampling rules from a source.
    * @param to Context id that the answer names.
    * @param source Link and origin of the answer.
    * @returns True only for an answer from the upstream owner to this context.
    */
   private acceptsRules(to: string, source: MessageSource): boolean {
-    // Accept rules only from the upstream owner. A sibling on a shared link is not trusted.
+    // Accept rules only from the upstream owner. A sibling on a shared link isn't trusted.
     if (this.role !== "forwarder" || to !== this.contextId || source.link !== this.upstream?.kind) {
       return false;
     }
 
-    // A page on another origin can embed this app. It must not lower minLevel and read the records.
+    // A page on another origin can embed this app. Don't let it lower minLevel and read the
+    // records.
     const { origin } = source;
 
     if (
@@ -1096,8 +1103,8 @@ export class Bus {
   }
 
   /**
-   * Applies the rules of an answer. It ignores rules that are not valid.
-   * @param raw Rules of the answer, or null when the upstream has none.
+   * Applies the rules from an answer, ignoring any that are invalid.
+   * @param raw The answer's rules, or null when the upstream has none.
    */
   private applyRules(raw: unknown): void {
     if (raw === null) {
@@ -1113,8 +1120,8 @@ export class Bus {
   }
 
   /**
-   * Asks the upstream owner for the remote sampling rules now, then at each poll interval.
-   * A direct link cannot push the rules to a child. A poll works on each link kind.
+   * Asks the upstream owner for the remote sampling rules now, then on every poll interval.
+   * A direct link can't push the rules to a child, but a poll works on every link kind.
    */
   private pollRules(): void {
     const { upstream } = this;
@@ -1123,7 +1130,8 @@ export class Bus {
       return;
     }
 
-    // Read the config at each poll. A later configure() can turn remote sampling on or off.
+    // Read the config on every poll, because a later configure() can turn remote sampling on
+    // or off.
     const ask = (): void => {
       if (this.config.sampling.remote) {
         upstream.post({ t: BUS_TYPE.samplingRequest, from: this.contextId });

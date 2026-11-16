@@ -23,7 +23,7 @@ const config = (over: Partial<ObservabilityConfig> = {}) =>
   );
 
 /**
- * The tests below use a `count` of 0. An empty batch must do nothing. It must not send a request.
+ * The tests below use a `count` of 0. An empty batch must do nothing and send no request.
  */
 const batch = (count = 2): LogBatch => ({
   id: "batch-1",
@@ -57,7 +57,7 @@ const stubFetch = (impl: (url: string, init: RequestInit) => Promise<Response>) 
   return fetchMock;
 };
 
-/** The body is null by default. 204 is a null-body status. A Response with both throws. */
+/** The body defaults to null. 204 is a null-body status, and a Response with both throws. */
 const answer = (status: number, body: string | null = null, headers: Record<string, string> = {}) =>
   stubFetch(() => Promise.resolve(new Response(body, { status, headers })));
 
@@ -68,7 +68,7 @@ const headersOf = (fetchMock: any, index = 0): Headers =>
   initOf(fetchMock, index).headers as Headers;
 
 describe("HttpTransport", () => {
-  it("gives the clock offset of a 2xx answer with a valid Date header", async () => {
+  it("returns the clock offset from a 2xx answer with a valid Date header", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T10:00:00.000Z"));
     const onClock = vi.fn();
     const send = (date?: string) => {
@@ -82,7 +82,7 @@ describe("HttpTransport", () => {
     await send();
     await send("not a date");
 
-    // The header has whole seconds. The offset adds half a second.
+    // The header has whole seconds, so the offset adds half a second.
     expect(onClock.mock.calls).toEqual([[5500]]);
   });
 
@@ -92,7 +92,7 @@ describe("HttpTransport", () => {
     await expect(new HttpTransport(config(), diagnostics()).send(batch())).resolves.toBeUndefined();
   });
 
-  it("gives the sampling header of a 2xx answer to the sampling callback", async () => {
+  it("passes the sampling header from a 2xx answer to the sampling callback", async () => {
     answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
     const onSampling = vi.fn();
     const t = new HttpTransport(config({ sampling: { remote: true } }), diagnostics(), onSampling);
@@ -158,7 +158,7 @@ describe("HttpTransport", () => {
     await expect(t.send(metrics)).rejects.toMatchObject({ kind: "throttled" });
     expect(t.throttledForMs(batch())).toBe(0);
 
-    // An accepted log batch must not end the throttle of metricsEndpoint.
+    // An accepted log batch must not end the throttle on metricsEndpoint.
     answer(204);
     await t.send(batch());
     expect(t.throttledForMs(metrics)).toBeGreaterThan(6000);
@@ -203,9 +203,8 @@ describe("HttpTransport", () => {
   });
 
   it("overwrites our headers whatever case the consumer spells them in", async () => {
-    // Header names ignore case. With a plain object, BOTH keys stay. fetch joins them into
-    // "spoofed, batch-1". That id matches no batch on the server. Deduplication then fails with no
-    // sign.
+    // Header names ignore case. With a plain object, BOTH keys stay, and fetch joins them into
+    // "spoofed, batch-1". That id matches no batch on the server, so deduplication silently fails.
     const fetchMock = answer(204);
     const headers = { "x-uiobs-batch-id": "spoofed", "content-type": "text/csv" };
     const t = new HttpTransport(config({ headers }), diagnostics());
@@ -266,7 +265,7 @@ describe("HttpTransport", () => {
     vi.useRealTimers();
   });
 
-  it("sends one time more with new headers after a 401, when headers is a function", async () => {
+  it("sends once more with new headers after a 401, when headers is a function", async () => {
     let token = 0;
     const headers = () => ({ authorization: `Bearer t${String(++token)}` });
     const statuses = [401, 204];
@@ -298,7 +297,7 @@ describe("HttpTransport", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("gives the last headers that it sent, for the exit flush", async () => {
+  it("returns the last headers it sent, for the exit flush", async () => {
     answer(204);
     let fail = false;
     const headers = () => {
@@ -341,7 +340,7 @@ describe("HttpTransport", () => {
   });
 
   it("keeps the cached headers after a send to metricsEndpoint", async () => {
-    // The headers apply to both endpoints. The exit flush must not lose them.
+    // The headers apply to both endpoints, and the exit flush must not lose them.
     answer(204);
     const live = config({
       metricsEndpoint: "https://x/v1/metrics",
@@ -356,8 +355,8 @@ describe("HttpTransport", () => {
     expect(t.lastHeaders()).toEqual({ authorization: "Bearer t1" });
   });
 
-  it("gives no cached headers after a send to metricsEndpoint and a new endpoint", async () => {
-    // The exit flush must not send the token of tenant A to the endpoint of tenant B.
+  it("returns no cached headers after a send to metricsEndpoint and a new endpoint", async () => {
+    // The exit flush must not send tenant A's token to tenant B's endpoint.
     answer(204);
     const live = config({
       metricsEndpoint: "https://x/v1/metrics",
@@ -373,7 +372,7 @@ describe("HttpTransport", () => {
     expect(t.lastHeaders()).toBeUndefined();
   });
 
-  it("gives no cached headers after a log send and a new metricsEndpoint", async () => {
+  it("returns no cached headers after a log send and a new metricsEndpoint", async () => {
     answer(204);
     const live = config({
       metricsEndpoint: "https://x/v1/metrics",
@@ -412,8 +411,8 @@ describe("HttpTransport", () => {
     expect(reporter.snapshot()["record.dropped_no_destination"]).toBe(1);
   });
 
-  it("gives no cached headers when configure() changes the endpoint during headers()", async () => {
-    // headers() can give the token of the old tenant after the switch.
+  it("returns no cached headers when configure() changes the endpoint during headers()", async () => {
+    // headers() can return the old tenant's token after the switch.
     answer(204);
     const live = config({});
     live.headers = () => {
@@ -427,7 +426,7 @@ describe("HttpTransport", () => {
     expect(t.lastHeaders()).toBeUndefined();
   });
 
-  it("gives no cached headers after configure() replaces the headers function", async () => {
+  it("returns no cached headers after configure() replaces the headers function", async () => {
     // At a tenant switch, the old Authorization value must not go to the new endpoint.
     answer(204);
     const live = config({ headers: () => ({ authorization: "Bearer tenant-a" }) });
@@ -439,8 +438,8 @@ describe("HttpTransport", () => {
     expect(t.lastHeaders()).toBeUndefined();
   });
 
-  it("gives no cached headers after configure() changes the endpoint", async () => {
-    // One headers function can give the token of each tenant. The old token is for the old endpoint.
+  it("returns no cached headers after configure() changes the endpoint", async () => {
+    // One headers function can return every tenant's token. The old token is for the old endpoint.
     answer(204);
     const live = config({ headers: () => ({ authorization: "Bearer tenant-a" }) });
     const t = new HttpTransport(live, diagnostics());
@@ -452,7 +451,7 @@ describe("HttpTransport", () => {
   });
 
   it("calls onKeepalive only for a send that uses keepalive", async () => {
-    // A keepalive send continues after unload. The pipeline must not give it to the exit flush.
+    // A keepalive send continues after unload, so the pipeline must not hand it to the exit flush.
     answer(204);
     const t = new HttpTransport(config(), diagnostics());
     const onKeepalive = vi.fn<() => void>();
@@ -466,7 +465,7 @@ describe("HttpTransport", () => {
   });
 
   it("sends with keepalive while the document is hidden and the body fits the budget", async () => {
-    // A mobile OS can stop a hidden page with no pagehide. A keepalive request continues.
+    // A mobile OS can stop a hidden page with no pagehide, but a keepalive request continues.
     const fetchMock = answer(204);
     const t = new HttpTransport(config(), diagnostics());
 
@@ -625,8 +624,8 @@ describe("HttpTransport", () => {
     };
     const t = new HttpTransport(config({ serializer: broken }), new Diagnostics(handler, 0));
 
-    // The send resolves. The same records fail in the same way each time. The caller cannot do
-    // anything about it. A stored copy of the batch has no value.
+    // The send resolves. The same records would fail the same way every time, the caller can't do
+    // anything about it, and a stored copy of the batch has no value.
     await expect(t.send(batch())).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
@@ -634,7 +633,7 @@ describe("HttpTransport", () => {
     );
   });
 
-  it("gives onLoss a batch that its serializer cannot encode", async () => {
+  it("passes a batch its serializer cannot encode to onLoss", async () => {
     answer(204);
     const onLoss = vi.fn<LossReporter>();
     const broken = {
@@ -704,8 +703,8 @@ describe("HttpTransport", () => {
   });
 
   it("sends the plain body, unlabelled, when the runtime cannot gzip", async () => {
-    // The header is the dangerous part. A Content-Encoding header of gzip on a body that is not
-    // gzip gives a 400. The server cannot tell the cause.
+    // The header is the dangerous part. Content-Encoding: gzip on a body that is not gzip gives a
+    // 400, and the server can't tell the cause.
     const fetchMock = answer(204);
     vi.stubGlobal("CompressionStream", undefined);
     const t = new HttpTransport(config({ compression: "gzip" }), diagnostics());

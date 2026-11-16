@@ -1,8 +1,8 @@
 // src/transport/status-transport.ts
 //
-// Holds the parts that the HTTP transport and the custom transport share. A status code then
-// has the same meaning on both paths. 2xx accepts the batch. 413 splits it. 429 and 503 throttle.
-// 408 and 5xx retry. Each other code drops the batch.
+// Holds what the HTTP transport and the custom transport share, so a status code means the
+// same on both paths. 2xx accepts the batch, 413 splits it, 429 and 503 throttle, and 408 and
+// 5xx retry. Any other code drops the batch.
 
 import {
   DATE_HEADER_HALF_STEP_MS,
@@ -23,9 +23,9 @@ import { TransportError } from "./errors";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
 /**
- * Computes the clock offset from the Date header of an answer.
+ * Computes the clock offset from an answer's Date header.
  * @param date Value of the Date header. It has whole seconds.
- * @returns Server time minus client time in milliseconds, or undefined for no valid date.
+ * @returns Server time minus client time in milliseconds, or undefined without a valid date.
  */
 function clockOffset(date: unknown): number | undefined {
   const serverMs = typeof date === "string" ? Date.parse(date) : Number.NaN;
@@ -40,12 +40,12 @@ export interface BatchTransport {
   /**
    * Sends one batch.
    * @param batch Batch to send.
-   * @param onKeepalive Runs when a request of the batch starts with keepalive.
-   * @throws TransportError when the batch is not accepted.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @throws TransportError when the batch isn't accepted.
    */
   send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
   /**
-   * Returns the remaining throttle delay of the endpoint of a batch.
+   * Returns the remaining throttle delay for a batch's endpoint.
    * @param batch Batch to send.
    * @returns Milliseconds until the throttle ends, or 0.
    */
@@ -66,15 +66,15 @@ export interface RejectHints {
 export abstract class StatusTransport implements BatchTransport {
   /** Abort controller shared by the requests of this delivery context. */
   protected readonly cancellation = new AbortController();
-  /** Cancels work of this context. A custom transport receives the same abort signal. */
+  /** Cancels this context's work. A custom transport receives the same abort signal. */
   stop(): void {
     this.cancellation.abort();
   }
 
   /**
-   * Checks the batch context after each asynchronous step and before a send.
+   * Checks the batch context after every asynchronous step and before a send.
    * @param batch Batch to check.
-   * @throws TransportError if the context stopped or the context id does not match.
+   * @throws TransportError if the context stopped or the context id doesn't match.
    */
   protected assertContext(batch: LogBatch): void {
     if (
@@ -114,8 +114,8 @@ export abstract class StatusTransport implements BatchTransport {
     }
   }
   /**
-   * Epoch time in milliseconds when the server throttle ends, for each endpoint. A 429 from
-   * metricsEndpoint must not stop the log batches.
+   * Epoch time in milliseconds when the server throttle ends, per endpoint, so that a 429 from
+   * metricsEndpoint doesn't stop the log batches.
    */
   private readonly throttledUntil: Record<BatchKind, number> = { logs: 0, metrics: 0, traces: 0 };
 
@@ -125,9 +125,9 @@ export abstract class StatusTransport implements BatchTransport {
   /**
    * @param config Active configuration instance.
    * @param diagnostics Diagnostics reporter.
-   * @param onSampling Receives the sampling rules of an accepted batch, before validation.
-   * @param onLoss Receives the records of a batch that the serializer cannot encode.
-   * @param onClock Receives the clock offset of an accepted batch, in milliseconds.
+   * @param onSampling Receives an accepted batch's sampling rules, before validation.
+   * @param onLoss Receives the records of a batch that the serializer can't encode.
+   * @param onClock Receives an accepted batch's clock offset, in milliseconds.
    */
   constructor(
     protected readonly config: ResolvedConfig,
@@ -140,13 +140,13 @@ export abstract class StatusTransport implements BatchTransport {
   /**
    * Sends one batch.
    * @param batch Batch to send.
-   * @param onKeepalive Runs when a request of the batch starts with keepalive.
-   * @throws TransportError when the batch is not accepted.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @throws TransportError when the batch isn't accepted.
    */
   abstract send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
 
   /**
-   * Returns the remaining throttle delay of the endpoint of a batch, in milliseconds.
+   * Returns the remaining throttle delay for a batch's endpoint, in milliseconds.
    * @param batch Batch to send.
    * @returns Milliseconds remaining in throttle window, or 0 if unthrottled.
    */
@@ -164,7 +164,7 @@ export abstract class StatusTransport implements BatchTransport {
 
   /**
    * Serializes a batch with the configured serializer. A metrics batch gets the OTLP metrics
-   * format. It reports a serializer that throws.
+   * format. Reports a serializer that throws.
    * @param batch Batch to serialize.
    * @returns The serialized batch, or undefined if the serializer threw.
    */
@@ -184,16 +184,16 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
-   * Records an accepted batch. It ends the server throttle of the endpoint of the batch.
+   * Records an accepted batch and ends the server throttle for that batch's endpoint.
    * @param kind Kind of the accepted batch.
-   * @param sampling Sampling rules of the answer, as text or as an object.
-   * @param date Date header of the answer. It is null when the server does not expose it.
+   * @param sampling The answer's sampling rules, as text or as an object.
+   * @param date The answer's Date header. Null when the server doesn't expose it.
    */
   protected accept(kind: BatchKind, sampling: unknown, date: unknown): void {
     this.throttledUntil[kind] = 0;
     this.acceptedAt = Date.now();
 
-    // Trust only the answer to a batch that the library sent. A null header means no rules.
+    // Only trust the answer to a batch that we sent ourselves. A null header means no rules.
     if (this.config.sampling.remote && sampling !== undefined && sampling !== null) {
       this.onSampling(sampling);
     }
@@ -205,8 +205,8 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
-   * Converts a status code that is not 2xx into a classified TransportError.
-   * @param status Status code of the answer.
+   * Converts a non-2xx status code into a classified TransportError.
+   * @param status The answer's status code.
    * @param batchId Identifier of the rejected batch.
    * @param kind Kind of the rejected batch. A throttle applies only to its endpoint.
    * @param hints Delay, size limit and advice that come with the answer.
@@ -228,7 +228,7 @@ export abstract class StatusTransport implements BatchTransport {
         `The server returned ${code}.${advice}`,
         { status, endpoint: endpointFor(kind, this.config) },
       );
-      // Classify as permanent. A retry loop on a rejected credential blocks each batch after it.
+      // Classify as permanent. Retrying a rejected credential would block every batch behind it.
       return new TransportError("permanent", `The server rejected the batch with ${code}.`, status);
     }
 
@@ -244,7 +244,7 @@ export abstract class StatusTransport implements BatchTransport {
 
     if (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_SERVICE_UNAVAILABLE) {
       const throttled = status === HTTP_TOO_MANY_REQUESTS;
-      // Cap the server delay. Without the cap, a large Retry-After stops delivery for hours.
+      // Cap the server delay, otherwise a large Retry-After could stop delivery for hours.
       const retryAfterMs =
         hints.retryAfterMs === undefined
           ? undefined

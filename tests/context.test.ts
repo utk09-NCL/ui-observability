@@ -14,9 +14,9 @@ describe("ContextStore", () => {
   });
 
   it("is instance-owned, so two runtimes cannot leak into each other", () => {
-    // This is why the store is not a module-level Map. A static store makes each test depend on the
-    // order of the test files. It also makes two runtimes in one document share the identifiers of
-    // one user.
+    // This is why the store is not a module-level Map. A static store makes every test depend on
+    // the order of the test files, and makes two runtimes in one document share one user's
+    // identifiers.
     const a = new ContextStore();
     const b = new ContextStore();
 
@@ -35,8 +35,8 @@ describe("ContextStore", () => {
   });
 
   it("merges on setMany rather than replacing what is already there", () => {
-    // A caller that sets a region must not drop a user id. Another part of the application can set
-    // that id just before.
+    // A caller that sets a region must not drop a user id that another part of the application
+    // set just before.
     const store = new ContextStore();
     store.set("user", "u1");
 
@@ -56,8 +56,8 @@ describe("ContextStore", () => {
   });
 
   it("stores values verbatim, because sanitizing belongs where the record is built", () => {
-    // The consumer can replace the config that sets the sanitize limits at any time. A value that
-    // the store cleans on input uses old limits. Those limits do not apply at the time of the send.
+    // The consumer can replace the config that sets the sanitize limits at any time. A value
+    // cleaned on input would use old limits that no longer apply when the record is sent.
     const store = new ContextStore();
     const value = { nested: { deep: true } };
 
@@ -68,8 +68,8 @@ describe("ContextStore", () => {
 
   it("returns a fresh snapshot from getAll, so a caller cannot mutate the store", () => {
     // The record builder merges this object under the scoped and per-call attributes. If the store
-    // gives out the live map, three parties can change the context by accident. They are that
-    // merge, a sanitizer and a consumer that keeps the result.
+    // handed out the live map, that merge, a sanitizer or a consumer that keeps the result could
+    // each change the context by accident.
     const store = new ContextStore();
     store.set("user", "u1");
 
@@ -81,8 +81,8 @@ describe("ContextStore", () => {
   });
 
   it("keeps prototype keys as ordinary data, which is why the store is a Map", () => {
-    // On a plain object, `__proto__` is a setter. This pair then writes to the prototype chain. The
-    // store does not keep it. Consumers do put keys from users into the context.
+    // On a plain object, `__proto__` is a setter, so this pair would write to the prototype chain
+    // instead of being stored. Consumers do put user-supplied keys into the context.
     const store = new ContextStore();
     const payload = { polluted: true };
 
@@ -94,15 +94,15 @@ describe("ContextStore", () => {
     expect(snapshot.constructor).toBe("not a function");
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 
-    // Object.fromEntries defines properties. It does not assign them. The key stays an own
-    // property. The prototype of the snapshot does not change.
+    // Object.fromEntries defines properties instead of assigning them, so the key stays an own
+    // property and the snapshot's prototype doesn't change.
     expect(Object.getOwnPropertyNames(snapshot)).toEqual(["__proto__", "constructor"]);
     expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
   });
 
   it("cannot tell a stored undefined from an absent key, and does not pretend to", () => {
-    // Both values serialize to the same absence on a record. The difference has no cost. A simple
-    // store is better than a has() method that no code calls.
+    // Both values serialize to the same absence on a record, so the difference costs nothing. A
+    // simple store beats a has() method that no code calls.
     const store = new ContextStore();
 
     store.set("user", undefined);

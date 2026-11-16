@@ -1,7 +1,7 @@
 // src/transport/serializers/select.ts
 //
-// This module maps the serializer option to an implementation. Only transport code imports
-// this module. config.ts keeps only the name. The main chunk then contains no serializer.
+// Maps the serializer option to an implementation. Only transport code imports this module,
+// and config.ts keeps just the name, so the main chunk contains no serializer.
 
 import { ATTR_LOG_TYPE } from "../../constants";
 import type { Diagnostics } from "../../core/diagnostics";
@@ -31,9 +31,9 @@ export function serializerFor(choice: SerializerChoice): LogSerializer {
 }
 
 /**
- * Gives the kind of a batch. Only a batch of metric records goes to metricsEndpoint. A batch of
- * span records is always "traces". It must not go to endpoint as log records. A stored record
- * can be corrupt. It then is not a metric or a span.
+ * Returns the kind of a batch. Only a batch of metric records goes to metricsEndpoint. A batch
+ * of span records is always "traces" and must not go to endpoint as log records. A stored
+ * record can be corrupt, and then it is neither a metric nor a span.
  * @param batch Batch to test.
  * @param config Active configuration.
  * @returns "metrics" with metricsEndpoint set and only metric records, "traces" for only span
@@ -52,11 +52,11 @@ export function batchKind(batch: LogBatch, config: ResolvedConfig): BatchKind {
 }
 
 /**
- * Gives the endpoint of a batch kind.
+ * Returns the endpoint for a batch kind.
  * @param kind Kind of the batch.
  * @param config Active configuration.
  * @returns metricsEndpoint for a metrics batch, tracesEndpoint for a traces batch, else
- * endpoint. "" means that the batch has no destination.
+ * endpoint. "" means the batch has no destination.
  */
 export function endpointFor(kind: BatchKind, config: ResolvedConfig): string | null {
   if (kind === "metrics") {
@@ -66,15 +66,15 @@ export function endpointFor(kind: BatchKind, config: ResolvedConfig): string | n
   return kind === "traces" ? config.tracesEndpoint : config.endpoint;
 }
 
-/** Serializer of each batch kind that does not use the configured serializer. */
+/** Serializers for the batch kinds that don't use the configured serializer. */
 const SIGNAL_SERIALIZERS: Partial<Record<BatchKind, LogSerializer>> = {
   metrics: otlpMetricsSerializer,
   traces: otlpTracesSerializer,
 };
 
 /**
- * Serializes a batch. It reports a serializer that throws, and the caller drops the batch.
- * A metrics batch gets the OTLP metrics format. A traces batch gets the OTLP traces format.
+ * Serializes a batch. Reports a serializer that throws, and the caller then drops the batch.
+ * A metrics batch gets the OTLP metrics format, and a traces batch the OTLP traces format.
  * @param config Active configuration.
  * @param batch Batch to serialize.
  * @param diagnostics Diagnostics reporter.

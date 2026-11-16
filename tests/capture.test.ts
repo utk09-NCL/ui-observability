@@ -15,7 +15,7 @@ import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { type SpanHooks, TraceEngine } from "../src/utils/tracing";
 
-/** A logger with a spy for each method. A test can read what the logger recorded. */
+/** A logger with a spy for every method, so a test can read what the logger recorded. */
 interface SpyLogger {
   error: ReturnType<typeof vi.fn<CaptureLogger["error"]>>;
   warn: ReturnType<typeof vi.fn<CaptureLogger["warn"]>>;
@@ -29,7 +29,7 @@ const INGEST = "https://ingest.example/v1/logs";
 /**
  * Builds a capture context around a spy logger.
  * @param over Capture settings layered over errors and rejections on.
- * @param spans Span decisions of the trace engine. Without them, spans are off.
+ * @param spans The trace engine's span decisions. Without them, spans are off.
  * @returns The context and the spy logger inside it.
  */
 function ctx(
@@ -183,9 +183,9 @@ describe("ErrorCapture", () => {
     const capture = new ErrorCapture(c);
     capture.install();
 
-    // The call gives no error object and no message. The built Error has the fallback message.
+    // The call gives no error object and no message, so the built Error has the fallback message.
     dispatchEvent(new ErrorEvent("error", { message: "" }));
-    // The own message of the error object is empty. The error has no other text that names it.
+    // The error object's own message is empty, and no other text names the error.
     dispatchEvent(new ErrorEvent("error", { error: new Error(""), message: "" }));
 
     expect(logger.error.mock.calls[0][0]).toBe("unknown error");
@@ -298,13 +298,13 @@ describe("ErrorCapture", () => {
     dispatchEvent(rejectionEvent("just a string"));
 
     expect(logger.error).toHaveBeenCalledTimes(2);
-    // The logger converts the reason. It keeps a non-Error reason as error.data.
+    // The logger converts the reason and keeps a non-Error reason as error.data.
     expect(logger.error.mock.calls[1][0]).toBe("just a string");
     expect(logger.error.mock.calls[1][1]).toBe("just a string");
     capture.uninstall();
   });
 
-  it("gives an Error to the logger for a rejection with no reason", () => {
+  it("passes an Error to the logger for a rejection with no reason", () => {
     const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
     capture.install();
@@ -375,7 +375,7 @@ describe("ErrorCapture", () => {
     }
     vi.useRealTimers();
 
-    // The map has a size limit. The eviction ran without a throw. The module continued to report
+    // The map has a size limit. The eviction ran without throwing, and the module kept reporting
     // after the cap.
     expect(logger.error.mock.calls.length).toBeGreaterThan(200);
     capture.uninstall();
@@ -423,7 +423,7 @@ describe("ErrorCapture", () => {
     const { ctx: c, logger } = ctx();
     const capture = new ErrorCapture(c);
 
-    // A second install adds a duplicate listener. Each record then occurs two times.
+    // A second install would add a duplicate listener, and every record would occur twice.
     capture.install();
     capture.install();
     dispatchEvent(new ErrorEvent("error", { error: new Error("boom"), message: "boom" }));
@@ -487,9 +487,9 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
-  it("reports one time a fetch that starts during a custom transport call", async () => {
-    // A fetch after an await is outside the library request scope. Each send then records a value,
-    // and that value causes the next send.
+  it("reports a fetch that starts during a custom transport call only once", async () => {
+    // A fetch after an await is outside the library request scope. Every send would then record a
+    // value, and that value would cause the next send.
     const { ctx: c } = ctx({ fetch: true });
     globalThis.fetch = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
     const capture = new NetworkCapture(c);
@@ -544,7 +544,7 @@ describe("NetworkCapture: fetch", () => {
     await fetch("https://api.internal:8443/orders/42?token=secret", { method: "post" });
     await fetch("https://api.internal/orders");
 
-    // The path, the query and the port stay out. Each value makes a new series in the backend.
+    // The path, query and port stay out, because every value makes a new series in the backend.
     expect(
       recordMetric.mock.calls.map(([def, , attributes]) => [def.name, def.unit, attributes]),
     ).toEqual([
@@ -572,7 +572,7 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
-  it("gives a request without a response the type of its error", async () => {
+  it("uses the error's type for a request without a response", async () => {
     const { ctx: c, recordMetric } = ctx({ fetch: true });
     globalThis.fetch = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError("network down"));
 
@@ -588,9 +588,9 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
-  it("gives a rejection that is not an error the type _OTHER", async () => {
+  it("uses the type _OTHER for a rejection that is not an error", async () => {
     const { ctx: c, recordMetric } = ctx({ fetch: true });
-    // A script can reject with any value. This value is not an error.
+    // A script can reject with any value, and this one is not an error.
     globalThis.fetch = vi.fn<typeof fetch>().mockRejectedValueOnce("nope");
 
     const capture = new NetworkCapture(c);
@@ -932,7 +932,7 @@ describe("NetworkCapture: fetch", () => {
   });
 
   it("matches a string entry on the origin of the URL only", async () => {
-    // A substring test also matches a query value or a longer host name of a third party.
+    // A substring test would also match a query value or a third party's longer host name.
     const seen: Headers[] = [];
     globalThis.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       seen.push(new Headers(init?.headers));
@@ -992,7 +992,7 @@ describe("NetworkCapture: fetch", () => {
       seen.push({ input, init });
       return Promise.resolve(new Response("", { status: 200 }));
     });
-    // An init with headers replaces all headers of the Request, for example Authorization.
+    // An init with headers replaces every header on the Request, for example Authorization.
     const foreign = {
       url: "https://api.internal/orders",
       method: "GET",
@@ -1134,7 +1134,7 @@ describe("NetworkCapture: XMLHttpRequest", () => {
     vi.restoreAllMocks();
   });
 
-  it("records a reused XHR one time for each send", () => {
+  it("records a reused XHR once per send", () => {
     const { ctx: c, logger } = ctx({ xhr: true });
     const capture = new NetworkCapture(c);
     capture.install();
@@ -1484,14 +1484,14 @@ describe("InteractionCapture", () => {
     expect(history.pushState).not.toBe(original);
 
     history.pushState({}, "", "/orders/1");
-    // onNavigate runs as a microtask. location.href changes only after pushState returns.
+    // onNavigate runs as a microtask, since location.href only changes after pushState returns.
     await Promise.resolve();
 
     expect(logger.logEvent).toHaveBeenCalledWith("NAVIGATION", {
       "page.url.previous": expect.any(String) as string,
     });
-    // Do not use `url.full`. That name is for an HTTP request. The record builder sets the new URL
-    // as `page.url` itself.
+    // Do not use `url.full`, which is the name for an HTTP request. The record builder sets the
+    // new URL as `page.url` itself.
     expect(logger.logEvent.mock.calls[0][1]).not.toHaveProperty("url.full");
 
     capture.uninstall();
@@ -1649,7 +1649,7 @@ describe("InteractionCapture rage and dead clicks", () => {
 
   /**
    * Installs the capture on a page with two controls and one plain element.
-   * @param interactions Interaction options. They skip the config checks.
+   * @param interactions Interaction options, which skip the config checks.
    * @returns The capture, its context, the spy logger and the elements.
    */
   const page = (interactions: CaptureOptions["interactions"]) => {
@@ -1668,7 +1668,7 @@ describe("InteractionCapture rage and dead clicks", () => {
     return { capture, c, logger, buy, sell, plain };
   };
 
-  /** Gives the payloads of each event with the name. */
+  /** Returns the payloads of every event with the given name. */
   const events = (logger: SpyLogger, name: string) =>
     logger.logEvent.mock.calls.filter(([event]) => event === name).map(([, payload]) => payload);
 
@@ -1825,7 +1825,7 @@ describe("InteractionCapture rage and dead clicks", () => {
 });
 
 describe("WebVitalsCapture", () => {
-  /** Nothing here loads the real package. The loader is the seam for the test. */
+  /** Nothing here loads the real package. The loader is the test seam. */
   const nullLoader = (): Promise<never> =>
     Promise.reject(new Error("Cannot find module 'web-vitals'"));
 
@@ -1926,7 +1926,7 @@ describe("WebVitalsCapture", () => {
       webVitals: true,
       webVitalsLoader: () => {
         loads++;
-        // The first load fails, for example a chunk that the network did not deliver.
+        // The first load fails, for example a chunk the network didn't deliver.
         return loads === 1
           ? Promise.reject(new Error("chunk failed"))
           : Promise.resolve({
@@ -1991,16 +1991,16 @@ describe("WebVitalsCapture", () => {
       {
         domainLookupEnd: 10,
         domainLookupStart: 5,
+        // connectEnd before connectStart gives a negative duration, which would poison the
+        // percentile chart it lands in.
         connectEnd: 8,
-        connectStart: 6,
+        connectStart: 9,
         responseStart: 20,
         requestStart: 15,
         responseEnd: 30,
         domInteractive: 40,
         domComplete: 50,
-        // Not finished at read time. Reporting -1 as a duration poisons the
-        // percentile chart it lands in.
-        loadEventEnd: -1,
+        loadEventEnd: 60,
         type: "navigate",
       } as never,
     ]);
@@ -2009,7 +2009,278 @@ describe("WebVitalsCapture", () => {
 
     const names = logger.logMetric.mock.calls.map((call) => call[0]);
     expect(names).toContain("navigation.dns_ms");
-    expect(names).not.toContain("navigation.load_ms");
+    expect(names).toContain("navigation.load_ms");
+    expect(names).not.toContain("navigation.tcp_ms");
+  });
+
+  describe("before the load event has finished", () => {
+    // A browser reports 0 for domComplete and loadEventEnd until the load event has finished.
+    const entry = {
+      domainLookupEnd: 10,
+      domainLookupStart: 5,
+      connectEnd: 8,
+      connectStart: 6,
+      responseStart: 20,
+      requestStart: 15,
+      responseEnd: 30,
+      domInteractive: 40,
+      domComplete: 0,
+      loadEventEnd: 0,
+      type: "navigate",
+    };
+
+    const values = (logger: { logMetric: { mock: { calls: unknown[][] } } }) =>
+      Object.fromEntries(logger.logMetric.mock.calls.map((call) => [call[0], call[1]]));
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("waits for the load event instead of reporting a load time of 0", async () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const nav = { ...entry };
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
+
+      new WebVitalsCapture(c).install();
+
+      expect(logger.logMetric).not.toHaveBeenCalled();
+
+      // The browser fills in loadEventEnd only after the load handlers have returned.
+      nav.domComplete = 50;
+      window.dispatchEvent(new Event("load"));
+      expect(logger.logMetric).not.toHaveBeenCalled();
+      nav.loadEventEnd = 60;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(values(logger)).toMatchObject({
+        "navigation.dns_ms": 5,
+        "navigation.dom_interactive_ms": 40,
+        "navigation.dom_complete_ms": 50,
+        "navigation.load_ms": 60,
+      });
+      expect(logger.logMetric).toHaveBeenCalledTimes(7);
+    });
+
+    it("reads one task later when it starts inside a load handler", async () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const nav = { ...entry, domComplete: 50 };
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
+      // readyState is already "complete" while the load handlers run, and no second load
+      // event will come.
+      vi.spyOn(document, "readyState", "get").mockReturnValue("complete");
+
+      new WebVitalsCapture(c).install();
+      nav.loadEventEnd = 60;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(values(logger)).toMatchObject({ "navigation.load_ms": 60 });
+    });
+
+    it("leaves out a milestone that is still 0 after the load event", async () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("complete");
+
+      new WebVitalsCapture(c).install();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A DNS time of 0 is real (a cached lookup). A load time of 0 is not.
+      const seen = values(logger);
+      expect(seen).toMatchObject({ "navigation.dns_ms": 5, "navigation.dom_interactive_ms": 40 });
+      expect(seen).not.toHaveProperty("navigation.dom_complete_ms");
+      expect(seen).not.toHaveProperty("navigation.load_ms");
+    });
+
+    it("logs what is ready when the page is hidden before the load event, and the rest after it", async () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      // The document is still downloading, so responseEnd is 0 as well.
+      const nav = { ...entry, responseEnd: 0 };
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+
+      new WebVitalsCapture(c).install();
+
+      // Back to visible is not a reason to report.
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(logger.logMetric).not.toHaveBeenCalled();
+
+      // The user leaves a slow page. Without this report, the slowest loads go missing.
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      expect(values(logger)).toEqual({
+        "navigation.dns_ms": 5,
+        "navigation.tcp_ms": 2,
+        "navigation.ttfb_ms": 5,
+        "navigation.dom_interactive_ms": 40,
+      });
+
+      // The user comes back and the page finishes. Only the missing metrics follow.
+      nav.responseEnd = 30;
+      nav.domComplete = 50;
+      window.dispatchEvent(new Event("load"));
+      nav.loadEventEnd = 60;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(logger.logMetric).toHaveBeenCalledTimes(7);
+      expect(values(logger)).toMatchObject({
+        "navigation.response_ms": 10,
+        "navigation.dom_complete_ms": 50,
+        "navigation.load_ms": 60,
+      });
+
+      // The late read took the listener away, so a later hide reports nothing more.
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(logger.logMetric).toHaveBeenCalledTimes(7);
+    });
+
+    it("reports a fault of the early read to diagnostics", () => {
+      const { ctx: c, logger } = ctx({ webVitals: true });
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      logger.logMetric.mockImplementation(() => {
+        throw new Error("logger fault");
+      });
+
+      new WebVitalsCapture(c).install();
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      expect(c.diagnostics.snapshot()["capture.install_failed"]).toBe(1);
+    });
+
+    it("reports a fault of the late read to diagnostics", async () => {
+      // No loader, so the only capture.install_failed report can come from the late read.
+      const { ctx: c, logger } = ctx({ webVitals: true });
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("complete");
+      logger.logMetric.mockImplementation(() => {
+        throw new Error("logger fault");
+      });
+
+      new WebVitalsCapture(c).install();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(c.diagnostics.snapshot()["capture.install_failed"]).toBe(1);
+    });
+  });
+
+  describe("on a prerendered page", () => {
+    // The browser loaded the page 4 s before the user opened it. Every time in the entry
+    // counts from the start of the prerender.
+    const entry = {
+      domainLookupEnd: 10,
+      domainLookupStart: 5,
+      connectEnd: 8,
+      connectStart: 6,
+      responseStart: 20,
+      requestStart: 15,
+      responseEnd: 30,
+      domInteractive: 3000,
+      domComplete: 4500,
+      loadEventEnd: 5000,
+      activationStart: 4000,
+      type: "navigate",
+    };
+
+    const sent = (logger: { logMetric: { mock: { calls: unknown[][] } } }) =>
+      Object.fromEntries(logger.logMetric.mock.calls.map((call) => [call[0], call[1]]));
+
+    /** Sets document.prerendering, which happy-dom doesn't have. */
+    const prerendering = (value: boolean): void => {
+      Object.defineProperty(document, "prerendering", { configurable: true, value });
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      delete (document as { prerendering?: boolean }).prerendering;
+    });
+
+    it("counts the milestones from the activation and marks the navigation as prerender", () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
+
+      new WebVitalsCapture(c).install();
+
+      expect(sent(logger)).toEqual({
+        // The request phases are durations, so the prerender doesn't change them.
+        "navigation.dns_ms": 5,
+        "navigation.tcp_ms": 2,
+        "navigation.ttfb_ms": 5,
+        "navigation.response_ms": 10,
+        // Interactive before the user opened the page: they waited 0 ms for it.
+        "navigation.dom_interactive_ms": 0,
+        "navigation.dom_complete_ms": 500,
+        "navigation.load_ms": 1000,
+      });
+      const types = logger.logMetric.mock.calls.map(
+        (call) => (call[4] as Record<string, string>)["navigation.type"],
+      );
+      expect(types).toEqual(Array(7).fill("prerender"));
+    });
+
+    it("reports nothing until the user opens a page that finished loading in the prerender", () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      // activationStart is 0 until the activation.
+      const nav = { ...entry, activationStart: 0 };
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
+      prerendering(true);
+
+      new WebVitalsCapture(c).install();
+
+      // A page that nobody opens must not report a load at all.
+      expect(logger.logMetric).not.toHaveBeenCalled();
+
+      prerendering(false);
+      nav.activationStart = 6000;
+      document.dispatchEvent(new Event("prerenderingchange"));
+
+      expect(sent(logger)).toMatchObject({
+        "navigation.dom_interactive_ms": 0,
+        "navigation.dom_complete_ms": 0,
+        "navigation.load_ms": 0,
+      });
+    });
+
+    it("waits for the activation when the load event ends during the prerender", async () => {
+      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const nav = { ...entry, activationStart: 0, domComplete: 0, loadEventEnd: 0 };
+      vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
+      vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
+      // A prerendered page is hidden, but that is not the user leaving.
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      prerendering(true);
+
+      new WebVitalsCapture(c).install();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(logger.logMetric).not.toHaveBeenCalled();
+
+      nav.domComplete = 4500;
+      window.dispatchEvent(new Event("load"));
+      nav.loadEventEnd = 5000;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(logger.logMetric).not.toHaveBeenCalled();
+
+      prerendering(false);
+      nav.activationStart = 4000;
+      document.dispatchEvent(new Event("prerenderingchange"));
+
+      expect(sent(logger)).toMatchObject({
+        "navigation.dom_complete_ms": 500,
+        "navigation.load_ms": 1000,
+      });
+      expect(logger.logMetric).toHaveBeenCalledTimes(7);
+    });
   });
 
   it("returns quietly when there is no navigation entry at all", () => {
@@ -2025,7 +2296,7 @@ describe("WebVitalsCapture", () => {
     const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
     // happy-dom has no navigation entry. This test supplies one.
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([
-      { domainLookupEnd: 10, domainLookupStart: 5, type: "navigate" } as never,
+      { domainLookupEnd: 10, domainLookupStart: 5, loadEventEnd: 60, type: "navigate" } as never,
     ]);
     const capture = new WebVitalsCapture(c);
 
@@ -2065,8 +2336,8 @@ describe("WebVitalsCapture", () => {
       expect(subscriptions).toBe(5);
     });
 
-    // web-vitals has no unsubscribe. The rebuilt instance must not call the reporters again. If it
-    // does, it reports each LCP two times.
+    // web-vitals has no unsubscribe, so the rebuilt instance must not call the reporters again.
+    // Otherwise it reports every LCP twice.
     first.uninstall();
     const second = new WebVitalsCapture(c);
     second.install();

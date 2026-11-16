@@ -1,46 +1,56 @@
 // src/core/breadcrumbs.ts
 //
-// This ring buffer keeps a bounded trail of recent user and system events in time order.
-// The buffer does not send breadcrumbs as records. Breadcrumbs go to the backend in the
-// payload of an error record. No function in this file throws.
+// A ring buffer that keeps a bounded, time-ordered trail of recent user and system events.
+// Breadcrumbs are never sent as records of their own. They reach the backend inside the
+// payload of an error record. Nothing in this file throws.
 
 import { BREADCRUMB_MIN_CAPACITY } from "../constants";
 
 /** Category of a breadcrumb event. */
 export type BreadcrumbCategory =
-  "log" | "action" | "event" | "click" | "navigation" | "http" | "console" | "frame" | "custom";
+  | "log"
+  | "action"
+  | "event"
+  | "click"
+  | "navigation"
+  | "http"
+  | "console"
+  | "frame"
+  | "profile"
+  | "custom";
 
-/** Short summary of one event that the buffer keeps for an error record. */
+/** Short summary of one event, kept so an error record can carry it. */
 export interface Breadcrumb {
   /** Timestamp in epoch milliseconds. */
   t: number;
   /** Category of the event. */
   category: BreadcrumbCategory;
-  /** Description of the event for a person to read. */
+  /** Human-readable description of the event. */
   message: string;
   /** Optional contextual metadata. */
   data?: Record<string, unknown>;
 }
 
-/** Ring buffer of fixed size. It keeps recent breadcrumbs in time order. */
+/** Fixed-size ring buffer that keeps recent breadcrumbs in time order. */
 export class BreadcrumbBuffer {
-  /** Storage array of the ring buffer. */
+  /** The ring's backing array. */
   private buffer: (Breadcrumb | undefined)[];
 
   /** Next write index in the circular buffer. */
   private pointer = 0;
 
   /**
-   * It is true after the pointer wraps past the capacity. The pointer alone cannot
-   * tell an empty ring from a ring that wrapped back to index 0.
+   * True once the pointer has wrapped past the capacity. The pointer alone can't tell an
+   * empty ring from one that wrapped back to index 0.
    */
   private filled = false;
 
-  /** Maximum number of breadcrumbs that the buffer keeps. */
+  /** Maximum number of breadcrumbs the buffer keeps. */
   private capacity: number;
 
   /**
-   * @param capacity Maximum number of breadcrumbs. A smaller value changes to the minimum size.
+   * @param capacity Maximum number of breadcrumbs. 0 turns the buffer off. Any other value
+   * below the minimum size is raised to it.
    */
   constructor(capacity: number) {
     this.capacity = capacity === 0 ? 0 : Math.max(capacity, BREADCRUMB_MIN_CAPACITY);
@@ -48,8 +58,8 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Changes the capacity and keeps the most recent breadcrumbs that fit.
-   * @param capacity New capacity. Set 0 to remove and disable stored breadcrumbs.
+   * Changes the capacity, keeping the most recent breadcrumbs that fit.
+   * @param capacity New capacity. Pass 0 to drop the stored breadcrumbs and turn the buffer off.
    */
   resize(capacity: number): void {
     const recent = this.snapshot().slice(-capacity);
@@ -61,7 +71,7 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Adds a breadcrumb. When the buffer is full, the new breadcrumb replaces the oldest one.
+   * Adds a breadcrumb. When the buffer is full, it overwrites the oldest one.
    * @param crumb Breadcrumb to add.
    */
   push(crumb: Breadcrumb): void {
@@ -73,7 +83,7 @@ export class BreadcrumbBuffer {
     }
   }
 
-  /** Removes all breadcrumbs. A new session must not carry the trail of the previous user. */
+  /** Removes all breadcrumbs, so a new session never carries the previous user's trail. */
   clear(): void {
     this.buffer.fill(undefined);
     this.pointer = 0;
@@ -81,8 +91,8 @@ export class BreadcrumbBuffer {
   }
 
   /**
-   * Returns all stored breadcrumbs ordered from oldest to newest.
-   * @returns List of breadcrumbs in time order.
+   * Returns all stored breadcrumbs, oldest to newest.
+   * @returns The breadcrumbs in time order.
    */
   snapshot(): Breadcrumb[] {
     const ordered = this.filled

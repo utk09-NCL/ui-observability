@@ -1,8 +1,7 @@
 // src/storage/factory.ts
 //
-// This module selects a storage adapter. It falls back from IndexedDB to localStorage to memory.
-// It falls back and does not throw. IndexedDB is unavailable in private mode and sandboxed
-// frames.
+// Picks a storage adapter, falling back from IndexedDB to localStorage to memory instead of
+// throwing. IndexedDB is unavailable in private mode and in sandboxed frames.
 
 import {
   STORAGE_DB_NAME,
@@ -18,18 +17,19 @@ import { LocalStorageStorage } from "./local-storage";
 import { MemoryStorage } from "./memory-storage";
 
 /**
- * Gives the database name of one application namespace. The sender and the deletion use one rule.
- * @param namespace Application namespace. An empty value keeps the name before namespaces.
- * @returns Name of the IndexedDB database.
+ * Returns the database name for one application namespace. The sender and the deletion both
+ * use this one rule.
+ * @param namespace Application namespace. An empty value keeps the name used before namespaces.
+ * @returns The IndexedDB database name.
  */
 export function storageName(namespace: string): string {
   return namespace ? `${STORAGE_DB_NAME}:${namespace}` : STORAGE_DB_NAME;
 }
 
 /**
- * Builds the adapter that keeps nothing. The factory returns it for the "none" strategy. Each
- * method resolves. A sender that calls close() on shutdown must not crash.
- * @param onGap Receives each batch that the adapter does not keep. That batch is a loss.
+ * Builds the adapter that keeps nothing, returned for the "none" strategy. Every method
+ * resolves, so a sender that calls close() on shutdown doesn't crash.
+ * @param onGap Receives every batch the adapter doesn't keep. Each one is a loss.
  * @returns The adapter.
  */
 const noop = (onGap?: GapReporter): StorageAdapter => ({
@@ -48,7 +48,7 @@ const noop = (onGap?: GapReporter): StorageAdapter => ({
 });
 
 /**
- * Checks if IndexedDB is available in the current context.
+ * Checks whether IndexedDB is available in the current context.
  * @param diagnostics Diagnostics reporter.
  * @returns True if IDBFactory is available.
  */
@@ -66,9 +66,9 @@ function hasIndexedDb(diagnostics: Diagnostics): boolean {
 }
 
 /**
- * Checks if localStorage is available and accepts writes.
+ * Checks whether localStorage is available and accepts writes.
  * @param diagnostics Diagnostics reporter.
- * @returns True if localStorage probe write succeeds.
+ * @returns True if a probe write to localStorage succeeds.
  */
 function hasLocalStorage(diagnostics: Diagnostics): boolean {
   const usable = diagnostics.guard(
@@ -85,14 +85,14 @@ function hasLocalStorage(diagnostics: Diagnostics): boolean {
 }
 
 /**
- * Creates the requested storage adapter. It falls back to the next adapter when
- * a dependency is unavailable.
- * @param strategy Configured persistence strategy.
+ * Creates the requested storage adapter, falling back to the next one when a dependency is
+ * unavailable.
+ * @param strategy The configured persistence strategy.
  * @param dbName IndexedDB database name.
  * @param limits Storage retention and capacity thresholds.
  * @param diagnostics Diagnostics reporter.
  * @param onGap Optional callback for telemetry gap reporting.
- * @returns Promise that resolves to the selected StorageAdapter instance.
+ * @returns A promise that resolves to the selected StorageAdapter.
  */
 export async function createStorage(
   strategy: StorageStrategy,
@@ -111,17 +111,17 @@ export async function createStorage(
 
   if (strategy === STORAGE_NAME_INDEXEDDB || strategy === "auto") {
     if (hasIndexedDb(diagnostics)) {
-      // Import IndexedDbStorage dynamically. This keeps the driver out of the main bundle. A
-      // chunk that does not load falls back to the next adapter.
+      // The dynamic import keeps the driver out of the main bundle. If the chunk fails to
+      // load, we fall back to the next adapter.
       const adapter = await diagnostics.guardAsync(
         "storage.unavailable",
         "The library could not open IndexedDB.",
         async () => {
           const { IndexedDbStorage } = await import("./indexeddb-storage");
           const storage = new IndexedDbStorage(dbName, limits, diagnostics, onGap);
-          // Open the database here, not on first use. Private mode, a corrupt profile and
-          // some WebViews define indexedDB but reject open(). Only a rejection in this
-          // block selects the next adapter.
+          // Open the database here rather than on first use. Private mode, a corrupt profile
+          // and some WebViews define indexedDB but reject open(), and only a rejection in
+          // this block selects the next adapter.
           await storage.open();
           return storage;
         },

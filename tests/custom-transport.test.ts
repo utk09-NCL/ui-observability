@@ -69,7 +69,7 @@ afterEach(() => {
 });
 
 describe("CustomTransport", () => {
-  it("gives the serialized batch, its id, its attempt and its records to the transport", async () => {
+  it("passes the serialized batch, its id, its attempt and its records to the transport", async () => {
     const transport = vi.fn<Transport>(() => Promise.resolve({ status: 202 }));
     const { sut } = setup(transport);
     const sent = batch();
@@ -85,7 +85,7 @@ describe("CustomTransport", () => {
     expect(request.records).toBe(sent.records);
   });
 
-  it("gives a batch of metric records with metricsEndpoint set the metrics kind and body", async () => {
+  it("marks a batch of metric records with the metrics kind and body when metricsEndpoint is set", async () => {
     const transport = vi.fn<Transport>(() => Promise.resolve({ status: 202 }));
     const diagnostics = new Diagnostics(vi.fn(), 0);
     const config = resolveConfig(
@@ -122,15 +122,15 @@ describe("CustomTransport", () => {
 
     await sut.send(batch());
 
-    // A captured transport fetch logs a record. The transport then sends that record again.
-    // A captured transport console line does the same.
+    // A captured transport fetch logs a record, which the transport then sends again. A captured
+    // transport console line does the same.
     expect(inside).toBe(true);
     expect(printing).toBe(true);
     expect(isLibraryRequest()).toBe(false);
     expect(isLibraryConsole()).toBe(false);
   });
 
-  it("gives the sampling rules of a 2xx answer to the sampling callback", async () => {
+  it("passes the sampling rules from a 2xx answer to the sampling callback", async () => {
     const diagnostics = new Diagnostics(undefined, 0);
     const rules = { v: 1, ttlMs: 1000 };
     const config = resolveConfig(
@@ -149,7 +149,7 @@ describe("CustomTransport", () => {
     expect(onSampling).toHaveBeenCalledWith(rules);
   });
 
-  it("gives the clock offset of the date in a 2xx answer", async () => {
+  it("returns the clock offset from the date in a 2xx answer", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T10:00:00.000Z"));
     const diagnostics = new Diagnostics(vi.fn(), 0);
     const config = resolveConfig(
