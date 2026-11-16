@@ -44,9 +44,14 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
@@ -59,7 +64,7 @@
     "example:angular": "pnpm --filter @example/angular run dev",
     "example:microfrontend": "concurrently -k \"pnpm --filter @example/mf-blotter run dev\" \"pnpm --filter @example/mf-ticket run dev\" \"pnpm --filter @example/mf-host run dev\"",
     "example:console-only": "pnpm --filter @example/console-only run dev",
-    "build": "rimraf dist && tsc --project tsconfig.build.json && vite build",
+    "build": "rimraf dist && tsc --project tsconfig.build.json && node tools/finish-declarations.mjs && vite build",
     "build:watch": "vite build --watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -72,9 +77,10 @@
     "check:peers": "node tools/check-peer-imports.mjs",
     "check:size": "node tools/check-size.mjs",
     "check:dev": "node tools/check-dev-server.mjs",
+    "check:consumers": "node tools/check-consumers.mjs",
     "prepare": "pnpm run build",
     "fix": "pnpm run lint:fix && pnpm run format",
-    "verify": "pnpm run format:check && pnpm run typecheck && pnpm run build && pnpm run lint && pnpm run check:peers && pnpm run check:size && pnpm run check:dev && pnpm run test:coverage",
+    "verify": "pnpm run format:check && pnpm run typecheck && pnpm run build && pnpm run lint && pnpm run check:peers && pnpm run check:size && pnpm run check:dev && pnpm run check:consumers && pnpm run test:coverage",
     "prepublishOnly": "pnpm run verify"
   },
   "peerDependencies": {
