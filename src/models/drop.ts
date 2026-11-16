@@ -14,6 +14,8 @@ import type { LogRecord } from "./log-record";
  *   `retention.maxAgeMs`, `retention.maxBatches` or the browser's storage quota.
  * - "max_attempts": a stored batch reached `retention.maxAttempts`.
  * - "rejected": the server refused the batch permanently, or one record is too large for it.
+ * - "partially_rejected": an OTLP server accepted the batch but rejected some records in it. The
+ *   server gives only a count, so `journeyIds` and `actions` stay empty.
  * - "unserializable": the serializer threw on the batch.
  * - "exit_queue_full": the exit queue in localStorage is full, so it drops its oldest batch.
  * - "load_failed": the delivery code failed to load, or shutdown() came first. The held records
@@ -29,6 +31,7 @@ export type LossReason =
   | "quota"
   | "max_attempts"
   | "rejected"
+  | "partially_rejected"
   | "unserializable"
   | "exit_queue_full"
   | "load_failed"
@@ -56,9 +59,12 @@ export interface DropSummary {
  * @param reason Cause of the loss.
  * @param records Lost records.
  * @param batchIds Ids of the lost batches.
+ * @param count Number of lost records when the caller can't name them. Defaults to the length
+ * of `records`.
  */
 export type LossReporter = (
   reason: LossReason,
   records: readonly LogRecord[],
   batchIds?: readonly string[],
+  count?: number,
 ) => void;

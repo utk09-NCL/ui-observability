@@ -29,11 +29,11 @@ describe("Worker client", () => {
     const { client, factory, worker, signal } = setup();
     const jobs = [workerJob(), workerJob()];
     jobs[1].batch.id = "second";
-    const results = await Promise.all(jobs.map((job) => client.send(job, signal.signal, 1000)));
+    const results = await Promise.all(jobs.map((job) => client.send(job, signal.signal, 1000, 0)));
     expect(results).toMatchObject([{ status: 204 }, { status: 204 }]);
     expect(factory).toHaveBeenCalledOnce();
     expect(worker.postMessage).toHaveBeenCalledOnce();
-    await client.send(workerJob(), signal.signal, 1000);
+    await client.send(workerJob(), signal.signal, 1000, 0);
     client.close();
     expect(worker.terminate).toHaveBeenCalledOnce();
   });
@@ -41,12 +41,12 @@ describe("Worker client", () => {
   it("rejects a stopped client and an aborted signal", async () => {
     const { client, signal, factory } = setup();
     signal.abort();
-    await expect(client.send(workerJob(), signal.signal, 1000)).rejects.toMatchObject({
+    await expect(client.send(workerJob(), signal.signal, 1000, 0)).rejects.toMatchObject({
       kind: "cancelled",
     });
     client.close();
     await expect(
-      client.send(workerJob(), new AbortController().signal, 1000),
+      client.send(workerJob(), new AbortController().signal, 1000, 0),
     ).rejects.toBeInstanceOf(WorkerFault);
     expect(factory).not.toHaveBeenCalled();
   });
@@ -57,7 +57,7 @@ describe("Worker client", () => {
       throw new Error("factory");
     }, diagnostics);
     await expect(
-      client.send(workerJob(), new AbortController().signal, 1000),
+      client.send(workerJob(), new AbortController().signal, 1000, 0),
     ).rejects.toMatchObject({ kind: "channel" });
     expect(diagnostics.snapshot()["transport.http_error"]).toBeGreaterThan(0);
     client.close();
@@ -68,7 +68,7 @@ describe("Worker client", () => {
     worker.postMessage.mockImplementation(() => {
       throw new Error("connect");
     });
-    await expect(client.send(workerJob(), signal.signal, 1000)).rejects.toMatchObject({
+    await expect(client.send(workerJob(), signal.signal, 1000, 0)).rejects.toMatchObject({
       kind: "channel",
     });
     expect(worker.terminate).toHaveBeenCalled();
@@ -80,7 +80,7 @@ describe("Worker client", () => {
     vi.spyOn(FakePort.prototype, "addEventListener").mockImplementation(() => {
       throw new Error("listener");
     });
-    await expect(client.send(workerJob(), signal.signal, 1000)).rejects.toMatchObject({
+    await expect(client.send(workerJob(), signal.signal, 1000, 0)).rejects.toMatchObject({
       kind: "channel",
     });
     expect(FakeChannel.created[0].port1.close).toHaveBeenCalledOnce();
@@ -92,7 +92,7 @@ describe("Worker client", () => {
     vi.useFakeTimers();
     const { worker, client, signal } = setup();
     worker.connect = () => undefined;
-    const sent = client.send(workerJob(), signal.signal, 10);
+    const sent = client.send(workerJob(), signal.signal, 10, 0);
     const result = expect(sent).rejects.toMatchObject({ kind: "channel" });
     await vi.advanceTimersByTimeAsync(10);
     await result;
@@ -100,15 +100,23 @@ describe("Worker client", () => {
     client.close();
   });
 
-  it("ends a request at its deadline and sends cancellation", async () => {
+  it("waits the grace after the deadline for a ready worker, then sends cancellation", async () => {
     vi.useFakeTimers();
     const { worker, client, signal } = setup();
     worker.connect = (_data, port) => {
       port.postMessage(workerMessage(TRANSPORT_WORKER_TYPE.ready, { ok: true }));
     };
-    const sent = client.send(workerJob(), signal.signal, 10);
-    const result = expect(sent).rejects.toMatchObject({ kind: "timeout" });
+    const sent = client.send(workerJob(), signal.signal, 10, 5);
+    let settled = false;
+    const result = expect(
+      sent.finally(() => {
+        settled = true;
+      }),
+    ).rejects.toMatchObject({ kind: "timeout" });
+
     await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(5);
     await result;
     expect(FakeChannel.created[0].port1.sent).toContainEqual(
       expect.objectContaining({ t: TRANSPORT_WORKER_TYPE.cancel, id: 1 }),
@@ -119,7 +127,7 @@ describe("Worker client", () => {
   it("cancels an active send when its signal aborts", async () => {
     const { worker, client, signal } = setup();
     worker.connect = () => undefined;
-    const sent = client.send(workerJob(), signal.signal, 1000);
+    const sent = client.send(workerJob(), signal.signal, 1000, 0);
     signal.abort();
     await expect(sent).rejects.toMatchObject({ kind: "cancelled" });
     client.close();
@@ -135,7 +143,7 @@ describe("Worker client", () => {
       },
       new Diagnostics(vi.fn(), 0),
     );
-    await expect(client.send(workerJob(), signal.signal, 1000)).rejects.toMatchObject({
+    await expect(client.send(workerJob(), signal.signal, 1000, 0)).rejects.toMatchObject({
       kind: "cancelled",
     });
     expect(fetch).not.toHaveBeenCalled();
@@ -152,7 +160,7 @@ describe("Worker client", () => {
       new Diagnostics(vi.fn(), 0),
     );
     await expect(
-      client.send(workerJob(), new AbortController().signal, 1000),
+      client.send(workerJob(), new AbortController().signal, 1000, 0),
     ).rejects.toMatchObject({ kind: "cancelled" });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -162,7 +170,7 @@ describe("Worker client", () => {
     async (event) => {
       const { worker, client, signal } = setup();
       worker.connect = () => undefined;
-      const sent = client.send(workerJob(), signal.signal, 1000);
+      const sent = client.send(workerJob(), signal.signal, 1000, 0);
       if (event === "port error") {
         FakeChannel.created[0].port1.emit("messageerror", {});
       } else {
@@ -182,7 +190,7 @@ describe("Worker client", () => {
   ])("refuses an invalid private reply %j", async (message) => {
     const { worker, client, signal } = setup();
     worker.connect = () => undefined;
-    const sent = client.send(workerJob(), signal.signal, 1000);
+    const sent = client.send(workerJob(), signal.signal, 1000, 0);
     FakeChannel.created[0].port1.emit("message", { data: message });
     await expect(sent).rejects.toMatchObject({ kind: "channel" });
     client.close();
@@ -190,7 +198,7 @@ describe("Worker client", () => {
 
   it("ignores a second ready message and a result without a pending id", async () => {
     const { worker, client, signal } = setup();
-    await client.send(workerJob(), signal.signal, 1000);
+    await client.send(workerJob(), signal.signal, 1000, 0);
     const channel = FakeChannel.created[0];
     const count = channel.port1.sent.length;
     channel.port1.emit("message", {
@@ -208,14 +216,16 @@ describe("Worker client", () => {
     const { client, signal } = setup();
     const job = workerJob();
     job.batch.records[0].attributes.bad = () => undefined;
-    await expect(client.send(job, signal.signal, 1000)).rejects.toMatchObject({ kind: "channel" });
+    await expect(client.send(job, signal.signal, 1000, 0)).rejects.toMatchObject({
+      kind: "channel",
+    });
     client.close();
   });
 
   it("contains cancellation and close failures", async () => {
     const { worker, client, signal, diagnostics } = setup();
     worker.connect = () => undefined;
-    const sent = client.send(workerJob(), signal.signal, 1000);
+    const sent = client.send(workerJob(), signal.signal, 1000, 0);
     const port = FakeChannel.created[0].port1;
     port.postMessage.mockImplementation(() => {
       throw new Error("cancel");

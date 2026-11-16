@@ -28,6 +28,10 @@ The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uio
 
 A `413` answer makes the library split the batch. Each half gets a new batch ID. The server did not accept the first batch. No duplicate occurs.
 
+The request deadline also covers the read of a response body. A body that does not arrive in time, or that fails, does not change the result of the status code. After a `413`, the library then splits the batch with no size hint. After a `2xx`, it accepts the batch with no `partialSuccess`. It reports `transport.http_error`. A stop or a rotation during the read ends the send.
+
+An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The library then gives the rejected count to `onDrop` with the reason `partially_rejected`. The server gives only a count, so `journeyIds` and `actions` are empty. The library reports `transport.partial_success`. It does not send the batch again, because the server kept the other records. A `partialSuccess` with no rejected records gives only the diagnostic.
+
 ## Order
 
 - In one batch, the records of one resource and one logger namespace keep their order.
@@ -39,19 +43,20 @@ A `413` answer makes the library split the batch. Each half gets a new batch ID.
 
 `onDrop` receives a summary of each loss. The `reason` field tells the cause.
 
-| `reason`           | Cause                                                                                 | Setting to change                               |
-| ------------------ | ------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `buffer_full`      | A hold buffer before startup, or the live buffer, is full.                            | `buffering`                                     |
-| `expired`          | A stored batch is older than `retention.maxAgeMs`.                                    | `retention.maxAgeMs`, `retention.mode`          |
-| `over_capacity`    | Storage has `retention.maxBatches` batches. A new batch evicts an old batch.          | `retention.maxBatches`                          |
-| `quota`            | The browser storage quota is full.                                                    | A lower `retention.maxBatches`                  |
-| `max_attempts`     | A stored batch reached `retention.maxAttempts`.                                       | `retention.maxAttempts`, `retention.mode`       |
-| `rejected`         | The server refused the batch permanently, or one record is too large for the server.  | The ingest server, `limits`                     |
-| `unserializable`   | The serializer threw an error on the batch.                                           | A custom `serializer`                           |
-| `exit_queue_full`  | The emergency queue in `localStorage` is full. It drops its oldest batch.             | None                                            |
-| `load_failed`      | The delivery code did not load, or `shutdown()` came first.                           | None                                            |
-| `not_stored`       | Storage did not keep a batch after a failed send, for example with `storage: "none"`. | `storage`                                       |
-| `security_context` | A change of the delivery identity removed the records of the old identity.            | The `pending` rule of `rotateSecurityContext()` |
+| `reason`             | Cause                                                                                 | Setting to change                               |
+| -------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `buffer_full`        | A hold buffer before startup, or the live buffer, is full.                            | `buffering`                                     |
+| `expired`            | A stored batch is older than `retention.maxAgeMs`.                                    | `retention.maxAgeMs`, `retention.mode`          |
+| `over_capacity`      | Storage has `retention.maxBatches` batches. A new batch evicts an old batch.          | `retention.maxBatches`                          |
+| `quota`              | The browser storage quota is full.                                                    | A lower `retention.maxBatches`                  |
+| `max_attempts`       | A stored batch reached `retention.maxAttempts`.                                       | `retention.maxAttempts`, `retention.mode`       |
+| `rejected`           | The server refused the batch permanently, or one record is too large for the server.  | The ingest server, `limits`                     |
+| `partially_rejected` | An OTLP server accepted the batch but rejected some records in it.                    | The ingest server                               |
+| `unserializable`     | The serializer threw an error on the batch.                                           | A custom `serializer`                           |
+| `exit_queue_full`    | The emergency queue in `localStorage` is full. It drops its oldest batch.             | None                                            |
+| `load_failed`        | The delivery code did not load, or `shutdown()` came first.                           | None                                            |
+| `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage: "none"`. | `storage`                                       |
+| `security_context`   | A change of the delivery identity removed the records of the old identity.            | The `pending` rule of `rotateSecurityContext()` |
 
 Some records never reach delivery by design. `onDrop` does not report them. The diagnostic codes in `getDiagnosticCounters()` show these cases:
 

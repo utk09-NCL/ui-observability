@@ -2,7 +2,7 @@
 //
 // Instruments fetch and XMLHttpRequest to record the outcome and timing of network requests.
 
-import { SERVER_TIMING_HEADER } from "../constants";
+import { SERVER_TIMING_HEADER, TRACEPARENT_HEADER } from "../constants";
 import { readServerTiming, xhrServerTiming } from "./server-timing";
 import type { InstrumentDef, MetricAttributes } from "../models/metric";
 import { isErrorLike } from "../utils/error-like";
@@ -163,6 +163,16 @@ function readFetchMethod(input: unknown, init: RequestInit | undefined): string 
  */
 function isForeignInput(input: unknown): boolean {
   return typeof input === "object" && !(input instanceof URL) && !(input instanceof Request);
+}
+
+/**
+ * Checks whether a fetch init sets nothing, for example {}. Like fetch(request), the call
+ * fetch(request, {}) keeps the Request's referrer, and any other init resets it.
+ * @param init The caller's fetch init.
+ * @returns True when no member has a value.
+ */
+function isEmptyInit(init: RequestInit | undefined): boolean {
+  return init === undefined || Object.values(init).every((value) => value === undefined);
 }
 
 /**
@@ -361,23 +371,40 @@ export class NetworkCapture implements Capture {
     }
 
     try {
+      // fetch(request, init) builds new Request(request, init), and init.headers then replaces
+      // every header the Request had. So work on the headers that actually go out.
+      const own = input instanceof Request ? input.headers : undefined;
+      const headers = new Headers(init?.headers ?? own);
+
+      // The caller runs its own trace, for example with OpenTelemetry, so don't break it.
+      if (headers.has(TRACEPARENT_HEADER)) {
+        this.ctx.diagnostics.report(
+          "capture.trace_header_kept",
+          "The request already has a traceparent header. The library keeps it and records no " +
+            "client span.",
+          { url },
+        );
+        return plan;
+      }
+
       const trace = this.ctx.tracing.request();
-      const injected = Object.entries(trace.headers);
+      for (const [key, value] of Object.entries(trace.headers)) {
+        headers.set(key, value);
+      }
 
       if (input instanceof Request) {
-        // Don't spread a non-empty init next to a Request input. That runs the Request
-        // constructor on `input` again and reads its body, and reading a body twice
-        // throws a TypeError.
-        const headers = new Headers(input.headers);
-        for (const [key, value] of injected) {
-          headers.set(key, value);
+        const rebuilt: RequestInit = { ...init, headers };
+        // Our rebuild has headers, which resets the referrer, so keep it when the caller's didn't.
+        if (isEmptyInit(init)) {
+          rebuilt.referrer = input.referrer;
+          rebuilt.referrerPolicy = input.referrerPolicy;
         }
-        plan.input = new Request(input, { headers });
+
+        // Build the Request once with the caller's whole init, as fetch would, and pass no init
+        // next to it. Otherwise fetch builds it again and reads the body twice, which throws.
+        plan.input = new Request(input, rebuilt);
+        plan.init = undefined;
       } else {
-        const headers = new Headers(init?.headers);
-        for (const [key, value] of injected) {
-          headers.set(key, value);
-        }
         plan.init = { ...init, headers };
       }
 

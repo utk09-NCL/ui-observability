@@ -34,7 +34,21 @@ interface Session {
 
 /** Private channel operations of the HTTP worker adapter. */
 export interface WorkerClient {
-  send(job: WorkerJob, signal: AbortSignal, timeoutMs: number): Promise<WorkerResult>;
+  /**
+   * Sends one job to the worker.
+   * @param job The job.
+   * @param signal Cancels the job.
+   * @param timeoutMs Wait for the worker's ready answer, and then for its result.
+   * @param graceMs Extra wait for the result of a ready worker, which enforces the deadline
+   * itself and may reply with a status at the deadline.
+   * @returns The worker's result.
+   */
+  send(
+    job: WorkerJob,
+    signal: AbortSignal,
+    timeoutMs: number,
+    graceMs: number,
+  ): Promise<WorkerResult>;
   close(): void;
 }
 
@@ -163,7 +177,7 @@ export function createWorkerClient(factory: () => Worker, diagnostics: Diagnosti
   };
 
   return {
-    send: async (job, signal, timeoutMs) => {
+    send: async (job, signal, timeoutMs, graceMs) => {
       if (inactive(signal)) {
         throw new WorkerFault("cancelled");
       }
@@ -190,14 +204,18 @@ export function createWorkerClient(factory: () => Worker, diagnostics: Diagnosti
           const abort = (): void => {
             cancel("cancelled");
           };
-          const timer = setTimeout(() => {
+          let timer = setTimeout(() => {
             // A worker that hasn't answered ready hasn't started, so HTTP can't duplicate its
             // unsent job.
-            if (current.ready) {
-              cancel("timeout");
-            } else {
+            if (!current.ready) {
               fail();
+              return;
             }
+
+            timer = setTimeout(() => {
+              cancel("timeout");
+            }, graceMs);
+            unrefTimer(timer);
           }, timeoutMs);
           unrefTimer(timer);
           finish = () => {

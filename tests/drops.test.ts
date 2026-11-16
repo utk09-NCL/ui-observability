@@ -92,6 +92,22 @@ describe("DropReporter", () => {
     expect(summary.actions).toEqual(records.slice(0, 20).map((one) => one.body));
   });
 
+  it("counts a loss that the reporter can't name records for", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    const { reporter } = setup(onDrop);
+
+    reporter.add("partially_rejected", [], ["batch-1"], 3);
+    await Promise.resolve();
+
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith({
+      reason: "partially_rejected",
+      records: 3,
+      batchIds: ["batch-1"],
+      journeyIds: [],
+      actions: [],
+    });
+  });
+
   it("ignores a loss with no records and no batch ids", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     const { reporter } = setup(onDrop);

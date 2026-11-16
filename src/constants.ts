@@ -377,6 +377,12 @@ export const MILLIS_PER_SECOND = 1000;
 /** Max exit payload size, in bytes (`sendBeacon`/`fetch(keepalive)` shared budget). */
 export const BEACON_LIMIT_BYTES = 60_000;
 
+/** Largest ingest response body the library reads, in bytes. It skips a larger body. */
+export const RESPONSE_BODY_LIMIT_BYTES = 16_384;
+
+/** Longest server message that a diagnostic repeats. The server controls this text. */
+export const SERVER_MESSAGE_MAX_CHARS = 256;
+
 /** Content type for an exit payload. CORS-safelisted, so it doesn't trigger a preflight. */
 export const CONTENT_TYPE_TEXT_PLAIN = "text/plain;charset=UTF-8";
 
@@ -867,6 +873,13 @@ export const TRANSPORT_WORKER_REFUSAL = {
 
 /** Maximum requests in one transport worker. */
 export const TRANSPORT_WORKER_MAX_JOBS = 64;
+
+/**
+ * Extra wait for the transport worker's answer after the request deadline. The worker replies
+ * with a status it got in time when the deadline ends its body read, and that reply needs a
+ * message hop.
+ */
+export const WORKER_REPLY_GRACE_MS = 1_000;
 
 /** Longest the deferred logger waits for idle time before it builds its records. */
 export const DEFER_IDLE_TIMEOUT_MS = 1000;

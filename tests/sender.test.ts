@@ -124,6 +124,28 @@ describe("Sender stats", () => {
   });
 });
 
+describe("Sender dispatch slots", () => {
+  it("frees the slot of a 413 whose body stalls, so the next batch still goes out", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>(), { status: 413 })),
+    );
+    const { sender } = await setup({
+      delivery: { requestTimeoutMs: 20, maxConcurrentRequests: 1 },
+    });
+
+    sender.push(record("stalled"));
+    void sender.flush();
+    await vi.waitFor(() => {
+      expect(sender.stats().inFlight).toBe(0);
+    });
+    sender.push(record("next"));
+    await sender.flush();
+
+    const bodies = fetchMock.mock.calls.map(([, init]) => init.body as string);
+    expect(bodies.some((body) => body.includes('"next"'))).toBe(true);
+  });
+});
+
 describe("Sender clock offset", () => {
   /**
    * Reads the clock offset attribute from the first record of one request.

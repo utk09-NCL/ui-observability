@@ -20,6 +20,7 @@ import type { BatchKind, ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { SerializedBatch } from "../models/serializer";
 import { TransportError } from "./errors";
+import { partialSuccessOf } from "./response-body";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
 /**
@@ -202,6 +203,45 @@ export abstract class StatusTransport implements BatchTransport {
     if (offset !== undefined) {
       this.onClock(offset);
     }
+  }
+
+  /**
+   * Reports what an OTLP server rejected or warned about in a batch it accepted. The batch isn't
+   * sent again, because the server kept the other records and a resend would duplicate them.
+   * @param batch The accepted batch.
+   * @param kind Kind of the batch, which names the count's field.
+   * @param body The answer's body text.
+   */
+  protected reportPartial(batch: LogBatch, kind: BatchKind, body: string): void {
+    const partial = this.diagnostics.guard(
+      "transport.http_error",
+      "The library could not read the body of the 2xx response.",
+      () => partialSuccessOf(body, kind),
+    );
+    if (!partial) {
+      return;
+    }
+
+    const endpoint = endpointFor(kind, this.config);
+    // The server only gives a count, so onDrop can't name the journeys or the actions.
+    const rejected = Math.min(partial.rejected, batch.records.length);
+    if (rejected === 0) {
+      this.diagnostics.report(
+        "transport.partial_success",
+        "The server accepted the batch with a warning.",
+        { endpoint, serverMessage: partial.message },
+      );
+      return;
+    }
+
+    this.onLoss("partially_rejected", [], [batch.id], rejected);
+    const total = String(batch.records.length);
+    this.diagnostics.report(
+      "transport.partial_success",
+      `The server rejected ${String(rejected)} of ${total} records in the batch. ` +
+        "The library does not send them again.",
+      { endpoint, rejected, serverMessage: partial.message },
+    );
   }
 
   /**

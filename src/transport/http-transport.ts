@@ -29,6 +29,7 @@ import { unrefTimer } from "../utils/unref";
 import { gzip } from "./compression";
 import { lastHeaders, resetHeaders, resolveHeaders } from "./headers";
 import { parseRetryAfter, TransportError } from "./errors";
+import { isOtlpBatch, maxBytesOf, needsBody, readOptionalBody } from "./response-body";
 import { batchKind, endpointFor } from "./serializers/select";
 import { StatusTransport } from "./status-transport";
 
@@ -40,6 +41,13 @@ export const CREDENTIAL_ADVICE =
 
 /** Body of one request, either text or gzip bytes. */
 type RequestBody = string | Uint8Array<ArrayBuffer>;
+
+/** A response, and the body text when the library uses it. */
+interface Answer {
+  response: Response;
+  /** A 413's size hint or an OTLP 2xx's partialSuccess. Absent when not read or too large. */
+  body?: string;
+}
 
 /** Lets us read document.visibilityState without global DOM type assertions. */
 interface DocumentGlobal {
@@ -106,28 +114,37 @@ export class HttpTransport extends StatusTransport {
       return;
     }
 
-    let response = await this.attempt(batch, endpoint, serialized, onKeepalive);
+    const otlp = isOtlpBatch(kind, this.config.serializer);
+    let answer = await this.attempt(batch, endpoint, serialized, otlp, onKeepalive);
     this.assertContext(batch);
 
     // A token can expire between two headers() calls, so send once more with fresh
     // headers. A second 401 or 403 drops the batch.
-    if (this.rejectsCredentials(response.status) && typeof this.config.headers === "function") {
+    if (
+      this.rejectsCredentials(answer.response.status) &&
+      typeof this.config.headers === "function"
+    ) {
       resetHeaders(this);
-      response = await this.attempt(batch, endpoint, serialized, onKeepalive);
+      answer = await this.attempt(batch, endpoint, serialized, otlp, onKeepalive);
       this.assertContext(batch);
     }
+
+    const { response, body } = answer;
 
     if (response.ok) {
       // The server must list each header in Access-Control-Expose-Headers, or it reads as null.
       const { headers } = response;
       this.accept(kind, headers.get(HEADER_SAMPLING), headers.get(HEADER_DATE));
+      if (body !== undefined) {
+        this.reportPartial(batch, kind, body);
+      }
       return;
     }
 
     const status = response.status;
     const retryAfterMs = parseRetryAfter(response.headers.get(HEADER_RETRY_AFTER));
     const maxBytes =
-      status === HTTP_PAYLOAD_TOO_LARGE ? await this.readMaxBytes(response) : undefined;
+      status === HTTP_PAYLOAD_TOO_LARGE && body !== undefined ? this.readMaxBytes(body) : undefined;
 
     throw this.reject(status, batch.id, kind, {
       retryAfterMs,
@@ -151,16 +168,18 @@ export class HttpTransport extends StatusTransport {
    * @param batch Batch to deliver.
    * @param endpoint Ingest URL.
    * @param serialized Serialized batch.
+   * @param otlp True when the batch is in an OTLP format, so a 2xx can carry a partialSuccess.
    * @param onKeepalive Runs when the request starts with keepalive.
-   * @returns Promise that resolves to the HTTP Response.
+   * @returns Promise that resolves to the response and the body text its status needs.
    * @throws TransportError on timeout or network failure.
    */
   private async attempt(
     batch: LogBatch,
     endpoint: string,
     serialized: SerializedBatch,
+    otlp: boolean,
     onKeepalive: (() => void) | undefined,
-  ): Promise<Response> {
+  ): Promise<Answer> {
     const deadline = Date.now() + this.config.delivery.requestTimeoutMs;
 
     // Headers ignores case in header names, so a config header can't duplicate one set below.
@@ -182,7 +201,7 @@ export class HttpTransport extends StatusTransport {
       onKeepalive?.();
     }
 
-    return this.dispatch(endpoint, headers, body, deadline, keepalive);
+    return this.dispatch(endpoint, headers, body, deadline, keepalive, otlp);
   }
 
   /**
@@ -245,7 +264,8 @@ export class HttpTransport extends StatusTransport {
    * @param body Request body string or byte array.
    * @param deadline Epoch time in milliseconds at which the request times out.
    * @param keepalive True if the request continues after unload.
-   * @returns Promise that resolves to the HTTP Response.
+   * @param otlp True when the batch is in an OTLP format, so a 2xx can carry a partialSuccess.
+   * @returns Promise that resolves to the response and the body text its status needs.
    * @throws TransportError on network failure, timeout, or offline status.
    */
   private async dispatch(
@@ -254,7 +274,8 @@ export class HttpTransport extends StatusTransport {
     body: RequestBody,
     deadline: number,
     keepalive: boolean,
-  ): Promise<Response> {
+    otlp: boolean,
+  ): Promise<Answer> {
     const { config } = this;
     const controller = new AbortController();
     const cancel = (): void => {
@@ -272,7 +293,7 @@ export class HttpTransport extends StatusTransport {
     unrefTimer(timer);
 
     try {
-      return await runAsLibraryRequest(() =>
+      const response = await runAsLibraryRequest(() =>
         fetch(endpoint, {
           method: "POST",
           headers,
@@ -285,6 +306,17 @@ export class HttpTransport extends StatusTransport {
           priority: keepalive ? "auto" : config.delivery.priority,
         }),
       );
+
+      if (!needsBody(response, otlp)) {
+        return { response };
+      }
+
+      // Read the body before the finally below disarms the timer and the stop listener,
+      // otherwise a body that stalls holds the dispatch slot past the deadline and after stop().
+      return {
+        response,
+        body: await readOptionalBody(response, controller.signal, this.diagnostics),
+      };
     } catch {
       if (this.cancellation.signal.aborted) {
         throw new TransportError("permanent", "The delivery context retired.");
@@ -315,19 +347,14 @@ export class HttpTransport extends StatusTransport {
 
   /**
    * Reads the optional maxBytes limit from a 413 response body.
-   * @param response HTTP 413 Response instance.
-   * @returns Promise that resolves to maximum byte limit or undefined.
+   * @param body The 413 body text.
+   * @returns The limit in bytes, or undefined.
    */
-  private async readMaxBytes(response: Response): Promise<number | undefined> {
-    return this.diagnostics.guardAsync(
+  private readMaxBytes(body: string): number | undefined {
+    return this.diagnostics.guard(
       "transport.http_error",
       "The library could not read the body of the 413 response.",
-      async () => {
-        const parsed = JSON.parse(await response.text()) as {
-          maxBytes?: unknown;
-        };
-        return typeof parsed.maxBytes === "number" ? parsed.maxBytes : undefined;
-      },
+      () => maxBytesOf(body),
     );
   }
 

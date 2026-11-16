@@ -176,6 +176,8 @@ describe("Transport worker service", () => {
     '{"maxBytes":"bad"}',
     '{"maxBytes":-1}',
     '{"maxBytes":1e999}',
+    '{"maxBytes":0}',
+    '{"maxBytes":1.5}',
     '{"maxBytes":100}',
   ])("reads a 413 body %s", async (body) => {
     vi.stubGlobal(
@@ -216,6 +218,113 @@ describe("Transport worker service", () => {
     expect(results()[0].result).toEqual({ failure: "timeout" });
     release(new Response(null, { status: 204 }));
     await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it.each([
+    ["an OTLP job", "otlp", "application/json", '{"partialSuccess":{}}'],
+    ["an ECS job", "ecs", "application/json", undefined],
+    ["a text answer", "otlp", "text/plain", undefined],
+  ] as const)("returns the body of a 2xx answer for %s", async (_name, serializer, type, body) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response('{"partialSuccess":{}}', {
+            status: 200,
+            headers: { "Content-Type": type },
+          }),
+        ),
+      ),
+    );
+    const { send, results } = setup();
+    const job = workerJob();
+    job.serializer = serializer;
+    send(job);
+
+    await vi.waitFor(() => expect(results()).toHaveLength(1));
+    expect(results()[0].result.body).toBe(body);
+  });
+
+  it.each([
+    [413, "maxBytes"],
+    [200, "body"],
+  ])("keeps the %s status when its body stalls past the deadline", async (status, field) => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(new ReadableStream<Uint8Array>(), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    );
+    const { send, results } = setup();
+    const job = workerJob();
+    job.timeoutMs = 10;
+    send(job);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(results()).toHaveLength(1);
+    expect(results()[0].result.status).toBe(status);
+    expect(results()[0].result[field]).toBeUndefined();
+  });
+
+  it.each([413, 200])("keeps the %s status when its body stream fails", async (status) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.error(new TypeError("connection reset"));
+              },
+            }),
+            { status, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      ),
+    );
+    const { send, results, diagnostics } = setup();
+    send();
+
+    await vi.waitFor(() => expect(results()).toHaveLength(1));
+    expect(results()[0].result).toMatchObject({ status });
+    expect(diagnostics.snapshot()["transport.http_error"]).toBe(1);
+  });
+
+  it("stops reading a 413 body after 16 KiB and cancels the rest", async () => {
+    const cancel = vi.fn();
+    const json = new TextEncoder().encode(
+      JSON.stringify({ maxBytes: 100, pad: "x".repeat(64 * 1024) }),
+    );
+    let at = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (at >= json.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(json.slice(at, at + 1024));
+        at += 1024;
+      },
+      cancel,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response(body, { status: 413 }))),
+    );
+    const { send, results } = setup();
+    send();
+
+    await vi.waitFor(() => expect(results()).toHaveLength(1));
+    expect(results()[0].result.status).toBe(413);
+    expect(results()[0].result.maxBytes).toBeUndefined();
+    expect(cancel).toHaveBeenCalled();
+    expect(at).toBeLessThan(json.length);
   });
 
   it("does not fetch after cancellation during compression", async () => {
