@@ -23,6 +23,10 @@ pnpm add --save-exact @utk09/ui-observability
 yarn add --exact @utk09/ui-observability
 ```
 
+The package has an ES module entry and a CommonJS entry. Each entry has its own type declarations.
+The types work with `moduleResolution` set to `NodeNext` or `Bundler`. They also work with `skipLibCheck: false`.
+Use one module format in one application. The two entries are separate copies with separate state and separate types.
+
 ### Peer Dependencies
 
 Each peer is optional. The library has no runtime dependency.
@@ -929,7 +933,7 @@ The workspace enables install scripts for `@parcel/watcher`, `esbuild`, `fsevent
 ```bash
 pnpm install
 pnpm run dev      # Playground, mock ingest server and iframe host
-pnpm run verify   # Format check, typecheck, build, lint, peer, size and dev-server checks, tests
+pnpm run verify   # Format check, typecheck, build, lint, peer, size, dev-server and consumer checks, tests
 ```
 
 - Vanilla playground: `http://localhost:5173/playground/vanilla/index.html`. Add `?worker=1` to send through the transport worker.
