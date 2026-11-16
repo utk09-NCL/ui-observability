@@ -44,6 +44,7 @@ describe("Transport worker protocol", () => {
       { status: 204 },
       { status: 429, retryAfterMs: 1000, maxBytes: 20, sampling: null, date: null },
       { status: 200, sampling: "rules", date: "date", compressionFailed: false },
+      { status: 200, body: '{"partialSuccess":{}}' },
     ]) {
       expect(isWorkerResult(response)).toBe(true);
     }
@@ -64,6 +65,8 @@ describe("Transport worker protocol", () => {
       { status: 200, sampling: 1 },
       { status: 200, date: {} },
       { status: 200, compressionFailed: 1 },
+      { status: 200, body: 1 },
+      { status: 200, body: "x".repeat(16_385) },
     ].map((value) => ({ value })),
   )("refuses the response $value", ({ value }) => {
     expect(isWorkerResult(value)).toBe(false);

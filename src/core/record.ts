@@ -19,7 +19,10 @@ import {
   ATTR_SANITIZE_FAILED,
   LEVEL_BYPASS_TYPES,
   LEVEL_ORDER,
+  LOG_TYPE_METRIC,
+  LOG_TYPE_SPAN,
   METRIC_KEYS,
+  METRIC_NAMESPACE,
   RESOURCE_BROWSER_USER_AGENT,
   RESOURCE_CONTEXT_ID,
   RESOURCE_DEPLOYMENT_ENVIRONMENT,
@@ -38,6 +41,7 @@ import {
   TELEMETRY_SDK_LANGUAGE,
   TELEMETRY_SDK_NAME,
   TELEMETRY_SDK_VERSION,
+  TRACE_NAMESPACE,
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import {
@@ -163,26 +167,106 @@ export interface BuildInput {
   snapshot?: RecordSnapshot;
 }
 
-/** Keys of the fields the library builds for a metric point or a span. */
-const FIXED_KEYS: readonly string[] = [
-  "metric.name",
-  "metric.unit",
-  "metric.type",
-  "metric.value",
-  ...Object.values(METRIC_KEYS),
-  ...Object.values(SPAN_KEYS),
-];
+/** Checks whether a forwarded value has the shape the library writes for one field. */
+type FieldCheck = (value: unknown) => boolean;
+
+/** Fields the library writes together on one kind of record, each with its check. */
+type FieldGroup = Readonly<Record<string, FieldCheck>>;
+
+const isFiniteNumber: FieldCheck = (value) => typeof value === "number" && Number.isFinite(value);
+const isNumberList: FieldCheck = (value) => Array.isArray(value) && value.every(isFiniteNumber);
+// An int64 time travels as a digit string because a JavaScript number can't hold it.
+const isNanos: FieldCheck = (value) => typeof value === "string" && /^\d{1,20}$/.test(value);
+const isTraceId: FieldCheck = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+const isSpanId: FieldCheck = (value) => typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
+// A root span's parent id is empty.
+const isParentId: FieldCheck = (value) => value === "" || isSpanId(value);
+const isCounter: FieldCheck = (value) => value === "counter";
+const isHistogram: FieldCheck = (value) => value === "histogram";
+const isSpanKind: FieldCheck = (value) => value === "client" || value === "internal";
+const isSpanStatus: FieldCheck = (value) => value === "error" || value === "unset";
+
+// metric.name, metric.unit and metric.attribute_keys are app text, so they aren't in a group
+// and the sender's redact has the last word on them.
+const COUNTER_FIELDS: FieldGroup = {
+  "metric.type": isCounter,
+  "metric.value": isFiniteNumber,
+  [METRIC_KEYS.start]: isNanos,
+};
+
+const HISTOGRAM_FIELDS: FieldGroup = {
+  "metric.type": isHistogram,
+  [METRIC_KEYS.start]: isNanos,
+  [METRIC_KEYS.count]: isFiniteNumber,
+  [METRIC_KEYS.sum]: isFiniteNumber,
+  [METRIC_KEYS.min]: isFiniteNumber,
+  [METRIC_KEYS.max]: isFiniteNumber,
+  [METRIC_KEYS.bounds]: isNumberList,
+  [METRIC_KEYS.buckets]: isNumberList,
+};
+
+const SPAN_FIELDS: FieldGroup = {
+  [SPAN_KEYS.kind]: isSpanKind,
+  [SPAN_KEYS.parentId]: isParentId,
+  [SPAN_KEYS.start]: isNanos,
+  [SPAN_KEYS.end]: isNanos,
+  [SPAN_KEYS.status]: isSpanStatus,
+};
+
+// A span only has a link when both ids are there, so a lone id is the app's own attribute.
+const LINK_FIELDS: FieldGroup = {
+  [SPAN_KEYS.linkTraceId]: isTraceId,
+  [SPAN_KEYS.linkSpanId]: isSpanId,
+};
 
 /**
- * Reads the fields that the library built in another context. The sender's hooks can't change
- * them, and the limits can't trim them.
- * @param attributes A forwarded record's attributes.
- * @returns Those fields that the record has.
+ * Picks the field groups the library wrote on a forwarded record. The builder sets log.type and
+ * app.namespace after it merges the app's attributes, so an attribute can't fake them, but an app
+ * logger named uiobs.metrics can. A logMetric() point writes its fields as payload, so it gets
+ * none, as on the local path.
+ * @param attributes A forwarded record's attributes, before the sender's hooks.
+ * @returns The groups to check.
+ */
+function groupsOf(attributes: Record<string, unknown>): FieldGroup[] {
+  const type = attributes[ATTR_LOG_TYPE];
+  const namespace = attributes[ATTR_APP_NAMESPACE];
+
+  if (type === LOG_TYPE_SPAN && namespace === TRACE_NAMESPACE) {
+    return [SPAN_FIELDS, LINK_FIELDS];
+  }
+
+  if (type !== LOG_TYPE_METRIC || namespace !== METRIC_NAMESPACE) {
+    return [];
+  }
+
+  if (attributes["metric.type"] === "histogram") {
+    return [HISTOGRAM_FIELDS];
+  }
+
+  return [COUNTER_FIELDS];
+}
+
+/**
+ * Reads the encoding fields of a metric point or a span from another context, so the sender's
+ * redact can't break the point and the limits can't trim its buckets. A group comes back whole
+ * or not at all, and only when each value has the library's shape. Otherwise a caller attribute
+ * named like a library field would undo the sender's redact.
+ * @param attributes A forwarded record's attributes, before the sender's hooks.
+ * @returns The fields to put back after the hooks.
  */
 function fixedOf(attributes: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    FIXED_KEYS.filter((key) => key in attributes).map((key) => [key, attributes[key]]),
-  );
+  const fixed: Record<string, unknown> = {};
+
+  for (const group of groupsOf(attributes)) {
+    const keys = Object.keys(group);
+    if (keys.every((key) => group[key](attributes[key]))) {
+      for (const key of keys) {
+        fixed[key] = attributes[key];
+      }
+    }
+  }
+
+  return fixed;
 }
 
 /**

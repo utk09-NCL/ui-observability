@@ -5,6 +5,7 @@ import {
   HTTP_SUCCESS_END,
   HTTP_SUCCESS_MIN,
   HTTP_UNAUTHORIZED,
+  WORKER_REPLY_GRACE_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
@@ -136,6 +137,9 @@ class WorkerTransport extends StatusTransport {
     }
     if (result.status >= HTTP_SUCCESS_MIN && result.status < HTTP_SUCCESS_END) {
       this.accept(kind, result.sampling, result.date);
+      if (result.body !== undefined) {
+        this.reportPartial(batch, kind, result.body);
+      }
       return;
     }
     throw this.reject(result.status, batch.id, kind, {
@@ -215,6 +219,9 @@ class WorkerTransport extends StatusTransport {
       },
       this.cancellation.signal,
       remaining,
+      // The worker enforces the deadline itself. Without the grace, our timer fires first and
+      // a 2xx the worker got in time comes back as a timeout, so the batch goes out again.
+      WORKER_REPLY_GRACE_MS,
     );
   }
 }

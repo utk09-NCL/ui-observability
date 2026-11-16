@@ -468,6 +468,37 @@ describe("runtime lifecycle", () => {
     });
   });
 
+  it("gives onDrop the count of records an OTLP server rejected in an accepted batch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response('{"partialSuccess":{"rejectedLogRecords":"1"}}', {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    );
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({ ...base, onDrop });
+    await ready();
+
+    startJourney("checkout");
+    logAction("submit order");
+    await flush();
+
+    await vi.waitFor(() => {
+      expect(onDrop).toHaveBeenCalledWith({
+        reason: "partially_rejected",
+        records: 1,
+        batchIds: [expect.any(String)],
+        journeyIds: [],
+        actions: [],
+      });
+    });
+  });
+
   it("passes the batches that storage evicts to onDrop", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, onDrop });
@@ -641,11 +672,224 @@ describe("runtime lifecycle", () => {
     });
     await ready();
     const point = forwardedRecord("orders");
-    point.attributes = { "log.type": "metric", "metric.value": 3, region: "eu-west" };
+    point.attributes = {
+      "log.type": "metric",
+      "app.namespace": "uiobs.metrics",
+      "metric.type": "counter",
+      "metric.value": 3,
+      "metric.start_time_unix_nano": "1731770000000000000",
+      region: "eu-west",
+    };
 
     runtime()["ingestForwarded"]([point]);
 
     expect(buffered()[0].attributes).toMatchObject({ "metric.value": 3, region: "masked" });
+  });
+
+  describe("library fields on a forwarded record after the sender's redact", () => {
+    /** Sends records through the direct link of a same-origin child frame. */
+    async function forward(...records: Record<string, unknown>[]): Promise<LogRecord[]> {
+      runtime().busAccept(
+        {
+          t: "ui-observability.message.records",
+          from: "child",
+          records: records as unknown as LogRecord[],
+        },
+        vi.fn(),
+      );
+      await settle();
+      return buffered();
+    }
+
+    /** A forwarded record of one log.type and app.namespace with the given attributes. */
+    function forwardedOf(type: string, namespace: string, attributes: Record<string, unknown>) {
+      const record = forwardedRecord(type);
+      record.attributes = { "log.type": type, "app.namespace": namespace, ...attributes };
+      return record;
+    }
+
+    const emptyRedact = { ...base, redact: (record: LogRecord) => ({ ...record, attributes: {} }) };
+
+    const counterFields = {
+      "metric.type": "counter",
+      "metric.value": 2,
+      "metric.start_time_unix_nano": "1731770000000000000",
+    };
+
+    const histogramFields = {
+      "metric.type": "histogram",
+      "metric.start_time_unix_nano": "1731770000000000000",
+      "metric.count": 3,
+      "metric.sum": 42.5,
+      "metric.min": 0.5,
+      "metric.max": 40,
+      "metric.bounds": [10, 100],
+      "metric.bucket_counts": [2, 0, 1],
+    };
+
+    const spanFields = {
+      "span.kind": "client",
+      "span.parent_id": "c".repeat(16),
+      "span.start_time_unix_nano": "1731770000000000000",
+      "span.end_time_unix_nano": "1731770000250000000",
+      "span.status": "error",
+    };
+
+    // An ambient trace's root span has no parent and no error.
+    const rootSpanFields = {
+      "span.kind": "internal",
+      "span.parent_id": "",
+      "span.start_time_unix_nano": "1731770000000000000",
+      "span.end_time_unix_nano": "1731770000250000000",
+      "span.status": "unset",
+    };
+
+    const linkFields = {
+      "span.link.trace_id": "d".repeat(32),
+      "span.link.span_id": "e".repeat(16),
+    };
+
+    it("doesn't restore a metric-named or span-named attribute on an ordinary event", async () => {
+      configure(emptyRedact);
+      await ready();
+
+      const [record] = await forward(
+        forwardedOf("event", "checkout", {
+          "metric.name": "customer-secret",
+          "metric.value": 1234,
+          "span.status": "error",
+          "span.parent_id": "f".repeat(16),
+        }),
+      );
+
+      expect(record.attributes).toEqual({});
+    });
+
+    it("restores a forwarded histogram's encoding that redact removed", async () => {
+      configure(emptyRedact);
+      await ready();
+
+      const [record] = await forward(forwardedOf("metric", "uiobs.metrics", histogramFields));
+
+      expect(record.attributes).toEqual(histogramFields);
+    });
+
+    it("restores a forwarded span's encoding and link that redact replaced", async () => {
+      configure({
+        ...base,
+        redact: (record) => {
+          for (const key of Object.keys(record.attributes)) {
+            record.attributes[key] = "[masked]";
+          }
+          return record;
+        },
+      });
+      await ready();
+
+      const [record] = await forward(
+        forwardedOf("span", "uiobs.traces", { ...spanFields, ...linkFields, user: "a@b.example" }),
+      );
+
+      expect(record.attributes).toEqual({
+        ...spanFields,
+        ...linkFields,
+        "log.type": "[masked]",
+        "app.namespace": "[masked]",
+        user: "[masked]",
+      });
+    });
+
+    it("keeps redact's change to a forwarded point's name, unit and attribute keys", async () => {
+      configure({
+        ...base,
+        redact: (record) => {
+          record.attributes["metric.name"] = "[masked]";
+          Reflect.deleteProperty(record.attributes, "metric.unit");
+          Reflect.deleteProperty(record.attributes, "metric.attribute_keys");
+          return record;
+        },
+      });
+      await ready();
+
+      const [record] = await forward(
+        forwardedOf("metric", "uiobs.metrics", {
+          ...histogramFields,
+          "metric.name": "checkout.a@b.example",
+          "metric.unit": "ms",
+          "metric.attribute_keys": ["region"],
+          region: "eu-west",
+        }),
+      );
+
+      expect(record.attributes).toEqual({
+        ...histogramFields,
+        "log.type": "metric",
+        "app.namespace": "uiobs.metrics",
+        "metric.name": "[masked]",
+        region: "eu-west",
+      });
+    });
+
+    it("restores only the fields the library writes for the record", async () => {
+      configure(emptyRedact);
+      await ready();
+
+      const records = await forward(
+        // A context key on a counter point, which the library never writes for a counter.
+        forwardedOf("metric", "uiobs.metrics", { ...counterFields, "metric.sum": 4111 }),
+        // logMetric() writes its fields as the caller's payload, as on the local path.
+        forwardedOf("metric", "checkout", { ...counterFields }),
+        // An app logger can't make its event a library point by its namespace alone.
+        forwardedOf("event", "uiobs.metrics", { ...counterFields }),
+        // A measure attribute can't pose as half of a span link.
+        forwardedOf("span", "uiobs.traces", {
+          ...spanFields,
+          "span.link.trace_id": "5f2b9c0e7a1d4e3f8b6a0c9d2e1f4a7b",
+        }),
+      );
+
+      expect(records.map((record) => record.attributes)).toEqual([
+        counterFields,
+        {},
+        {},
+        spanFields,
+      ]);
+    });
+
+    it("restores a group only when each of its values has the library's shape", async () => {
+      configure(emptyRedact);
+      await ready();
+
+      const records = await forward(
+        forwardedOf("metric", "uiobs.metrics", {
+          ...histogramFields,
+          "metric.start_time_unix_nano": "555-0100",
+        }),
+        forwardedOf("metric", "uiobs.metrics", {
+          ...histogramFields,
+          "metric.bounds": ["a@b.example"],
+        }),
+        forwardedOf("metric", "uiobs.metrics", { ...counterFields, "metric.value": "4111" }),
+        forwardedOf("span", "uiobs.traces", { ...spanFields, "span.kind": "a@b.example" }),
+        forwardedOf("span", "uiobs.traces", {
+          ...spanFields,
+          ...linkFields,
+          "span.link.trace_id": "D".repeat(32),
+        }),
+        forwardedOf("span", "uiobs.traces", rootSpanFields),
+        forwardedOf("span", "uiobs.traces", { ...rootSpanFields, "span.status": "secret" }),
+      );
+
+      expect(records.map((record) => record.attributes)).toEqual([
+        {},
+        {},
+        {},
+        {},
+        spanFields,
+        rootSpanFields,
+        {},
+      ]);
+    });
   });
 
   it("drops a forwarded record that the redact hook of the sender drops", async () => {

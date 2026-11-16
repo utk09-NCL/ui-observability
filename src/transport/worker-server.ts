@@ -13,11 +13,11 @@ import {
 import type { Diagnostics } from "../core/diagnostics";
 import type { SerializedBatch } from "../models/serializer";
 import { DeadlineError, withDeadline } from "../utils/deadline";
-import { isObject } from "../utils/guards";
 import { runAsLibraryRequest } from "../utils/library-request";
 import { estimateBytes } from "../utils/sanitize";
 import { gzip } from "./compression";
 import { parseRetryAfter } from "./errors";
+import { isOtlpBatch, maxBytesOf, needsBody, readOptionalBody } from "./response-body";
 import { otlpMetricsSerializer } from "./serializers/otlp-metrics";
 import { otlpTracesSerializer } from "./serializers/otlp-traces";
 import { serializerFor } from "./serializers/select";
@@ -26,14 +26,24 @@ import {
   isWorkerMessage,
   workerMessage,
   type WorkerJob,
+  type WorkerResponse,
   type WorkerResult,
 } from "./worker-protocol";
 
-/** Serializes and sends one worker request. The main thread owns its retry policy. */
+/**
+ * Serializes and sends one worker request. The main thread owns its retry policy.
+ * @param job The request to send.
+ * @param signal Aborts at the deadline and on cancel.
+ * @param diagnostics Diagnostics reporter.
+ * @param onAnswer Gets the server's status before the body read, so a deadline that ends the
+ * read can still reply with it.
+ * @returns The result for the main thread.
+ */
 async function deliver(
   job: WorkerJob,
   signal: AbortSignal,
   diagnostics: Diagnostics,
+  onAnswer: (answer: WorkerResponse) => void,
 ): Promise<WorkerResult> {
   const serialized = diagnostics.guard<SerializedBatch>(
     "transport.serialize_failed",
@@ -86,31 +96,36 @@ async function deliver(
       priority: job.priority,
     }),
   );
-  const maxBytes =
-    response.status === HTTP_PAYLOAD_TOO_LARGE
-      ? await diagnostics.guardAsync(
-          "transport.http_error",
-          "The transport worker could not read the 413 response.",
-          async () => {
-            const parsed: unknown = JSON.parse(await response.text());
-            return isObject(parsed) &&
-              typeof parsed.maxBytes === "number" &&
-              Number.isFinite(parsed.maxBytes) &&
-              parsed.maxBytes >= 0
-              ? parsed.maxBytes
-              : undefined;
-          },
-        )
-      : undefined;
-
-  return {
+  const result: WorkerResponse = {
     status: response.status,
     sampling: response.headers.get(HEADER_SAMPLING),
     date: response.headers.get(HEADER_DATE),
     retryAfterMs: parseRetryAfter(response.headers.get(HEADER_RETRY_AFTER)),
-    maxBytes,
     compressionFailed,
   };
+  onAnswer(result);
+
+  if (!needsBody(response, isOtlpBatch(job.kind, job.serializer))) {
+    return result;
+  }
+
+  // run() aborts the signal after its deadline and on cancel, which also ends a stalled body.
+  const answer = await readOptionalBody(response, signal, diagnostics);
+  if (answer === undefined) {
+    return result;
+  }
+
+  if (response.status === HTTP_PAYLOAD_TOO_LARGE) {
+    const maxBytes = diagnostics.guard(
+      "transport.http_error",
+      "The transport worker could not read the 413 response.",
+      () => maxBytesOf(answer),
+    );
+    return { ...result, maxBytes };
+  }
+
+  // The main thread reads the partialSuccess, so both paths report it the same way.
+  return { ...result, body: answer };
 }
 
 /** Serves a private port after the worker entry accepts one connection. */
@@ -130,13 +145,21 @@ export function serveWorkerPort(port: MessagePort, diagnostics: Diagnostics): ()
   const run = async (id: number, job: WorkerJob): Promise<void> => {
     const controller = new AbortController();
     pending.set(id, controller);
+    // Set once the server answers. A deadline during the body read then still replies with the
+    // server's status, because a timeout would make the main thread send an accepted batch again.
+    let answered: WorkerResponse | undefined;
     try {
       const remaining = Math.min(job.timeoutMs, job.deadlineMs - Date.now());
       if (remaining <= 0) {
         reply(id, { failure: "timeout" });
         return;
       }
-      const result = await withDeadline(deliver(job, controller.signal, diagnostics), remaining);
+      const result = await withDeadline(
+        deliver(job, controller.signal, diagnostics, (answer) => {
+          answered = answer;
+        }),
+        remaining,
+      );
       if (pending.get(id) === controller) {
         reply(id, result);
       }
@@ -148,7 +171,7 @@ export function serveWorkerPort(port: MessagePort, diagnostics: Diagnostics): ()
         error,
       );
       if (pending.get(id) === controller) {
-        reply(id, { failure: error instanceof DeadlineError ? "timeout" : "network" });
+        reply(id, answered ?? { failure: error instanceof DeadlineError ? "timeout" : "network" });
       }
     } finally {
       controller.abort();

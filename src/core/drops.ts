@@ -48,8 +48,15 @@ export class DropReporter {
    * @param reason Cause of the loss.
    * @param records Lost records.
    * @param batchIds Ids of the lost batches.
+   * @param count Number of lost records when the caller can't name them, for example after an
+   * OTLP partial rejection. Defaults to the length of `records`.
    */
-  add(reason: LossReason, records: readonly LogRecord[], batchIds: readonly string[] = []): void {
+  add(
+    reason: LossReason,
+    records: readonly LogRecord[],
+    batchIds: readonly string[] = [],
+    count = records.length,
+  ): void {
     // A hook that logs can fill a buffer again, and reporting that loss would start a loop.
     if (!this.config.onDrop || this.reporting) {
       return;
@@ -66,7 +73,7 @@ export class DropReporter {
       this.pending.set(reason, summary);
     }
 
-    summary.records += records.length;
+    summary.records += count;
     for (const id of batchIds) {
       addCapped(summary.batchIds, id);
     }

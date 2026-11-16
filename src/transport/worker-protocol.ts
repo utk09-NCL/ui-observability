@@ -1,6 +1,7 @@
 import {
   HTTP_STATUS_MAX,
   HTTP_STATUS_MIN,
+  RESPONSE_BODY_LIMIT_BYTES,
   TELEMETRY_SDK_VERSION,
   TRANSPORT_WORKER_PROTOCOL,
 } from "../constants";
@@ -31,6 +32,8 @@ export interface WorkerResponse {
   retryAfterMs?: number;
   maxBytes?: number;
   compressionFailed?: boolean;
+  /** Body text of an OTLP 2xx answer, which can carry a partialSuccess. */
+  body?: string;
 }
 
 /** A worker failure never carries app exception text. */
@@ -57,6 +60,14 @@ function isHint(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
+/** Checks for an absent body or a string no longer than the worker reads. */
+function isBody(value: unknown): boolean {
+  // A decoded UTF-8 byte gives at most one UTF-16 unit, so the text is never longer.
+  return (
+    value === undefined || (typeof value === "string" && value.length <= RESPONSE_BODY_LIMIT_BYTES)
+  );
+}
+
 /** Checks for a nullable response header. */
 function isHeader(value: unknown): boolean {
   return value === undefined || value === null || typeof value === "string";
@@ -80,7 +91,8 @@ export function isWorkerResult(value: unknown): value is WorkerResult {
     isHint(value.maxBytes) &&
     isHeader(value.sampling) &&
     isHeader(value.date) &&
-    (value.compressionFailed === undefined || typeof value.compressionFailed === "boolean")
+    (value.compressionFailed === undefined || typeof value.compressionFailed === "boolean") &&
+    isBody(value.body)
   );
 }
 

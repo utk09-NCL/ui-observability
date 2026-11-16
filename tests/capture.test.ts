@@ -1029,6 +1029,149 @@ describe("NetworkCapture: fetch", () => {
     capture.uninstall();
   });
 
+  describe("trace headers on the request that actually goes out", () => {
+    const TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    /** Stubs fetch the way a browser reads its arguments, and keeps each effective request. */
+    function effectiveRequests(): Request[] {
+      const sent: Request[] = [];
+      globalThis.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push(new Request(input, init));
+        return Promise.resolve(new Response("", { status: 200 }));
+      });
+      return sent;
+    }
+
+    /** Installs fetch capture with client spans on for https://api.internal. */
+    function install() {
+      const spans: SpanHooks = { enabled: () => true, keeps: () => true, onEnd: vi.fn() };
+      const handler = vi.fn<(event: DiagnosticEvent) => void>();
+      const made = ctx({ fetch: true, propagateTraceHeaderTo: ["https://api.internal"] }, spans);
+      made.ctx.diagnostics.setHandler(handler);
+      const capture = new NetworkCapture(made.ctx);
+      capture.install();
+      return { capture, handler, recordSpan: made.recordSpan };
+    }
+
+    it("adds the header after the init's headers replace the Request's own", async () => {
+      const sent = effectiveRequests();
+      const { capture, recordSpan } = install();
+      const controller = new AbortController();
+
+      await fetch(
+        new Request("https://api.internal/orders", {
+          method: "POST",
+          body: "from the request",
+          headers: { Authorization: "Bearer request" },
+        }),
+        { headers: { Authorization: "Bearer init", "X-Tenant": "t1" }, signal: controller.signal },
+      );
+      capture.uninstall();
+
+      const [request] = sent;
+      expect(request.headers.get("traceparent")).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+      expect(request.headers.get("Authorization")).toBe("Bearer init");
+      expect(request.headers.get("X-Tenant")).toBe("t1");
+      expect(request.method).toBe("POST");
+      expect(await request.text()).toBe("from the request");
+      controller.abort();
+      expect(request.signal.aborted).toBe(true);
+      expect(recordSpan).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ["no init", undefined],
+      ["an empty init", {}],
+    ])("keeps the referrer and referrer policy of a Request sent with %s", async (_name, init) => {
+      const sent = effectiveRequests();
+      const { capture } = install();
+
+      // A referrer from another origin always becomes about:client, so use the page's own.
+      const referrer = `${location.origin}/checkout`;
+      await fetch(
+        new Request("https://api.internal/orders", { referrer, referrerPolicy: "no-referrer" }),
+        init,
+      );
+      capture.uninstall();
+
+      expect(sent[0].headers.get("traceparent")).toBeTruthy();
+      expect(sent[0].referrerPolicy).toBe("no-referrer");
+      expect(sent[0].referrer).toBe(referrer);
+    });
+
+    it("keeps the init's method and body over the Request's", async () => {
+      const sent = effectiveRequests();
+      const { capture } = install();
+
+      await fetch(new Request("https://api.internal/orders"), {
+        method: "PUT",
+        body: "from the init",
+        headers: { "X-Tenant": "t1" },
+      });
+      capture.uninstall();
+
+      const [request] = sent;
+      expect(request.method).toBe("PUT");
+      expect(await request.text()).toBe("from the init");
+      expect(request.headers.get("traceparent")).toBeTruthy();
+    });
+
+    it("adds the header when the init's headers drop a traceparent the Request had", async () => {
+      const sent = effectiveRequests();
+      const { capture, recordSpan } = install();
+
+      await fetch(
+        new Request("https://api.internal/orders", { headers: { traceparent: TRACEPARENT } }),
+        {
+          headers: { "X-Tenant": "t1" },
+        },
+      );
+      capture.uninstall();
+
+      expect(sent[0].headers.get("traceparent")).not.toBe(TRACEPARENT);
+      expect(sent[0].headers.get("traceparent")).toBeTruthy();
+      expect(recordSpan).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      [
+        "a string and init headers",
+        () => fetch("https://api.internal/orders", { headers: { traceparent: TRACEPARENT } }),
+      ],
+      [
+        "a Request's own headers",
+        () =>
+          fetch(
+            new Request("https://api.internal/orders", { headers: { traceparent: TRACEPARENT } }),
+          ),
+      ],
+      [
+        "a Request and init headers",
+        () =>
+          fetch(new Request("https://api.internal/orders"), {
+            headers: { Traceparent: TRACEPARENT },
+          }),
+      ],
+    ])("keeps the caller's own traceparent from %s and says so", async (_name, call) => {
+      const sent = effectiveRequests();
+      const { capture, handler, recordSpan } = install();
+
+      await call();
+      capture.uninstall();
+
+      expect(sent[0].headers.get("traceparent")).toBe(TRACEPARENT);
+      expect(recordSpan).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: "capture.trace_header_kept",
+          message:
+            "The request already has a traceparent header. The library keeps it and records no client span.",
+          detail: { url: "https://api.internal/orders" },
+        }),
+      );
+    });
+  });
+
   it("sends the caller's request unchanged when the header cannot be attached", async () => {
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const seen: (RequestInfo | URL)[] = [];

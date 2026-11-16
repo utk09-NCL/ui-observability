@@ -191,6 +191,183 @@ describe("HttpTransport", () => {
     });
   });
 
+  it("splits on a 413 with no body and reports the missing limit", async () => {
+    answer(413);
+    const handler = vi.fn();
+    const t = new HttpTransport(config(), new Diagnostics(handler, 0));
+
+    await expect(t.send(batch(4))).rejects.toMatchObject({
+      kind: "too_large",
+      maxBytes: undefined,
+    });
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "transport.http_error",
+        message: "The library could not read the body of the 413 response.",
+      }),
+    );
+  });
+
+  it.each(['{"maxBytes":0}', '{"maxBytes":-1}', '{"maxBytes":1.5}', '{"maxBytes":1e999}', "null"])(
+    "ignores a 413 maxBytes that isn't a positive whole number: %s",
+    async (body) => {
+      answer(413, body);
+      const t = new HttpTransport(config(), diagnostics());
+
+      await expect(t.send(batch(4))).rejects.toMatchObject({
+        kind: "too_large",
+        maxBytes: undefined,
+      });
+    },
+  );
+
+  describe("a response body that doesn't arrive in time or breaks", () => {
+    /** Resolves with "pending" when the send hasn't settled within a few event loop turns. */
+    const outcomeOf = (send: Promise<void>): Promise<unknown> =>
+      Promise.race([
+        send.then(
+          () => "sent",
+          (error: unknown) => error,
+        ),
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve("pending");
+          }, 50);
+        }),
+      ]);
+
+    /** An answer whose headers arrive and whose body then never sends a byte. */
+    const stalled = (status = 413) =>
+      new Response(new ReadableStream<Uint8Array>(), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    /** An answer whose body stream fails after the headers. */
+    const broken = (status: number) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new TypeError("connection reset"));
+          },
+        }),
+        { status, headers: { "Content-Type": "application/json" } },
+      );
+
+    /** Sends one batch with fake timers and returns how it settled after the deadline. */
+    const settleAfterDeadline = async (t: HttpTransport): Promise<unknown> => {
+      vi.useFakeTimers();
+      let outcome: unknown = "pending";
+      t.send(batch()).then(
+        () => {
+          outcome = "sent";
+        },
+        (error: unknown) => {
+          outcome = error;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 20);
+      vi.useRealTimers();
+      return outcome;
+    };
+
+    const bodyFailure = expect.objectContaining({
+      code: "transport.http_error",
+      message: "The library could not read the response body. It uses the status code alone.",
+    });
+
+    it("splits on a 413 whose body stalls past the deadline, without the size hint", async () => {
+      stubFetch(() => Promise.resolve(stalled()));
+      const handler = vi.fn();
+      const t = new HttpTransport(config(), new Diagnostics(handler, 0));
+
+      expect(await settleAfterDeadline(t)).toMatchObject({
+        kind: "too_large",
+        maxBytes: undefined,
+      });
+      expect(handler).toHaveBeenCalledWith(bodyFailure);
+    });
+
+    it("accepts a 2xx whose OTLP body stalls past the deadline, so it isn't sent again", async () => {
+      stubFetch(() => Promise.resolve(stalled(200)));
+      const onLoss = vi.fn<LossReporter>();
+      const handler = vi.fn();
+      const t = new HttpTransport(config(), new Diagnostics(handler, 0), undefined, onLoss);
+
+      expect(await settleAfterDeadline(t)).toBe("sent");
+      expect(t.lastSendAt()).not.toBeNull();
+      expect(onLoss).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith(bodyFailure);
+    });
+
+    it.each([
+      [200, "sent"],
+      [413, expect.objectContaining({ kind: "too_large", maxBytes: undefined })],
+    ])("keeps the %s status when the body stream fails", async (status, expected) => {
+      stubFetch(() => Promise.resolve(broken(status)));
+      const handler = vi.fn();
+      const t = new HttpTransport(config(), new Diagnostics(handler, 0));
+
+      expect(await outcomeOf(t.send(batch()))).toEqual(expected);
+      expect(handler).toHaveBeenCalledWith(bodyFailure);
+    });
+
+    it("splits on a 413 that a fetch ignoring its signal gives after the deadline", async () => {
+      stubFetch(
+        () =>
+          new Promise<Response>((resolve) => {
+            setTimeout(() => {
+              resolve(stalled());
+            }, REQUEST_TIMEOUT_MS + 10);
+          }),
+      );
+      const t = new HttpTransport(config(), diagnostics());
+
+      expect(await settleAfterDeadline(t)).toMatchObject({ kind: "too_large" });
+    });
+
+    it("retires the send when the transport stops during the body read", async () => {
+      const fetchMock = stubFetch(() => Promise.resolve(stalled()));
+      const t = new HttpTransport(config(), diagnostics());
+
+      const send = t.send(batch());
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalled();
+      });
+      t.stop();
+
+      expect(await outcomeOf(send)).toMatchObject({ kind: "permanent" });
+    });
+
+    it("stops reading after 16 KiB and cancels the rest of the body", async () => {
+      const cancel = vi.fn();
+      const json = new TextEncoder().encode(
+        JSON.stringify({ maxBytes: 100, pad: "x".repeat(64 * 1024) }),
+      );
+      let at = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (at >= json.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(json.slice(at, at + 1024));
+          at += 1024;
+        },
+        cancel,
+      });
+      stubFetch(() => Promise.resolve(new Response(body, { status: 413 })));
+      const t = new HttpTransport(config(), diagnostics());
+
+      expect(await outcomeOf(t.send(batch()))).toMatchObject({
+        kind: "too_large",
+        maxBytes: undefined,
+      });
+      expect(cancel).toHaveBeenCalled();
+      expect(at).toBeLessThan(json.length);
+    });
+  });
+
   it("lets a consumer header be added without letting it rewrite ours", async () => {
     const fetchMock = answer(204);
     const headers = { Authorization: "Bearer x", "X-UiObs-Batch-Id": "spoofed" };
@@ -764,5 +941,159 @@ describe("parseRetryAfter", () => {
   it("is undefined for a missing or unparseable header", () => {
     expect(parseRetryAfter(null)).toBeUndefined();
     expect(parseRetryAfter("soon")).toBeUndefined();
+  });
+});
+
+describe("HttpTransport with an OTLP partialSuccess answer", () => {
+  const JSON_TYPE = { "Content-Type": "application/json" };
+
+  /** Four records of one log.type, so the batch goes to that signal's endpoint. */
+  const batchOf = (type: string): LogBatch => {
+    const plain = batch(4);
+    return {
+      ...plain,
+      records: plain.records.map((record) => ({ ...record, attributes: { "log.type": type } })),
+    };
+  };
+
+  /** A transport that collects its losses and its diagnostic events. */
+  const setupPartial = (over: Partial<ObservabilityConfig> = {}) => {
+    const onLoss = vi.fn<LossReporter>();
+    const handler = vi.fn();
+    const transport = new HttpTransport(
+      config(over),
+      new Diagnostics(handler, 0),
+      undefined,
+      onLoss,
+    );
+    const codes = (): string[] => handler.mock.calls.map(([event]) => event.code as string);
+    return { transport, onLoss, handler, codes };
+  };
+
+  it.each([
+    ["log records", "rejectedLogRecords", "log", {}],
+    ["data points", "rejectedDataPoints", "metric", { metricsEndpoint: "https://x/v1/metrics" }],
+    ["spans", "rejectedSpans", "span", { tracesEndpoint: "https://x/v1/traces" }],
+  ] as const)(
+    "reports the %s the server rejected and doesn't send the batch again",
+    async (_signal, field, type, over) => {
+      answer(
+        200,
+        JSON.stringify({ partialSuccess: { [field]: "2", errorMessage: "attribute too long" } }),
+        JSON_TYPE,
+      );
+      const { transport, onLoss, handler } = setupPartial(over);
+
+      await transport.send(batchOf(type));
+
+      expect(onLoss).toHaveBeenCalledExactlyOnceWith("partially_rejected", [], ["batch-1"], 2);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: "transport.partial_success",
+          message:
+            "The server rejected 2 of 4 records in the batch. The library does not send them again.",
+          detail: expect.objectContaining({ rejected: 2, serverMessage: "attribute too long" }),
+        }),
+      );
+      expect(transport.lastSendAt()).not.toBeNull();
+    },
+  );
+
+  it("reads a rejected count that JSON gives as a number", async () => {
+    answer(200, JSON.stringify({ partialSuccess: { rejectedLogRecords: 1 } }), JSON_TYPE);
+    const { transport, onLoss } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).toHaveBeenCalledExactlyOnceWith("partially_rejected", [], ["batch-1"], 1);
+  });
+
+  it("caps the rejected count at the number of records in the batch", async () => {
+    answer(200, JSON.stringify({ partialSuccess: { rejectedLogRecords: "999" } }), JSON_TYPE);
+    const { transport, onLoss } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).toHaveBeenCalledExactlyOnceWith("partially_rejected", [], ["batch-1"], 4);
+  });
+
+  it("reports a warning and no loss when the server rejected nothing", async () => {
+    answer(
+      200,
+      JSON.stringify({ partialSuccess: { rejectedLogRecords: "0", errorMessage: "deprecated" } }),
+      JSON_TYPE,
+    );
+    const { transport, onLoss, handler } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "transport.partial_success",
+        message: "The server accepted the batch with a warning.",
+        detail: expect.objectContaining({ serverMessage: "deprecated" }),
+      }),
+    );
+  });
+
+  it("cuts a long server message, because the server controls its text", async () => {
+    answer(
+      200,
+      JSON.stringify({
+        partialSuccess: { rejectedLogRecords: "1", errorMessage: "x".repeat(10_000) },
+      }),
+      JSON_TYPE,
+    );
+    const { transport, handler } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    const event = handler.mock.calls.find(([e]) => e.code === "transport.partial_success")?.[0];
+    expect(String(event.detail.serverMessage).length).toBeLessThan(300);
+  });
+
+  it.each([
+    ["an empty JSON body", 200, "", JSON_TYPE],
+    ["a text body", 200, "OK", { "Content-Type": "text/plain" }],
+    ["no body", 204, null, {}],
+    ["a JSON null", 200, "null", JSON_TYPE],
+    ["no partialSuccess", 200, "{}", JSON_TYPE],
+    ["an empty partialSuccess", 200, '{"partialSuccess":{}}', JSON_TYPE],
+    ["a negative count", 200, '{"partialSuccess":{"rejectedLogRecords":"-3"}}', JSON_TYPE],
+    ["a fractional count", 200, '{"partialSuccess":{"rejectedLogRecords":1.5}}', JSON_TYPE],
+  ] as const)("keeps %s as a plain success", async (_name, status, body, headers) => {
+    answer(status, body, headers);
+    const { transport, onLoss, codes } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(codes()).toEqual([]);
+  });
+
+  it("doesn't read the answer of an ECS batch, which isn't OTLP", async () => {
+    answer(200, '{"partialSuccess":{"rejectedLogRecords":"2"}}', JSON_TYPE);
+    const { transport, onLoss, codes } = setupPartial({ serializer: "ecs" });
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(codes()).toEqual([]);
+  });
+
+  it("reports a JSON answer that doesn't parse and keeps the batch accepted", async () => {
+    answer(200, "{bad", JSON_TYPE);
+    const { transport, onLoss, handler } = setupPartial();
+
+    await transport.send(batchOf("log"));
+
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "transport.http_error",
+        message: "The library could not read the body of the 2xx response.",
+      }),
+    );
   });
 });

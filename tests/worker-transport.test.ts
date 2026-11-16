@@ -173,6 +173,55 @@ describe("Worker transport", () => {
     await expect(transport.send(workerJob().batch)).rejects.toMatchObject({ kind });
   });
 
+  it("reports the records an OTLP server rejected in a batch the worker sent", async () => {
+    const worker = scriptedWorker({
+      status: 200,
+      body: '{"partialSuccess":{"rejectedLogRecords":"1"}}',
+    });
+    const { transport, onLoss, diagnostics } = setup({
+      transportWorker: () => worker as unknown as Worker,
+    });
+    const batch = workerJob().batch;
+
+    await transport.send(batch);
+
+    expect(onLoss).toHaveBeenCalledExactlyOnceWith("partially_rejected", [], [batch.id], 1);
+    expect(diagnostics.snapshot()["transport.partial_success"]).toBe(1);
+  });
+
+  it.each([
+    [200, "accepted"],
+    [413, "too_large"],
+  ])(
+    "keeps the worker's %s answer when its body stalls past the request deadline",
+    async (status, expected) => {
+      vi.useFakeTimers();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(new ReadableStream<Uint8Array>(), {
+              status,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        ),
+      );
+      const { transport, config, diagnostics } = setup({
+        transportWorker: () => new FakeWorker() as unknown as Worker,
+      });
+
+      const outcome = transport.send(workerJob().batch).then(
+        () => "accepted",
+        (error: unknown) => (error as { kind: string }).kind,
+      );
+      await vi.advanceTimersByTimeAsync(config.delivery.requestTimeoutMs + 50);
+
+      expect(await outcome).toBe(expected);
+      expect(diagnostics.snapshot()["transport.timeout"]).toBeUndefined();
+    },
+  );
+
   it("reports a compression failure that still sends a plain batch", async () => {
     const worker = scriptedWorker({ status: 204, compressionFailed: true });
     const { transport, diagnostics } = setup({

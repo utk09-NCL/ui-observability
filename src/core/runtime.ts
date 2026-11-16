@@ -2172,8 +2172,8 @@ export class ObservabilityRuntime {
    * @param records Lost records.
    * @param batchIds Ids of the lost batches.
    */
-  private readonly reportLoss: LossReporter = (reason, records, batchIds) => {
-    this.drops.add(reason, records, batchIds);
+  private readonly reportLoss: LossReporter = (reason, records, batchIds, count) => {
+    this.drops.add(reason, records, batchIds, count);
   };
 
   /**
