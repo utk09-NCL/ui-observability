@@ -56,6 +56,11 @@ export interface ExitFlushDeps {
    * a header, so when there are headers the exit flush uses a keepalive fetch.
    */
   exitHeaders: () => Record<string, string> | undefined;
+  /**
+   * Returns the bytes of the HTTP transport's keepalive requests that haven't settled, or
+   * undefined without an HTTP transport. A hidden page's sends use the exit sends' budget.
+   */
+  keepaliveInFlight: () => number | undefined;
   /** Receives the records that the exit flush loses. */
   onLoss?: LossReporter;
   /** Pushes the open metric interval's points into the buffers. */
@@ -70,7 +75,10 @@ export class ExitFlush {
   /** True while we are listening for the unload events. */
   private installed = false;
 
-  /** Bytes used by the current exit flush's keepalive fetches. All batches share one budget. */
+  /**
+   * Bytes in flight against the browser's one budget for beacons and keepalive fetches. It
+   * starts at the transport's keepalive sends, and each batch of the current exit flush adds to it.
+   */
   private keepaliveBytes = 0;
 
   /** Flushes on visibilitychange when the document becomes hidden. */
@@ -181,8 +189,9 @@ export class ExitFlush {
       return;
     }
 
-    // An earlier flush's fetches are complete or lost by now, so they don't use this budget.
-    this.keepaliveBytes = 0;
+    // A hidden flush's keepalive sends can still be in flight, so start from the transport's count.
+    // An earlier exit flush's sends aren't in it, because nothing tracks an exit send's completion.
+    this.keepaliveBytes = this.deps.keepaliveInFlight() ?? 0;
 
     for (const batch of this.deps.drainForExit()) {
       // resolveConfig keeps only a valid absolute metricsEndpoint and tracesEndpoint. A traces
@@ -217,27 +226,31 @@ export class ExitFlush {
 
     // An oversized payload goes to the synchronous localStorage queue, because localStorage
     // is the only storage that accepts a write without an await.
-    if (estimateBytes(serialized.body) > BEACON_LIMIT_BYTES) {
+    const bytes = estimateBytes(serialized.body);
+    if (bytes > BEACON_LIMIT_BYTES) {
       this.park(batch);
       return;
     }
 
-    // The batch ID and the reason go in query parameters, because sendBeacon can't set headers.
+    // The batch ID and the reason go in query parameters, because a beacon can't set a header and
+    // a text/plain fetch with one would need a preflight.
     url.searchParams.set(QUERY_PARAM_BATCH_ID, batch.id);
     url.searchParams.set(QUERY_PARAM_EXIT_REASON, reason);
 
     const target = url.toString();
 
+    const custom = this.deps.exitHeaders();
+    const typedHeaders = (): Headers => {
+      const headers = new Headers(custom);
+      headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
+      headers.set(HEADER_BATCH_ID, batch.id);
+      return headers;
+    };
+
     // sendBeacon can't set a header, and an ingest server that needs the authorization header
     // drops a beacon. Send the last headers with a keepalive fetch instead.
-    const custom = this.deps.exitHeaders();
     if (custom) {
-      this.keepaliveFetch(target, batch, serialized.body, reason, () => {
-        const headers = new Headers(custom);
-        headers.set(HEADER_CONTENT_TYPE, serialized.contentType);
-        headers.set(HEADER_BATCH_ID, batch.id);
-        return headers;
-      });
+      this.keepaliveFetch(target, batch, serialized.body, bytes, reason, typedHeaders);
       return;
     }
 
@@ -248,20 +261,66 @@ export class ExitFlush {
       return;
     }
 
-    const outcome = this.beacon(target, serialized.body);
-    if (outcome === "sent") {
+    // A same-origin request needs no preflight, so it can carry the serializer's content type.
+    // A stock OpenTelemetry Collector answers 415 to text/plain and the batch is lost.
+    if (this.isSameOrigin(url)) {
+      this.keepaliveFetch(target, batch, serialized.body, bytes, reason, typedHeaders);
       return;
     }
 
-    // A refusal means the in-flight budget is full. A keepalive fetch uses the same budget and
-    // fails the same way, and with the document closing nothing would retry the send.
+    // text/plain and no other header keep the request "simple", so the browser sends no preflight.
+    const plain = (): Headers => new Headers({ [HEADER_CONTENT_TYPE]: CONTENT_TYPE_TEXT_PLAIN });
+
+    // sendBeacon always sends the cookies, whatever `credentials` says. Only an app that asked for
+    // cookies gets a beacon, or a session cookie on a parent domain would reach the ingest server.
+    const wantsCookies = config.credentials === "include";
+    if (!wantsCookies) {
+      this.keepaliveFetch(target, batch, serialized.body, bytes, reason, plain);
+      return;
+    }
+
+    const outcome = this.beacon(target, serialized.body);
+    if (outcome === "sent") {
+      // Count the beacon, or a later same-origin fetch would go over the budget they share.
+      this.keepaliveBytes += bytes;
+      return;
+    }
+
+    // A refusal means the in-flight budget is full, and nothing retries a send while the document
+    // closes. Mark the shared budget as used up, so a later keepalive fetch is parked, not lost.
     if (outcome === "refused") {
+      this.keepaliveBytes = BEACON_LIMIT_BYTES;
       this.park(batch);
       return;
     }
 
-    const plain = (): Headers => new Headers({ [HEADER_CONTENT_TYPE]: CONTENT_TYPE_TEXT_PLAIN });
-    this.keepaliveFetch(target, batch, serialized.body, reason, plain);
+    this.keepaliveFetch(target, batch, serialized.body, bytes, reason, plain);
+  }
+
+  /**
+   * Checks whether the endpoint is on the page's origin, where a request needs no CORS preflight.
+   * @param url Endpoint of the batch.
+   * @returns False for another origin, for an opaque origin, and when the origin global and
+   * location disagree or the host has no location.
+   */
+  private isSameOrigin(url: URL): boolean {
+    if (typeof location === "undefined") {
+      return false;
+    }
+
+    // Two opaque origins both read "null" but are never the same origin, for example a file:
+    // page in Firefox.
+    const isOpaque = url.origin === "null";
+
+    // The origin global is "null" in a frame sandboxed without allow-same-origin, while location
+    // still shows the URL's origin.
+    const matchesGlobal = url.origin === globalThis.origin;
+
+    // A page's script can replace the origin global with `var origin = "..."`, but it can't
+    // replace location. Without this check, that page would send JSON to another origin.
+    const matchesLocation = url.origin === location.origin;
+
+    return !isOpaque && matchesGlobal && matchesLocation;
   }
 
   /** Runs a hidden document's normal flush, and reports it if it throws or rejects. */
@@ -392,21 +451,24 @@ export class ExitFlush {
   }
 
   /**
-   * Sends a fallback POST with fetch and `keepalive: true`. A keepalive request continues
+   * Sends the exit POST with fetch and `keepalive: true`. A keepalive request continues
    * after the document closes, whereas the browser cancels a plain fetch at page close.
-   * A failed fetch parks the batch in the emergency queue, and the server drops a second copy
-   * by its batch id.
+   * A fetch that fails while the document is alive parks the batch in the emergency queue, and
+   * the server drops a second copy by its batch id. A rejection after the close parks nothing.
    * @param url Target endpoint URL.
    * @param batch Batch in the payload.
    * @param body Serialized payload string.
+   * @param bytes Size of the body, which flushBatch has measured already.
    * @param reason Reason code of the flush.
-   * @param headers Builds the request headers. Without custom headers that is only a text/plain
-   * content type. A header value outside ISO-8859-1 makes the Headers constructor throw.
+   * @param headers Builds the request headers. To another origin without `headers` that is only
+   * a text/plain content type. A header value outside ISO-8859-1 makes the Headers constructor
+   * throw.
    */
   private keepaliveFetch(
     url: string,
     batch: LogBatch,
     body: string,
+    bytes: number,
     reason: ExitReason,
     headers: () => Headers,
   ): void {
@@ -419,7 +481,6 @@ export class ExitFlush {
 
     // The browser rejects a fetch over the budget after the document closes. By then park()
     // doesn't run, and the batch is lost.
-    const bytes = estimateBytes(body);
     if (this.keepaliveBytes + bytes > BEACON_LIMIT_BYTES) {
       park();
       return;
@@ -427,13 +488,17 @@ export class ExitFlush {
     this.keepaliveBytes += bytes;
 
     const started = diagnostics.guard("transport.http_error", "The keepalive fetch failed.", () => {
-      void fetch(url, {
-        method: "POST",
-        body,
-        headers: headers(),
-        credentials: config.credentials,
-        keepalive: true,
-      }).catch((error: unknown) => {
+      // Network capture skips a request that starts in this scope. Its ignoreUrls entry misses
+      // an endpoint such as http://LOCALHOST/, because new URL() rewrites the host in lower case.
+      void runAsLibraryRequest(() =>
+        fetch(url, {
+          method: "POST",
+          body,
+          headers: headers(),
+          credentials: config.credentials,
+          keepalive: true,
+        }),
+      ).catch((error: unknown) => {
         diagnostics.report("transport.http_error", "The exit flush failed.", { reason }, error);
         park();
       });

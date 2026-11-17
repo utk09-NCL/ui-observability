@@ -358,6 +358,9 @@ export const HTTP_REQUEST_TIMEOUT = 408;
 /** 413, payload too large. The transport must split the batch. */
 export const HTTP_PAYLOAD_TOO_LARGE = 413;
 
+/** 415, unsupported media type. A stock OpenTelemetry Collector gives it to a text/plain batch. */
+export const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+
 /** 429, backpressure. */
 export const HTTP_TOO_MANY_REQUESTS = 429;
 
@@ -1115,11 +1118,17 @@ export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
 /** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
 export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
-/** Max non-action records in one hold buffer. A full buffer drops the oldest. */
+/** Default of buffering.maxHeldRecords, the cap on non-action records in one hold buffer. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
 
 /** Max action records in one hold buffer. Their own cap means a log storm can't push one out. */
 export const BUS_MAX_BOOT_BUFFER_ACTIONS = 2000;
+
+/**
+ * Records of each kind that a full hold buffer never drops, counted from the first one. The
+ * first error of a failed startup is usually the cause, so it has to outlive the storm.
+ */
+export const HOLD_BUFFER_HEAD_RECORDS = 100;
 
 /** Max distinct values in each list of an onDrop summary. */
 export const DROP_SUMMARY_MAX_ITEMS = 20;
@@ -1228,7 +1237,12 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     maxInstruments: 1000,
     maxHistogramBoundaries: METRIC_MAX_BOUNDARIES,
   },
-  buffering: { maxPendingRecords: 10000, maxPendingBytes: 16777216, overflow: "drop-oldest" },
+  buffering: {
+    maxPendingRecords: 10000,
+    maxPendingBytes: 16777216,
+    maxHeldRecords: BUS_MAX_BOOT_BUFFER_RECORDS,
+    overflow: "drop-oldest",
+  },
   delivery: {
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,

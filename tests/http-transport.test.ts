@@ -684,6 +684,74 @@ describe("HttpTransport", () => {
     expect(initOf(fetchMock).keepalive).toBe(true);
   });
 
+  it("counts the bytes of its keepalive requests until each one settles", async () => {
+    // The exit flush sends against the same browser budget, so it reads the bytes in flight.
+    const settle: ((response: Response) => void)[] = [];
+    const fetchMock = stubFetch(() => new Promise<Response>((resolve) => settle.push(resolve)));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const t = new HttpTransport(config(), diagnostics());
+    expect(t.keepaliveInFlight()).toBe(0);
+
+    const sends = [t.send(batch()), t.send(batch())];
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    const bytes = (initOf(fetchMock).body as string).length;
+    expect(t.keepaliveInFlight()).toBe(2 * bytes);
+
+    settle[0](new Response(null, { status: 204 }));
+    await sends[0];
+    expect(t.keepaliveInFlight()).toBe(bytes);
+
+    settle[1](new Response(null, { status: 204 }));
+    await sends[1];
+    expect(t.keepaliveInFlight()).toBe(0);
+  });
+
+  it("frees the bytes of a keepalive request that fails", async () => {
+    // A count that only a 2xx lowers would grow with every failure and park every exit batch.
+    let fail: (error: Error) => void = () => undefined;
+    const fetchMock = stubFetch(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const t = new HttpTransport(config(), diagnostics());
+
+    const send = t.send(batch());
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(t.keepaliveInFlight()).toBeGreaterThan(0);
+
+    fail(new TypeError("Failed to fetch"));
+    await expect(send).rejects.toBeInstanceOf(TransportError);
+    expect(t.keepaliveInFlight()).toBe(0);
+  });
+
+  it("counts no bytes for a request without keepalive", async () => {
+    // The browser cancels a plain fetch at page close, so it never uses the keepalive budget.
+    let settle: (response: Response) => void = () => undefined;
+    const fetchMock = stubFetch(
+      () =>
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const t = new HttpTransport(config(), diagnostics());
+
+    const send = t.send(batch());
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(t.keepaliveInFlight()).toBe(0);
+
+    settle(new Response(null, { status: 204 }));
+    await send;
+  });
+
   it("sends without keepalive in a realm with no document", async () => {
     const fetchMock = answer(204);
     vi.stubGlobal("document", undefined);

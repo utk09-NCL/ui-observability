@@ -2,7 +2,7 @@
 //
 // Communication link implementations for direct, frame, broadcast, OpenFin, and worker channels.
 
-import { BUS_TYPE_DETAIL_MAX_CHARS, RUNTIME_GLOBAL_KEY } from "../constants";
+import { BUS_PROTOCOL, BUS_TYPE_DETAIL_MAX_CHARS, RUNTIME_GLOBAL_KEY } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import {
   type BusMessage,
@@ -37,6 +37,11 @@ export type Receive = (message: BusMessage, source: MessageSource) => void;
 
 /** Interface that a same-origin parent runtime exposes on a global symbol. */
 export interface DirectHost {
+  /**
+   * The parent's bus protocol tag. A direct call has no envelope to carry it, so the child
+   * compares it before it opens the link. A parent on 0.12 or older has no tag.
+   */
+  readonly protocol?: string;
   /**
    * Accepts a message directly from a child frame and replies synchronously.
    * @param message Child bus message.
@@ -81,8 +86,14 @@ export interface WorkerLike {
 /** Global symbol used to look up same-origin parent runtime instances. */
 const RUNTIME_KEY = Symbol.for(RUNTIME_GLOBAL_KEY);
 
-/** Origin of a sandboxed frame without allow-same-origin. */
+/** What an opaque origin reads as, for example in a frame sandboxed without allow-same-origin. */
 const OPAQUE_ORIGIN = "null";
+
+/**
+ * Bus protocol of a parent that has busCanAccept but no protocol field, which is every release
+ * from 0.9.5 to 0.12. Release 0.9.5 added busCanAccept and this tag together.
+ */
+const UNTAGGED_HOST_PROTOCOL = "ui-observability/2";
 
 /** Location with the ancestor list that Chromium and WebKit give. */
 interface LocationWithAncestors {
@@ -130,10 +141,34 @@ function parentOrigin(): string | null {
 }
 
 /**
+ * Returns the origin this frame runs on. A srcdoc or about:blank frame runs on the origin of
+ * the document that made it, but its location.origin reads "null", because that comes from
+ * the URL.
+ * @returns location.origin, or the origin global when location.origin is "null". A frame
+ * sandboxed from a URL keeps its URL origin here, and the parent refuses its "null" messages.
+ */
+function frameOrigin(): string {
+  if (location.origin !== OPAQUE_ORIGIN) {
+    return location.origin;
+  }
+
+  // A same-origin script can overwrite the origin global. docs/threat-model.md leaves such a
+  // script out of scope, and it gains nothing here, because it can already call the parent.
+  const real = (globalThis as { origin?: unknown }).origin;
+  if (typeof real !== "string") {
+    return OPAQUE_ORIGIN;
+  }
+
+  return real;
+}
+
+/**
  * Establishes direct synchronous communication with a same-origin parent runtime.
  * @param receive Callback for parent replies.
  * @param diagnostics Diagnostics reporter.
- * @returns Direct link, or null if parent is inaccessible or lacks a runtime.
+ * @returns Direct link, or null if the parent is inaccessible, lacks a runtime, uses another
+ * bus protocol or refuses this frame. When it is null, the bus tries the message link to the
+ * parent.
  */
 export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Link | null {
   if (typeof window === "undefined" || window.parent === window) {
@@ -152,7 +187,41 @@ export function createDirectLink(receive: Receive, diagnostics: Diagnostics): Li
     return null;
   }
 
-  if (host.busCanAccept && !host.busCanAccept(window, location.origin)) return null;
+  // Read protocol and busCanAccept once, before any call into the parent. A getter could answer
+  // differently on a second read, and the check would then judge one value and act on another.
+  const hostProtocol = host.protocol;
+  const canAccept = host.busCanAccept;
+  const hasSourceCheck = typeof canAccept === "function";
+
+  // Without this, a frame under a 0.9.5 to 0.12 parent falls back to the message link. Where
+  // that link can't find the parent's origin, the frame sends its own records and the parent's
+  // redact never sees them.
+  const untagged = hostProtocol === undefined && hasSourceCheck;
+  const protocol = untagged ? UNTAGGED_HOST_PROTOCOL : hostProtocol;
+
+  // A direct call skips the envelope, so this is the only version check on this path. Without
+  // it, a parent on another library version gets messages in a shape it doesn't expect.
+  if (protocol !== BUS_PROTOCOL) {
+    // The parent controls this text, so cap it like an untrusted message type.
+    const found =
+      typeof protocol === "string" ? protocol.slice(0, BUS_TYPE_DETAIL_MAX_CHARS) : "none";
+    diagnostics.report(
+      "bus.protocol_mismatch",
+      "The same-origin parent runtime uses another bus protocol. This context tries a message link instead of a direct call.",
+      { found, own: BUS_PROTOCOL },
+    );
+    return null;
+  }
+
+  // A srcdoc frame's location.origin reads "null", which a parent refuses, and the frame then
+  // sends its own records past the parent's redact. The runtime read above proved same-origin.
+  const origin = frameOrigin();
+
+  // Called as the parent's method, so a runtime that uses "this" inside it still works.
+  if (hasSourceCheck && !canAccept.call(host, window, origin)) {
+    return null;
+  }
+
   const target = host;
   let open = true;
 
@@ -196,12 +265,13 @@ export function createParentLink(
     return null;
   }
 
-  // A sandboxed frame has an opaque origin, which no parent can put in its trust list.
-  const self = location.origin;
+  // No parent can put "null" in its trust list. A srcdoc frame isn't that case, because it
+  // runs on a real origin, so it goes on to the parent origin check below.
+  const self = frameOrigin();
   if (self === OPAQUE_ORIGIN) {
     diagnostics.report(
       "bus.untrusted_origin",
-      'This frame is sandboxed without allow-same-origin. It has an opaque origin. No parent can trust it. This context sends its own records. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+      'This frame reports the origin "null". No parent can trust that origin. This context sends its own records. A frame that is sandboxed without allow-same-origin has this origin. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
       { origin: self, type: "parent" },
     );
     return null;

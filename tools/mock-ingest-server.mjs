@@ -306,6 +306,8 @@ const server = createServer(async (req, res) => {
     exit: exitReason,
     contentType: req.headers["content-type"] ?? null,
     contentEncoding: req.headers["content-encoding"] ?? null,
+    // Only whether a cookie came, never its value, so a test can prove an exit send leaked none.
+    hasCookie: req.headers.cookie !== undefined,
     duplicate,
     payload,
   });

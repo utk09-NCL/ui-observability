@@ -11,6 +11,8 @@ import type { LogBatch } from "../src/models/batch";
 import type { ResolvedConfig, RetentionOptions } from "../src/models/config";
 import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
+import type { GapReporter, StorageAdapter } from "../src/models/storage";
+import { createStorage } from "../src/storage/factory";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { TransportError } from "../src/transport/errors";
 import type { HttpTransport } from "../src/transport/http-transport";
@@ -77,9 +79,10 @@ const makeEngine = (
     retention?: Partial<RetentionOptions>;
     onLoss?: LossReporter;
     config?: ResolvedConfig;
+    storage?: StorageAdapter;
   } = {},
 ) => {
-  const storage = new MemoryStorage(limits);
+  const storage = options.storage ?? new MemoryStorage(limits);
   const retentionConfig = options.retention
     ? resolveConfig(
         { endpoint: "https://x/v1/logs", serviceName: "svc", retention: options.retention },
@@ -549,8 +552,9 @@ describe("RetryEngine splitting", () => {
     const { engine, storage, handler } = makeEngine();
     const refused = new TransportError("too_large", "413", 413, undefined, SERVER_MAX_BYTES);
 
-    await engine.storeFailed(batch("big", { records: 4 }), refused);
+    const outcome = await engine.storeFailed(batch("big", { records: 4 }), refused);
 
+    expect(outcome).toBe("split");
     const stored = await storage.take(10);
     expect(stored).toHaveLength(2);
     expect(stored.every((one) => one.records.length === 2)).toBe(true);
@@ -563,9 +567,85 @@ describe("RetryEngine splitting", () => {
   it("stores nothing after a refusal the server will never accept", async () => {
     const { engine, storage } = makeEngine();
 
-    await engine.storeFailed(batch("gone"), new TransportError("permanent", "400", 400));
+    const refused = new TransportError("permanent", "400", 400);
 
+    expect(await engine.storeFailed(batch("gone"), refused)).toBe("rejected");
     expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
+
+  it("says it stored a batch that storage keeps whole, and brings the drain forward", async () => {
+    const { engine, storage } = makeEngine();
+
+    const outcome = await engine.storeFailed(batch("kept"), new Error("network"));
+
+    expect(outcome).toBe("stored");
+    expect((await storage.take(10)).map((one) => one.id)).toEqual(["kept"]);
+    // The nudge is the only thing that arms a timer on an engine that never started.
+    expect(vi.getTimerCount()).toBe(1);
+    engine.stop();
+  });
+
+  it("says the batch was rejected when its one record is too large to split", async () => {
+    const { engine, storage, handler } = makeEngine();
+    const refused = new TransportError("too_large", "413", 413);
+
+    expect(await engine.storeFailed(batch("one"), refused)).toBe("rejected");
+    expect(await storage.count()).toBe(0);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "transport.dropped_permanent" }),
+    );
+    engine.stop();
+  });
+
+  it("says the batch isn't stored when the app runs without storage", async () => {
+    const onGap = vi.fn<GapReporter>();
+    const none = await createStorage("none", "db", limits, new Diagnostics(vi.fn(), 0), onGap);
+    const { engine } = makeEngine({ storage: none });
+    const lost = batch("lost");
+
+    const outcome = await engine.storeFailed(lost, new Error("network"));
+
+    expect(outcome).toBe("not_stored");
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "not_stored" }, [lost]);
+    // Storage holds nothing, so an earlier drain would find nothing to send.
+    expect(vi.getTimerCount()).toBe(0);
+    engine.stop();
+  });
+
+  it("says the batch isn't stored when storage evicts it right after the write", async () => {
+    const onGap = vi.fn<GapReporter>();
+    const storage = new MemoryStorage({ ...limits, maxBatches: 1 }, onGap);
+    const audit: LogBatch = {
+      ...batch("audit"),
+      records: [{ ...record("submit order"), attributes: { "log.type": "action" } }],
+    };
+    await storage.save(audit);
+    const { engine } = makeEngine({ storage });
+    const lost = batch("lost");
+
+    const outcome = await engine.storeFailed(lost, new Error("network"));
+
+    // The store is full of actions, so the eviction removes the new batch. A "stored" answer
+    // would promise a resend while onDrop reports the same batch as lost.
+    expect(outcome).toBe("not_stored");
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "over_capacity" }, [lost]);
+    expect((await storage.take(10)).map((one) => one.id)).toEqual(["audit"]);
+    expect(vi.getTimerCount()).toBe(0);
+    engine.stop();
+  });
+
+  it("says the batch isn't stored when storage keeps only one half of a split", async () => {
+    const { engine, storage } = makeEngine();
+    const refused = new TransportError("too_large", "413", 413);
+    vi.spyOn(storage, "save").mockResolvedValueOnce(false);
+
+    const outcome = await engine.storeFailed(batch("big", { records: 4 }), refused);
+
+    expect(outcome).toBe("not_stored");
+    expect(await storage.count()).toBe(1);
+    // The half that storage kept still needs a drain.
+    expect(vi.getTimerCount()).toBe(1);
     engine.stop();
   });
 });

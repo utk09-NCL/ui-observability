@@ -15,6 +15,7 @@ import {
   HEADER_DATE,
   HEADER_RETRY_AFTER,
   HEADER_SAMPLING,
+  HTTP_UNSUPPORTED_MEDIA_TYPE,
   QUERY_PARAM_BATCH_ID,
   QUERY_PARAM_EXIT_REASON,
   REQUEST_TIMEOUT_MS as LIBRARY_TIMEOUT_MS,
@@ -148,6 +149,15 @@ function absent(response: Response, name: string, wanted: readonly string[]): st
 /** Checks an answer's status. */
 const statusProblem: AnswerTest = (response) =>
   response.ok ? undefined : `The server returned ${String(response.status)}.`;
+
+/**
+ * Names the collector case for a 415 answer to the beacon batch, because the bare status doesn't
+ * say that only the exit batches are lost or how to fix it.
+ */
+const mediaTypeProblem: AnswerTest = (response) =>
+  response.status === HTTP_UNSUPPORTED_MEDIA_TYPE
+    ? `The server returned ${String(response.status)} to a text/plain batch, as a stock OpenTelemetry Collector does. The library loses the exit batches of a page on another origin. Set headers in the app, or put a same-origin proxy in front of the server.`
+    : undefined;
 
 /** Builds the result for one rule. The first problem found becomes the detail. */
 function judge(rule: string, answer: Answer, passed: string, ...tests: AnswerTest[]): DoctorResult {
@@ -327,7 +337,13 @@ export async function runDoctor(
           pass: true,
           detail: "The library sends no beacon with custom headers. The tool sent no beacon.",
         }
-      : judge("beacon", beacon, "The server accepted a text/plain batch.", statusProblem),
+      : judge(
+          "beacon",
+          beacon,
+          "The server accepted a text/plain batch.",
+          mediaTypeProblem,
+          statusProblem,
+        ),
   ];
 }
 

@@ -44,13 +44,21 @@ export class ContextStorage implements StorageAdapter {
   /**
    * Stores a batch for this context. After a discard, a late save removes its own batch again.
    * @param batch The batch to store.
-   * @returns A promise that resolves once the save, and any removal, is done.
+   * @returns True if the batch is in the store once the save, and any removal, is done.
    */
-  async save(batch: LogBatch): Promise<void> {
-    if (!this.active || !this.accepts(batch)) return;
-    await this.store.save(batch);
+  async save(batch: LogBatch): Promise<boolean> {
+    if (!this.active || !this.accepts(batch)) {
+      return false;
+    }
+
+    const written = await this.store.save(batch);
     // A slow save can finish after the context change already cleared these records.
-    if (this.discard) await this.store.remove(batch.id);
+    if (this.discard) {
+      await this.store.remove(batch.id);
+      return false;
+    }
+
+    return written;
   }
 
   /**

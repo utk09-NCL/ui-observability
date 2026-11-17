@@ -34,6 +34,7 @@ export type DiagnosticCode =
   | "bus.handshake_timeout"
   | "bus.untrusted_origin"
   | "bus.send_failed"
+  | "bus.protocol_mismatch"
   | "transport.http_error"
   | "transport.timeout"
   | "transport.batch_split"

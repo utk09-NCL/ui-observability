@@ -59,6 +59,9 @@ interface DocumentGlobal {
  * classifies errors.
  */
 export class HttpTransport extends StatusTransport {
+  /** Body bytes of this transport's keepalive requests that haven't settled yet. */
+  private keepaliveBytes = 0;
+
   /**
    * Sends one log batch over HTTP. A metrics batch goes to metricsEndpoint and a traces batch
    * to tracesEndpoint. A batch without an endpoint goes nowhere.
@@ -91,6 +94,15 @@ export class HttpTransport extends StatusTransport {
    */
   lastHeaders(): Record<string, string> | undefined {
     return lastHeaders(this, this.config);
+  }
+
+  /**
+   * Returns the body bytes of the keepalive requests that haven't settled. The browser has one
+   * budget for them and the exit sends, so the exit flush starts its count from this number.
+   * @returns Bytes in flight, or 0.
+   */
+  keepaliveInFlight(): number {
+    return this.keepaliveBytes;
   }
 
   /**
@@ -194,14 +206,23 @@ export class HttpTransport extends StatusTransport {
       headers.set(HEADER_CONTENT_ENCODING, ENCODING_GZIP);
     }
 
-    // A keepalive request continues after unload, so the exit flush must not send the batch
-    // again.
-    const keepalive = this.keepalive(body);
-    if (keepalive) {
-      onKeepalive?.();
+    const bytes = typeof body === "string" ? estimateBytes(body) : body.byteLength;
+    if (!this.keepalive(bytes)) {
+      return this.dispatch(endpoint, headers, body, deadline, false, otlp);
     }
 
-    return this.dispatch(endpoint, headers, body, deadline, keepalive, otlp);
+    // A keepalive request continues after unload, so the exit flush must not send the batch
+    // again.
+    onKeepalive?.();
+
+    // Count the request until it settles either way, or a failure would leak its bytes and the
+    // exit flush would park every later batch.
+    this.keepaliveBytes += bytes;
+    try {
+      return await this.dispatch(endpoint, headers, body, deadline, true, otlp);
+    } finally {
+      this.keepaliveBytes -= bytes;
+    }
   }
 
   /**
@@ -335,12 +356,11 @@ export class HttpTransport extends StatusTransport {
    * Checks whether a send uses keepalive. A mobile OS can stop a hidden page without a
    * pagehide, and a keepalive request continues after that. The browser limits the keepalive
    * bodies in flight.
-   * @param body Request body string or byte array.
+   * @param bytes Size of the request body.
    * @returns True for a hidden document and a body of BEACON_LIMIT_BYTES or less.
    */
-  private keepalive(body: RequestBody): boolean {
+  private keepalive(bytes: number): boolean {
     const hidden = (globalThis as DocumentGlobal).document?.visibilityState === "hidden";
-    const bytes = typeof body === "string" ? estimateBytes(body) : body.byteLength;
 
     return hidden && bytes <= BEACON_LIMIT_BYTES;
   }

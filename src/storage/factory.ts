@@ -36,7 +36,7 @@ const noop = (onGap?: GapReporter): StorageAdapter => ({
   name: STORAGE_NAME_NONE,
   save: (batch) => {
     onGap?.({ batches: 1, records: batch.records.length, reason: "not_stored" }, [batch]);
-    return Promise.resolve();
+    return Promise.resolve(false);
   },
   take: () => Promise.resolve([]),
   remove: () => Promise.resolve(),

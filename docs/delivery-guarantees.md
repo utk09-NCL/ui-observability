@@ -11,7 +11,7 @@ This page tells what the library promises about delivery. It lists each case whe
 
 ## Accepted Batches
 
-A batch is delivered when the server answers `2xx`. A custom transport gives the same result when it returns a `2xx` status. A beacon of the exit flush gets no answer. The library counts it as sent when the browser accepts the beacon.
+A batch is delivered when the server answers `2xx`. A custom transport gives the same result when it returns a `2xx` status. The exit flush does not read the answer of the server. The library counts an exit batch as sent when the browser accepts the beacon or starts the keepalive fetch.
 
 ## Duplicates
 
@@ -58,6 +58,8 @@ An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The libr
 | `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage: "none"`. | `storage`                                       |
 | `security_context`   | A change of the delivery identity removed the records of the old identity.            | The `pending` rule of `rotateSecurityContext()` |
 
+A hold buffer keeps the records that arrive before startup ends, or while the sender loads. `buffering.maxHeldRecords` sets its limit for the records that are not actions. The default is 500. The range is 200 to 10000. Actions have a separate limit of 2000. A full hold buffer keeps its first 100 records of each kind. It drops the oldest record after them. `onDrop` reports that record with `buffer_full`. Thus the first error of a failed startup stays in the buffer. The newest records also stay.
+
 Some records never reach delivery by design. `onDrop` does not report them. The diagnostic codes in `getDiagnosticCounters()` show these cases:
 
 - A record below `minLevel`, or outside the sample. With `debugBuffer`, the next error of the context sends the recent ones.
@@ -76,7 +78,10 @@ A batch that did not send goes to storage. The default store is IndexedDB. Witho
 - An offline failure and a throttle answer use no attempt. A network failure while the browser reports online uses one. A long server outage can then reach `max_attempts`.
 - With `retention.mode: "until-delivered"`, a stored batch has no age limit and no attempt limit. `retention.maxBatches` still applies.
 - A full store evicts the oldest batch without an action record first. The library keeps action records longest. An action record is not an authoritative audit record.
+- The store can evict the new batch. This occurs when each older batch has an action record. `onDrop` then reports the new batch with `over_capacity`.
 - With `storage: "memory"`, stored batches stay only until the page closes. With `storage: "none"`, a batch that did not send is lost.
+- After a failed send, the `transport.http_error` diagnostic tells the result for the batch. The library stores the batch, stores it in two parts, or drops it.
+- While the server throttles, the library stores a new batch and does not send it. The `transport.throttled` diagnostic tells if storage kept the batch.
 - Under storage pressure, a browser can delete the store. `persistence.requestPersistent` asks the browser to keep it.
 
 ## Page Exit
@@ -84,8 +89,16 @@ A batch that did not send goes to storage. The default store is IndexedDB. Witho
 The exit flush is best effort.
 
 - When the page becomes hidden, the library sends the buffered records with a normal request. A send of 60 KB or less uses `keepalive`.
-- On `pagehide` and `freeze`, the library uses `sendBeacon` for payloads up to about 60 KB. With `headers`, it uses a keepalive fetch.
-- A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it.
+- On `pagehide` and `freeze`, the library sends payloads up to about 60 KB. To an endpoint on another origin, the request has the content type `text/plain`, which needs no CORS preflight. The batch id and the exit reason are in the query.
+- With `credentials: "omit"` or `"same-origin"`, that request is a keepalive fetch with no custom header. It obeys `credentials`. Thus it sends no cookie to another origin.
+- With `credentials: "include"`, that request is a beacon. `sendBeacon` always sends the cookies, whatever `credentials` is. Thus the library uses it only when the app asks for cookies.
+- The answer to the `text/plain` keepalive fetch must permit the origin. If it does not, the fetch fails. A page that is still open then puts the batch in the emergency queue. The server gets that batch again at the next page load.
+- It is possible that a keepalive fetch is less reliable than a beacon at page exit in some browsers. This is a hypothesis. `e2e/exit-flush.e2e.ts` shows that the `text/plain` keepalive fetch arrives after a navigation in Chromium, Firefox and WebKit. No test checks a tab close, a browser close or a slow network.
+- With `headers`, it uses a keepalive fetch. It also uses a keepalive fetch for an endpoint on the origin of the page. That request has the content type of the serializer. For OTLP, that is `application/json`. The endpoint origin must be the same as `location.origin` and the `origin` global of the page. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame send the `text/plain` request.
+- A stock OpenTelemetry Collector on another origin refuses the `text/plain` batch with `415`. The exit flush does not read that answer. `onDrop` does not report that loss.
+- To prevent that loss, set `headers` or put a same-origin proxy in front of the collector.
+- With `headers`, the keepalive fetch to another origin needs a CORS preflight. It is possible that a browser cancels that request during page exit. No test in this repository checks this risk.
+- A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
 - `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage.
 

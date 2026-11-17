@@ -22,6 +22,16 @@ import type { BatchTransport } from "./status-transport";
 type Outcome = "next" | "stop" | number;
 
 /**
+ * What became of a batch whose live send failed. The pipeline picks its report from this, so
+ * the report never promises a resend that can't happen.
+ * - "stored": storage holds the whole batch, and the drain sends it again.
+ * - "split": the server said the batch is too large, and storage holds its two halves.
+ * - "rejected": no later send can succeed, so the engine dropped the batch.
+ * - "not_stored": storage didn't keep the batch, or kept only one half of a split.
+ */
+export type StoreOutcome = "stored" | "split" | "rejected" | "not_stored";
+
+/**
  * Resends persisted offline batches on a timer, with backoff, a cross-tab drain lock and
  * batch splitting.
  */
@@ -90,17 +100,35 @@ export class RetryEngine {
    * payload the server already refused.
    * @param batch Rejected batch, with its attempt already counted.
    * @param error Failure thrown by the transport.
+   * @returns What became of the batch. A storage call that throws or runs past its deadline
+   * rejects instead, and the caller reports it.
    */
-  async storeFailed(batch: LogBatch, error: unknown): Promise<void> {
+  async storeFailed(batch: LogBatch, error: unknown): Promise<StoreOutcome> {
     const parts = this.toStorable(batch, error);
 
-    for (const part of parts) {
-      await this.bounded(this.storage.save(part));
+    if (parts.length === 0) {
+      return "rejected";
     }
 
-    if (parts.length > 0) {
+    let written = 0;
+
+    for (const part of parts) {
+      if (await this.bounded(this.storage.save(part))) {
+        written++;
+      }
+    }
+
+    // Only bring the drain forward for a batch that is in storage. With `storage: "none"` an
+    // early drain would find nothing to send.
+    if (written > 0) {
       this.nudge();
     }
+
+    if (written < parts.length) {
+      return "not_stored";
+    }
+
+    return parts.length > 1 ? "split" : "stored";
   }
 
   /** Stops the engine. Removes the listener and clears the pending timer. */

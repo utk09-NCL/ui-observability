@@ -329,9 +329,14 @@ describe("uiobs doctor", () => {
       "FAIL deduplication: The server returned 409.",
     ],
     [
-      "a rejected text/plain batch",
+      "a text/plain batch that the server refuses for its media type, and names the collector",
       { beacon: answer(415, {}) },
-      "FAIL beacon: The server returned 415.",
+      "FAIL beacon: The server returned 415 to a text/plain batch, as a stock OpenTelemetry Collector does. The library loses the exit batches of a page on another origin. Set headers in the app, or put a same-origin proxy in front of the server.",
+    ],
+    [
+      "a text/plain batch that the server refuses for another reason",
+      { beacon: answer(500, {}) },
+      "FAIL beacon: The server returned 500.",
     ],
   ])("fails for %s", async (_label, answers, line) => {
     stubServer(answers);

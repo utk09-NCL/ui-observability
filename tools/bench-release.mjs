@@ -667,7 +667,7 @@ if (results.replay?.skipped !== undefined) {
 if (budgetFile !== null && budgetFile.machine?.cpuModel !== environment.cpuModel) {
   console.log(
     `bench: the budgets come from "${budgetFile.machine?.cpuModel}". ` +
-      "Measure new baselines for this machine.",
+      "The same budgets apply here. Report a failure on this machine to the maintainer.",
   );
 }
 

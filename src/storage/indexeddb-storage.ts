@@ -10,6 +10,14 @@ import { EvictionPick, hasAction } from "./eviction";
 import { addDrop, reportEviction } from "./gap";
 import { IdbDriver } from "./idb-driver";
 
+/** What one prune did. save() reads `removed` to see whether its own batch survived. */
+interface Sweep {
+  /** The prune summary across all rules. */
+  result: PruneResult;
+  /** The batches the prune deleted. */
+  removed: LogBatch[];
+}
+
 /** StorageAdapter that keeps batches in IndexedDB. */
 export class IndexedDbStorage implements StorageAdapter {
   /** The storage strategy name. */
@@ -44,11 +52,17 @@ export class IndexedDbStorage implements StorageAdapter {
   /**
    * Writes a batch to IndexedDB, then prunes the storage.
    * @param batch The batch to store.
+   * @returns True if the batch is in the database after the prune, false if the write failed
+   * or the prune removed the batch.
    */
-  async save(batch: LogBatch): Promise<void> {
+  async save(batch: LogBatch): Promise<boolean> {
     try {
       await this.db.put(batch);
-      await this.prune();
+      const { removed } = await this.sweep();
+
+      // The prune can remove the batch it just wrote, for example when every older batch holds
+      // an action. A true here would promise a resend for a batch that onGap reported as lost.
+      return !removed.some((gone) => gone.id === batch.id);
     } catch (error) {
       if (error instanceof Error && error.name === QUOTA_EXCEEDED_ERROR) {
         this.diagnostics.report(
@@ -80,7 +94,7 @@ export class IndexedDbStorage implements StorageAdapter {
           const gap: PruneResult = { batches: 1, records: batch.records.length, reason: "quota" };
           reportEviction(this.diagnostics, this.onGap, gap, [batch]);
         }
-        return;
+        return stored === true;
       }
 
       this.diagnostics.report(
@@ -91,6 +105,7 @@ export class IndexedDbStorage implements StorageAdapter {
       );
       // The diagnostic above names the failure. A storage.evicted report would count it twice.
       this.onGap?.({ batches: 1, records: batch.records.length, reason: "not_stored" }, [batch]);
+      return false;
     }
   }
 
@@ -170,7 +185,19 @@ export class IndexedDbStorage implements StorageAdapter {
    * @returns Prune summary metrics.
    */
   async prune(): Promise<PruneResult> {
+    const { result } = await this.sweep();
+
+    return result;
+  }
+
+  /**
+   * Runs the prune and keeps the batches it deleted. A failed prune reports to diagnostics and
+   * returns what it deleted before the failure.
+   * @returns The prune summary and the deleted batches.
+   */
+  private async sweep(): Promise<Sweep> {
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
+    const removed: LogBatch[] = [];
 
     await this.diagnostics.guardAsync(
       "storage.degraded",
@@ -181,17 +208,19 @@ export class IndexedDbStorage implements StorageAdapter {
         if (expired.length > 0) {
           await this.db.deleteMany(expired.map((batch) => batch.id));
           this.addGap(result, "expired", expired);
+          removed.push(...expired);
         }
 
         const total = await this.db.count();
         if (total > this.limits.maxBatches) {
           const evicted = await this.evictOldest(total - this.limits.maxBatches);
           this.addGap(result, "over_capacity", evicted);
+          removed.push(...evicted);
         }
       },
     );
 
-    return result;
+    return { result, removed };
   }
 
   /**

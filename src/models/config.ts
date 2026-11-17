@@ -795,7 +795,7 @@ export interface DeliveryPolicy {
   priority: "low" | "auto" | "high";
 }
 
-/** Record and byte limits for the live delivery buffers. */
+/** Record and byte limits for the live delivery buffers, and the cap of a hold buffer. */
 export interface BufferingPolicy {
   /**
    * Maximum records in the buffers and requests. Set 0 for no record limit.
@@ -807,6 +807,14 @@ export interface BufferingPolicy {
    * @default 16777216
    */
   maxPendingBytes: number;
+  /**
+   * Maximum records other than actions in one hold buffer. A hold buffer keeps the records
+   * that arrive before startup ends, or while the sender loads. A full one keeps its first
+   * 100 records and drops the oldest record after them. A lower value removes no held record.
+   * 200 to 10000.
+   * @default 500
+   */
+  maxHeldRecords: number;
   /**
    * What to do when a new record does not fit: remove old records, drop the new record, or
    * try storage.

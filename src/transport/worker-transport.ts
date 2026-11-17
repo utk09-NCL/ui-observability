@@ -233,10 +233,17 @@ export function createWorkerTransport(
   onSampling: (raw: unknown) => void,
   onLoss: LossReporter,
   onClock: (offsetMs: number) => void,
-): { transport: StatusTransport; exitHeaders: () => Record<string, string> | undefined } {
+): {
+  transport: StatusTransport;
+  exitHeaders: () => Record<string, string> | undefined;
+  keepaliveInFlight: () => number;
+} {
   const http = new HttpTransport(config, diagnostics, onSampling, onLoss, onClock);
   return {
     transport: new WorkerTransport(config, diagnostics, http, onSampling, onLoss, onClock),
     exitHeaders: () => http.lastHeaders(),
+    // The worker's own fetch has no keepalive, so only the hidden-page HTTP path uses this budget.
+    // Hypothesis from the Fetch spec: a worker is its own fetch group, with a budget of its own.
+    keepaliveInFlight: () => http.keepaliveInFlight(),
   };
 }

@@ -1,6 +1,6 @@
 # Browser integration tests
 
-These tests run the library source in Chromium, Firefox and WebKit. Each test asserts data that the mock ingest server received. The trace test asserts the request headers from `/__echo`. The other tests assert the payload from `/__received`. No test asserts console output.
+These tests run the library source in Chromium, Firefox and WebKit. Each test asserts data that the mock ingest server received. The trace test asserts the request headers from `/__echo`. The other tests assert the payload from `/__received`. The startup burst tests also assert the `onDrop` summaries of the page. The exit flush tests also assert `exit`, `contentType` and `hasCookie` of the request. No test asserts console output.
 
 The tests are separate from `pnpm run verify`. Vitest does not run them.
 
@@ -26,6 +26,8 @@ The tests run in one worker. All browsers use one mock server, and each test res
 
 Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in each frame. Without it, Firefox sends the exit flush when Playwright closes the context. That request can arrive after the reset of the next test.
 
+`exit-flush.e2e.ts` leaves the page with a navigation. The call then finds no library in the new document. It still stops the library when a test fails before the navigation.
+
 ## Test APIs of the mock ingest server
 
 | Request           | Result                                                                                       |
@@ -34,7 +36,7 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 | `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`.      |
 | `GET /__echo`     | Returns the headers of this request as the server received them.                             |
 
-Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `duplicate` and `payload`. `payload` is the parsed JSON body.
+Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie.
 
 - The server keeps a request only when `UIOBS_MOCK_RECORD` is `1`. Without it, `/__received` returns empty lists. The Playwright config sets it.
 - The server keeps the last 100 entries for each path.
@@ -58,7 +60,12 @@ Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `co
 | Spec                       | Coverage                                                                                                                                              |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `logging.e2e.ts`           | A logger call arrives at `/v1/logs` with its body, level, scope, attributes and resource attributes. The body is gzip-encoded.                        |
+| `startup-burst.e2e.ts`     | A page logs one error and 2,000 records before the sender loads. The server gets the error. `onDrop` reports 1,501 records as `buffer_full`.          |
+| `startup-burst.e2e.ts`     | With `buffering.maxHeldRecords: 5000`, the server gets each record of the same burst. `onDrop` reports nothing.                                       |
+| `exit-flush.e2e.ts`        | After a navigation, the exit batch arrives at another origin as a `text/plain` keepalive `fetch`. It has `uiobs_exit=pagehide` and no cookie.         |
+| `exit-flush.e2e.ts`        | With `credentials: "include"`, the exit batch of the same navigation arrives as a beacon. It has the cookie of the page.                              |
 | `forwarding.e2e.ts`        | A same-origin child frame forwards a record through the parent. The `redact` hook of the parent removes a field from it.                              |
+| `forwarding.e2e.ts`        | A same-origin `srcdoc` frame forwards a record through the parent. The `redact` hook of the parent removes a field. Only the parent frame posts.      |
 | `forwarding.e2e.ts`        | A cross-origin child forwards a record when `bus.trustedOrigins` has the origin of the parent. Only the parent frame posts.                           |
 | `forwarding.e2e.ts`        | A cross-origin child without `bus.trustedOrigins` resolves to `sender` and posts its own record. The parent posts nothing.                            |
 | `trace-propagation.e2e.ts` | A `fetch` to an origin in `capture.propagateTraceHeaderTo` has `traceparent`. A `fetch` to a different origin does not.                               |
@@ -75,7 +82,8 @@ These items have no browser test.
 - A transport worker that fails after its ready answer, and a worker script that does not load.
 - Offline recovery after a `503` with `Retry-After`.
 - A reload that sends the batches in IndexedDB.
-- The exit flush on page close, with `sendBeacon` and with `keepalive`.
+- The exit flush on a tab close or a browser close, on `freeze`, with `headers`, and to the origin of the page.
+- The emergency queue of the exit flush, and its import at the next page load.
 - Security-context rotation with `rotateSecurityContext()`.
 - Session replay with the real `@rrweb/record` recorder, its masking, and stop and reset. The recorder is installed for `playground/vanilla`.
 - The `/v1/metrics` and `/v1/traces` endpoints.

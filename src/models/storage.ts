@@ -21,8 +21,10 @@ export interface StorageAdapter {
   /**
    * Persists a batch to storage.
    * @param batch The batch to store.
+   * @returns True if the batch is in storage when the save ends. A save's own prune can remove
+   * it, and the second write after a quota error runs no prune. False means nothing sends it again.
    */
-  save(batch: LogBatch): Promise<void>;
+  save(batch: LogBatch): Promise<boolean>;
 
   /**
    * Reads up to `limit` batches in FIFO order without removing them.

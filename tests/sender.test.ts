@@ -3,6 +3,7 @@ import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { Sender } from "../src/core/sender";
 import type { ObservabilityConfig } from "../src/models/config";
+import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { drainEmergencyQueue, saveToEmergencyQueue } from "../src/storage/emergency-queue";
 import { RetryEngine } from "../src/transport/retry-engine";
@@ -44,15 +45,16 @@ async function setup(over: Partial<ObservabilityConfig> = {}) {
     { endpoint: ENDPOINT, serviceName: "svc", storage: "memory", compression: "none", ...over },
     diagnostics,
   );
+  const onLoss = vi.fn<LossReporter>();
   const sender = await Sender.create({
     config,
     diagnostics,
     onGap: vi.fn(),
-    onLoss: vi.fn(),
+    onLoss,
     remote: { sampling: null },
   });
   created.push(sender);
-  return { sender, diagnostics, codes: () => events.map((event) => event.code) };
+  return { sender, diagnostics, onLoss, codes: () => events.map((event) => event.code) };
 }
 
 let fetchMock: ReturnType<typeof vi.fn<(url: string, init: RequestInit) => Promise<Response>>>;
@@ -224,5 +226,38 @@ describe("Sender exit flush", () => {
     const [, init] = fetchMock.mock.calls[1];
     expect(init.keepalive).toBe(true);
     expect((init.headers as Headers).get("authorization")).toBe("Bearer t1");
+  });
+
+  it("keeps an exit batch that doesn't fit next to a hidden send still in flight", async () => {
+    // On a navigation, hidden fires just before pagehide, and both sends use one browser budget.
+    // The browser rejects a fetch over it after the document closes, when nothing reports it.
+    let settle: (response: Response) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { sender, onLoss } = await setup({ headers: { authorization: "Bearer t1" } });
+
+    sender.push(record("x".repeat(50_000)));
+    const hiddenFlush = sender.flush();
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(fetchMock.mock.calls[0][1].keepalive).toBe(true);
+
+    sender.push(record("y".repeat(20_000)));
+    dispatchEvent(new Event("pagehide"));
+    const exitRequests = fetchMock.mock.calls.length - 1;
+
+    // Settle the hidden send before the assertions, or a failure leaves the teardown waiting.
+    settle(new Response(null, { status: 204 }));
+    await hiddenFlush;
+
+    // Memory storage keeps nothing on the device, so the parked batch reaches onLoss.
+    expect(exitRequests).toBe(0);
+    expect(onLoss.mock.calls.map(([reason]) => reason)).toEqual(["not_stored"]);
   });
 });

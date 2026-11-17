@@ -23,6 +23,14 @@ interface Entry {
   batch: LogBatch | null;
 }
 
+/** What one prune did. save() reads `removed` to see whether its own entry survived. */
+interface Sweep {
+  /** The prune summary across all rules. */
+  result: PruneResult;
+  /** The entries the prune removed. */
+  removed: Entry[];
+}
+
 /**
  * Reads the creation time from a storage key. prune() runs after every save, and reading the
  * time from the batch would parse the whole store each time.
@@ -57,11 +65,17 @@ export class LocalStorageStorage implements StorageAdapter {
   /**
    * Writes a batch to localStorage, removing the oldest entries on a quota error.
    * @param batch The batch to store.
+   * @returns True if the batch is in localStorage after the prune, false if both writes were
+   * refused or the prune removed the batch.
    */
-  async save(batch: LogBatch): Promise<void> {
+  save(batch: LogBatch): Promise<boolean> {
     if (this.write(batch, "localStorage refused a batch, evicting the oldest")) {
-      await this.prune();
-      return;
+      const key = batchKey(this.prefix, batch);
+      const { removed } = this.sweep();
+
+      // The prune can remove the entry it just wrote, for example when every older batch holds
+      // an action. A true here would promise a resend for a batch that onGap reported as lost.
+      return Promise.resolve(!removed.some((entry) => entry.key === key));
     }
 
     this.evictForQuota();
@@ -71,7 +85,10 @@ export class LocalStorageStorage implements StorageAdapter {
     if (!this.write(batch, "localStorage refused a batch even after evicting")) {
       const gap: PruneResult = { batches: 1, records: batch.records.length, reason: "quota" };
       reportEviction(this.diagnostics, this.onGap, gap, [batch]);
+      return Promise.resolve(false);
     }
+
+    return Promise.resolve(true);
   }
 
   /**
@@ -196,6 +213,14 @@ export class LocalStorageStorage implements StorageAdapter {
    * @returns A promise that resolves to the prune summary metrics.
    */
   prune(): Promise<PruneResult> {
+    return Promise.resolve(this.sweep().result);
+  }
+
+  /**
+   * Runs the prune and keeps the entries it removed.
+   * @returns The prune summary and the removed entries.
+   */
+  private sweep(): Sweep {
     const cutoff = Date.now() - this.limits.maxAgeMs;
     const result: PruneResult = { batches: 0, records: 0, reason: "expired" };
     const expired: string[] = [];
@@ -212,14 +237,17 @@ export class LocalStorageStorage implements StorageAdapter {
     }
 
     // The record count is the one field the key doesn't hold, so parse only the deleted batches.
-    this.drop(result, "expired", [...this.entries(expired)]);
+    const removed = [...this.entries(expired)];
+    this.drop(result, "expired", removed);
 
     const excess = alive.length - this.limits.maxBatches;
     if (excess > 0) {
-      this.drop(result, "over_capacity", this.evictable(alive, excess));
+      const evicted = this.evictable(alive, excess);
+      this.drop(result, "over_capacity", evicted);
+      removed.push(...evicted);
     }
 
-    return Promise.resolve(result);
+    return { result, removed };
   }
 
   /**

@@ -19,7 +19,7 @@ import type { LogBatch } from "../models/batch";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
 import type { BatchTransport } from "../transport/status-transport";
-import type { RetryEngine } from "../transport/retry-engine";
+import type { RetryEngine, StoreOutcome } from "../transport/retry-engine";
 import { withDeadline } from "../utils/deadline";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
@@ -46,6 +46,43 @@ function streamOf(record: LogRecord): StreamName {
 
   return type === LOG_TYPE_SPAN ? "traces" : "logs";
 }
+
+/**
+ * What a store call did with a failed batch. "unknown" is a call that threw or ran past its
+ * deadline, so the batch can still reach storage after the report.
+ */
+type StoreResult = StoreOutcome | "unknown";
+
+/** The results the throttle path can get. Only a failed send splits or rejects a batch. */
+type ThrottledResult = Exclude<StoreResult, "split" | "rejected">;
+
+/**
+ * The text of the send-failure report for each store result. Each one says what happened to
+ * the batch and what the library does next, so it never promises a resend that can't happen
+ * and never reports a drop it can't be sure of.
+ */
+const SEND_FAILED_TEXT: Record<StoreResult, string> = {
+  stored: "The send failed. The library stored the batch and sends it again later.",
+  split: "The send failed. The library stored the batch in two parts and sends them again later.",
+  rejected: "The send failed, and another send would fail too. The library drops the batch.",
+  not_stored:
+    "The send failed, and storage did not keep the batch. " +
+    "The library drops the records that are not in storage.",
+  unknown:
+    "The send failed. The library could not confirm that storage kept the batch. " +
+    "The library sends again only the records that are in storage.",
+};
+
+/** The text of the throttle report for each store result, under the same rule. */
+const THROTTLED_TEXT: Record<ThrottledResult, string> = {
+  stored: "The server throttles requests. The pipeline stored the batch and did not send it.",
+  not_stored:
+    "The server throttles requests, and storage did not keep the batch. " +
+    "The library drops the batch.",
+  unknown:
+    "The server throttles requests. The library could not confirm that storage kept the batch. " +
+    "The library sends the batch later only if it is in storage.",
+};
 
 /** Batching policy for one record stream. */
 export interface StreamOptions {
@@ -251,8 +288,10 @@ export class LogPipeline {
           "Could not persist an overflow record.",
           async () => {
             try {
-              await this.storage.save(batch);
-              this.retry.nudge();
+              // Only bring the drain forward for a record that is in storage.
+              if (await this.storage.save(batch)) {
+                this.retry.nudge();
+              }
             } finally {
               this.persisting = false;
             }
@@ -555,16 +594,12 @@ export class LogPipeline {
       // nothing was sent.
       const throttledMs = this.transport.throttledForMs(batch);
       if (throttledMs > 0) {
-        await this.store(batch);
-        this.diagnostics.report(
-          "transport.throttled",
-          "The server throttles requests. The pipeline stored the batch and did not send it.",
-          {
-            batchId: batch.id,
-            records: batch.records.length,
-            throttledMs,
-          },
-        );
+        const result = await this.store(batch);
+        this.diagnostics.report("transport.throttled", THROTTLED_TEXT[result], {
+          batchId: batch.id,
+          records: batch.records.length,
+          throttledMs,
+        });
         return;
       }
 
@@ -578,10 +613,10 @@ export class LogPipeline {
         if (this.stopped) return;
         // Increment the attempt count before storing. Left at 0, the batch would exceed
         // STORAGE_LIMITS.maxAttempts by one and the attempt headers would report one too few.
-        await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
+        const result = await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         this.diagnostics.report(
           "transport.http_error",
-          "The send failed. The pipeline stored the batch for a retry.",
+          SEND_FAILED_TEXT[result],
           { batchId: batch.id, records: batch.records.length },
           error,
         );
@@ -596,15 +631,18 @@ export class LogPipeline {
    * batch the server won't accept.
    * @param batch Batch to persist, with its attempt already counted.
    * @param error Failure thrown by the transport.
+   * @returns What became of the batch, for the send-failure report.
    */
-  private async storeFailed(batch: LogBatch, error: unknown): Promise<void> {
-    await this.diagnostics.guardAsync(
+  private async storeFailed(batch: LogBatch, error: unknown): Promise<StoreResult> {
+    const outcome = await this.diagnostics.guardAsync(
       "storage.degraded",
       "The library could not store an undelivered batch.",
-      async () => {
-        await this.retry.storeFailed(batch, error);
-      },
+      () => this.retry.storeFailed(batch, error),
     );
+
+    // The guard returns undefined when a storage call threw or ran past its deadline. A late
+    // save can still finish and the engine then sends the batch, so don't report a drop.
+    return outcome ?? "unknown";
   }
 
   /**
@@ -612,15 +650,31 @@ export class LogPipeline {
    * because a storage call that never settles holds this dispatch slot, and two of them
    * stop the pipeline.
    * @param batch Batch to persist.
+   * @returns What became of the batch, for the throttle report.
    */
-  private async store(batch: LogBatch): Promise<void> {
-    await this.diagnostics.guardAsync(
+  private async store(batch: LogBatch): Promise<ThrottledResult> {
+    const kept = await this.diagnostics.guardAsync(
       "storage.degraded",
       "The library could not store an undelivered batch.",
       async () => {
-        await withDeadline(this.storage.save(batch), STORAGE_DEADLINE_MS);
-        this.retry.nudge();
+        const written = await withDeadline(this.storage.save(batch), STORAGE_DEADLINE_MS);
+
+        // Only bring the drain forward for a batch that is in storage. With `storage: "none"`
+        // an early drain would find nothing to send.
+        if (written) {
+          this.retry.nudge();
+        }
+
+        return written;
       },
     );
+
+    // The guard returns undefined when the save threw or ran past its deadline. A late save
+    // can still finish and the engine then sends the batch, so don't report a drop.
+    if (kept === undefined) {
+      return "unknown";
+    }
+
+    return kept ? "stored" : "not_stored";
   }
 }

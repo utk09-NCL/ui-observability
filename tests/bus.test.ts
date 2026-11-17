@@ -26,7 +26,12 @@ import {
 } from "../src/models/bus";
 import type { BusOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
-import { BUS_CHANNEL_NAME, BUS_PROTOCOL, REMOTE_SAMPLING_POLL_MS } from "../src/constants";
+import {
+  BUS_CHANNEL_NAME,
+  BUS_PROTOCOL,
+  BUS_TYPE_DETAIL_MAX_CHARS,
+  REMOTE_SAMPLING_POLL_MS,
+} from "../src/constants";
 
 /** Matches the parent-runtime lookup key in src/bus/links.ts. */
 const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
@@ -129,6 +134,16 @@ const crossOriginParent = () =>
     },
   });
 
+/**
+ * Makes this document read like a srcdoc frame, whose location.origin is "null".
+ * @param real What the origin global reads. A srcdoc frame reads its parent's origin there, and
+ * a frame that is sandboxed without allow-same-origin reads "null" there too.
+ */
+const nullLocation = (real: unknown): void => {
+  vi.stubGlobal("location", { origin: "null" });
+  vi.stubGlobal("origin", real);
+};
+
 describe("models/bus: envelope and unwrap", () => {
   it("wraps a message in the protocol envelope", () => {
     const message: BusMessage = {
@@ -213,12 +228,15 @@ describe("createDirectLink", () => {
     const fakeParent = {} as unknown as Window & typeof globalThis;
     (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
       busAccept,
+      protocol: BUS_PROTOCOL,
     };
     vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
 
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
     const receive = vi.fn<Receive>();
-    const link = createDirectLink(receive, diag());
+    const link = createDirectLink(receive, new Diagnostics(handler, 0));
     expect(link).not.toBeNull();
+    expect(handler).not.toHaveBeenCalled();
 
     link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     expect(busAccept).toHaveBeenCalledWith(
@@ -239,6 +257,7 @@ describe("createDirectLink", () => {
       busAccept: () => {
         throw new Error("parent is broken");
       },
+      protocol: BUS_PROTOCOL,
     };
     vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
 
@@ -247,6 +266,259 @@ describe("createDirectLink", () => {
     link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
+  });
+
+  it("returns null and reports once when the parent's runtime uses another bus protocol", () => {
+    const busAccept = vi.fn();
+    const busCanAccept = vi.fn(() => true);
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept,
+      busCanAccept,
+      protocol: "ui-observability/1",
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.protocol_mismatch",
+        message:
+          "The same-origin parent runtime uses another bus protocol. This context tries a message link instead of a direct call.",
+        detail: { found: "ui-observability/1", own: BUS_PROTOCOL },
+      }),
+    );
+    // The child asks a parent on another protocol nothing, not even its source policy.
+    expect(busCanAccept).not.toHaveBeenCalled();
+    expect(busAccept).not.toHaveBeenCalled();
+  });
+
+  it("returns null and reports when a parent from before 0.9.5 has neither busCanAccept nor a protocol", () => {
+    const busAccept = vi.fn();
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = { busAccept };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.protocol_mismatch",
+        message:
+          "The same-origin parent runtime uses another bus protocol. This context tries a message link instead of a direct call.",
+        detail: { found: "none", own: BUS_PROTOCOL },
+      }),
+    );
+    expect(busAccept).not.toHaveBeenCalled();
+  });
+
+  it("attaches directly to a parent from 0.9.5 to 0.12, which has busCanAccept but no protocol", () => {
+    const busAccept = vi.fn();
+    const busCanAccept = vi.fn(() => true);
+    const host = { busAccept, busCanAccept };
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = host;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const receive = vi.fn<Receive>();
+    const link = createDirectLink(receive, new Diagnostics(handler, 0));
+
+    expect(link?.kind).toBe("direct");
+    expect(handler).not.toHaveBeenCalled();
+    expect(busCanAccept).toHaveBeenCalledTimes(1);
+    expect(busCanAccept).toHaveBeenCalledWith(window, location.origin);
+    // The parent's function still runs as a method of its runtime.
+    expect(busCanAccept.mock.contexts[0]).toBe(host);
+
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+    expect(busAccept).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.hello" }),
+      receive,
+      window,
+    );
+  });
+
+  it("returns null without a report when a parent from 0.9.5 to 0.12 refuses this frame", () => {
+    const busAccept = vi.fn();
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept,
+      busCanAccept: () => false,
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(busAccept).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Turns this document into a frame under a parent that accepts one origin, as a parent does
+   * for a frame it registered.
+   * @param registered The origin the parent registered for this frame.
+   * @returns The parent's busAccept and busCanAccept spies.
+   */
+  function registeringParent(registered: string) {
+    const busAccept = vi.fn();
+    const busCanAccept = vi.fn((_source: Window, origin: string) => origin === registered);
+    const fakeParent = {
+      [RUNTIME_KEY]: { busAccept, busCanAccept, protocol: BUS_PROTOCOL },
+    } as unknown as Window & typeof globalThis;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    return { busAccept, busCanAccept };
+  }
+
+  it("gives a srcdoc frame a direct link, and tells the parent the frame's real origin", () => {
+    const { busAccept, busCanAccept } = registeringParent("https://app.example");
+    nullLocation("https://app.example");
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const receive = vi.fn<Receive>();
+    const link = createDirectLink(receive, new Diagnostics(handler, 0));
+
+    expect(link?.kind).toBe("direct");
+    expect(busCanAccept).toHaveBeenCalledTimes(1);
+    expect(busCanAccept).toHaveBeenCalledWith(window, "https://app.example");
+    expect(handler).not.toHaveBeenCalled();
+
+    // The records now go to the parent's runtime, which is where the parent's redact runs.
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+    expect(busAccept).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.hello" }),
+      receive,
+      window,
+    );
+  });
+
+  it("leaves the registration check to the parent when a srcdoc frame runs on another origin", () => {
+    const { busCanAccept } = registeringParent("https://app.example");
+    nullLocation("https://other.example");
+
+    expect(createDirectLink(vi.fn<Receive>(), diag())).toBeNull();
+    expect(busCanAccept).toHaveBeenCalledWith(window, "https://other.example");
+  });
+
+  it('refuses a frame whose location.origin and origin global are both "null"', () => {
+    const { busAccept, busCanAccept } = registeringParent("https://app.example");
+    nullLocation("null");
+
+    expect(createDirectLink(vi.fn<Receive>(), diag())).toBeNull();
+    expect(busCanAccept).toHaveBeenCalledWith(window, "null");
+    expect(busAccept).not.toHaveBeenCalled();
+  });
+
+  it('keeps "null" when a page script has put a value that isn\'t a string in the origin global', () => {
+    const { busCanAccept } = registeringParent("https://app.example");
+    // A classic script's `var origin = { x: 0, y: 0 }` replaces the global.
+    nullLocation({ x: 0, y: 0 });
+
+    expect(createDirectLink(vi.fn<Receive>(), diag())).toBeNull();
+    expect(busCanAccept).toHaveBeenCalledWith(window, "null");
+  });
+
+  it("reads the parent's protocol only once, so the report names the value it judged", () => {
+    let reads = 0;
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept: vi.fn(),
+      get protocol() {
+        reads += 1;
+        return `other-protocol/${String(reads)}`;
+      },
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(reads).toBe(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.protocol_mismatch",
+        detail: { found: "other-protocol/1", own: BUS_PROTOCOL },
+      }),
+    );
+  });
+
+  it("opens no direct link when the parent's protocol matches only on a later read", () => {
+    let reads = 0;
+    const busAccept = vi.fn();
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept,
+      get protocol() {
+        reads += 1;
+        return reads === 1 ? "ui-observability/1" : BUS_PROTOCOL;
+      },
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(reads).toBe(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.protocol_mismatch",
+        detail: { found: "ui-observability/1", own: BUS_PROTOCOL },
+      }),
+    );
+  });
+
+  it("reads the parent's busCanAccept only once, before it calls into the parent", () => {
+    const order: string[] = [];
+    const busCanAccept = vi.fn(() => {
+      order.push("call busCanAccept");
+      return true;
+    });
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept: vi.fn(),
+      get busCanAccept() {
+        order.push("read busCanAccept");
+        // A second read would find no function to call.
+        return order.length === 2 ? busCanAccept : undefined;
+      },
+      get protocol() {
+        order.push("read protocol");
+        return BUS_PROTOCOL;
+      },
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const link = createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0));
+
+    expect(link?.kind).toBe("direct");
+    expect(order).toEqual(["read protocol", "read busCanAccept", "call busCanAccept"]);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("keeps a long protocol text from the parent short in the diagnostic detail", () => {
+    const fakeParent = {} as unknown as Window & typeof globalThis;
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept: vi.fn(),
+      protocol: "x".repeat(500),
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    expect(createDirectLink(vi.fn<Receive>(), new Diagnostics(handler, 0))).toBeNull();
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.protocol_mismatch",
+        detail: { found: "x".repeat(BUS_TYPE_DETAIL_MAX_CHARS), own: BUS_PROTOCOL },
+      }),
+    );
   });
 });
 
@@ -330,19 +602,73 @@ describe("createParentLink", () => {
     );
   });
 
-  it("returns null and names the fix when this frame is sandboxed", () => {
-    frameOf(PARENT);
-    vi.stubGlobal("location", { origin: "null" });
+  it('returns null and names the fix when this frame\'s origin is "null"', () => {
+    const { postMessage } = frameOf(PARENT);
+    nullLocation("null");
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
 
     expect(createParentLink(vi.fn<Receive>(), [PARENT], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "bus.untrusted_origin",
         message:
-          'This frame is sandboxed without allow-same-origin. It has an opaque origin. No parent can trust it. This context sends its own records. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+          'This frame reports the origin "null". No parent can trust that origin. This context sends its own records. A frame that is sandboxed without allow-same-origin has this origin. Set bus.mode: "sender" in the frame. Add allow-same-origin to the sandbox attribute only for content that you trust.',
+        detail: { origin: "null", type: "parent" },
       }),
     );
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("opens the message link from a srcdoc frame to a parent on the frame's real origin", () => {
+    const { fakeParent, postMessage } = frameOf(PARENT);
+    nullLocation(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const receive = vi.fn<Receive>();
+
+    // No trust list, because the frame runs on its parent's origin.
+    const link = createParentLink(receive, [], new Diagnostics(handler, 0));
+
+    expect(link?.kind).toBe("parent");
+    expect(handler).not.toHaveBeenCalled();
+
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+    expect(postMessage).toHaveBeenCalledWith(
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
+      PARENT,
+    );
+
+    postFrom(fakeParent, PARENT);
+    expect(receive).toHaveBeenCalledWith(
+      { t: "ui-observability.message.hello", from: "parent-ctx", tabId: "tab-9" },
+      { link: "parent", origin: PARENT, peer: fakeParent },
+    );
+
+    // The location's "null" is not a trusted origin, so a parent that turned opaque is dropped.
+    receive.mockClear();
+    postFrom(fakeParent, "null");
+    expect(receive).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "bus.untrusted_origin", detail: expect.anything() }),
+    );
+    link?.close();
+  });
+
+  it("still refuses a parent on another origin when this frame is a srcdoc frame", () => {
+    const { postMessage } = frameOf("https://evil.example");
+    nullLocation(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    expect(createParentLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message:
+          "The parent frame is on https://evil.example. This origin is not in bus.trustedOrigins. This context sends its own records.",
+        detail: { origin: "https://evil.example", type: "parent" },
+      }),
+    );
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it("reads the parent origin from location.ancestorOrigins before the referrer", () => {
@@ -1122,7 +1448,10 @@ describe("Bus role resolution: auto mode", () => {
   it("attaches directly to a same-origin parent and negotiates its context", async () => {
     const busAccept = vi.fn();
     const fakeParent = {} as unknown as Window & typeof globalThis;
-    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = { busAccept };
+    (fakeParent as unknown as Record<symbol, unknown>)[RUNTIME_KEY] = {
+      busAccept,
+      protocol: BUS_PROTOCOL,
+    };
     const parentSpy = vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
 
     const { bus } = make();
@@ -1138,6 +1467,235 @@ describe("Bus role resolution: auto mode", () => {
 
     bus.destroy();
     parentSpy.mockRestore();
+  });
+
+  /**
+   * Turns this document into a same-origin frame whose parent exposes the given runtime.
+   * @param host The object on the parent's runtime key.
+   * @param answers True when the parent's bus answers a hello on the message link.
+   * @returns The parent's postMessage spy.
+   */
+  function skewedParent(host: Record<string, unknown>, answers: boolean) {
+    // Read now, so a test that stubs location afterwards still gets a parent on the real origin.
+    const origin = location.origin;
+    const fakeParent = { [RUNTIME_KEY]: host } as unknown as Window & typeof globalThis;
+    const postMessage = vi.fn((data: unknown) => {
+      if (answers && unwrap(data)?.t === "ui-observability.message.hello") {
+        dispatchEvent(
+          Object.assign(
+            new MessageEvent("message", {
+              data: envelope({
+                t: "ui-observability.message.welcome",
+                from: "owner",
+                to: "ctx-1",
+                tabId: "t",
+              }),
+            }),
+            { source: fakeParent, origin },
+          ),
+        );
+      }
+    });
+    Object.assign(fakeParent, { postMessage });
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    vi.spyOn(document, "referrer", "get").mockReturnValue(`${origin}/page`);
+    return postMessage;
+  }
+
+  /**
+   * Builds a frame's bus with a diagnostics handler that the test can read.
+   * @returns The bus and the handler.
+   */
+  function frameBus() {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const diagnostics = new Diagnostics(handler, 0);
+    const config = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        bus: { sourcePolicy: "trusted-origin", validation: "envelope" },
+      },
+      diagnostics,
+    );
+    const bus = new Bus(
+      config,
+      diagnostics,
+      platform({ isTopLevelDocument: false }),
+      "ctx-1",
+      "tab-1",
+      handlers(),
+      { timeoutMs: 20, maxAttempts: 1 },
+    );
+    return { bus, handler };
+  }
+
+  it("connects through the message link when a same-origin parent has neither busCanAccept nor a protocol", async () => {
+    const busAccept = vi.fn();
+    const postMessage = skewedParent({ busAccept }, true);
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("forwarder");
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "bus.protocol_mismatch" }),
+    );
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.role_resolved",
+        detail: { role: "forwarder", via: "parent" },
+      }),
+    );
+
+    bus.sendRecords(oneRecord());
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        p: BUS_PROTOCOL,
+        m: expect.objectContaining({ t: "ui-observability.message.records" }),
+      },
+      location.origin,
+    );
+    expect(busAccept).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+
+  it("forwards through a parent from 0.9.5 to 0.12 when the browser hides the parent's origin", async () => {
+    const busAccept = vi.fn();
+    const fakeParent = {
+      [RUNTIME_KEY]: { busAccept, busCanAccept: () => true },
+    } as unknown as Window & typeof globalThis;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    // Firefox has no ancestorOrigins, and Referrer-Policy: no-referrer empties the referrer, so
+    // the message link can't find the parent's origin and this frame would send its own records.
+    vi.spyOn(document, "referrer", "get").mockReturnValue("");
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("forwarder");
+
+    const codes = handler.mock.calls.map(([event]) => event.code);
+    expect(codes).not.toContain("bus.protocol_mismatch");
+    expect(codes).not.toContain("bus.untrusted_origin");
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.role_resolved",
+        detail: { role: "forwarder", via: "direct" },
+      }),
+    );
+
+    // The records reach the parent's runtime, so the parent's redact still runs on them.
+    bus.sendRecords(oneRecord());
+    expect(busAccept).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+      expect.any(Function),
+      window,
+    );
+    bus.destroy();
+  });
+
+  it("sends its own records when a same-origin parent on another protocol never answers", async () => {
+    const busAccept = vi.fn();
+    const postMessage = skewedParent({ busAccept, protocol: "ui-observability/1" }, false);
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("sender");
+
+    const codes = handler.mock.calls.map(([event]) => event.code);
+    expect(codes.filter((code) => code === "bus.protocol_mismatch")).toHaveLength(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.handshake_timeout",
+        detail: expect.objectContaining({ via: "parent" }),
+      }),
+    );
+    // The hello went out in an envelope, which a parent on another tag ignores.
+    expect(postMessage).toHaveBeenCalledWith(
+      { p: BUS_PROTOCOL, m: expect.objectContaining({ t: "ui-observability.message.hello" }) },
+      location.origin,
+    );
+    expect(busAccept).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+
+  it("forwards a srcdoc frame's records through the direct link to a parent that registered it", async () => {
+    const parentOrigin = location.origin;
+    const busAccept = vi.fn();
+    // The parent accepts only the origin it registered, as Bus.isRegistered() does.
+    const busCanAccept = vi.fn((_source: Window, origin: string) => origin === parentOrigin);
+    const fakeParent = {
+      [RUNTIME_KEY]: { busAccept, busCanAccept, protocol: BUS_PROTOCOL },
+    } as unknown as Window & typeof globalThis;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    nullLocation(parentOrigin);
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("forwarder");
+
+    expect(busCanAccept).toHaveBeenCalledWith(window, parentOrigin);
+    const codes = handler.mock.calls.map(([event]) => event.code);
+    expect(codes).not.toContain("bus.untrusted_origin");
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.role_resolved",
+        detail: { role: "forwarder", via: "direct" },
+      }),
+    );
+
+    // The records reach the parent's runtime, so the parent's redact runs on them.
+    bus.sendRecords(oneRecord());
+    expect(busAccept).toHaveBeenCalledWith(
+      expect.objectContaining({ t: "ui-observability.message.records" }),
+      expect.any(Function),
+      window,
+    );
+    bus.destroy();
+  });
+
+  it("connects a srcdoc frame through the message link when it gets no direct link", async () => {
+    const parentOrigin = location.origin;
+    const busAccept = vi.fn();
+    const postMessage = skewedParent({ busAccept }, true);
+    nullLocation(parentOrigin);
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("forwarder");
+
+    const codes = handler.mock.calls.map(([event]) => event.code);
+    expect(codes).not.toContain("bus.untrusted_origin");
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.role_resolved",
+        detail: { role: "forwarder", via: "parent" },
+      }),
+    );
+
+    // The records go to the parent's real origin, never to "null" or "*".
+    bus.sendRecords(oneRecord());
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        p: BUS_PROTOCOL,
+        m: expect.objectContaining({ t: "ui-observability.message.records" }),
+      },
+      parentOrigin,
+    );
+    expect(busAccept).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+
+  it("sends its own records from a frame with an opaque origin, and says why", async () => {
+    // A frame that is sandboxed without allow-same-origin can't read its parent either.
+    vi.spyOn(window, "parent", "get").mockReturnValue(crossOriginParent());
+    nullLocation("null");
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("sender");
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message: expect.stringContaining('This frame reports the origin "null".') as string,
+        detail: { origin: "null", type: "parent" },
+      }),
+    );
+    bus.destroy();
   });
 
   it("falls back to the handshake when the parent is cross-origin", async () => {

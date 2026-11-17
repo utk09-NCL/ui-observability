@@ -29,8 +29,9 @@ export class MemoryStorage implements StorageAdapter {
   /**
    * Appends a batch and applies retention pruning.
    * @param batch The batch to store.
+   * @returns True if the batch is still in memory after the prune.
    */
-  async save(batch: LogBatch): Promise<void> {
+  async save(batch: LogBatch): Promise<boolean> {
     // A batch with a known id replaces the old copy in place, as IndexedDB put() does.
     const index = this.batches.findIndex((stored) => stored.id === batch.id);
     if (index >= 0) {
@@ -39,6 +40,10 @@ export class MemoryStorage implements StorageAdapter {
       this.batches.push(batch);
     }
     await this.prune();
+
+    // The prune can remove the batch it just got, for example when every older batch holds an
+    // action. A true here would promise a resend for a batch that onGap reported as lost.
+    return this.batches.includes(batch);
   }
 
   /**

@@ -266,6 +266,31 @@ describe("Worker transport", () => {
     expect(transport.lastSendAt()).not.toBeNull();
   });
 
+  it("gives the exit flush the bytes of a hidden-page keepalive send still in flight", async () => {
+    // The worker's own fetch has no keepalive, so only the main-thread path uses the page's budget.
+    let settle: (response: Response) => void = () => undefined;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { transport, keepaliveInFlight } = setup();
+    expect(keepaliveInFlight()).toBe(0);
+
+    const send = transport.send(workerJob().batch);
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(keepaliveInFlight()).toBeGreaterThan(0);
+
+    settle(new Response(null, { status: 204 }));
+    await send;
+    expect(keepaliveInFlight()).toBe(0);
+  });
+
   it("works without a document global", async () => {
     vi.stubGlobal("document", undefined);
     const { transport } = setup();

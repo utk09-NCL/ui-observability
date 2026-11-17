@@ -15,6 +15,7 @@ import {
   CONSOLE_DEFAULT_STYLES,
   DEAD_CLICK_MS,
   DEFAULT_CONFIG,
+  HOLD_BUFFER_HEAD_RECORDS,
   LEVEL_ORDER,
   PROFILER_PROBE_LIMIT,
   REMOTE_CAPTURE_FLAGS,
@@ -240,7 +241,13 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
     },
   },
   buffering: {
-    ranges: { maxPendingRecords: COUNT_RANGE, maxPendingBytes: COUNT_RANGE },
+    ranges: {
+      maxPendingRecords: COUNT_RANGE,
+      maxPendingBytes: COUNT_RANGE,
+      // Two heads at least, or a full buffer keeps its first records but too few of the newest.
+      // The maximum bounds the memory of a startup storm.
+      maxHeldRecords: [2 * HOLD_BUFFER_HEAD_RECORDS, 10_000],
+    },
     choices: { overflow: ["drop-oldest", "drop-newest", "persist"] },
   },
   delivery: {
