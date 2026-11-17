@@ -37,17 +37,22 @@ Each example that sends records sends them to `tools/mock-ingest-server.mjs` on 
 pnpm run dev:ingest
 ```
 
-The server accepts requests only from the origins of the examples. `ALLOWED_ORIGINS` in `tools/mock-ingest-server.mjs` lists them. A request from another origin fails the CORS preflight.
+The server accepts requests only from the origins of the examples and of the browser tests. `ALLOWED_ORIGINS` in `tools/mock-ingest-server.mjs` lists them. A request from another origin fails the CORS preflight.
 
-| Path          | Use                                                                                                 |
-| ------------- | --------------------------------------------------------------------------------------------------- |
-| `/v1/logs`    | Log, action, event, error and metric records. Each example sends here.                              |
-| `/v1/metrics` | Metric points in the OTLP metrics format. Only the React example sets `metricsEndpoint`.            |
-| `/v1/traces`  | Spans in the OTLP traces format. Only the vanilla playground sets `tracesEndpoint`.                 |
-| `/v1/replay`  | Session replay segments. Only the vanilla playground sets `replay.endpoint`.                        |
-| `/__control`  | Sets the status that the server returns for each batch. The vanilla playground has a button for it. |
-| `/__sampling` | Sets the sampling rules that the server returns. The vanilla playground has a button for it.        |
-| `/__timing`   | Returns a `Server-Timing` header. The vanilla playground has a button for it.                       |
+Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a different port. It does not change the port of the examples. Set it only for a client that posts to that port.
+
+| Path          | Use                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/v1/logs`    | Log, action, event, error and metric records. Each example sends here.                                                                     |
+| `/v1/metrics` | Metric points in the OTLP metrics format. Only the React example sets `metricsEndpoint`.                                                   |
+| `/v1/traces`  | Spans in the OTLP traces format. Only the vanilla playground sets `tracesEndpoint`.                                                        |
+| `/v1/replay`  | Session replay segments. Only the vanilla playground sets `replay.endpoint`.                                                               |
+| `/__control`  | Sets the status that the server returns for each batch. The vanilla playground has a button for it.                                        |
+| `/__sampling` | Sets the sampling rules that the server returns. The vanilla playground has a button for it.                                               |
+| `/__timing`   | Returns a `Server-Timing` header. The vanilla playground has a button for it.                                                              |
+| `/__reset`    | Clears the received requests, the known batch ids, the forced status and the sampling rules. The browser tests use it.                     |
+| `/__received` | Returns the requests that the server kept for each path. The server keeps them only with `UIOBS_MOCK_RECORD=1`. The browser tests read it. |
+| `/__echo`     | Returns the request headers that the server received. The trace propagation test reads it.                                                 |
 
 ## Where to look
 
