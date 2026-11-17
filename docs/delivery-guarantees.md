@@ -75,7 +75,7 @@ A batch that did not send goes to storage. The default store is IndexedDB. Witho
 - With `retention.mode: "limited"`, the default, a stored batch stays for 24 hours or 5 attempts. Storage keeps at most 500 batches.
 - An offline failure and a throttle answer use no attempt. A network failure while the browser reports online uses one. A long server outage can then reach `max_attempts`.
 - With `retention.mode: "until-delivered"`, a stored batch has no age limit and no attempt limit. `retention.maxBatches` still applies.
-- A full store evicts the oldest batch without an action record first. An action is an audit fact.
+- A full store evicts the oldest batch without an action record first. The library keeps action records longest. An action record is not an authoritative audit record.
 - With `storage: "memory"`, stored batches stay only until the page closes. With `storage: "none"`, a batch that did not send is lost.
 - Under storage pressure, a browser can delete the store. `persistence.requestPersistent` asks the browser to keep it.
 
