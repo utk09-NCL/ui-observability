@@ -8,6 +8,23 @@ The library batches records and sends them over HTTP as OTLP/JSON. It stores a b
 
 ---
 
+## Documentation
+
+- [Production recipes](docs/production-recipes.md): login, logout, tenant rotation, token refresh, consent withdrawal and the initialization order.
+- [Release and support](docs/release-and-support.md): the stable API contract, the supported environments and the release evidence.
+- [Architecture](docs/architecture.md): the layers of the library and the path of a record.
+- [Runtime policies and migration](docs/runtime-policies.md): each default, each range, security-context rotation and the upgrade steps.
+- [Delivery guarantees](docs/delivery-guarantees.md): duplicates, order, each loss and its `onDrop` reason.
+- [Attribute reference](docs/attributes.md): each attribute that the library writes, and its type.
+- [Browser support](docs/browser-support.md): the browser APIs that the library uses, and the fallback for each.
+- [Threat model](docs/threat-model.md): the trust boundaries, the threats and the controls.
+- [Performance](docs/performance.md): the release benchmark, its baselines and the proposed budgets.
+- [Browser tests](e2e/README.md): the Playwright tests and the coverage that is still missing.
+- [Collector check](e2e/collector/README.md): the check against a pinned OpenTelemetry Collector.
+- [Playground guide](playground/README.md): the five example applications and how to start each one.
+
+---
+
 ## Installation
 
 Use one command for your package manager. Each command saves an exact version.
@@ -79,7 +96,7 @@ log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
 log.error("pricing call failed", caughtError);
 ```
 
-- `configure()` is idempotent. A later call updates an unlocked runtime singleton in place. Delivery/identity changes require `rotateSecurityContext()` by default. You cannot change `storage`, `identity`, `batching`, `retention`, `limits`, `journey.maxAgeMs` or `profiler.maxProbes` after startup. The library reports that change and ignores it.
+- `configure()` is idempotent. A later call updates an unlocked runtime singleton in place. Delivery/identity changes require `rotateSecurityContext()` by default. You cannot change `storage`, `identity`, `correlation`, `persistence`, `batching`, `retention`, `limits`, `journey.maxAgeMs` or `profiler.maxProbes` after startup. The library reports that change and ignores it. [Settings that are fixed after startup](docs/production-recipes.md#settings-that-are-fixed-after-startup) gives the exact rule for each key.
 - Call `configure()` from one context in each document. A second call changes `service.name` on the records of every other context. In a composed page, the shell calls `configure()`. Each microfrontend uses its own namespace.
 - You can call `getLogger()` at module top level, before `configure()`. The logger finds the runtime on its first write.
 - A write before the first `configure()` starts a runtime with default settings. It does not throw. The first `configure()` then sets `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `persistence.namespace` and an explicit `securityContext.id` of that runtime.
@@ -434,7 +451,8 @@ configure({
 - **What stays in clear text.** The recorder does not mask an attribute value, for example `title`, `alt`, `placeholder`, `aria-label`, `data-*`, `id` and `class`. It does not mask the `value` of a checkbox, a radio button, a button and an `<option>`. It does not mask a URL in `href` or `src` with its query, the CSS text, the content of a `<meta>` element and a comment. It records the mouse positions and the scroll positions. The library removes the query of the page URL unless `capture.fullUrls` is set. Block an element with `replay.blockSelectors` when one of these can identify a person or an account.
 - Do not put `data-observability-unmask` on an element that shows content from a user. That content can then add text that stays in clear text. With `replay.maskText: false`, a `maskSelectors` entry does not reach an element inside a shadow root.
 - A `maskSelectors` or `blockSelectors` entry that is not valid CSS reports `config.invalid`. The replay then does not start, because a missing mask shows text that you wanted to hide.
-- With `replay.requireConsent: true`, nothing records before `startReplay()`. `stopReplay()` stops the recorder, stops the request in flight and drops each event that is not sent. The recorder then stays off until the next `startReplay()`, also after a later `configure()`.
+- With `replay.requireConsent: true`, nothing records before `startReplay()`.
+- `stopReplay()` stops the recorder, stops the request in flight and drops each event that is not sent. The recorder then stays off until the next `startReplay()`, also after a later `configure()`. This rule applies with and without `requireConsent`.
 - `newSession()` and `rotateSecurityContext()` drop the buffer and start a new recording with a new `replay.id`. The next user of a shared device does not get the page of the previous user.
 - A change of another capture setting in `configure()` keeps the recording and its buffer. A change of `replay.endpoint`, a mask setting, a selector list, `recordCanvas`, `bufferMs`, `requireConsent`, `capture.fullUrls` or `capture.ignoreUrls` starts a new recording with a new `replay.id` and drops the buffer. The batch settings, the limits and `replay.headers` apply to the recording that runs. See [Runtime policies](docs/runtime-policies.md).
 - `replay.recordOptions` gives other options to the recorder. The library accepts `sampling`, `slimDOMOptions`, `ignoreClass`, `ignoreSelector`, `ignoreCSSAttributes`, `userTriggeredOnInput`, `recordAfter`, `inlineStylesheet` and `dataURLOptions`. It sets each mask, block, canvas, plugin and event option itself. It ignores another key and reports `config.invalid`.
@@ -508,7 +526,7 @@ See [runtime policies, operational budgets and migration](docs/runtime-policies.
 
 ## Configuration Options
 
-No key is required. Set `endpoint` to send records. A value of the wrong type or outside its range reports `config.invalid`. The current value stays. Level names can have any case. You cannot change `batching` and `retention` after the delivery stack loads. You cannot change `limits`, `journey.maxAgeMs` and `profiler.maxProbes` after the first `configure()`. [Runtime policies](docs/runtime-policies.md) gives each default and range of the policy sections.
+No key is required. Set `endpoint` to send records. A value of the wrong type or outside its range reports `config.invalid`. The current value stays. Level names can have any case. You cannot change `batching` and `retention` after the delivery stack loads. You cannot change `limits`, `journey.maxAgeMs` and `profiler.maxProbes` after the first `configure()`. You cannot change `correlation` after startup. You can change `persistence` only in the first `configure()` after an implicit start, before the delivery stack loads. [Runtime policies](docs/runtime-policies.md) gives each default and range of the policy sections.
 
 | Key                                                                                                    | Default                                                                                                                                                                                                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

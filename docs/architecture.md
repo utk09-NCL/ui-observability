@@ -1,0 +1,345 @@
+# Architecture and Lifecycle
+
+This page is for a person who maintains the library. It tells how a record moves from a logger call to the network. It names the module that owns each step, each buffer and each state change.
+
+An application developer does not need this page. The README and the playground guides are for the application developer.
+
+Each fact on this page comes from the code at commit `2e1dfaa`. Search by symbol name. Line numbers move.
+
+## Record path
+
+```text
+logger call                        src/index.ts, src/core/logger.ts
+  |  payloadMode "defer" only      src/core/deferred.ts (deferred queue)
+  v
+RecordBuilder.build()              src/core/record.ts
+  |  sampling, sanitize, fixed fields, processors, redact, size cut
+  v
+OneLogger.print()                  src/core/logger.ts (console copy, after the hooks)
+  v
+ObservabilityRuntime.emit()        src/core/runtime.ts
+  |  boot buffer until startup completes
+  |
+  +-- forwarder role: forward buffer -> Bus.sendRecords()      src/bus/bus.ts
+  |        the sender context then runs ingestForwarded()      src/core/runtime.ts
+  |
+  +-- sender role: Sender.push()                               src/core/sender.ts
+           |  pendingRecords while the delivery stack loads
+           v
+      LogPipeline                                              src/core/pipeline.ts
+           |  admit, stream buffer, batch, queue, dispatch
+           v
+      transport.send()                                         src/transport/
+           |  2xx: the batch is complete
+           |  throttle or failure: ContextStorage.save()       src/storage/
+           v
+      RetryEngine drain -> transport.send()                    src/transport/retry-engine.ts
+
+document closes: ExitFlush.flush()                             src/transport/exit-flush.ts
+      beacon, keepalive fetch, or emergency queue              src/storage/emergency-queue.ts
+```
+
+| Step            | Module                                                                          | What the step does                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Entry           | `src/index.ts`                                                                  | `requireRuntime()` gives the current runtime or the stopped runtime. With neither, it starts a default runtime.                 |
+| Logger          | `src/core/logger.ts`                                                            | `OneLogger` refuses a call after `shutdown()`. During a rotation it counts `record.dropped_during_rotation`.                    |
+| Deferred queue  | `src/core/deferred.ts`                                                          | With `payloadMode: "defer"`, `deferWrite()` holds the call and builds the record later.                                         |
+| Builder         | `src/core/record.ts`                                                            | `RecordBuilder.build()` samples, sanitizes, adds the fixed fields, runs the hooks and applies `limits.maxRecordBytes`.          |
+| Console copy    | `src/core/logger.ts`                                                            | `print()` writes the console line. With a hook, the line shows only the result of the hooks.                                    |
+| Routing         | `src/core/runtime.ts`                                                           | `emit()` holds a record in the boot buffer until `ready`. Then `route()` selects `forward()` or `deliver()`.                    |
+| Delivery stack  | `src/core/sender.ts`                                                            | `Sender.create()` builds storage, transport, retry engine, pipeline and exit flush. The runtime loads it with a dynamic import. |
+| Pipeline        | `src/core/pipeline.ts`                                                          | `push()` sets `observedTimeUnixNano`. `admit()` applies the buffer limits. `claim()` makes one batch for each stream.           |
+| Dispatch        | `src/core/pipeline.ts`                                                          | `pump()` starts on a microtask. It obeys `delivery.maxConcurrentRequests`. `dispatch()` sends, or stores the batch.             |
+| Transport       | `src/transport/status-transport.ts`                                             | The base class holds the status rules, the throttle state and the cancellation signal.                                          |
+| Transport types | `src/transport/http-transport.ts`, `custom-transport.ts`, `worker-transport.ts` | `Sender.create()` selects one. A custom transport comes first, then a transport worker, then HTTP.                              |
+| Storage         | `src/storage/context-storage.ts`, `src/storage/factory.ts`                      | `ContextStorage` limits the adapter to one delivery context. `createStorage()` selects IndexedDB, localStorage or memory.       |
+| Retry engine    | `src/transport/retry-engine.ts`                                                 | `drain()` runs under the drain lock of `src/utils/lock.ts`. It sends stored batches with backoff and full jitter.               |
+| Exit flush      | `src/transport/exit-flush.ts`                                                   | `flush()` runs in an unload listener. It never awaits.                                                                          |
+
+More facts about the path.
+
+- A metric point and a span use the same path. `emitPoint()` and `recordSpan()` in `src/core/runtime.ts` call `builder.build()` and then `emit()`.
+- The pipeline has three streams, `logs`, `metrics` and `traces`. `streamOf()` reads `log.type` to select one. A batch has records of one stream only.
+- A throttled transport does not get the batch. `dispatch()` stores the batch and does not change `attempts`.
+- A failed send stores the batch through `RetryEngine.storeFailed()` with `attempts + 1`.
+- The retry engine has one timer. Each schedule path calls `schedule()`, which clears the timer first.
+- A `hidden` document gets a normal flush through `LogPipeline.flushPending()`. The other exit reasons call `LogPipeline.drainForExit()`.
+- An exit batch above `BEACON_LIMIT_BYTES` goes to the emergency queue. The next page load moves it to storage in `Sender.importEmergency()`.
+
+The delivery promises are in [Delivery Guarantees](delivery-guarantees.md). Change that page with each change to this path.
+
+## Privacy boundary
+
+The three rules below have no exception.
+
+### `redact` is the last privacy gate
+
+| Where                                           | Enforcement                                                                                                                  |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `RecordBuilder.build()` in `src/core/record.ts` | The hook list is `config.processors` first, then `config.redact`. `applyHooks()` sanitizes the record again after the hooks. |
+| `RecordBuilder.build()`                         | The size cut reads `page.url`, `journey.id` and `journey.name` after `redact` (`REDACTABLE_INDEX_KEYS`).                     |
+| `OneLogger.print()` in `src/core/logger.ts`     | With a hook, the console gets the built record. A record that a hook drops prints nothing.                                   |
+| `ObservabilityRuntime.releaseBootBuffer()`      | It adds the journey keys to a held record only when the config has no hook.                                                  |
+| `ObservabilityRuntime.reconfigure()`            | A change of `redact` or `processors` clears the debug buffer. A kept record saw only the old hooks.                          |
+| `ObservabilityRuntime.ingestForwarded()`        | It reports a loss to `onDrop` only after sampling and `redact`.                                                              |
+
+A new record path must run `processors`, then `redact`, before a callback, the console or the network gets the record.
+
+### A server can never change a privacy setting
+
+| Where                                              | Enforcement                                                                                                                                     |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `parseRemoteRules()` in `src/core/remote-rules.ts` | A remote `capture` object can have only the keys of `REMOTE_CAPTURE_FLAGS`. Each value must be a boolean. Any other key refuses the rules.      |
+| `REMOTE_CAPTURE_FLAGS` in `src/constants.ts`       | The list has capture switches only. It has no `redact`, `fullUrls`, `ignoreUrls` or replay mask key.                                            |
+| `effectiveCapture()` in `src/core/runtime.ts`      | A remote switch applies only when the application names the key in `capture.remoteToggles`. A remote `true` does not replace an object setting. |
+| `RemoteSlot` in `src/core/remote-sampling.ts`      | The remote rules stay in the slot. The code never writes them into the config.                                                                  |
+| `Bus` in `src/bus/bus.ts`                          | The bus accepts sampling rules only from the upstream owner. An origin outside `bus.trustedOrigins` reports `bus.untrusted_origin`.             |
+
+Do not add a privacy key to `REMOTE_CAPTURE_FLAGS`.
+
+### A forwarded record keeps the redact result of the sender
+
+A forwarder builds its records with its own hooks. The sender context then applies its own `redact` in `ingestForwarded()`, through `RecordBuilder.redactForwarded()`.
+
+- `fixedOf()` in `src/core/record.ts` restores a field group after `redact` only when each value has the shape that the library writes.
+- `groupsOf()` selects a group only for a metric record of `uiobs.metrics` or a span record of `uiobs.traces`.
+- `metric.name`, `metric.unit` and `metric.attribute_keys` are not in a group. The `redact` of the sender controls them.
+- With no `redact` in the sender, `redactForwarded()` returns the record with no change.
+
+The residual risks of this path are in [Threat Model](threat-model.md), section "Other Documents (the Bus)".
+
+## Buffer ownership
+
+`onDrop` reasons are in [Delivery Guarantees, Losses](delivery-guarantees.md#losses). The table below names the owner of each buffer.
+
+### In-memory buffers
+
+| Buffer              | Owner                                                            | Limit                                                        | Who drops a record                                                                                                             |
+| ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Deferred queue      | `src/core/deferred.ts`, one queue for each runtime               | `buffering.maxPendingRecords`, at most `DEFER_QUEUE_LIMIT`   | `deferWrite()` counts `record.dropped_by_ceiling` when the queue stays full. `cancelDeferred()` clears it at shutdown.         |
+| Debug buffer        | `DebugBuffer` in `src/core/debug-buffer.ts`, held by the runtime | `debugBuffer.maxRecords`, `debugBuffer.maxAgeMs`             | The buffer trims itself. `resetSession()` and a hook change clear it.                                                          |
+| Boot buffer         | `bootBuffer` in `src/core/runtime.ts`, a `HoldBuffer`            | `BUS_MAX_BOOT_BUFFER_RECORDS`, `BUS_MAX_BOOT_BUFFER_ACTIONS` | `HoldBuffer.push()` drops the oldest record of the same kind. `dropHeld()` reports `buffer_full`.                              |
+| Pending records     | `pendingRecords` in `src/core/runtime.ts`, a `HoldBuffer`        | Same as the boot buffer                                      | `dropHeld()` reports `buffer_full`. A failed load or a shutdown before the load reports `load_failed`.                         |
+| Forward buffer      | `forwardBuffer` in `src/core/runtime.ts`                         | None. It lives for one microtask.                            | `sendForwarded()` gives it to the bus.                                                                                         |
+| Stream buffers      | `RecordStream` in `src/core/pipeline.ts`                         | `buffering.maxPendingRecords`, `buffering.maxPendingBytes`   | `LogPipeline.admit()` and `evict()` report `buffer_full`.                                                                      |
+| Batch queue         | `queue` and `open` in `LogPipeline`                              | Same budget as the stream buffers                            | `evict()` removes the oldest queued batch first. `destroy()` clears the queue.                                                 |
+| Unconfirmed batches | `unconfirmed` in `LogPipeline`                                   | Same budget                                                  | It holds a batch until the send ends or a keepalive request starts. `drainForExit()` copies its records into the exit batches. |
+| Replay buffer       | `ReplayBuffer` in `src/capture/replay-buffer.ts`                 | `replay.maxBufferBytes`                                      | The buffer drops its oldest part. `resetSession()` clears it through `replay.reset()`.                                         |
+| Drop summaries      | `DropReporter` in `src/core/drops.ts`                            | `DROP_SUMMARY_MAX_ITEMS` for each list                       | It sends each summary to `onDrop` on a microtask.                                                                              |
+
+Rules for the pipeline budget.
+
+- `admit()` encodes each record one time to count its bytes. A record that JSON cannot encode reports `unserializable`.
+- `buffering.overflow` selects the rule for a full buffer. `drop-oldest` calls `evict()`. `persist` stores the new record as a batch of one record.
+- `evict()` cannot remove a request that the transport has. Only records before the transport can go.
+- The error ceiling in `route()` drops a log record and counts `record.dropped_by_ceiling`. It does not call `onDrop`.
+
+### Stored batches
+
+A stored batch belongs to the storage adapter. The pipeline, the retry engine and the sender use the adapter through `ContextStorage`.
+
+| Who removes a stored batch | When                                                                                                    | Report                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| The adapter, in `prune()`  | The batch is older than `retention.maxAgeMs`, or the store has more than `retention.maxBatches` batches | `expired` or `over_capacity` through `onGap`              |
+| The adapter, in `save()`   | The browser refuses the write, or the adapter keeps nothing                                             | `quota` or `not_stored` through `onGap`                   |
+| `RetryEngine.deliver()`    | The server accepts the batch                                                                            | None. It is not a loss.                                   |
+| `RetryEngine.deliver()`    | `attempts` reaches `retention.maxAttempts`                                                              | `max_attempts` and `storage.dead_lettered`                |
+| `RetryEngine.toStorable()` | A permanent refusal, or a 413 for a batch of one record                                                 | `rejected`                                                |
+| `Sender.retire()`          | A rotation with `pending` set to `discard` or `flush`                                                   | `security_context`, from `rotateContext()` in the runtime |
+| `Sender.clearPersisted()`  | The application calls `clearPersistedLogs()`                                                            | See "Open items"                                          |
+
+- `src/storage/eviction.ts` selects the batches to evict. A batch with no action record goes first.
+- `reportGap()` in `src/core/runtime.ts` receives each `onGap` call. It reports to `onDrop` and writes one throttled warning record.
+- `RetryEngine.deliver()` runs only inside `drainLocked()`. With the Web Locks API, one window drains a namespace at a time. Without that API, the drain runs with no lock.
+- A throttle answer does not change the `attempts` of a stored batch.
+
+### Emergency queue
+
+`src/storage/emergency-queue.ts` owns a synchronous `localStorage` queue. `ExitFlush.park()` is the only writer. The queue keeps `EMERGENCY_MAX_ENTRIES` entries and drops the oldest with `exit_queue_full`. `drainEmergencyQueue()` moves the entries to storage at the next `Sender.create()`. `clearEmergencyContext()` removes them at a rotation that discards, and at `clearPersistedLogs()`.
+
+## State transitions of the runtime
+
+The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runtime.ts`.
+
+| Flag             | Meaning                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `tunablesLocked` | False in a runtime that an early logger call started. The first `configure()` sets it. |
+| `roleResolved`   | Startup has decided the bus role. The delivery stack loads after this.                 |
+| `ready`          | Startup is complete. `emit()` stops using the boot buffer.                             |
+| `rotating`       | A security-context rotation is in progress.                                            |
+| `closingContext` | The rotation collects the last records of the old context. `emit()` accepts them.      |
+| `destroyed`      | `shutdown()` stopped the runtime.                                                      |
+| `degraded`       | The runtime is console-only. It is on Node, or another version owns the page runtime.  |
+
+| Transition         | Entry point                                                                           | What changes                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Implicit start     | `requireRuntime()` in `src/index.ts` calls `ObservabilityRuntime.configure({}, true)` | A new runtime with the defaults. `tunablesLocked` is false. The runtime goes on the global key. `init()` starts.                   |
+| Explicit start     | `configure()` with no live runtime                                                    | A new runtime with the config of the application. `tunablesLocked` is true. The stopped-runtime key is deleted.                    |
+| Startup            | `init()`, then `boot()`                                                               | Journey bootstrap, bus start unless `bus.mode` is `off`, `roleResolved`, `syncSender()`. Then `ready` and `releaseBootBuffer()`.   |
+| Console-only start | `startDegraded()`                                                                     | Another version owns the page runtime. A local runtime starts and stays off the global key. It reports `runtime.version_mismatch`. |
+| Reconfigure        | `configure()` with a live runtime calls `reconfigure()`                               | The config changes in place through `applyResolvedConfig()`. It reports `config.reconfigured`.                                     |
+| Shutdown           | `shutdown()` calls `destroy()` on the current runtime                                 | `destroyed` is true. The runtime moves from the global key to the stopped-runtime key.                                             |
+| Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new delivery settings, a new delivery stack and a new session.                                         |
+| New session        | `newSession()`                                                                        | A new `session.id`. The delivery stack and its buffers do not change.                                                              |
+
+### Implicit start
+
+- A logger call, `getHealth()`, `flush()` and most other functions call `requireRuntime()`. Each one can start the default runtime.
+- `shutdown()` does not start a runtime. It reads `ObservabilityRuntime.current()` only.
+- `boot()` never rejects. A startup fault reports `pipeline.crashed`, and `ready` still becomes true.
+- The first `configure()` after an implicit start sets `limits` and `journey.maxAgeMs`. It also sets `persistence` when the delivery stack has not started to load. `correlation` stays fixed in this case too.
+
+### `configure()` on a live runtime
+
+`reconfigure()` refuses the full call in two cases. Each case reports `config.locked`.
+
+- A rotation is in progress.
+- `lockConfiguration` is true and the new config is different.
+
+A fixed key keeps its value and reports `config.invalid`. The other keys of the same call still apply.
+
+| Key                                                                                                   | Function that keeps it                         |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `correlation`, `persistence`                                                                          | The loop in `reconfigure()`                    |
+| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`                                                    | `keepStartupTunables()`                        |
+| `batching`, `retention`, after the delivery stack starts to load                                      | `keepStartupTunables()` with `SENDER_SECTIONS` |
+| `storage`, after the delivery stack starts to load                                                    | `keepBuiltStorage()`                           |
+| `identity`                                                                                            | `keepBuiltIdentity()`                          |
+| Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()`                            |
+| The keys of `DELIVERY_RESET` and `securityContext.id`, with `securityContext.isolation`               | `keepRouting()`                                |
+
+Do not write to `this.config` directly. Use `applyResolvedConfig()`.
+
+### Shutdown
+
+`destroy()` does these steps in order.
+
+1. It drains the deferred queue, collects the metric points and ends the root span.
+2. It sets `destroyed`, removes its `pagehide` listener and uninstalls the captures.
+3. It starts `Sender.destroy()`. That function runs a normal flush, then the exit flush with the reason `shutdown`.
+4. It stops the journey engine, gives the forward buffer to the bus and stops the bus.
+5. It reports the pending records as `load_failed`.
+6. It waits for the sender, for a load in progress and for a rotation in progress.
+7. It moves the runtime to the stopped-runtime key.
+
+After shutdown, each call goes to the stopped runtime and records nothing. The next `configure()` builds a new runtime.
+
+### Security-context rotation
+
+`rotateSecurityContext()` rejects when a rotation is in progress, when the options are invalid, or after shutdown. `rotateContext()` also rejects in a forwarder, for an unchanged id, and for invalid delivery settings. An invalid update keeps the old delivery stack.
+
+1. `rotating` becomes true. The function waits for startup and for the delivery stack load.
+2. It resolves the next config on a base that has no old delivery values (`DELIVERY_RESET`).
+3. Under `closingContext`, it collects the metric points, ends the root span and ends the journey.
+4. It takes the boot buffer, the pending records and the forward buffer.
+5. `Sender.retire()` stops the old exit flush, retry engine, transport and pipeline. It applies the `pending` rule.
+6. With `discard` or `flush`, the runtime reports the old records as `security_context`.
+7. It applies the next config, calls `advanceIdentity()` and clears the remote rules, the context and the breadcrumbs.
+8. It calls `newSession()`, then `syncSender()`, then `Bus.rotateContext()`.
+9. `rotating` becomes false. With `carry`, `Sender.adopt()` stores the old batches under the new id.
+10. It reports `security.rotated`.
+
+While `rotating` is true, a logger call counts `record.dropped_during_rotation`. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
+
+The `pending` rules are in [Runtime policies, Security context rotation](runtime-policies.md#security-context-rotation). The default is `discard`. The default `timeoutMs` is 5000.
+
+### New session
+
+`newSession()` calls `resetSession()` with a new id. `resetSession()` does these steps in order.
+
+1. It collects the metric points, so the old points keep the old `session.id`.
+2. It starts a new trace with `tracing.rotate("explicit")` and ends the journey.
+3. It clears the breadcrumbs and the debug buffer, and resets the replay buffer.
+4. It sets `identity.sessionId`, restarts the session touch and calls `builder.invalidateResource()`.
+
+`newSession()` does nothing after shutdown.
+
+## Cancellation rules
+
+### Request deadline
+
+`delivery.requestTimeoutMs` is the deadline of one send. Its default is `REQUEST_TIMEOUT_MS`, 15000 ms.
+
+- `HttpTransport.attempt()` calculates one `deadline` at the start. The header function, the body encoding, the `fetch` and the body read share it.
+- `before()` waits for a step with `withDeadline(this.untilCancelled(work), remaining)`.
+- `dispatch()` makes one `AbortController` for the request. A timer aborts it at the deadline. The `fetch` and `readOptionalBody()` get its signal.
+- The body read runs before the `finally` block that clears the timer and the stop listener. A stalled body cannot hold a dispatch slot after the deadline or after a stop.
+- `withDeadline()` in `src/utils/deadline.ts` rejects with `DeadlineError`. It does not stop the work. Use an `AbortController` when the work must stop.
+- A storage call has the deadline `STORAGE_DEADLINE_MS` in `LogPipeline.store()` and in `RetryEngine.bounded()`.
+
+### Stop listener
+
+`StatusTransport` has one `AbortController` for its delivery context, the field `cancellation`. `stop()` aborts it.
+
+- `Sender.destroy()` and `Sender.retire()` call `transport.stop()`.
+- Each request adds an `abort` listener to `cancellation.signal` and removes it in `finally`. No listener stays after the request.
+- `untilCancelled()` ends a wait when the context stops.
+- `assertContext()` runs after each asynchronous step and before a send. It throws when the context stopped. With isolation, it also throws when `routingContextId` is not the current context id.
+- A stop gives a `TransportError` of the kind `permanent`. A deadline gives the kind `timeout`. `dispatch()` checks the stop first.
+- After a stop, `LogPipeline.dispatch()` does not store the batch, and `RetryEngine.deliver()` returns `stop`.
+- A custom transport gets the same signal in its request (`request.signal` in `src/transport/custom-transport.ts`).
+
+### Worker reply grace
+
+The worker transport has two timers for one job. They are in different contexts.
+
+- `attempt()` in `src/transport/worker-transport.ts` sends the job with `timeoutMs` and `deadlineMs`.
+- `run()` in `src/transport/worker-server.ts` applies that deadline in the worker with `withDeadline()`.
+- `deliver()` gives the status to `onAnswer` before the body read. At the deadline, `run()` replies with that status, not with a timeout.
+- `createWorkerClient()` in `src/transport/worker-client.ts` waits `timeoutMs`, then `WORKER_REPLY_GRACE_MS` more, for a ready worker. Then it cancels the job as a timeout.
+- A worker that is not ready at `timeoutMs` gets no grace. The client rejects its jobs with a `channel` fault. The transport then sends the batch over HTTP.
+
+`WORKER_REPLY_GRACE_MS` is 1000 ms in `src/constants.ts`.
+
+### The timeout of the caller must be longer than the deadline of the callee
+
+The callee is the code nearest to the network. It knows if the server answered before the deadline. Its reply needs time to come back to the caller.
+
+If the two timers have the same length, the timer of the caller can fire first. An accepted batch then looks like a timeout. The pipeline stores the batch, and the retry engine sends it again. The server then gets the same batch id two times.
+
+Apply the rule to each new wait across a context boundary.
+
+1. Let the callee apply the deadline.
+2. Give the callee the absolute deadline, as `deadlineMs` does.
+3. Make the caller wait for the deadline plus a grace time.
+4. Let the callee reply with a result that it got in time.
+
+A rotation also has a deadline. `Sender.retire()` puts `timeoutMs` on the old flush with `withDeadline()`. After the deadline it reports `transport.timeout` and calls `transport.stop()`.
+
+The exit flush has no cancellation. It never awaits, so it has nothing to cancel.
+
+## Modules and tests for common changes
+
+The checklist of each change is in `.claude/skills/feature-change-checklist/SKILL.md`. The rule files for each folder are in `.claude/rules/`. This page does not repeat them. The rules that have no exception are in `AGENTS.md`. These files are in the checkout of the maintainer and are not in git.
+
+| Change                                 | Modules                                                                                                                                                                   | Tests                                                                                                                                                                                            | Checklist section                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| A new config key                       | `src/models/config.ts`, `src/constants.ts`, `src/core/config.ts`. For a key fixed at startup, also `keepStartupTunables()` in `src/core/runtime.ts`.                      | `tests/config.test.ts`, `tests/policies.test.ts`, `tests/runtime.test.ts`                                                                                                                        | "A new config key", "A new config section"                           |
+| A new capture                          | A module in `src/capture/`, its loader in `CAPTURE_LOADERS` and its install in `installCaptures()` in `src/core/runtime.ts`. For a remote switch, `REMOTE_CAPTURE_FLAGS`. | `tests/capture.test.ts`, `tests/phase-c-captures.test.ts`, `tests/remote-captures.test.ts`, `tests/storm.test.ts`                                                                                | "A new capture", and the skill `auto-capture-safety`                 |
+| A new transport behavior               | `src/transport/status-transport.ts` for a status rule. Then each transport type, and `src/transport/worker-server.ts` for the worker side.                                | `tests/http-transport.test.ts`, `tests/custom-transport.test.ts`, `tests/worker-transport.test.ts`, `tests/worker-server.test.ts`, `tests/worker-client.test.ts`, `tests/worker-runtime.test.ts` | `.claude/rules/delivery.md`, and the skill `durability-and-recovery` |
+| A change to retry, storage or exit     | `src/transport/retry-engine.ts`, `src/storage/`, `src/transport/exit-flush.ts`, `src/core/pipeline.ts`, `src/core/sender.ts`                                              | `tests/retry-engine.test.ts`, `tests/storage.test.ts`, `tests/eviction.test.ts`, `tests/emergency-queue.test.ts`, `tests/exit-flush.test.ts`, `tests/pipeline.test.ts`, `tests/sender.test.ts`   | `.claude/rules/delivery.md`                                          |
+| A new loss reason                      | `LossReason` in `src/models/drop.ts`, the reporting module, and the table in [Delivery Guarantees](delivery-guarantees.md#losses)                                         | `tests/drops.test.ts` and the test file of the reporting module                                                                                                                                  | "A new attribute, code or header"                                    |
+| A new diagnostic code                  | `DiagnosticCode` in `src/core/diagnostics.ts`. For a code that is not a fault, `NOTICE_CODES` in `src/core/runtime.ts`.                                                   | `tests/diagnostics.test.ts`, `tests/diagnostic-records.test.ts`, and the test file of the reporting module                                                                                       | "A new attribute, code or header"                                    |
+| A change to the record build or a hook | `src/core/record.ts`, `src/core/logger.ts`                                                                                                                                | `tests/record.test.ts`, `tests/log-record.test.ts`, `tests/logger.test.ts`, `tests/sanitize.test.ts`, `tests/enterprise.test.ts`                                                                 | "Privacy defaults"                                                   |
+| A change to a lifecycle transition     | `src/core/runtime.ts`, `src/index.ts`                                                                                                                                     | `tests/runtime.test.ts`, `tests/enterprise.test.ts`, `tests/policies.test.ts`                                                                                                                    | "A new public function"                                              |
+
+Rules for each change.
+
+- A test asserts the text of a diagnostic message. Change the test and the documents with the message.
+- A transport behavior must give the same result on the HTTP path and on the worker path. Add the test to both.
+- A new aggregator must collect at each place that calls `collectPoints()` in `src/core/runtime.ts`.
+- A change is complete only when `pnpm run verify` passes with 100 percent coverage.
+- A change to forwarding, trace propagation or the worker transport also needs `pnpm run test:e2e`. The unit tests run in happy-dom, and the browser tests run in real browsers.
+- A change to the OTLP serializer also needs `pnpm run test:collector`.
+- A change on the log call path also needs `pnpm run bench:release`.
+
+## Open items
+
+These facts are not verified against the code. Verify each one before you rely on it.
+
+- The buffers inside `src/bus/bus.ts` and `src/bus/links.ts`. This page covers the forward buffer of the runtime only. It does not tell what the bus holds, or drops, between a forwarder and its sender.
+- The aggregation state of `src/core/meter.ts` and `src/core/profiler.ts`. This page tells only that `collectPoints()` turns that state into records.
+- The loss report of `clearPersistedLogs()`. The two `clearPersisted()` functions call no loss reporter. The `remove()` path of each adapter is not checked.
+- The full path of a replay segment, from the replay buffer to `replay.endpoint`. See [Threat Model](threat-model.md) and [Runtime policies](runtime-policies.md) for the replay rules.
+- The exact content of each test file. The test table uses the file names and the `describe` titles of `tests/`. It was not checked test by test.
+- `.claude/` and `AGENTS.md` are in `.gitignore`. This page names their paths as text, because a link does not resolve in a clone of the repository.

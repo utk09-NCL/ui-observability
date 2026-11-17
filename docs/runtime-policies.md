@@ -213,7 +213,7 @@ Health does not start a second runtime. It does not wait for initialization to c
 2. Replace `newSession()` at logout with awaited rotation. Also replace `configure()` calls that change delivery. Or disable isolation explicitly.
 3. Supply a stable security-context ID if you need offline replay after a page reload. The default isolation policy parks legacy untagged batches. Disable isolation only if you intend to send them with the current credentials.
 4. Register child frames before they start. Grant journey and sampling permissions where necessary. Or select origin-based discovery explicitly.
-5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame before 0.9.5 and an owner on 0.9.5 or later ignore each other.
+5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame before 0.9.5 and an owner on 0.9.5 or later ignore each other. This rule applies to message links only. A same-origin child frame calls the parent runtime directly. That path has no envelope and no version check.
 6. Set cache and bus budgets for the workload of the application. Then lock configuration if the shell owns it.
 7. Update each backend query that filters by OTLP scope name. Logs and spans now use the logger namespace as the scope name. Metrics keep the library scope.
 
