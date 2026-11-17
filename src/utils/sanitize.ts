@@ -207,7 +207,8 @@ function walk(
   try {
     // An Error from another realm fails instanceof, but its built-in tag still names an Error.
     if (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]") {
-      const error = value as Error;
+      // The build's ES2021 types don't declare cause, so the type adds it.
+      const error = value as Error & { cause?: unknown };
       // Keep the error's own fields, for example a code or an HTTP status.
       const extra: Record<string, unknown> = {};
       let extraCount = 0;

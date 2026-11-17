@@ -11,3 +11,14 @@
 export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/**
+ * Checks whether a key is the object's own property, so an inherited "toString" fails. It
+ * replaces Object.hasOwn, which is missing before Chrome 93, Firefox 92 and Safari 15.4.
+ * @param object The object to check.
+ * @param key The property key.
+ * @returns True if the object has its own property with this key.
+ */
+export function hasOwn(object: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}

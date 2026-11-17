@@ -257,6 +257,18 @@ describe("start of the recorder", () => {
     expect((await run()).maskTextSelector).toBeUndefined();
   });
 
+  it("starts the recorder with a replay id when the browser has no crypto.randomUUID", async () => {
+    // Chrome 85 to 91, Firefox 79 to 94, Safari 14.1 to 15.3 and any plain http page lack it.
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+    const { run, context, events } = setup();
+
+    await run();
+
+    expect(context.get("replay.id")).toMatch(/^[0-9a-f]{32}$/);
+    expect(reports(events)).toEqual([]);
+  });
+
   it("sets the replay id as an ambient attribute while the recorder runs", async () => {
     const { sut, run, context } = setup();
 

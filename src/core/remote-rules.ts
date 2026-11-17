@@ -15,7 +15,7 @@ import {
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LogLevel } from "../models/log-record";
-import { isObject } from "../utils/guards";
+import { hasOwn, isObject } from "../utils/guards";
 import type { Diagnostics } from "./diagnostics";
 import {
   type RemoteRules,
@@ -99,7 +99,7 @@ function readMinLevels(value: unknown): Record<string, LogLevel> {
 
   const entries = Object.entries(value);
   const valid = entries.every(
-    ([, level]) => typeof level === "string" && Object.hasOwn(LEVEL_ORDER, level),
+    ([, level]) => typeof level === "string" && hasOwn(LEVEL_ORDER, level),
   );
 
   if (entries.length > REMOTE_SAMPLING_MAX_RATES || !valid) {
@@ -137,10 +137,7 @@ function readRules(value: unknown): RemoteUpdate {
     throw new RuleError("defaultRate must be a number from 0 to 1.");
   }
 
-  if (
-    minLevel !== undefined &&
-    !(typeof minLevel === "string" && Object.hasOwn(LEVEL_ORDER, minLevel))
-  ) {
+  if (minLevel !== undefined && !(typeof minLevel === "string" && hasOwn(LEVEL_ORDER, minLevel))) {
     throw new RuleError("minLevel must be a level name, for example DEBUG.");
   }
 

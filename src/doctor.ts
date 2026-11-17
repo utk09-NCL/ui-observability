@@ -130,7 +130,8 @@ async function request(
     });
   } catch (error) {
     // Node only says "fetch failed". The cause holds the real reason, for example ECONNREFUSED.
-    const reason: unknown = error instanceof Error ? (error.cause ?? error) : error;
+    const reason: unknown =
+      error instanceof Error ? ((error as Error & { cause?: unknown }).cause ?? error) : error;
 
     return `The request failed. ${reason instanceof Error ? reason.message : String(reason)}`;
   }

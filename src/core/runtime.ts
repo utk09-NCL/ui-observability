@@ -43,7 +43,7 @@ import type { DeliveryStats } from "../models/stats";
 import type { DebugBundle, ObservabilityHealth } from "../models/health";
 import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
 import { ConsoleSink } from "../utils/console";
-import { isObject } from "../utils/guards";
+import { hasOwn, isObject } from "../utils/guards";
 import {
   BROWSER_STORES,
   type Identity,
@@ -2621,8 +2621,6 @@ function sameConfig(a: unknown, b: unknown, seen = new WeakMap<object, object>()
   const bk = Object.keys(b);
   return (
     ak.length === bk.length &&
-    ak.every(
-      (key) => Object.hasOwn(b, key) && sameConfig(Reflect.get(a, key), Reflect.get(b, key), seen),
-    )
+    ak.every((key) => hasOwn(b, key) && sameConfig(Reflect.get(a, key), Reflect.get(b, key), seen))
   );
 }
