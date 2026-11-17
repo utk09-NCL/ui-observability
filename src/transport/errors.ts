@@ -31,8 +31,14 @@ export class TransportError extends Error {
     public readonly maxBytes?: number,
     cause?: unknown,
   ) {
-    super(message, cause === undefined ? undefined : { cause });
+    super(message);
     this.name = "TransportError";
+
+    // Older browsers ignore the ES2022 (message, { cause }) option, so set the property the way
+    // the native one does: own, writable and not enumerable.
+    if (cause !== undefined) {
+      Object.defineProperty(this, "cause", { value: cause, writable: true, configurable: true });
+    }
   }
 }
 

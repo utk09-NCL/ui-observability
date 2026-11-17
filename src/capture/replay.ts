@@ -7,6 +7,7 @@
 import { REPLAY_ID_KEY, REPLAY_UNMASK_ATTRIBUTE } from "../constants";
 import type { LogRecord } from "../models/log-record";
 import type { ReplayEvent, ReplayPluginTools, ReplayRecord } from "../models/replay";
+import { newId } from "../utils/identity";
 import { isLibraryRequest } from "../utils/library-request";
 import { unrefTimer } from "../utils/unref";
 import { ReplayBuffer } from "./replay-buffer";
@@ -258,7 +259,7 @@ export class ReplayCapture implements Capture {
       this.stopRecorder = stopRecorder;
       this.record = record;
       this.starvedReported = false;
-      this.replayId = crypto.randomUUID();
+      this.replayId = newId(this.ctx.diagnostics);
       this.ctx.setContext?.(REPLAY_ID_KEY, this.replayId);
     });
   }

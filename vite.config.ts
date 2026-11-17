@@ -28,7 +28,9 @@ export default defineConfig({
       external: ["@opentelemetry/api", "@rrweb/record", "web-vitals"],
     },
     sourcemap: true,
-    target: "es2022",
+    // ES2021 keeps Chrome 85, Firefox 79 and Safari 14.1 working. tsc rejects ES2022 built-ins,
+    // but not a newer DOM API such as structuredClone, so check those by hand.
+    target: "es2021",
     // The build script runs `tsc --project tsconfig.build.json` first, which
     // emits the declarations into dist/. Vite empties outDir by default, so
     // leaving this true deletes index.d.ts a moment after tsc writes it.

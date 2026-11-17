@@ -6,6 +6,7 @@ import { LEVEL_ORDER, RECORD_LIMITS } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { ResolvedConsole } from "../models/config";
 import type { LogLevel } from "../models/log-record";
+import { hasOwn } from "./guards";
 import { isLibraryConsole, runAsLibraryConsole } from "./library-console";
 import { type SanitizeLimits, sanitize } from "./sanitize";
 
@@ -51,7 +52,7 @@ export class ConsoleSink {
     }
 
     // Guard against a level that is not a key of LEVEL_ORDER, for example "toString".
-    if (!Object.hasOwn(LEVEL_ORDER, this.settings.level)) {
+    if (!hasOwn(LEVEL_ORDER, this.settings.level)) {
       return false;
     }
 

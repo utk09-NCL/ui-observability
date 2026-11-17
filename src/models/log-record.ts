@@ -5,6 +5,7 @@
 // The severity tables live in `src/constants.ts`.
 
 import { LEVEL_ORDER } from "../constants";
+import { hasOwn } from "../utils/guards";
 
 /** OpenTelemetry severity levels, in ascending order. */
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
@@ -65,7 +66,7 @@ export function nowUnixNano(): string {
  * @returns True if `value` is a key of the severity table.
  */
 export function isLogLevel(value: unknown): value is LogLevel {
-  return typeof value === "string" && Object.hasOwn(LEVEL_ORDER, value);
+  return typeof value === "string" && hasOwn(LEVEL_ORDER, value);
 }
 
 /**
