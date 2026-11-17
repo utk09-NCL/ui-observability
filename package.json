@@ -73,6 +73,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:collector": "node tools/check-collector.mjs",
+    "bench:release": "node tools/bench-release.mjs",
     "typecheck": "tsc --noEmit",
     "check:peers": "node tools/check-peer-imports.mjs",
     "check:size": "node tools/check-size.mjs",
@@ -102,6 +105,7 @@
   "devDependencies": {
     "@eslint/js": "catalog:library",
     "@opentelemetry/api": "catalog:library",
+    "@playwright/test": "catalog:library",
     "@types/node": "catalog:library",
     "@vitest/coverage-istanbul": "catalog:library",
     "concurrently": "catalog:library",

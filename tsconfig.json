@@ -14,5 +14,5 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*", "tests/**/*", "playground/vanilla/**/*", "*.config.ts"]
+  "include": ["src/**/*", "tests/**/*", "playground/vanilla/**/*", "e2e/**/*", "*.config.ts"]
 }

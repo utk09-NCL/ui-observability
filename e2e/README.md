@@ -1,0 +1,88 @@
+# Browser integration tests
+
+These tests run the library source in Chromium, Firefox and WebKit. Each test asserts data that the mock ingest server received. The trace test asserts the request headers from `/__echo`. The other tests assert the payload from `/__received`. No test asserts console output.
+
+The tests are separate from `pnpm run verify`. Vitest does not run them.
+
+## Run the tests
+
+1. Install the workspace with `pnpm install`.
+2. Install the browsers one time with `pnpm exec playwright install chromium firefox webkit`.
+3. Run `pnpm run test:e2e`.
+
+Run one browser with `pnpm run test:e2e --project firefox`. Run one file with `pnpm run test:e2e e2e/logging.e2e.ts`.
+
+Playwright starts three servers and stops them after the run.
+
+| Port | Server                                                                       | Use                                  |
+| ---- | ---------------------------------------------------------------------------- | ------------------------------------ |
+| 5181 | `vite --config vite.cross-origin.config.ts`                                  | The page under test.                 |
+| 5182 | `vite --config vite.cross-origin.config.ts`                                  | The same files from a second origin. |
+| 8791 | `UIOBS_MOCK_PORT=8791 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
+
+The run fails when a different program uses one of these ports. Playwright does not use a server that is already there.
+
+The tests run in one worker. All browsers use one mock server, and each test resets it.
+
+Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in each frame. Without it, Firefox sends the exit flush when Playwright closes the context. That request can arrive after the reset of the next test.
+
+## Test APIs of the mock ingest server
+
+| Request           | Result                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| `POST /__reset`   | Clears the received requests, the known batch ids, the forced status and the sampling rules. |
+| `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`.      |
+| `GET /__echo`     | Returns the headers of this request as the server received them.                             |
+
+Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `duplicate` and `payload`. `payload` is the parsed JSON body.
+
+- The server keeps a request only when `UIOBS_MOCK_RECORD` is `1`. Without it, `/__received` returns empty lists. The Playwright config sets it.
+- The server keeps the last 100 entries for each path.
+- The server does not keep a request that it rejects.
+- A second request with a known batch id gets `204`, and the server keeps it with `duplicate: true`. Thus a test that counts the records fails when the library sends a batch two times.
+
+`UIOBS_MOCK_PORT` sets the port of the mock server. The default is 8787.
+
+## Fixtures
+
+- `fixtures/page.html` and `fixtures/page.ts` are the one test page. The page puts the library on `window.e2e.uiobs`. It does not call `configure()`. Each test configures the library in `page.evaluate()`.
+- The page keeps the `fetch` of the browser in `window.e2e.nativeFetch`. The trace test waits until `window.fetch` is a different function.
+- The same page is the child frame of the forwarding tests.
+- `fixtures/transport-worker.ts` calls `serveTransportWorker()`. It sends the URL of each `fetch` to the page on a `BroadcastChannel`.
+- `fixtures/silent-worker.ts` loads and gives no ready answer.
+- `fixtures/worker-channel.ts` has the name of that `BroadcastChannel`. The page and the worker import it.
+- `fixtures/ingest.ts` has the ports, the origins, the Node helpers for the test APIs and `stopLibrary()`. The Playwright config imports the ports from it.
+
+## What each spec covers
+
+| Spec                       | Coverage                                                                                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `logging.e2e.ts`           | A logger call arrives at `/v1/logs` with its body, level, scope, attributes and resource attributes. The body is gzip-encoded.                        |
+| `forwarding.e2e.ts`        | A same-origin child frame forwards a record through the parent. The `redact` hook of the parent removes a field from it.                              |
+| `forwarding.e2e.ts`        | A cross-origin child forwards a record when `bus.trustedOrigins` has the origin of the parent. Only the parent frame posts.                           |
+| `forwarding.e2e.ts`        | A cross-origin child without `bus.trustedOrigins` resolves to `sender` and posts its own record. The parent posts nothing.                            |
+| `trace-propagation.e2e.ts` | A `fetch` to an origin in `capture.propagateTraceHeaderTo` has `traceparent`. A `fetch` to a different origin does not.                               |
+| `worker-transport.e2e.ts`  | With `transportWorker`, the worker sends the batch.                                                                                                   |
+| `worker-transport.e2e.ts`  | A worker that gives no ready answer causes the fallback to plain HTTP. The server gets the record one time. No `transport.timeout` diagnostic occurs. |
+
+## Coverage that is missing
+
+These items have no browser test.
+
+- Frame permissions other than `records`, for example `journey:read`, `journey:write` and `sampling:read`.
+- A parent that does not register the frame, and `bus.sourcePolicy: "trusted-origin"`.
+- Trace propagation for `XMLHttpRequest`, and for a `RegExp` target.
+- A transport worker that fails after its ready answer, and a worker script that does not load.
+- Offline recovery after a `503` with `Retry-After`.
+- A reload that sends the batches in IndexedDB.
+- The exit flush on page close, with `sendBeacon` and with `keepalive`.
+- Security-context rotation with `rotateSecurityContext()`.
+- Session replay with the real `@rrweb/record` recorder, its masking, and stop and reset. The recorder is installed for `playground/vanilla`.
+- The `/v1/metrics` and `/v1/traces` endpoints.
+- OTLP receiver interoperability. `tools/check-collector.mjs` and `e2e/collector/` own this check.
+
+## OpenFin
+
+No OpenFin runtime is available in this environment. No test in this folder starts an OpenFin container.
+
+The real-runtime smoke check for OpenFin is a validation gap. It is not a pass. No test in this folder verifies the supported OpenFin versions.

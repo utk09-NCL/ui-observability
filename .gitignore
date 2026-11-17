@@ -14,6 +14,10 @@ storybook-static
 
 # Testing
 coverage
+test-results
+playwright-report
+.otelcol
+bench-results
 *.lcov
 PLAN.md
 TASKS.md

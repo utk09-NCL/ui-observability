@@ -1,0 +1,46 @@
+# e2e/collector/config.yaml
+#
+# Collector configuration of tools/check-collector.mjs. The check starts otelcol-contrib with
+# this file and sets CHECK_OUTPUT_DIR to a temporary folder.
+
+receivers:
+  otlp:
+    protocols:
+      # Only OTLP/HTTP, because a browser can't speak gRPC to the receiver.
+      http:
+        endpoint: 127.0.0.1:14318
+        cors:
+          # The origin of the fixture page that the check serves.
+          allowed_origins:
+            - http://127.0.0.1:5196
+          # The request headers of the library, as in "Ingest Server Requirements" in the README.
+          allowed_headers:
+            - Content-Type
+            - Content-Encoding
+            - X-UiObs-Batch-Id
+            - X-UiObs-Attempt
+
+exporters:
+  # One file for each signal. Each line is one OTLP/JSON export request that the receiver accepted.
+  file/logs:
+    path: ${env:CHECK_OUTPUT_DIR}/logs.jsonl
+  file/metrics:
+    path: ${env:CHECK_OUTPUT_DIR}/metrics.jsonl
+  file/traces:
+    path: ${env:CHECK_OUTPUT_DIR}/traces.jsonl
+
+service:
+  telemetry:
+    # The collector's own metrics would open a second port, and the check doesn't read them.
+    metrics:
+      level: none
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file/logs]
+    metrics:
+      receivers: [otlp]
+      exporters: [file/metrics]
+    traces:
+      receivers: [otlp]
+      exporters: [file/traces]

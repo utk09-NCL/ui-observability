@@ -1,0 +1,39 @@
+{
+  "status": "proposed, not approved by the maintainer",
+  "rule": "A max budget is the worst of 5 runs plus a margin. The margin is 25 percent of the worst value or the floor of the metric's unit in marginFloors, whichever is larger. A min budget is the worst of 5 runs minus 25 percent. A value in microseconds is rounded up to the next 5 microsecond clock step. Other max budgets are rounded up to an integer.",
+  "marginFloors": {
+    "ms": 25,
+    "us": 10,
+    "bytes/10k": 1000,
+    "note": "A unit that is not in this list has no floor. The ms floor is two times the range of outage.drainMs in the 5 runs (12 ms). The us floor is two clock steps. The bytes/10k floor is the band of the 15 heap reads in the fit (952 to 988 bytes)."
+  },
+  "measuredOn": "2026-11-17",
+  "command": "pnpm run bench:release",
+  "runs": 5,
+  "loadAverage1mAtStart": [0.94, 1.63, 1.71, 1.7, 2.09],
+  "machine": {
+    "cpuModel": "Apple M5 Max",
+    "cpuCores": 18,
+    "memoryGiB": 64,
+    "browser": "chromium 145.0.7632.6 (headless)",
+    "node": "v22.22.3",
+    "commit": "d2805b3",
+    "workingTree": "Changes that were not committed. src/ had no changes."
+  },
+  "budgets": {
+    "latency.blockP50Ns": { "worstOf5": 2210, "max": 2763 },
+    "latency.blockP99Ns": { "worstOf5": 2560, "max": 3200 },
+    "latency.blockP999Ns": { "worstOf5": 2770, "max": 3463 },
+    "throughput.acceptedPerSecond": { "worstOf5": 321416, "min": 241062 },
+    "heap.slopeBytesPer10k": { "worstOf5": -62, "max": 938, "note": "The margin is the floor." },
+    "outage.drainMs": { "worstOf5": 42, "max": 67, "note": "The margin is the floor." },
+    "outage.recoveryToDrainMs": {
+      "worstOf5": 634,
+      "max": 1067,
+      "note": "Not from the rule. The retry timer is random up to delivery.retryMaxDelayMs, which the workload sets to 1000 ms. The budget is 1000 ms plus the outage.drainMs budget."
+    },
+    "replay.onP50Us": { "worstOf5": 85, "max": 110 },
+    "replay.onP99Us": { "worstOf5": 200, "max": 250 },
+    "replay.onP999Us": { "worstOf5": 3005, "max": 3760 }
+  }
+}

@@ -1,13 +1,27 @@
 // tools/mock-ingest-server.mjs
 // Run:     node tools/mock-ingest-server.mjs
+//          UIOBS_MOCK_PORT=8791 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs
+// Env:     UIOBS_MOCK_PORT    Port. Default 8787, and every example posts to 8787.
+//          UIOBS_MOCK_RECORD  Set to 1 to keep each request for GET /__received.
 // Control: curl -X POST "http://localhost:8787/__control?status=429&retryAfter=5"
 //          curl -X POST "http://localhost:8787/__control?status=200"
+// Tests:   curl -X POST "http://localhost:8787/__reset"
+//          curl "http://localhost:8787/__received"   (empty without UIOBS_MOCK_RECORD=1)
+//          curl "http://localhost:8787/__echo"
 
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
 
-const PORT = 8787;
+const DEFAULT_PORT = 8787;
+// The browser tests start their own copy on another port, so a running playground keeps 8787.
+// A PORT exported for another project would move this server off 8787, so the name isn't PORT.
+const PORT = Number(process.env.UIOBS_MOCK_PORT) || DEFAULT_PORT;
+// Only the browser tests read /__received, so only they turn this on. A playground that kept
+// every parsed replay body grew to gigabytes.
+const RECORD = process.env.UIOBS_MOCK_RECORD === "1";
+// Oldest entries leave first, so /__received never holds more than this many per path.
+const MAX_RECEIVED_PER_PATH = 100;
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
@@ -20,6 +34,8 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost:5191", // microfrontend host
   "http://localhost:5192", // microfrontend remote, blotter
   "http://localhost:5193", // microfrontend remote, ticket
+  "http://localhost:5181", // browser tests, main page
+  "http://localhost:5182", // browser tests, cross-origin frame
 ]);
 
 let forcedStatus = 0;
@@ -27,6 +43,36 @@ let forcedRetryAfter = 0;
 // Sampling rules sent in X-UiObs-Sampling with every accepted batch. Empty means no header.
 let samplingRules = "";
 const seenBatchIds = new Map(); // idempotency, as the real server must also do
+// Every parsed body by ingest path, so a test can assert what the server really got.
+const received = new Map();
+
+// Keeps one request for GET /__received, or nothing when recording is off.
+function remember(path, entry) {
+  if (!RECORD) {
+    return;
+  }
+
+  const entries = received.get(path) ?? [];
+  entries.push(entry);
+  if (entries.length > MAX_RECEIVED_PER_PATH) {
+    entries.shift();
+  }
+  received.set(path, entries);
+}
+
+// Puts the server back to its start state, so one test can't see another test's batches.
+function reset() {
+  forcedStatus = 0;
+  forcedRetryAfter = 0;
+  samplingRules = "";
+  seenBatchIds.clear();
+  received.clear();
+}
+
+function sendJson(res, value) {
+  res.setHeader("Content-Type", "application/json");
+  res.writeHead(200).end(JSON.stringify(value));
+}
 
 function cors(req, res) {
   const origin = req.headers.origin;
@@ -160,6 +206,30 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/__reset" && req.method === "POST") {
+    reset();
+    console.log("[control] reset");
+    res.writeHead(204).end();
+    return;
+  }
+
+  if (url.pathname === "/__received" && req.method === "GET") {
+    sendJson(res, {
+      "/v1/logs": received.get("/v1/logs") ?? [],
+      "/v1/metrics": received.get("/v1/metrics") ?? [],
+      "/v1/traces": received.get("/v1/traces") ?? [],
+      "/v1/replay": received.get("/v1/replay") ?? [],
+    });
+    return;
+  }
+
+  // Answers with the request headers as the server saw them. A test reads traceparent here,
+  // because a page can't read the headers that the browser really sent.
+  if (url.pathname === "/__echo" && req.method === "GET") {
+    sendJson(res, { headers: req.headers });
+    return;
+  }
+
   if (url.pathname === "/__sampling") {
     samplingRules = url.searchParams.get("rules") || "";
     console.log(`[control] sampling=${samplingRules || "(none)"}`);
@@ -214,18 +284,6 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Send the rules only with an accepted batch, as the ingest contract says.
-  if (samplingRules) {
-    res.setHeader("X-UiObs-Sampling", samplingRules);
-  }
-
-  if (seenBatchIds.has(batchId)) {
-    console.log(`[duplicate] batch=${batchId} ignored (idempotency working as intended)`);
-    res.writeHead(204).end();
-    return;
-  }
-  seenBatchIds.set(batchId, Date.now());
-
   let payload;
   try {
     payload = JSON.parse(raw.toString("utf8"));
@@ -234,6 +292,30 @@ const server = createServer(async (req, res) => {
     res.writeHead(400).end();
     return;
   }
+
+  // Send the rules only with an accepted batch, as the ingest contract says.
+  if (samplingRules) {
+    res.setHeader("X-UiObs-Sampling", samplingRules);
+  }
+
+  const duplicate = seenBatchIds.has(batchId);
+  // A second send is kept with its flag, or a test that counts arrivals couldn't see it.
+  remember(url.pathname, {
+    batchId,
+    attempt: Number(attempt),
+    exit: exitReason,
+    contentType: req.headers["content-type"] ?? null,
+    contentEncoding: req.headers["content-encoding"] ?? null,
+    duplicate,
+    payload,
+  });
+
+  if (duplicate) {
+    console.log(`[duplicate] batch=${batchId} ignored (idempotency working as intended)`);
+    res.writeHead(204).end();
+    return;
+  }
+  seenBatchIds.set(batchId, Date.now());
 
   if (isReplay) {
     const events = Array.isArray(payload.events) ? payload.events.length : 0;

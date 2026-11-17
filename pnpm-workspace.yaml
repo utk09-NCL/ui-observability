@@ -21,6 +21,7 @@ catalogs:
   library:
     "@eslint/js": "10.0.1"
     "@opentelemetry/api": "1.10.0"
+    "@playwright/test": "1.58.2"
     "@types/node": "26.6.6"
     "@vitest/coverage-istanbul": "5.1.0"
     "concurrently": "10.0.7"

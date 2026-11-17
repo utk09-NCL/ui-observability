@@ -936,6 +936,14 @@ pnpm run dev      # Playground, mock ingest server and iframe host
 pnpm run verify   # Format check, typecheck, build, lint, peer, size, dev-server and consumer checks, tests
 ```
 
+These release checks are not part of `verify`. Run them before a release.
+
+```bash
+pnpm run test:e2e        # Browser tests in Chromium, Firefox and WebKit. See e2e/README.md.
+pnpm run test:collector  # Sends records to a pinned OpenTelemetry Collector. See e2e/collector/README.md.
+pnpm run bench:release   # Latency, throughput, heap, outage and replay checks. See docs/performance.md.
+```
+
 - Vanilla playground: `http://localhost:5173/playground/vanilla/index.html`. Add `?worker=1` to send through the transport worker.
 - Mock ingest server: `http://localhost:8787`. It accepts `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`. It prints one line for each record, metric point, span and replay segment.
 - Cross-origin child frame: `http://localhost:5174`. The vanilla playground registers it and its same-origin child frame before they load.

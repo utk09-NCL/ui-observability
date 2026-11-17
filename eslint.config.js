@@ -41,6 +41,11 @@ export default defineConfig(
     "**/node_modules",
     "**/dist",
     "playground/**/.angular",
+    // Output of the e2e, collector and bench runs. bench-results/.vite holds Vite's bundled peers.
+    "test-results",
+    "playwright-report",
+    ".otelcol",
+    "bench-results",
   ]),
 
   {
