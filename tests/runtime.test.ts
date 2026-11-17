@@ -6,6 +6,7 @@ import {
   BUS_MAX_BOOT_BUFFER_ACTIONS,
   BUS_MAX_BOOT_BUFFER_RECORDS,
   CONSOLE_DEFAULT_STYLES as STYLES,
+  HOLD_BUFFER_HEAD_RECORDS,
   METRIC_DEFAULT_BOUNDARIES,
   SESSION_ID_KEY,
   TELEMETRY_SDK_VERSION,
@@ -419,7 +420,7 @@ describe("runtime lifecycle", () => {
     expect(first.attributes).not.toHaveProperty("journey.name");
   });
 
-  it("drops the oldest buffered record once the boot buffer is full", () => {
+  it("drops the oldest record after the head once the boot buffer is full", () => {
     configure(base);
     const log = getLogger("test");
 
@@ -429,8 +430,9 @@ describe("runtime lifecycle", () => {
 
     const bodies = runtime()["bootBuffer"].records.map((record: LogRecord) => record.body);
     expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS);
-    // The buffer evicted the first record, so the second is now the oldest.
-    expect(bodies[0]).toBe("record 1");
+    // The first 100 records stay, so the buffer evicted record 100 and record 101 moved up.
+    expect(bodies[0]).toBe("record 0");
+    expect(bodies[HOLD_BUFFER_HEAD_RECORDS]).toBe(`record ${String(HOLD_BUFFER_HEAD_RECORDS + 1)}`);
     expect(runtime().diagnostics.snapshot()["record.dropped_boot_buffer_full"]).toBe(1);
   });
 
@@ -447,10 +449,10 @@ describe("runtime lifecycle", () => {
     const bodies = runtime()["bootBuffer"].records.map((record: LogRecord) => record.body);
     expect(bodies).toHaveLength(BUS_MAX_BOOT_BUFFER_RECORDS + 1);
     expect(bodies[0]).toBe("submit order");
-    expect(bodies[1]).toBe("record 1");
+    expect(bodies[1]).toBe("record 0");
   });
 
-  it("drops the oldest action at the action cap and gives it to onDrop", async () => {
+  it("drops the oldest action after the head at the action cap and gives it to onDrop", async () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({ ...base, onDrop });
 
@@ -460,10 +462,14 @@ describe("runtime lifecycle", () => {
 
     const buffer = runtime()["bootBuffer"].records;
     expect(buffer).toHaveLength(BUS_MAX_BOOT_BUFFER_ACTIONS);
-    expect(buffer[0].body).toBe("action 1");
+    expect(buffer[0].body).toBe("action 0");
     await vi.waitFor(() => {
       expect(onDrop).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: "buffer_full", records: 1, actions: ["action 0"] }),
+        expect.objectContaining({
+          reason: "buffer_full",
+          records: 1,
+          actions: [`action ${String(HOLD_BUFFER_HEAD_RECORDS)}`],
+        }),
       );
     });
   });

@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ERROR_CEILING_MAX_PER_WINDOW } from "../src/constants";
+import { ERROR_CEILING_MAX_PER_WINDOW, STORAGE_DEADLINE_MS } from "../src/constants";
+import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { LogPipeline, type StreamName, type StreamOptions } from "../src/core/pipeline";
 import type { LogBatch } from "../src/models/batch";
 import type { LogRecord } from "../src/models/log-record";
-import type { StorageAdapter } from "../src/models/storage";
+import type { GapReporter, StorageAdapter } from "../src/models/storage";
+import { createStorage } from "../src/storage/factory";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { TransportError } from "../src/transport/errors";
-import type { RetryEngine } from "../src/transport/retry-engine";
+import { RetryEngine, type StoreOutcome } from "../src/transport/retry-engine";
 
 const LOG_FLUSH_MS = 1000;
 const METRIC_FLUSH_MS = 5000;
@@ -57,11 +59,14 @@ const setup = (
   const nudge = vi.fn<() => void>();
 
   // This stub takes the place of the engine's classification. retry-engine.test.ts proves the
-  // split, so here the stub only stores and nudges.
-  const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<void>>(async (failed) => {
-    await storage.save(failed);
-    nudge();
-  });
+  // split and the outcomes, so here the stub only stores, nudges and says "stored".
+  const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<StoreOutcome>>(
+    async (failed) => {
+      await storage.save(failed);
+      nudge();
+      return "stored";
+    },
+  );
 
   const pipeline = new LogPipeline(
     { send, throttledForMs },
@@ -73,6 +78,28 @@ const setup = (
 
   return { pipeline, send, throttledForMs, storage, nudge, storeFailed, diagnostics, handler };
 };
+
+/** The texts of the send-failure reports that reached the handler, in order. */
+const sendFailureTexts = (handler: ReturnType<typeof setup>["handler"]): string[] =>
+  handler.mock.calls
+    .map(([event]) => event)
+    .filter((event) => event.code === "transport.http_error")
+    .map((event) => event.message);
+
+/** The texts of the throttle reports that reached the handler, in order. */
+const throttleTexts = (handler: ReturnType<typeof setup>["handler"]): string[] =>
+  handler.mock.calls
+    .map(([event]) => event)
+    .filter((event) => event.code === "transport.throttled")
+    .map((event) => event.message);
+
+/** The reports for a store call that threw or ran past its deadline, so its result is unknown. */
+const SEND_FAILED_UNCONFIRMED_TEXT =
+  "The send failed. The library could not confirm that storage kept the batch. " +
+  "The library sends again only the records that are in storage.";
+const THROTTLED_UNCONFIRMED_TEXT =
+  "The server throttles requests. The library could not confirm that storage kept the batch. " +
+  "The library sends the batch later only if it is in storage.";
 
 /** The record bodies of one send, in order. */
 const bodiesOf = (batch: LogBatch): string[] => batch.records.map((one) => one.body);
@@ -240,7 +267,7 @@ describe("LogPipeline", () => {
 
   it("stores without spending an attempt while the server is throttling us", async () => {
     // The pipeline sent nothing, so no attempt counts against the batch.
-    const { pipeline, send, throttledForMs, storage, nudge, diagnostics } = setup();
+    const { pipeline, send, throttledForMs, storage, nudge, handler } = setup();
     throttledForMs.mockReturnValue(5000);
 
     pipeline.push(record());
@@ -250,7 +277,106 @@ describe("LogPipeline", () => {
     const stored = await storage.take(1);
     expect(stored[0].attempts).toBe(0);
     expect(nudge).toHaveBeenCalled();
-    expect(diagnostics.snapshot()["transport.throttled"]).toBe(1);
+    expect(throttleTexts(handler)).toEqual([
+      "The server throttles requests. The pipeline stored the batch and did not send it.",
+    ]);
+    pipeline.destroy();
+  });
+
+  it("doesn't claim it stored a throttled batch when the app runs without storage", async () => {
+    const onGap = vi.fn<GapReporter>();
+    const none = await createStorage("none", "db", limits, new Diagnostics(vi.fn(), 0), onGap);
+    const { pipeline, send, throttledForMs, nudge, handler } = setup(none);
+    throttledForMs.mockReturnValue(5000);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "not_stored" }, [
+      expect.objectContaining({ attempts: 0 }),
+    ]);
+    expect(throttleTexts(handler)).toEqual([
+      "The server throttles requests, and storage did not keep the batch. " +
+        "The library drops the batch.",
+    ]);
+    // Storage holds nothing, so an earlier drain would find nothing to send.
+    expect(nudge).not.toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it("reports an unconfirmed store when the save of a throttled batch throws", async () => {
+    const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() =>
+      Promise.reject(new Error("quota")),
+    );
+    const { pipeline, throttledForMs, nudge, diagnostics, handler } = setup({
+      save,
+    } as unknown as StorageAdapter);
+    throttledForMs.mockReturnValue(5000);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(diagnostics.snapshot()["storage.degraded"]).toBe(1);
+    // A rejected save says nothing about what storage holds, so the report can't say "drops".
+    expect(throttleTexts(handler)).toEqual([THROTTLED_UNCONFIRMED_TEXT]);
+    expect(nudge).not.toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it("reports an unconfirmed store when a throttled batch's save passes its deadline", async () => {
+    // The save is still running at the deadline, so it can still put the batch in storage.
+    const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() => new Promise(() => undefined));
+    const { pipeline, throttledForMs, nudge, diagnostics, handler } = setup({
+      save,
+    } as unknown as StorageAdapter);
+    throttledForMs.mockReturnValue(5000);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(throttleTexts(handler)).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(STORAGE_DEADLINE_MS);
+
+    expect(diagnostics.snapshot()["storage.degraded"]).toBe(1);
+    expect(throttleTexts(handler)).toEqual([THROTTLED_UNCONFIRMED_TEXT]);
+    expect(nudge).not.toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it.each([
+    ["brings the drain forward when storage keeps the record", true, 1],
+    ["leaves the drain alone when storage doesn't keep the record", false, 0],
+  ] as const)("on a persist overflow, %s", async (_name, kept, nudges) => {
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const policy = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        buffering: { maxPendingRecords: 1, overflow: "persist" },
+      },
+      diagnostics,
+    );
+    const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() => Promise.resolve(kept));
+    const nudge = vi.fn<() => void>();
+    const pipeline = new LogPipeline(
+      { send: vi.fn<Send>(() => Promise.resolve()), throttledForMs: () => 0 },
+      { save } as unknown as StorageAdapter,
+      { nudge, storeFailed: vi.fn() } as unknown as RetryEngine,
+      diagnostics,
+      DEFAULT_STREAMS,
+      undefined,
+      policy,
+    );
+
+    pipeline.push(record({ body: "held" }));
+    pipeline.push(record({ body: "overflow" }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(save).toHaveBeenCalledOnce();
+    expect(bodiesOf(save.mock.calls[0][0])).toEqual(["overflow"]);
+    expect(nudge).toHaveBeenCalledTimes(nudges);
     pipeline.destroy();
   });
 
@@ -272,10 +398,12 @@ describe("LogPipeline", () => {
   });
 
   it("reports rather than nudging when the store refuses the batch", async () => {
-    const save = vi.fn<(batch: LogBatch) => Promise<void>>(() =>
+    const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() =>
       Promise.reject(new Error("quota")),
     );
-    const { pipeline, send, nudge, diagnostics } = setup({ save } as unknown as StorageAdapter);
+    const { pipeline, send, nudge, diagnostics, handler } = setup({
+      save,
+    } as unknown as StorageAdapter);
     send.mockRejectedValueOnce(new Error("network"));
 
     pipeline.push(record());
@@ -284,7 +412,109 @@ describe("LogPipeline", () => {
     expect(save).toHaveBeenCalled();
     expect(nudge).not.toHaveBeenCalled();
     expect(diagnostics.snapshot()["storage.degraded"]).toBe(1);
+    // A store call that threw says nothing about what storage holds, so the report can't
+    // promise a resend and can't say "drops".
+    expect(sendFailureTexts(handler)).toEqual([SEND_FAILED_UNCONFIRMED_TEXT]);
     pipeline.destroy();
+  });
+
+  it("reports an unconfirmed store when a failed batch's save passes its deadline", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const diagnostics = new Diagnostics(handler, 0);
+    const config = resolveConfig(
+      { endpoint: "https://x/v1/logs", serviceName: "svc" },
+      diagnostics,
+    );
+    // The save is still running at the deadline, so it can still put the batch in storage.
+    const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() => new Promise(() => undefined));
+    const storage = { save } as unknown as StorageAdapter;
+    const send = vi.fn<Send>(() => Promise.reject(new Error("network")));
+    const transport = { send, throttledForMs: () => 0 };
+    // The real engine, because the deadline on this path is the engine's.
+    const retry = new RetryEngine(storage, transport, diagnostics, config);
+    const nudge = vi.spyOn(retry, "nudge");
+    const pipeline = new LogPipeline(transport, storage, retry, diagnostics, DEFAULT_STREAMS);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(save).toHaveBeenCalledOnce();
+    expect(sendFailureTexts(handler)).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(STORAGE_DEADLINE_MS);
+
+    expect(diagnostics.snapshot()["storage.degraded"]).toBe(1);
+    expect(sendFailureTexts(handler)).toEqual([SEND_FAILED_UNCONFIRMED_TEXT]);
+    expect(nudge).not.toHaveBeenCalled();
+    pipeline.destroy();
+    retry.stop();
+  });
+
+  it.each([
+    [
+      "says the library stored the batch and sends it again",
+      "stored",
+      "The send failed. The library stored the batch and sends it again later.",
+    ],
+    [
+      "says the library stored the batch in two parts",
+      "split",
+      "The send failed. The library stored the batch in two parts and sends them again later.",
+    ],
+    [
+      "says the library drops a batch that another send can't deliver",
+      "rejected",
+      "The send failed, and another send would fail too. The library drops the batch.",
+    ],
+    [
+      "says the library drops the records that storage didn't keep",
+      "not_stored",
+      "The send failed, and storage did not keep the batch. " +
+        "The library drops the records that are not in storage.",
+    ],
+  ] as const)("after a failed send, %s", async (_name, outcome, text) => {
+    const { pipeline, send, storeFailed, handler } = setup();
+    const failure = new Error("network");
+    send.mockRejectedValueOnce(failure);
+    storeFailed.mockResolvedValueOnce(outcome);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(sendFailureTexts(handler)).toEqual([text]);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "transport.http_error", cause: failure }),
+    );
+    pipeline.destroy();
+  });
+
+  it("doesn't claim a retry for a failed send when the app runs without storage", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const diagnostics = new Diagnostics(handler, 0);
+    const config = resolveConfig(
+      { endpoint: "https://x/v1/logs", serviceName: "svc" },
+      diagnostics,
+    );
+    const onGap = vi.fn<GapReporter>();
+    const none = await createStorage("none", "db", limits, diagnostics, onGap);
+    const send = vi.fn<Send>(() => Promise.reject(new Error("network")));
+    const transport = { send, throttledForMs: () => 0 };
+    // The real engine and the real "none" adapter, because the finding was in how they meet.
+    const retry = new RetryEngine(none, transport, diagnostics, config);
+    const pipeline = new LogPipeline(transport, none, retry, diagnostics, DEFAULT_STREAMS);
+
+    pipeline.push(record());
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+
+    expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "not_stored" }, [
+      expect.objectContaining({ attempts: 1 }),
+    ]);
+    expect(sendFailureTexts(handler)).toEqual([
+      "The send failed, and storage did not keep the batch. " +
+        "The library drops the records that are not in storage.",
+    ]);
+    pipeline.destroy();
+    retry.stop();
   });
 
   it("contains a dispatch that rejects instead of stopping delivery", async () => {

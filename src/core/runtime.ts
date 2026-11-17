@@ -9,6 +9,7 @@ import {
   ATTR_BREADCRUMBS,
   ATTR_DEBUG_BUFFER,
   ATTR_PAGE_URL,
+  BUS_PROTOCOL,
   CAPTURE_NAMESPACE,
   REMOTE_CAPTURE_FLAGS,
   DIAGNOSTICS_NAMESPACE,
@@ -332,6 +333,12 @@ export class ObservabilityRuntime {
    * versions sharing one runtime would call methods the other version doesn't have.
    */
   readonly sdkVersion: string = TELEMETRY_SDK_VERSION;
+
+  /**
+   * This runtime's bus protocol tag. A same-origin child frame reads it from the global key
+   * before it opens a direct link, because a direct call has no envelope to carry the tag.
+   */
+  readonly protocol: string = BUS_PROTOCOL;
 
   /** Diagnostics reporter for internal faults. */
   readonly diagnostics: Diagnostics;
@@ -2026,7 +2033,7 @@ export class ObservabilityRuntime {
       if (this.ready) {
         this.route(one);
       } else {
-        this.bootBuffer.push(one);
+        this.bootBuffer.push(one, this.config.buffering.maxHeldRecords);
       }
     }
   }
@@ -2065,7 +2072,7 @@ export class ObservabilityRuntime {
       return;
     }
 
-    this.pendingRecords.push(record);
+    this.pendingRecords.push(record, this.config.buffering.maxHeldRecords);
   }
 
   /**

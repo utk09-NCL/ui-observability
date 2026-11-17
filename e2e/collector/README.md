@@ -68,7 +68,7 @@ pnpm run test:collector
 
 ## What the check does not cover
 
-- **Exit flush.** The exit flush sends a beacon with `Content-Type: text/plain;charset=UTF-8`. This collector answers `415` to that content type. Put an ingest server that meets the README rules in front of the collector, for example `tools/reference-collector.mjs`.
+- **Exit flush.** To an endpoint on another origin, the exit flush sends a batch with `Content-Type: text/plain;charset=UTF-8`. That batch is a keepalive `fetch`, or a beacon with `credentials: "include"`. This collector answers `415` to that content type. To an endpoint on the origin of the page, it sends `application/json`. Put an ingest server that meets the README rules in front of the collector, for example `tools/reference-collector.mjs`.
 - **Deduplication.** The collector ignores `X-UiObs-Batch-Id` and `uiobs_batch_id`. It does not remove a batch that arrives two times.
 - **Throttling and limits.** The check does not test `429`, `503`, `413`, `Retry-After` or `partialSuccess`.
 - **Other signals.** The check does not assert histogram points, client spans, root spans or the replay endpoint.

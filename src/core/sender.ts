@@ -127,7 +127,8 @@ export class Sender {
     };
 
     // The stack keeps one transport for its whole life, and the runtime refuses a later change.
-    // The exit flush reads the last headers from the HTTP transport.
+    // The exit flush reads the last headers and the keepalive bytes in flight from the HTTP
+    // transport.
     const { onLoss } = deps;
     const worker =
       !config.transport && config.transportWorker
@@ -180,6 +181,7 @@ export class Sender {
       drainForExit: () => pipeline.drainForExit(),
       flushAlive: () => pipeline.flushPending(),
       exitHeaders: () => (worker ? worker.exitHeaders() : http?.lastHeaders()),
+      keepaliveInFlight: () => (worker ? worker.keepaliveInFlight() : http?.keepaliveInFlight()),
       onLoss,
       beforeExit: deps.beforeExit,
     });

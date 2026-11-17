@@ -1,8 +1,8 @@
 # Performance and Memory Checks
 
-This page describes the release benchmark, its measured baselines and its proposed budgets.
+This page describes the release benchmark, its measured baselines and its budgets.
 
-The budgets on this page are **proposed, not approved by the maintainer**.
+The maintainer approved the budgets on 2026-11-17 and added 10 percent to each proposed budget.
 
 ## Run the Benchmark
 
@@ -198,11 +198,18 @@ Each percent value is the range of the 5 runs divided by the smallest value.
 - The replay p50 values are the same in the 5 runs. The clock step of 5 microseconds hides smaller changes.
 - `replay.onP99Us` changes by 17.6 percent. `replay.onP999Us` changes by 41.4 percent.
 
-## Proposed Budgets
+## Budgets
 
-These budgets are **proposed, not approved by the maintainer**. They are in `bench/budgets.json`.
+The budgets are in `bench/budgets.json`. The maintainer approved them on 2026-11-17.
 
-The rule has four parts.
+The maintainer added 10 percent to each proposed budget.
+
+- An approved `max` is the proposed `max` times 1.1, rounded up.
+- An approved `min` is the proposed `min` times 0.9, rounded down.
+- A value in microseconds is rounded up to the next clock step of 5 microseconds.
+- On a different CPU model, the command applies the same budgets. The maintainer examines a failure on that model.
+
+The proposed budgets come from a rule with four parts.
 
 - A `max` budget is the worst of the 5 runs plus a margin.
 - The margin is 25 percent of the worst value or the floor of the unit. The rule uses the larger of the two.
@@ -218,20 +225,20 @@ The floor prevents a failure from noise on a small value. Without the floor, the
 | bytes/10k          | 1 000 bytes         | The band of the 15 heap reads in the fit (952 to 988 bytes).         |
 | ns/call, records/s | No floor            | 25 percent of the value is much larger than the range of the 5 runs. |
 
-| Metric                         | Worst of 5 | Margin             | Budget      |
-| ------------------------------ | ---------- | ------------------ | ----------- |
-| `latency.blockP50Ns`           | 2 210      | 25 percent         | max 2 763   |
-| `latency.blockP99Ns`           | 2 560      | 25 percent         | max 3 200   |
-| `latency.blockP999Ns`          | 2 770      | 25 percent         | max 3 463   |
-| `throughput.acceptedPerSecond` | 321 416    | 25 percent         | min 241 062 |
-| `heap.slopeBytesPer10k`        | -62        | Floor, 1 000 bytes | max 938     |
-| `outage.drainMs`               | 42         | Floor, 25 ms       | max 67      |
-| `outage.recoveryToDrainMs`     | 634        | Not from the rule  | max 1 067   |
-| `replay.onP50Us`               | 85         | 25 percent         | max 110     |
-| `replay.onP99Us`               | 200        | 25 percent         | max 250     |
-| `replay.onP999Us`              | 3 005      | 25 percent         | max 3 760   |
+| Metric                         | Worst of 5 | Margin             | Proposed    | Approved    |
+| ------------------------------ | ---------- | ------------------ | ----------- | ----------- |
+| `latency.blockP50Ns`           | 2 210      | 25 percent         | max 2 763   | max 3 040   |
+| `latency.blockP99Ns`           | 2 560      | 25 percent         | max 3 200   | max 3 520   |
+| `latency.blockP999Ns`          | 2 770      | 25 percent         | max 3 463   | max 3 810   |
+| `throughput.acceptedPerSecond` | 321 416    | 25 percent         | min 241 062 | min 216 955 |
+| `heap.slopeBytesPer10k`        | -62        | Floor, 1 000 bytes | max 938     | max 1 032   |
+| `outage.drainMs`               | 42         | Floor, 25 ms       | max 67      | max 74      |
+| `outage.recoveryToDrainMs`     | 634        | Not from the rule  | max 1 067   | max 1 174   |
+| `replay.onP50Us`               | 85         | 25 percent         | max 110     | max 125     |
+| `replay.onP99Us`               | 200        | 25 percent         | max 250     | max 275     |
+| `replay.onP999Us`              | 3 005      | 25 percent         | max 3 760   | max 4 140   |
 
-`outage.recoveryToDrainMs` does not use the rule. Its budget is `retryMaxDelayMs` (1000 ms) plus the `outage.drainMs` budget (67 ms). The random wait of the retry timer can be as long as `retryMaxDelayMs`.
+`outage.recoveryToDrainMs` does not use the rule. Its proposed budget is `retryMaxDelayMs` (1000 ms) plus the proposed `outage.drainMs` budget (67 ms), which gives 1067 ms. The random wait of the retry timer can be as long as `retryMaxDelayMs`. The approved budget adds 10 percent, as for each other budget.
 
 A slope budget of 938 bytes for each 10 000 records is approximately 0.1 byte for each record.
 
@@ -243,7 +250,7 @@ These metrics have no budget.
 - `replay.offP50Us` is two clock steps.
 - `replay.overheadP50Us` is the difference of two other metrics.
 
-The budgets apply to the machine in the table above. On a different CPU model, the command prints a note and applies the same budgets. On a different machine, run the command 5 times and calculate new budgets with the rule.
+The budgets come from the machine in the table above. On a different CPU model, the command prints a note and applies the same budgets. The maintainer examines a failure on that model. The maintainer can then measure 5 runs there and calculate new budgets with the rule.
 
 ## Limits of the Baselines
 

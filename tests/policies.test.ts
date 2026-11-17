@@ -4,8 +4,13 @@ import { validMessage } from "../src/bus/validation";
 import { ContextStorage } from "../src/storage/context-storage";
 import { LocalStorageStorage } from "../src/storage/local-storage";
 import { MemoryStorage } from "../src/storage/memory-storage";
-import { createChildrenLink, type Receive } from "../src/bus/links";
-import { BATCH_KEY_TIME_WIDTH, BATCH_STORAGE_KEY_PREFIX, SESSION_ID_KEY } from "../src/constants";
+import { createChildrenLink, createDirectLink, type Receive } from "../src/bus/links";
+import {
+  BATCH_KEY_TIME_WIDTH,
+  BATCH_STORAGE_KEY_PREFIX,
+  BUS_PROTOCOL,
+  SESSION_ID_KEY,
+} from "../src/constants";
 import {
   clearEmergencyContext,
   drainEmergencyQueue,
@@ -149,9 +154,9 @@ describe("partition persistence", () => {
     const backing = memory();
     const policy = { id: "A", isolation: true };
     const storage = new ContextStorage(backing, policy);
-    await storage.save(batch("B"));
+    expect(await storage.save(batch("B"))).toBe(false);
     expect(await backing.count()).toBe(0);
-    await storage.save(batch("A"));
+    expect(await storage.save(batch("A"))).toBe(true);
     await storage.bumpAttempts("A", 2);
     expect((await storage.take(1))[0].attempts).toBe(2);
     await storage.prune();
@@ -162,7 +167,7 @@ describe("partition persistence", () => {
     await storage.remove("A");
     expect(await storage.count()).toBe(0);
     await storage.retire(false);
-    await storage.save(batch("A"));
+    expect(await storage.save(batch("A"))).toBe(false);
     expect(await backing.count()).toBe(1);
   });
 
@@ -175,13 +180,14 @@ describe("partition persistence", () => {
     const save = backing.save.bind(backing);
     vi.spyOn(backing, "save").mockImplementation(async (batch) => {
       await gate;
-      await save(batch);
+      return save(batch);
     });
     const storage = new ContextStorage(backing, { id: "A", isolation: true });
     const saving = storage.save(batch("A"));
     await storage.retire(true);
     release();
-    await saving;
+    // The backing store wrote the batch, but the discard removed it again.
+    expect(await saving).toBe(false);
     expect(await backing.count()).toBe(0);
   });
 
@@ -945,6 +951,57 @@ describe("policy edge cases", () => {
     expect(createDirectLink(vi.fn(), diag())).toBeNull();
   });
 
+  it("lets a registered same-origin frame attach directly to the real runtime", async () => {
+    configure(base);
+    await flush();
+    const runtime = rt();
+    expect(runtime.protocol).toBe(BUS_PROTOCOL);
+
+    const detach = registerFrame(window, { origin: location.origin });
+    await vi.waitFor(() => {
+      expect(runtime.busCanAccept(window, location.origin)).toBe(true);
+    });
+    const parent = { [Symbol.for("ui-observability.runtime")]: runtime } as unknown as Window &
+      typeof globalThis;
+    const parentSpy = vi.spyOn(window, "parent", "get").mockReturnValue(parent);
+    const handler = vi.fn();
+
+    expect(createDirectLink(vi.fn(), new Diagnostics(handler, 0))?.kind).toBe("direct");
+    expect(handler).not.toHaveBeenCalled();
+
+    parentSpy.mockRestore();
+    detach();
+  });
+
+  it("lets a registered srcdoc frame attach directly to the real runtime, but not an opaque one", async () => {
+    configure(base);
+    await flush();
+    const runtime = rt();
+    const registered = location.origin;
+
+    const detach = registerFrame(window, { origin: registered });
+    await vi.waitFor(() => {
+      expect(runtime.busCanAccept(window, registered)).toBe(true);
+    });
+    const parent = { [Symbol.for("ui-observability.runtime")]: runtime } as unknown as Window &
+      typeof globalThis;
+    const parentSpy = vi.spyOn(window, "parent", "get").mockReturnValue(parent);
+
+    // A srcdoc frame reads "null" from location and its parent's origin from the origin global.
+    vi.stubGlobal("location", { origin: "null" });
+    vi.stubGlobal("origin", registered);
+    expect(createDirectLink(vi.fn(), diag())?.kind).toBe("direct");
+
+    // With both "null" the frame is opaque, and the real runtime refuses that origin.
+    vi.stubGlobal("origin", "null");
+    expect(createDirectLink(vi.fn(), diag())).toBeNull();
+
+    // Put location back before the runtime's teardown reads it.
+    vi.unstubAllGlobals();
+    parentSpy.mockRestore();
+    detach();
+  });
+
   it("uses OpenFin's physical source identity when supplied", async () => {
     const { createOpenFinLink } = await import("../src/bus/links");
     const { envelope } = await import("../src/models/bus");
@@ -1410,6 +1467,7 @@ describe("direct link, owner adoption and answer routing", () => {
         owner.bus.acceptDirect(...args);
       },
       busCanAccept: (source: Window, origin: string) => owner.bus.isRegistered(source, origin),
+      protocol: BUS_PROTOCOL,
     };
     vi.spyOn(window, "parent", "get").mockReturnValue({
       [Symbol.for("ui-observability.runtime")]: host,
@@ -1440,6 +1498,61 @@ describe("direct link, owner adoption and answer routing", () => {
     );
     expect(await child.start()).toBe("forwarder");
     expect(onSecurityContext).toHaveBeenCalledWith("A");
+    child.sendRecords([record()]);
+    expect(owner.handlers.onRecords).toHaveBeenCalledTimes(1);
+    child.destroy();
+    owner.bus.destroy();
+  });
+
+  it("forwards to a parent from 0.9.5 to 0.12 only after that parent registers the frame", async () => {
+    const owner = makeBus();
+    // Releases 0.9.5 to 0.12 expose busCanAccept but no protocol field.
+    const host = {
+      busAccept: (...args: Parameters<Bus["acceptDirect"]>) => {
+        owner.bus.acceptDirect(...args);
+      },
+      busCanAccept: (source: Window, origin: string) => owner.bus.isRegistered(source, origin),
+    };
+    vi.spyOn(window, "parent", "get").mockReturnValue({
+      [Symbol.for("ui-observability.runtime")]: host,
+    } as unknown as Window & typeof globalThis);
+    const handler = vi.fn();
+
+    // The parent's source policy still decides, so an unregistered frame gets no direct link.
+    expect(createDirectLink(vi.fn(), new Diagnostics(handler, 0))).toBeNull();
+
+    owner.bus.registerFrame(window, { origin: location.origin });
+    const childConfig = resolveConfig(
+      { ...base, bus: { mode: "auto" }, securityContext: { id: "child" } },
+      diag(),
+    );
+    const child = new Bus(
+      childConfig,
+      new Diagnostics(handler, 0),
+      { platform: "browser", isTopLevelDocument: false, isWorker: false, userAgent: "test" },
+      "child",
+      "tab",
+      {
+        onRecords: vi.fn(),
+        onJourney: vi.fn(),
+        onJourneyRequest: vi.fn(() => null),
+        onTabConflict: vi.fn(),
+        remote: { sampling: null },
+        // The owner drops records from a child that hasn't taken the owner's context id.
+        onSecurityContext: (id: string) => {
+          childConfig.securityContext.id = id;
+          return true;
+        },
+      },
+      { timeoutMs: 50, maxAttempts: 1 },
+    );
+
+    expect(await child.start()).toBe("forwarder");
+    expect(handler).not.toHaveBeenCalledWith(
+      expect.objectContaining({ code: "bus.protocol_mismatch" }),
+    );
+
+    // The records reach the owner's handler, which is where the owner's redact runs.
     child.sendRecords([record()]);
     expect(owner.handlers.onRecords).toHaveBeenCalledTimes(1);
     child.destroy();
@@ -2049,6 +2162,7 @@ async function startDirectChild(
       owner.acceptDirect(...args);
     },
     busCanAccept: (source: Window, origin: string) => owner.isRegistered(source, origin),
+    protocol: BUS_PROTOCOL,
   };
   vi.spyOn(window, "parent", "get").mockReturnValue({
     [Symbol.for("ui-observability.runtime")]: host,

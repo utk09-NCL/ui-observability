@@ -61,7 +61,12 @@ More facts about the path.
 - A metric point and a span use the same path. `emitPoint()` and `recordSpan()` in `src/core/runtime.ts` call `builder.build()` and then `emit()`.
 - The pipeline has three streams, `logs`, `metrics` and `traces`. `streamOf()` reads `log.type` to select one. A batch has records of one stream only.
 - A throttled transport does not get the batch. `dispatch()` stores the batch and does not change `attempts`.
-- A failed send stores the batch through `RetryEngine.storeFailed()` with `attempts + 1`.
+- `store()` returns `stored`, `not_stored` or `unknown`. `dispatch()` selects the text of `transport.throttled` from that result.
+- A failed send gives the batch to `RetryEngine.storeFailed()` with `attempts + 1`.
+- `RetryEngine.storeFailed()` returns the result, which is `stored`, `split`, `rejected` or `not_stored`. `dispatch()` reports that result with `transport.http_error`.
+- The result is `unknown` when a storage call throws or does not settle in `STORAGE_DEADLINE_MS`. The report then says that the library could not confirm the store. A late save can still complete. The retry engine then sends the batch in a later drain.
+- `StorageAdapter.save()` returns `true` only when the batch is in storage at the end of the save. A save prunes after its write, and the prune can remove the new batch. After a quota error, `LocalStorageStorage` and `IndexedDbStorage` evict old batches and write again. That second write runs no prune.
+- `store()`, `storeFailed()` and the `persist` rule call `nudge()` only when storage kept a batch.
 - The retry engine has one timer. Each schedule path calls `schedule()`, which clears the timer first.
 - A `hidden` document gets a normal flush through `LogPipeline.flushPending()`. The other exit reasons call `LogPipeline.drainForExit()`.
 - An exit batch above `BEACON_LIMIT_BYTES` goes to the emergency queue. The next page load moves it to storage in `Sender.importEmergency()`.
@@ -118,7 +123,7 @@ The residual risks of this path are in [Threat Model](threat-model.md), section 
 | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | Deferred queue      | `src/core/deferred.ts`, one queue for each runtime               | `buffering.maxPendingRecords`, at most `DEFER_QUEUE_LIMIT`   | `deferWrite()` counts `record.dropped_by_ceiling` when the queue stays full. `cancelDeferred()` clears it at shutdown.         |
 | Debug buffer        | `DebugBuffer` in `src/core/debug-buffer.ts`, held by the runtime | `debugBuffer.maxRecords`, `debugBuffer.maxAgeMs`             | The buffer trims itself. `resetSession()` and a hook change clear it.                                                          |
-| Boot buffer         | `bootBuffer` in `src/core/runtime.ts`, a `HoldBuffer`            | `BUS_MAX_BOOT_BUFFER_RECORDS`, `BUS_MAX_BOOT_BUFFER_ACTIONS` | `HoldBuffer.push()` drops the oldest record of the same kind. `dropHeld()` reports `buffer_full`.                              |
+| Boot buffer         | `bootBuffer` in `src/core/runtime.ts`, a `HoldBuffer`            | `buffering.maxHeldRecords` and `BUS_MAX_BOOT_BUFFER_ACTIONS` | `HoldBuffer.push()` keeps the head of each kind and drops the oldest record after it. `dropHeld()` reports `buffer_full`.      |
 | Pending records     | `pendingRecords` in `src/core/runtime.ts`, a `HoldBuffer`        | Same as the boot buffer                                      | `dropHeld()` reports `buffer_full`. A failed load or a shutdown before the load reports `load_failed`.                         |
 | Forward buffer      | `forwardBuffer` in `src/core/runtime.ts`                         | None. It lives for one microtask.                            | `sendForwarded()` gives it to the bus.                                                                                         |
 | Stream buffers      | `RecordStream` in `src/core/pipeline.ts`                         | `buffering.maxPendingRecords`, `buffering.maxPendingBytes`   | `LogPipeline.admit()` and `evict()` report `buffer_full`.                                                                      |

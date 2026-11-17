@@ -105,7 +105,7 @@ A release needs each item of evidence in this section. Record the command and it
 1. Run `pnpm run verify`. It runs the format check, typecheck, build, lint, peer check, size check, dev-server check, consumer check and the tests with coverage.
 2. Run `pnpm run test:e2e`. It runs the browser tests in Chromium, Firefox and WebKit. [Browser tests](../e2e/README.md) lists what they cover.
 3. Run `pnpm run test:collector`. It sends logs, metrics and spans to a pinned OpenTelemetry Collector and checks the OTLP fields that the collector wrote. [Collector check](../e2e/collector/README.md) gives the pinned version and the limits.
-4. Run `pnpm run bench:release`. It compares latency, throughput, heap growth, outage recovery and replay cost with `bench/budgets.json`. [Performance](performance.md) gives the method. The maintainer has not approved these budgets.
+4. Run `pnpm run bench:release`. It compares latency, throughput, heap growth, outage recovery and replay cost with `bench/budgets.json`. [Performance](performance.md) gives the method and the approved budgets.
 5. Run `pnpm --filter './playground/**' --if-present run build`. It builds each consumer playground that has a build script.
 6. Do the manual browser checks that the README names.
    - Check the vanilla frames, the React example and the Angular example in a browser.
@@ -158,7 +158,15 @@ Version skew is two contexts, or two copies in one context, that run different v
 
 **Two contexts with the same tag.** Each context accepts the envelope of the other. The bus then checks the type and the fields of each message while `bus.validation` is `"strict"`.
 
-**A same-origin child frame.** This frame calls the runtime of its parent directly. That call has no envelope, and the code has no version check on that path. The bus of the parent checks each message as above.
+**A same-origin child frame.** This frame calls the runtime of its parent directly. That call has no envelope. The frame first compares the bus protocol tag of the parent runtime with its own tag.
+
+- With the same tag, the frame uses the direct call. The bus of the parent checks each message as above.
+- A parent runtime from 0.9.5 to 0.12 has no tag field. Those versions use the tag `ui-observability/2`. The frame uses the direct call to such a parent.
+- With a different tag, the frame does not use the direct call. It reports `bus.protocol_mismatch` and tries the message link to its parent.
+- A parent runtime before 0.9.5 has an older tag. Its child frame also reports `bus.protocol_mismatch`.
+- The rules of a message link then apply. A message link connects the two contexts only when their envelope tags are the same.
+- If the message link does not connect them, the frame becomes a sender. Its own `redact` applies to its records. The `redact` of the parent does not.
+- Only the child frame makes this check. A child frame on 0.12 or older makes no check. It calls a newer parent directly.
 
 **The transport worker.** The worker compares its version with the version of the page as an exact text. A worker with a different version refuses the connection. The library then sends on the main HTTP path.
 
@@ -176,7 +184,7 @@ Do this procedure for each upgrade of the library in an application with more th
 8. Deploy each bundle in the same release. A deployment in stages gives version skew for its full duration.
 9. If a deployment in stages is necessary, give each frame its own endpoint or transport first. A frame that gets no owner sends its own records.
 10. After the deployment, call `getHealth()` in each context. Confirm that `issues` has no `runtime.version_mismatch` and that `owningSdkVersion` is `null`.
-11. Call `getDiagnosticCounters()` in each forwarder. Confirm that it has no `bus.handshake_timeout`.
+11. Call `getDiagnosticCounters()` in each forwarder. Confirm that it has no `bus.handshake_timeout` and no `bus.protocol_mismatch`.
 12. Confirm in the ingest server that each context has the new `telemetry.sdk.version`.
 13. For a rollback, return each bundle to the old version in the same release.
 

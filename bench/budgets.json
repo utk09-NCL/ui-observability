@@ -1,5 +1,5 @@
 {
-  "status": "proposed, not approved by the maintainer",
+  "status": "approved by the maintainer on 2026-11-17, with 10 percent added to each proposed budget",
   "rule": "A max budget is the worst of 5 runs plus a margin. The margin is 25 percent of the worst value or the floor of the metric's unit in marginFloors, whichever is larger. A min budget is the worst of 5 runs minus 25 percent. A value in microseconds is rounded up to the next 5 microsecond clock step. Other max budgets are rounded up to an integer.",
   "marginFloors": {
     "ms": 25,
@@ -21,19 +21,59 @@
     "workingTree": "Changes that were not committed. src/ had no changes."
   },
   "budgets": {
-    "latency.blockP50Ns": { "worstOf5": 2210, "max": 2763 },
-    "latency.blockP99Ns": { "worstOf5": 2560, "max": 3200 },
-    "latency.blockP999Ns": { "worstOf5": 2770, "max": 3463 },
-    "throughput.acceptedPerSecond": { "worstOf5": 321416, "min": 241062 },
-    "heap.slopeBytesPer10k": { "worstOf5": -62, "max": 938, "note": "The margin is the floor." },
-    "outage.drainMs": { "worstOf5": 42, "max": 67, "note": "The margin is the floor." },
+    "latency.blockP50Ns": {
+      "worstOf5": 2210,
+      "max": 3040,
+      "proposedMax": 2763
+    },
+    "latency.blockP99Ns": {
+      "worstOf5": 2560,
+      "max": 3520,
+      "proposedMax": 3200
+    },
+    "latency.blockP999Ns": {
+      "worstOf5": 2770,
+      "max": 3810,
+      "proposedMax": 3463
+    },
+    "throughput.acceptedPerSecond": {
+      "worstOf5": 321416,
+      "min": 216955,
+      "proposedMin": 241062
+    },
+    "heap.slopeBytesPer10k": {
+      "worstOf5": -62,
+      "max": 1032,
+      "note": "The margin is the floor.",
+      "proposedMax": 938
+    },
+    "outage.drainMs": {
+      "worstOf5": 42,
+      "max": 74,
+      "note": "The margin is the floor.",
+      "proposedMax": 67
+    },
     "outage.recoveryToDrainMs": {
       "worstOf5": 634,
-      "max": 1067,
-      "note": "Not from the rule. The retry timer is random up to delivery.retryMaxDelayMs, which the workload sets to 1000 ms. The budget is 1000 ms plus the outage.drainMs budget."
+      "max": 1174,
+      "note": "Not from the rule. The retry timer is random up to delivery.retryMaxDelayMs, which the workload sets to 1000 ms. The proposed budget is 1000 ms plus the proposed outage.drainMs budget, 1067 ms. The approved budget adds 10 percent.",
+      "proposedMax": 1067
     },
-    "replay.onP50Us": { "worstOf5": 85, "max": 110 },
-    "replay.onP99Us": { "worstOf5": 200, "max": 250 },
-    "replay.onP999Us": { "worstOf5": 3005, "max": 3760 }
-  }
+    "replay.onP50Us": {
+      "worstOf5": 85,
+      "max": 125,
+      "proposedMax": 110
+    },
+    "replay.onP99Us": {
+      "worstOf5": 200,
+      "max": 275,
+      "proposedMax": 250
+    },
+    "replay.onP999Us": {
+      "worstOf5": 3005,
+      "max": 4140,
+      "proposedMax": 3760
+    }
+  },
+  "approval": "The maintainer added 10 percent on 2026-11-17. A max is the proposed max times 1.1, rounded up. A value in microseconds is rounded up to the next 5 microsecond clock step. A min is the proposed min times 0.9, rounded down. The same budgets apply on a different CPU model, and the maintainer reviews a failure there."
 }

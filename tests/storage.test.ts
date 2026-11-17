@@ -90,7 +90,8 @@ describe("storage factory", () => {
     const adapter = await createStorage("none", "db", limits, quiet(), onGap);
     const lost = batch("a", Date.now(), 2);
 
-    await adapter.save(lost);
+    // False tells the retry engine that there is nothing to send again.
+    expect(await adapter.save(lost)).toBe(false);
 
     expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 2, reason: "not_stored" }, [lost]);
   });
@@ -212,6 +213,14 @@ describe("MemoryStorage", () => {
     expect((await s.take(10)).map((b) => b.id)).toEqual(["a", "b"]);
   });
 
+  it("tells the caller that it wrote the batch", async () => {
+    const s = new MemoryStorage(limits);
+
+    expect(await s.save(batch("a"))).toBe(true);
+    // A batch with a known id replaces the old copy, and that is a write too.
+    expect(await s.save(batch("a"))).toBe(true);
+  });
+
   it("evicts the oldest once maxBatches is exceeded", async () => {
     const s = new MemoryStorage(limits);
     for (const id of ["a", "b", "c", "d"]) {
@@ -223,10 +232,28 @@ describe("MemoryStorage", () => {
 
   it("drops batches older than maxAgeMs", async () => {
     const s = new MemoryStorage(limits);
-    await s.save(batch("old", Date.now() - 5000));
+    // The prune that follows the write removes the batch, so the save must not claim it.
+    expect(await s.save(batch("old", Date.now() - 5000))).toBe(false);
     await s.save(batch("new"));
 
     expect((await s.take(10)).map((b) => b.id)).toEqual(["new"]);
+  });
+
+  it("says the batch isn't stored when its own prune evicts it", async () => {
+    const gaps: PruneResult[] = [];
+    const { ids, onGap } = droppedIds();
+    const s = new MemoryStorage({ ...limits, maxBatches: 1 }, (result, dropped) => {
+      gaps.push(result);
+      onGap(result, dropped);
+    });
+    await s.save(actionBatch("audit"));
+
+    // Eviction takes a batch without an action first, so the new batch goes and the action stays.
+    expect(await s.save(batch("plain", Date.now(), 2))).toBe(false);
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["audit"]);
+    expect(ids).toEqual(["plain"]);
+    expect(gaps).toEqual([{ batches: 1, records: 2, reason: "over_capacity" }]);
   });
 
   it("reports a gap when eviction drops records, so the backend sees the hole", async () => {
@@ -351,7 +378,7 @@ describe("LocalStorageStorage", () => {
     put(batch("a", now - 2000));
     put(batch("b", now - 1000));
 
-    await expect(s.save(batch("c", now))).resolves.toBeUndefined();
+    await expect(s.save(batch("c", now))).resolves.toBe(true);
     expect(ids).toEqual(["corrupt"]);
   });
 
@@ -415,6 +442,35 @@ describe("LocalStorageStorage", () => {
 
     expect((await s.take(10)).map((b) => b.id)).toEqual(["b2", "b3", "b4"]);
     expect(gaps.at(-1)).toMatchObject({ reason: "over_capacity" });
+  });
+
+  it("says the batch isn't stored when its own prune evicts it", async () => {
+    const gaps: PruneResult[] = [];
+    const { ids, onGap } = droppedIds();
+    const s = new LocalStorageStorage(
+      { ...lsLimits, maxBatches: 1 },
+      quiet(),
+      (result, dropped) => {
+        gaps.push(result);
+        onGap(result, dropped);
+      },
+    );
+    const now = Date.now();
+    expect(await s.save(actionBatch("audit", now - 1000))).toBe(true);
+
+    // Eviction takes a batch without an action first, so the new batch goes and the action stays.
+    expect(await s.save(batch("plain", now, 2))).toBe(false);
+
+    expect((await s.take(10)).map((b) => b.id)).toEqual(["audit"]);
+    expect(ids).toEqual(["plain"]);
+    expect(gaps).toEqual([{ batches: 1, records: 2, reason: "over_capacity" }]);
+  });
+
+  it("says the batch isn't stored when it is already past maxAgeMs", async () => {
+    const s = make();
+
+    expect(await s.save(batch("ancient", Date.now() - 120_000))).toBe(false);
+    expect(await s.count()).toBe(0);
   });
 
   it("drops batches past maxAgeMs", async () => {
@@ -503,9 +559,10 @@ describe("LocalStorageStorage", () => {
     }
 
     blocked.add("setItem");
-    await s.save(batch("overflow", now, 4));
+    const written = await s.save(batch("overflow", now, 4));
     blocked.delete("setItem");
 
+    expect(written).toBe(false);
     expect(await s.count()).toBe(2);
     // First the eviction, then the batch the adapter can't write even after the eviction.
     expect(gaps.at(-2)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
@@ -544,9 +601,10 @@ describe("LocalStorageStorage", () => {
     const setItem = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
       throw new DOMException("full", "QuotaExceededError");
     });
-    await s.save(batch("overflow", now, 2));
+    const written = await s.save(batch("overflow", now, 2));
     setItem.mockRestore();
 
+    expect(written).toBe(true);
     expect((await s.take(10)).map((b) => b.id)).toEqual(["b1", "b2", "overflow"]);
     expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 2, reason: "quota" });
   });
@@ -630,7 +688,7 @@ describe("IndexedDbStorage", () => {
   it("round-trips batches oldest first", async () => {
     const { storage } = await make();
     const now = Date.now();
-    await storage.save(batch("second", now));
+    expect(await storage.save(batch("second", now))).toBe(true);
     await storage.save(batch("first", now - 1000));
 
     expect((await storage.take(10)).map((b) => b.id)).toEqual(["first", "second"]);
@@ -654,11 +712,30 @@ describe("IndexedDbStorage", () => {
     const gaps: PruneResult[] = [];
     const { storage } = await make({}, vi.fn(), (result) => gaps.push(result));
 
-    // save() prunes, so this is gone before the next line runs.
-    await storage.save(batch("ancient", Date.now() - 120_000, 2));
+    // save() prunes, so this is gone before the next line runs, and the save must not claim it.
+    expect(await storage.save(batch("ancient", Date.now() - 120_000, 2))).toBe(false);
 
     expect(await storage.count()).toBe(0);
     expect(gaps[0]).toMatchObject({ batches: 1, records: 2, reason: "expired" });
+    await storage.close();
+  });
+
+  it("says the batch isn't stored when its own prune evicts it", async () => {
+    const gaps: PruneResult[] = [];
+    const { ids, onGap } = droppedIds();
+    const { storage } = await make({ maxBatches: 1 }, vi.fn(), (result, dropped) => {
+      gaps.push(result);
+      onGap(result, dropped);
+    });
+    const now = Date.now();
+    expect(await storage.save(actionBatch("audit", now - 1000))).toBe(true);
+
+    // Eviction takes a batch without an action first, so the new batch goes and the action stays.
+    expect(await storage.save(batch("plain", now, 2))).toBe(false);
+
+    expect((await storage.take(10)).map((b) => b.id)).toEqual(["audit"]);
+    expect(ids).toEqual(["plain"]);
+    expect(gaps).toEqual([{ batches: 1, records: 2, reason: "over_capacity" }]);
     await storage.close();
   });
 
@@ -731,7 +808,7 @@ describe("IndexedDbStorage", () => {
     vi.spyOn(storage["db"], "put").mockRejectedValueOnce(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
-    await storage.save(batch("overflow", now));
+    expect(await storage.save(batch("overflow", now))).toBe(true);
 
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "storage.quota_exceeded" }),
@@ -785,7 +862,7 @@ describe("IndexedDbStorage", () => {
     vi.spyOn(storage["db"], "put").mockRejectedValue(
       Object.assign(new Error("full"), { name: "QuotaExceededError" }),
     );
-    await storage.save(batch("overflow", Date.now(), 7));
+    expect(await storage.save(batch("overflow", Date.now(), 7))).toBe(false);
 
     expect(gaps.at(-1)).toMatchObject({ batches: 1, records: 7, reason: "quota" });
     await storage.close();
@@ -802,7 +879,8 @@ describe("IndexedDbStorage", () => {
       throw new Error("database is closing");
     });
 
-    await expect(storage.save(batch("overflow"))).resolves.toBeUndefined();
+    // Only the first write is refused, so the second write puts the batch in the store.
+    await expect(storage.save(batch("overflow"))).resolves.toBe(true);
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
   });
 
@@ -814,8 +892,8 @@ describe("IndexedDbStorage", () => {
       // undefined rather than throwing.
       .mockRejectedValueOnce("boom");
 
-    await storage.save(batch("b1"));
-    await storage.save(batch("b2"));
+    expect(await storage.save(batch("b1"))).toBe(false);
+    expect(await storage.save(batch("b2"))).toBe(false);
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
     expect(handler).not.toHaveBeenCalledWith(

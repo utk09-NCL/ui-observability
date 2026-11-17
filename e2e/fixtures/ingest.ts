@@ -72,6 +72,8 @@ export interface ReceivedRequest<Payload> {
   contentType: string | null;
   /** "gzip" for a compressed body, or null. The payload is always the decoded JSON. */
   contentEncoding: string | null;
+  /** True when the request had a Cookie header. The server never keeps the cookie's value. */
+  hasCookie: boolean;
   /** True when the server already had this batch id, which means the client sent it twice. */
   duplicate: boolean;
   payload: Payload;

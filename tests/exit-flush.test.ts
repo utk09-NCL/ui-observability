@@ -7,6 +7,7 @@ import type { ExitTransport, ObservabilityConfig } from "../src/models/config";
 import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { ExitFlush } from "../src/transport/exit-flush";
+import { isLibraryRequest } from "../src/utils/library-request";
 
 const ENDPOINT = "https://x/v1/logs";
 const METRICS_ENDPOINT = "https://x/v1/metrics";
@@ -57,6 +58,8 @@ interface Options {
   batches?: () => LogBatch[];
   /** The headers the HTTP transport resolved last. */
   headers?: Record<string, string>;
+  /** The bytes of the HTTP transport's keepalive sends that are still in flight. */
+  inFlight?: () => number;
   /** Replaces the pipeline's normal flush. */
   alive?: () => void | Promise<void>;
   /** Receives the records the exit flush loses. */
@@ -76,6 +79,7 @@ function setup({
   drain,
   batches,
   headers,
+  inFlight,
   alive,
   onLoss,
   beforeExit,
@@ -118,6 +122,7 @@ function setup({
     drainForExit,
     flushAlive,
     exitHeaders: () => headers,
+    keepaliveInFlight: () => inFlight?.(),
     onLoss,
     beforeExit,
   });
@@ -170,9 +175,9 @@ const emergencyKeys = () => {
 };
 
 describe("ExitFlush install", () => {
-  it("runs a normal flush, not a beacon, when the document becomes hidden", () => {
+  it("runs a normal flush, not an exit send, when the document becomes hidden", () => {
     // The document keeps running, so a normal flush keeps the headers, gzip and the retry.
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush, flushAlive, drainForExit } = setup({ records: [record("bye")] });
     flush.install();
 
@@ -181,40 +186,40 @@ describe("ExitFlush install", () => {
 
     expect(flushAlive).toHaveBeenCalledOnce();
     expect(drainForExit).not.toHaveBeenCalled();
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     flush.uninstall();
   });
 
   it("ignores a visibilitychange back to visible", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush } = setup({ records: [record("stay")] });
     flush.install();
 
     document.dispatchEvent(new Event("visibilitychange"));
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     flush.uninstall();
   });
 
   it("flushes on pagehide, which fires at the window", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush } = setup({ records: [record("bye")] });
     flush.install();
 
     dispatchEvent(new Event("pagehide"));
 
-    expect(new URL(beacon.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("pagehide");
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("pagehide");
     flush.uninstall();
   });
 
   it("flushes on freeze, which fires at the document and does not bubble", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush } = setup({ records: [record("bye")] });
     flush.install();
 
     document.dispatchEvent(new Event("freeze"));
 
-    expect(new URL(beacon.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("freeze");
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("freeze");
     flush.uninstall();
   });
 
@@ -241,7 +246,7 @@ describe("ExitFlush install", () => {
   });
 
   it("binds only the window listener in a host without a document", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     vi.stubGlobal("document", undefined);
     const { flush } = setup({ records: [record("bye")] });
 
@@ -249,13 +254,13 @@ describe("ExitFlush install", () => {
     dispatchEvent(new Event("pagehide"));
     flush.uninstall();
 
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
 describe("ExitFlush uninstall", () => {
   it("stops flushing on every signal", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush } = setup({ records: [record("bye")] });
     flush.install();
     flush.uninstall();
@@ -265,7 +270,7 @@ describe("ExitFlush uninstall", () => {
     document.dispatchEvent(new Event("freeze"));
     dispatchEvent(new Event("pagehide"));
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does nothing when it was never installed", () => {
@@ -280,7 +285,7 @@ describe("ExitFlush uninstall", () => {
 
 describe("ExitFlush on OpenFin", () => {
   it("flushes when the runtime asks to close a window", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const listeners = new Map<string, () => void>();
     stubFin({
       on: (event: string, listener: () => void) => listeners.set(event, listener),
@@ -291,7 +296,9 @@ describe("ExitFlush on OpenFin", () => {
     flush.install();
     listeners.get("close-requested")?.();
 
-    expect(new URL(beacon.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe("openfin-close");
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("uiobs_exit")).toBe(
+      "openfin-close",
+    );
     flush.uninstall();
   });
 
@@ -318,7 +325,7 @@ describe("ExitFlush on OpenFin", () => {
   });
 
   it("reports a runtime whose subscription throws, and installs anyway", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     stubFin({
       on: () => {
         throw new Error("runtime is gone");
@@ -330,25 +337,14 @@ describe("ExitFlush on OpenFin", () => {
     dispatchEvent(new Event("pagehide"));
 
     expect(codes()).toContain("openfin.unavailable");
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
     flush.uninstall();
   });
 });
 
 describe("ExitFlush flush", () => {
-  it("beacons the pending batch with the id in the query string", () => {
-    const beacon = stubBeacon();
-
-    setup({ records: [record("bye")] }).flush.flush("pagehide");
-
-    expect(beacon).toHaveBeenCalledOnce();
-    const url = new URL(beacon.mock.calls[0][0]);
-    expect(url.searchParams.get("uiobs_batch_id")).toBe("b1");
-    expect(beacon.mock.calls[0][1].type).toBe("text/plain;charset=utf-8");
-  });
-
   it("leaves the in-flight batches alone when the tab is only hidden", () => {
-    stubBeacon();
+    stubFetch();
     const { flush, drainForExit, flushAlive } = setup({ records: [record("bye")] });
 
     // hidden fires on every tab switch and every minimize. The document keeps running and its
@@ -378,7 +374,7 @@ describe("ExitFlush flush", () => {
   });
 
   it("takes the in-flight batches when the document is closing", () => {
-    stubBeacon();
+    stubFetch();
     const { flush, drainForExit, flushAlive } = setup({ records: [record("bye")] });
 
     flush.flush("pagehide");
@@ -388,15 +384,15 @@ describe("ExitFlush flush", () => {
   });
 
   it("sends nothing when there is no endpoint to send to", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
 
     setup({ records: [record("bye")], config: { endpoint: "" } }).flush.flush("pagehide");
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reports an endpoint that is not a URL, and keeps the buffer", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush, pending, events } = setup({
       records: [record("bye")],
       config: { endpoint: "not-a-url" },
@@ -404,24 +400,24 @@ describe("ExitFlush flush", () => {
 
     flush.flush("pagehide");
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(pending).toHaveLength(1);
     expect(events.some((event) => event.message.includes("The exit flush cannot use"))).toBe(true);
   });
 
   it("sends nothing when the drain hands back an empty batch", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush } = setup({
       drain: () => ({ id: "b1", createdAt: Date.now(), attempts: 0, records: [] }),
     });
 
     flush.flush("pagehide");
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reports a serializer that throws, and drops the batch", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush, codes } = setup({
       records: [record("bye")],
       config: {
@@ -436,12 +432,12 @@ describe("ExitFlush flush", () => {
 
     flush.flush("pagehide");
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(codes()).toContain("transport.serialize_failed");
   });
 
   it("passes the batch its serializer cannot encode to onLoss", () => {
-    stubBeacon();
+    stubFetch();
     const onLoss = vi.fn<LossReporter>();
     const { flush } = setup({
       records: [record("bye")],
@@ -465,8 +461,8 @@ describe("ExitFlush flush", () => {
     );
   });
 
-  it("beacons a batch of metric records to metricsEndpoint and the other batch to endpoint", () => {
-    const beacon = stubBeacon();
+  it("sends a batch of metric records to metricsEndpoint and the other batch to endpoint", () => {
+    const fetchMock = stubFetch();
     const { flush } = setup({
       config: { metricsEndpoint: METRICS_ENDPOINT },
       batches: () => [
@@ -477,13 +473,13 @@ describe("ExitFlush flush", () => {
 
     flush.flush("pagehide");
 
-    const urls = beacon.mock.calls.map(([url]) => new URL(url));
+    const urls = fetchMock.mock.calls.map(([url]) => new URL(url));
     expect(urls.map((url) => url.pathname)).toEqual(["/v1/metrics", "/v1/logs"]);
     expect(urls.map((url) => url.searchParams.get("uiobs_batch_id"))).toEqual(["m1", "l1"]);
   });
 
-  it("beacons a batch of span records to tracesEndpoint, and drops it without tracesEndpoint", () => {
-    const beacon = stubBeacon();
+  it("sends a batch of span records to tracesEndpoint, and drops it without tracesEndpoint", () => {
+    const fetchMock = stubFetch();
     const batches = () => [
       { id: "t1", createdAt: Date.now(), attempts: 0, records: [spanRecord()] },
       { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
@@ -494,13 +490,13 @@ describe("ExitFlush flush", () => {
     withTraces.flush.flush("pagehide");
     without.flush.flush("pagehide");
 
-    const paths = beacon.mock.calls.map(([url]) => new URL(url).pathname);
+    const paths = fetchMock.mock.calls.map(([url]) => new URL(url).pathname);
     expect(paths).toEqual(["/v1/traces", "/v1/logs", "/v1/logs"]);
     expect(without.diagnostics.snapshot()["record.dropped_no_destination"]).toBe(1);
   });
 
   it("sends the points of the open metric interval before the drain", () => {
-    stubBeacon();
+    stubFetch();
     const beforeExit = vi.fn();
     const { flush, drainForExit } = setup({ records: [record("bye")], beforeExit });
 
@@ -513,7 +509,7 @@ describe("ExitFlush flush", () => {
   });
 
   it("reports a metric collection that throws, and still sends the batch", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const { flush, codes } = setup({
       records: [record("bye")],
       beforeExit: () => {
@@ -524,46 +520,153 @@ describe("ExitFlush flush", () => {
     flush.flush("pagehide");
 
     expect(codes()).toContain("pipeline.crashed");
-    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("writes nothing to the device with storage memory, and reports the loss", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const onLoss = vi.fn<LossReporter>();
     const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
 
     setup({ records: huge, config: { storage: "memory" }, onLoss }).flush.flush("pagehide");
 
-    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(emergencyKeys()).toHaveLength(0);
     expect(onLoss).toHaveBeenCalledWith("not_stored", expect.any(Array), ["b1"]);
   });
 
   it("diverts an oversized batch to the synchronous emergency queue", () => {
-    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
     const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
 
     setup({ records: huge }).flush.flush("pagehide");
 
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+});
+
+describe("ExitFlush to another origin", () => {
+  /** A batch below the exit budget. Two of them together are above it. */
+  const large = (id: string): LogBatch => ({
+    id,
+    createdAt: Date.now(),
+    attempts: 0,
+    records: Array.from({ length: 40 }, (_unused, i) => record("x".repeat(900) + String(i))),
+  });
+
+  /** Lists every header of an exit fetch. happy-dom keeps a name's casing, so lower-case it. */
+  const headerEntries = (init: RequestInit): string[][] =>
+    [...(init.headers as Headers)].map(([name, value]) => [name.toLowerCase(), value]);
+
+  it("sends a text/plain keepalive fetch without cookies, not a beacon, by default", () => {
+    // sendBeacon always sends the cookies, so a session cookie on a parent domain would reach
+    // the ingest server although credentials is "omit".
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({ records: [record("bye")] }).flush.flush("pagehide");
+
     expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe("POST");
+    expect(init.keepalive).toBe(true);
+    expect(init.credentials).toBe("omit");
+    // Any other header would need a preflight, which a closing page can't wait for.
+    expect(headerEntries(init)).toEqual([["content-type", "text/plain;charset=UTF-8"]]);
+    expect(new URL(url).searchParams.get("uiobs_batch_id")).toBe("b1");
+    expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
+  });
+
+  it("sends the same keepalive fetch, not a beacon, with credentials same-origin", () => {
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      config: { credentials: "same-origin" },
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(init.keepalive).toBe(true);
+    expect(init.credentials).toBe("same-origin");
+    expect(headerEntries(init)).toEqual([["content-type", "text/plain;charset=UTF-8"]]);
+    expect(new URL(url).searchParams.get("uiobs_batch_id")).toBe("b1");
+    expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
+  });
+
+  it("keeps the beacon when the app asks for cookies with credentials include", () => {
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beacon).toHaveBeenCalledOnce();
+    const url = new URL(beacon.mock.calls[0][0]);
+    expect(url.searchParams.get("uiobs_batch_id")).toBe("b1");
+    expect(url.searchParams.get("uiobs_exit")).toBe("pagehide");
+    expect(beacon.mock.calls[0][1].type).toBe("text/plain;charset=utf-8");
+  });
+
+  it("parks a batch that doesn't fit in the budget that the batches before it used", () => {
+    // The browser rejects the second fetch after the document closes, when nothing can park it.
+    const fetchMock = stubFetch();
+
+    setup({ batches: () => [large("b1"), large("b2")] }).flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("parks a batch that doesn't fit next to the hidden flush's sends still in flight", () => {
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("x".repeat(20_000))],
+      inFlight: () => 50_000,
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("reports a keepalive fetch that never arrives, and parks the batch", async () => {
+    stubFetch(() => Promise.reject(new Error("network is down")));
+
+    const { flush, events } = setup({ records: [record("bye")] });
+    flush.flush("shutdown");
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.message.includes("exit flush failed"))).toBe(true);
+    });
     expect(emergencyKeys()).toHaveLength(1);
   });
 });
 
 describe("ExitFlush keepalive fallback", () => {
-  it("falls back when the host has no sendBeacon", () => {
+  it("falls back to a text/plain keepalive fetch when the host has no sendBeacon", () => {
     // A navigator without the method, which is what a worker has. The tests
     // below drop the navigator outright, which is the other half of the guard.
     vi.stubGlobal("navigator", {});
     const fetchMock = stubFetch();
 
-    setup({ records: [record("bye")] }).flush.flush("pagehide");
+    setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    }).flush.flush("pagehide");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const init = fetchMock.mock.calls[0][1];
     const headers = init.headers as Headers;
     expect(init.keepalive).toBe(true);
-    expect(init.credentials).toBe("omit");
+    expect(init.credentials).toBe("include");
     expect(headers.get("Content-Type")).toBe("text/plain;charset=UTF-8");
   });
 
@@ -588,6 +691,24 @@ describe("ExitFlush keepalive fallback", () => {
     expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
   });
 
+  it("starts the keepalive fetch inside the library request scope, and closes the scope", () => {
+    // Network capture skips a request that starts in the scope. Without it, capture.fetch logs
+    // the library's own exit request when the endpoint isn't written in its canonical form.
+    const scopes: boolean[] = [];
+    stubFetch(() => {
+      scopes.push(isLibraryRequest());
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    setup({
+      records: [record("bye")],
+      headers: { authorization: "Bearer t1" },
+    }).flush.flush("pagehide");
+
+    expect(scopes).toEqual([true]);
+    expect(isLibraryRequest()).toBe(false);
+  });
+
   it("parks a batch that does not fit in the keepalive budget that the batches before it used", () => {
     // Each batch is below the budget, but the two together are above it. The browser rejects
     // the second fetch after the document closes, and park() does not run.
@@ -608,9 +729,59 @@ describe("ExitFlush keepalive fallback", () => {
     expect(emergencyKeys()).toHaveLength(1);
   });
 
-  it("gives every exit flush the full keepalive budget", () => {
-    // An earlier flush's requests are complete, so a page from the back-forward cache can flush
-    // again.
+  it("parks a batch that doesn't fit next to the hidden flush's sends still in flight", () => {
+    // On a navigation, hidden fires just before pagehide, and the transport's keepalive sends
+    // use the same browser budget. The browser rejects a fetch over it after the document closes.
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("x".repeat(20_000))],
+      headers: { authorization: "Bearer t1" },
+      inFlight: () => 50_000,
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("sends a batch that fits next to the hidden flush's sends still in flight", () => {
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("x".repeat(20_000))],
+      headers: { authorization: "Bearer t1" },
+      inFlight: () => 30_000,
+    }).flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(0);
+  });
+
+  it("reads the transport's sends in flight again at every exit flush", () => {
+    // A page from the back-forward cache can flush again, and by then the transport's requests
+    // have settled.
+    const fetchMock = stubFetch();
+    let inFlight = 50_000;
+    const { flush, pending } = setup({
+      records: [record("x".repeat(20_000))],
+      headers: { authorization: "Bearer t1" },
+      inFlight: () => inFlight,
+    });
+
+    flush.flush("pagehide");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    inFlight = 0;
+    pending.push(record("x".repeat(20_000)));
+    flush.flush("pagehide");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("doesn't count an earlier exit flush's sends against the next exit flush", () => {
+    // A beacon never reports its completion, so an exit flush can't know what an earlier one
+    // still has in flight. A page from the back-forward cache can flush again.
     const fetchMock = stubFetch();
     const large = (): LogBatch => ({
       id: "b1",
@@ -666,7 +837,10 @@ describe("ExitFlush keepalive fallback", () => {
     stubBeacon(() => false);
     const fetchMock = stubFetch();
 
-    setup({ records: [record("bye")] }).flush.flush("pagehide");
+    setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    }).flush.flush("pagehide");
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(emergencyKeys()).toHaveLength(1);
@@ -678,18 +852,24 @@ describe("ExitFlush keepalive fallback", () => {
     });
     const fetchMock = stubFetch();
 
-    const { flush, codes } = setup({ records: [record("bye")] });
+    const { flush, codes } = setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    });
     flush.flush("pagehide");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(codes()).toContain("transport.http_error");
   });
 
-  it("reports a keepalive fetch that never arrives, and parks the batch", async () => {
+  it("reports a fallback fetch that never arrives in a host without a navigator", async () => {
     vi.stubGlobal("navigator", undefined);
     stubFetch(() => Promise.reject(new Error("network is down")));
 
-    const { flush, events } = setup({ records: [record("bye")] });
+    const { flush, events } = setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    });
     flush.flush("shutdown");
 
     await vi.waitFor(() => {
@@ -705,10 +885,275 @@ describe("ExitFlush keepalive fallback", () => {
       throw new Error("fetch is not usable here");
     });
 
-    const { flush, codes } = setup({ records: [record("bye")] });
+    const { flush, codes } = setup({
+      records: [record("bye")],
+      config: { credentials: "include" },
+    });
     flush.flush("pagehide");
 
     expect(codes()).toContain("transport.http_error");
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+});
+
+describe("ExitFlush to a same-origin endpoint", () => {
+  const ENDPOINT_ORIGIN = new URL(ENDPOINT).origin;
+
+  /**
+   * Puts the page on an origin. happy-dom has no globalThis.origin, and a real page shows its
+   * origin in location too.
+   */
+  const onOrigin = (origin: string): void => {
+    vi.stubGlobal("origin", origin);
+    vi.stubGlobal("location", { origin });
+  };
+
+  const onEndpointOrigin = (): void => {
+    onOrigin(ENDPOINT_ORIGIN);
+  };
+
+  /** A batch below the exit budget. Two of them together are above it. */
+  const large = (id: string, build: (i: number) => LogRecord): LogBatch => ({
+    id,
+    createdAt: Date.now(),
+    attempts: 0,
+    records: Array.from({ length: 40 }, (_unused, i) => build(i)),
+  });
+
+  /** Returns the content type of each exit fetch. Only a same-origin one has the serializer's. */
+  const contentTypes = (fetchMock: ReturnType<typeof stubFetch>): (string | null)[] =>
+    fetchMock.mock.calls.map(([, init]) => (init.headers as Headers).get("content-type"));
+
+  it("sends a keepalive fetch with the serializer's content type, not a beacon", () => {
+    // A stock OpenTelemetry Collector answers 415 to a text/plain batch. A same-origin
+    // request needs no preflight, so it can say application/json.
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({ records: [record("bye")] }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(init.method).toBe("POST");
+    expect(init.keepalive).toBe(true);
+    expect(init.credentials).toBe("omit");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("x-uiobs-batch-id")).toBe("b1");
+    expect(new URL(url).searchParams.get("uiobs_batch_id")).toBe("b1");
+    expect(new URL(url).searchParams.get("uiobs_exit")).toBe("pagehide");
+  });
+
+  it("keeps text/plain for an endpoint on another origin", () => {
+    // application/json to another origin needs a preflight, which a closing page can't wait for.
+    onOrigin("https://app.example");
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({ records: [record("bye")] }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("keeps text/plain when a page script has overwritten the origin global", () => {
+    // origin is a replaceable window attribute, so a classic script's `var origin = "..."`
+    // changes it. location still shows the real origin, and the endpoint isn't on it.
+    vi.stubGlobal("location", { origin: "https://app.example" });
+    vi.stubGlobal("origin", ENDPOINT_ORIGIN);
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({ records: [record("bye")] }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("keeps text/plain when the endpoint and the page both have an opaque origin", () => {
+    // Firefox gives a file: page the origin "null" on both sides, and a file: URL has it too.
+    // Two opaque origins are never the same origin, although their strings are equal.
+    vi.stubGlobal("location", { origin: "null" });
+    vi.stubGlobal("origin", "null");
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      config: { endpoint: "file:///ingest/v1/logs" },
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("keeps text/plain in a host without a location", () => {
+    vi.stubGlobal("location", undefined);
+    vi.stubGlobal("origin", ENDPOINT_ORIGIN);
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+    const { flush } = setup({ records: [record("bye")] });
+
+    expect(() => {
+      flush.flush("pagehide");
+    }).not.toThrow();
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("keeps text/plain in a host without an origin", () => {
+    vi.stubGlobal("location", { origin: ENDPOINT_ORIGIN });
+    vi.stubGlobal("origin", undefined);
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+    const { flush } = setup({ records: [record("bye")] });
+
+    expect(() => {
+      flush.flush("pagehide");
+    }).not.toThrow();
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("keeps text/plain in a sandboxed frame, whose own origin is opaque", () => {
+    // A frame sandboxed without allow-same-origin still shows its URL in location, but it sends
+    // as origin "null", so application/json to the endpoint would need a preflight.
+    vi.stubGlobal("location", { origin: ENDPOINT_ORIGIN });
+    vi.stubGlobal("origin", "null");
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({ records: [record("bye")] }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8"]);
+  });
+
+  it("decides for each batch by the origin of its own endpoint", () => {
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      config: { metricsEndpoint: "https://metrics.example/v1/metrics" },
+      batches: () => [
+        { id: "m1", createdAt: Date.now(), attempts: 0, records: [pointRecord()] },
+        { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
+      ],
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+      "/v1/metrics",
+      "/v1/logs",
+    ]);
+    expect(contentTypes(fetchMock)).toEqual(["text/plain;charset=UTF-8", "application/json"]);
+  });
+
+  it("parks the batch while a headers function has no result", () => {
+    // The server needs the headers on the same origin too, so the next page load sends the batch.
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("bye")],
+      config: { headers: () => ({ authorization: "Bearer t1" }) },
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("parks a batch that doesn't fit in the budget that the batches before it used", () => {
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+    const logs = (i: number): LogRecord => record("x".repeat(900) + String(i));
+
+    setup({ batches: () => [large("b1", logs), large("b2", logs)] }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("parks a batch that doesn't fit next to the hidden flush's sends still in flight", () => {
+    // Without headers a same-origin batch also goes out as a keepalive fetch, so the hidden
+    // flush's sends count against it too.
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+
+    setup({
+      records: [record("x".repeat(20_000))],
+      inFlight: () => 50_000,
+    }).flush.flush("pagehide");
+
+    expect(beacon).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("counts a beacon that the browser took against the budget of a later keepalive fetch", () => {
+    // The browser has one in-flight budget for both. It rejects a fetch over the budget after
+    // the document closes, when nothing can park the batch any more.
+    onEndpointOrigin();
+    const beacon = stubBeacon();
+    const fetchMock = stubFetch();
+    // A point's body is its metric name, and the name is what makes the payload large here.
+    const points = (i: number): LogRecord => ({
+      ...pointRecord(),
+      body: "x".repeat(900) + String(i),
+    });
+    const logs = (i: number): LogRecord => record("x".repeat(900) + String(i));
+
+    setup({
+      config: { metricsEndpoint: "https://metrics.example/v1/metrics", credentials: "include" },
+      batches: () => [large("m1", points), large("l1", logs)],
+    }).flush.flush("pagehide");
+
+    expect(beacon).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("parks a later same-origin batch after the browser refuses a beacon", () => {
+    // A refusal means the in-flight budget is full. The browser would reject the fetch after
+    // the document closes, when nothing can park the batch or report the loss any more.
+    onEndpointOrigin();
+    const beacon = stubBeacon(() => false);
+    const fetchMock = stubFetch();
+
+    setup({
+      config: { metricsEndpoint: "https://metrics.example/v1/metrics", credentials: "include" },
+      batches: () => [
+        { id: "m1", createdAt: Date.now(), attempts: 0, records: [pointRecord()] },
+        { id: "l1", createdAt: Date.now(), attempts: 0, records: [record("bye")] },
+      ],
+    }).flush.flush("pagehide");
+
+    expect(beacon.mock.calls.map(([url]) => new URL(url).pathname)).toEqual(["/v1/metrics"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(emergencyKeys()).toHaveLength(2);
+  });
+
+  it("reports a same-origin fetch that never arrives, and parks the batch", async () => {
+    onEndpointOrigin();
+    stubBeacon();
+    stubFetch(() => Promise.reject(new Error("network is down")));
+
+    const { flush, events } = setup({ records: [record("bye")] });
+    flush.flush("shutdown");
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.message.includes("exit flush failed"))).toBe(true);
+    });
     expect(emergencyKeys()).toHaveLength(1);
   });
 });
