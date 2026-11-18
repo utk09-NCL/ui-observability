@@ -142,7 +142,8 @@ export function setConfigurationLocked(locked: boolean): void {
 }
 
 /**
- * Stops delivery for the old context and starts it for the new one.
+ * Stops delivery for the old context and starts it for the new one. A call during another
+ * rotation runs after it.
  * @param update New identity, delivery settings and context attributes.
  * @param options What to do with old records, and the flush deadline.
  * @returns Promise that resolves once the change is complete.

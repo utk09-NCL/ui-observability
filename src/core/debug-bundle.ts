@@ -7,6 +7,7 @@ import type { ResolvedConfig } from "../models/config";
 import { isObject } from "../utils/guards";
 import { recordedUrl } from "../utils/platform";
 import { sanitize, type SanitizeLimits } from "../utils/sanitize";
+import { REFUSE_RECORDS } from "./config";
 import type { Diagnostics } from "./diagnostics";
 
 /**
@@ -55,6 +56,9 @@ export function configSummary(
     tracesEndpoint: cut(config.tracesEndpoint),
     // An object from the app can hold a key in any field, so only its name goes out.
     serializer: typeof serializer === "string" ? serializer : serializer.name,
+    // The stand-in for a bad hook value shows as "refused", so the bundle says why nothing sends.
+    redact: config.redact === REFUSE_RECORDS ? "refused" : config.redact,
+    processors: config.processors.map((hook) => (hook === REFUSE_RECORDS ? "refused" : hook)),
     capture: {
       ...capture,
       ignoreUrls: capture.ignoreUrls.map(cut),

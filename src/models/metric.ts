@@ -139,4 +139,6 @@ export interface InstrumentDef {
   unit: string;
   /** A histogram's bucket boundaries. A counter has none. */
   boundaries: readonly number[];
+  /** True when the app gave the boundaries. Only those count against maxHistogramBoundaries. */
+  fromApp?: boolean;
 }

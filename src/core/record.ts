@@ -58,6 +58,7 @@ import { currentUrl, type PlatformMetadata, recordedUrl } from "../utils/platfor
 import { type SanitizeLimits, sanitizeWithSize, truncate } from "../utils/sanitize";
 import type { Sequence } from "../utils/sequence";
 import type { TraceContext, TraceEngine } from "../utils/tracing";
+import { REFUSE_RECORDS } from "./config";
 import type { ContextStore } from "./context";
 import type { DebugBuffer } from "./debug-buffer";
 import type { Diagnostics } from "./diagnostics";
@@ -117,10 +118,20 @@ type RecordHook = (record: LogRecord) => LogRecord | null;
 /** Stage of a consumer hook. */
 type HookStage = "processor" | "redact";
 
-/** Message subject and drop code for each hook stage. */
+/** Message subject, drop code and refusal text for each hook stage. */
 const HOOK_STAGES = {
-  processor: { label: "A processor", code: "record.dropped_by_processor" },
-  redact: { label: "The redact hook", code: "record.dropped_by_redact" },
+  processor: {
+    label: "A processor",
+    code: "record.dropped_by_processor",
+    refused:
+      "processors is not a list of functions. The library drops each record until processors is a list of functions or [].",
+  },
+  redact: {
+    label: "The redact hook",
+    code: "record.dropped_by_redact",
+    refused:
+      "redact is not a function. The library drops each record until redact is a function or null.",
+  },
 } as const;
 
 /** Outcome of one build call. */
@@ -573,7 +584,7 @@ export class RecordBuilder {
    */
   private runHook(hook: RecordHook, stage: HookStage, record: LogRecord): LogRecord | DropReason {
     const { diagnostics } = this.deps;
-    const { label, code } = HOOK_STAGES[stage];
+    const { label, code, refused } = HOOK_STAGES[stage];
 
     // A plain JavaScript hook can edit the record in place and return nothing.
     let changed: unknown;
@@ -591,7 +602,12 @@ export class RecordBuilder {
     }
 
     if (changed === null) {
-      diagnostics.count(code);
+      // The stand-in for a hook value that isn't valid drops every record, and says why.
+      if (hook === REFUSE_RECORDS) {
+        diagnostics.report(code, refused);
+      } else {
+        diagnostics.count(code);
+      }
       return stage;
     }
 

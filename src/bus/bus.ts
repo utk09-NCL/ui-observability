@@ -352,7 +352,7 @@ export class Bus {
     const { maxRecordsPerMessage, maxMessageBytes } = this.config.bus;
     const encoder = new TextEncoder();
     const size = (value: unknown): number =>
-      maxMessageBytes ? encoder.encode(JSON.stringify(value)).length : 0;
+      maxMessageBytes === null ? 0 : encoder.encode(JSON.stringify(value)).length;
     const message = (chunk: LogRecord[]): BusMessage => ({
       t: BUS_TYPE.records,
       from: this.contextId,
@@ -368,15 +368,15 @@ export class Bus {
 
     for (const record of records) {
       const recordBytes = size(record);
-      if (maxMessageBytes && envelope + recordBytes > maxMessageBytes) {
+      if (maxMessageBytes !== null && envelope + recordBytes > maxMessageBytes) {
         this.diagnostics.count("bus.rejected_message");
         continue;
       }
 
       const comma = chunk.length > 0 ? 1 : 0;
       if (
-        (maxRecordsPerMessage && chunk.length >= maxRecordsPerMessage) ||
-        (maxMessageBytes && bytes + comma + recordBytes > maxMessageBytes)
+        (maxRecordsPerMessage !== null && chunk.length >= maxRecordsPerMessage) ||
+        (maxMessageBytes !== null && bytes + comma + recordBytes > maxMessageBytes)
       ) {
         this.upstream?.post(message(chunk));
         chunk = [];
@@ -580,7 +580,7 @@ export class Bus {
         }
       }
       if (
-        bus.maxTrackedSources &&
+        bus.maxTrackedSources !== null &&
         this.channelRates.size >= bus.maxTrackedSources &&
         !this.channelRates.has(key)
       ) {
@@ -589,8 +589,9 @@ export class Bus {
       this.channelRates.set(key, rate);
     }
 
-    // A limit of 0 still counts, just without a cap, so a named source's window stays current.
-    if (!countInWindow(rate, bus.maxMessagesPerSecond || Infinity, 1000)) {
+    // With no limit the window still counts, without a cap, so a named source's window stays
+    // current.
+    if (!countInWindow(rate, bus.maxMessagesPerSecond ?? Infinity, 1000)) {
       return false;
     }
 
@@ -600,7 +601,10 @@ export class Bus {
       }
       return value;
     });
-    if (bus.maxMessageBytes && new TextEncoder().encode(encoded).length > bus.maxMessageBytes) {
+    if (
+      bus.maxMessageBytes !== null &&
+      new TextEncoder().encode(encoded).length > bus.maxMessageBytes
+    ) {
       return false;
     }
     if (bus.validation === "strict" && !validMessage(message)) {
@@ -608,7 +612,7 @@ export class Bus {
     }
     if (
       message.t === BUS_TYPE.records &&
-      bus.maxRecordsPerMessage &&
+      bus.maxRecordsPerMessage !== null &&
       message.records.length > bus.maxRecordsPerMessage
     ) {
       return false;

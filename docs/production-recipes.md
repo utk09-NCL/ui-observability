@@ -110,14 +110,20 @@ await revokeToken();
 
 The rotation clears the context attributes, the breadcrumbs and the replay buffer. The next user of a shared device does not get the trail of the previous user. Use `pending: "discard"` when the old records must not go out.
 
-A rotation rejects in a forwarder. Do the rotation in the upstream owner. Other tabs keep their active context, and the host must coordinate them.
+With isolation on, which is the default, `configure({ headers: null })` is a refused change. Use the rotation for logout. `headers: undefined` keeps the token in each `configure()` call. With isolation off, `configure({ headers: null })` clears the headers.
+
+If the rotation rejects, the library stops the delivery of the old context. It sends no record with the old token. It keeps the unsent records of the old context in storage under the old ID. It drops each new record and reports it to `onDrop` with `security_context`. `getHealth()` shows the issue `security.rotation_failed`. Revoke the token anyway. Then call `rotateSecurityContext()` again with valid delivery settings, for example `{ delivery: {} }` for console-only mode. That rotation applies its `pending` rule to the records of the old user. With `flush`, the library removes them, because it does not send them with the old token.
+
+A logout rotation can start while a login rotation runs. It then waits, and it runs after the login rotation.
+
+A rotation rejects in a forwarder, and the delivery of the forwarder stays open. Do the rotation in the upstream owner. Other tabs keep their active context, and the host must coordinate them.
 
 ## Tenant rotation
 
 1. Make a new opaque context ID for the new tenant. Never use one ID for two tenants.
 2. Give the endpoint, the headers and the credentials of the new tenant together in `delivery`.
 3. Select `discard` to remove the records of the old tenant. Select `retain` to keep them under the old ID.
-4. Wait for the promise. An overlapping rotation rejects.
+4. Wait for the promise. A rotation that starts during another rotation runs after it.
 
 ```ts
 import { rotateSecurityContext } from "@utk09/ui-observability";
@@ -136,7 +142,9 @@ await rotateSecurityContext(
 );
 ```
 
-Invalid delivery settings reject the promise before the old sender stops. With `retain`, the library sends the old records only when the old ID is active again.
+Invalid delivery settings reject the promise before the old sender stops. A warning does not reject it, for example `transport` with `transportWorker`. A key that is not a delivery setting reports `config.invalid`, and the rotation ignores it. With `retain`, the library sends the old records only when the old ID is active again.
+
+After a rejection, the library sends nothing more to the old tenant. The unsent records of the old tenant stay stored under the old ID. Each new record is dropped and reported to `onDrop` with `security_context`, until a rotation succeeds. Correct the delivery settings and call `rotateSecurityContext()` again. The `pending` rule of that call applies to the records of the old tenant, so `discard` removes them also with isolation off. Do not use `configure()` to change the tenant. It does not open the delivery again.
 
 ## Token refresh
 

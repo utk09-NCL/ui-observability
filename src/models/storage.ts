@@ -86,19 +86,17 @@ export interface StorageLimits {
 }
 
 /**
- * Returns the storage limits for a retention setting. "until-delivered" has no age limit and
- * no attempt limit, but the batch cap still applies.
+ * Returns the storage limits for a retention setting. A null age or attempt limit becomes
+ * Infinity, so a batch stays until it's delivered, but the batch cap still applies.
  * @param retention Retention setting from the config.
  * @returns The limits for the storage adapters and the retry engine.
  */
 export function storageLimits(retention: RetentionOptions): StorageLimits {
-  const { maxBatches } = retention;
-
-  if (retention.mode === "until-delivered") {
-    return { maxBatches, maxAgeMs: Infinity, maxAttempts: Infinity };
-  }
-
-  return { maxBatches, maxAgeMs: retention.maxAgeMs, maxAttempts: retention.maxAttempts };
+  return {
+    maxBatches: retention.maxBatches,
+    maxAgeMs: retention.maxAgeMs ?? Infinity,
+    maxAttempts: retention.maxAttempts ?? Infinity,
+  };
 }
 
 /** Metrics for batches and records dropped during storage pruning. */

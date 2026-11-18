@@ -1,11 +1,14 @@
 // src/core/config.ts
 //
 // Resolves partial consumer options into a validated config, and updates the live config.
-// Two rules to follow here, because breaking either one fails silently:
+// Three rules to follow here, because breaking any one fails silently:
 //   1. Merge a reconfigure onto the current config, not onto the defaults.
 //   2. Change the resolved object in place, never replace it. Subsystems keep the
 //      reference they got at construction.
-// No function in this file throws to the caller.
+//   3. An omitted key or undefined keeps the current value at every depth. Only null clears a
+//      hook or lifts a limit, so an unset variable can't remove redact.
+// A getter in the app's input can throw here. ObservabilityRuntime.configure() catches it, so
+// configure() never throws into the app.
 
 import {
   ACTION_ATTRIBUTE_DEFAULT,
@@ -22,7 +25,6 @@ import {
   RESOURCE_SLOW_MS,
   RAGE_CLICK_COUNT,
   RAGE_CLICK_WINDOW_MS,
-  SAMPLING_RATE_FALLBACK,
   SAMPLING_RATE_MAX,
   SAMPLING_RATE_MIN,
   SERIALIZER_NAME_ECS,
@@ -47,11 +49,10 @@ import type {
   SamplingOptions,
   SerializerChoice,
 } from "../models/config";
-import type { LogLevel } from "../models/log-record";
+import type { LogLevel, LogType } from "../models/log-record";
 import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
 import { isObject } from "../utils/guards";
-import { recordedUrl } from "../utils/platform";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -66,7 +67,7 @@ const BUS_MODE_VALUES = ["auto", "sender", "forwarder", "off"] as const;
 const OPENFIN_ROLE_VALUES = ["auto", "provider", "client"] as const;
 const JOURNEY_SCOPE_VALUES = ["auto", "context", "tab", "origin"] as const;
 const CONSOLE_METHOD_VALUES = ["error", "warn", "info", "log"] as const;
-const RETENTION_MODE_VALUES = ["limited", "until-delivered"] as const;
+const LOG_TYPE_VALUES: readonly LogType[] = ["action", "event", "metric", "log", "system", "span"];
 
 /** Lowest and highest value an integer option accepts. */
 type Range = readonly [min: number, max: number];
@@ -79,12 +80,14 @@ const BATCHING_RANGES: Record<keyof BatchingOptions, Range> = {
   metricBatchSize: [1, 1000],
 };
 
-/** Accepted range for each numeric retention key. */
-const RETENTION_RANGES: Record<Exclude<keyof RetentionOptions, "mode">, Range> = {
-  maxBatches: [1, 5000],
-  maxAgeMs: [60_000, 7 * 24 * 60 * 60 * 1000],
-  maxAttempts: [1, 20],
-};
+/** Accepted range for retention.maxBatches. */
+const MAX_BATCHES_RANGE: Range = [1, 5000];
+
+/** Accepted range for retention.maxAgeMs. null lifts the age limit. */
+const RETENTION_AGE_RANGE: Range = [60_000, 7 * 24 * 60 * 60 * 1000];
+
+/** Accepted range for retention.maxAttempts. null lifts the attempt limit. */
+const RETENTION_ATTEMPTS_RANGE: Range = [1, 20];
 
 /**
  * Accepted range for each record limit. maxRecordBytes tops out at one beacon, and the body
@@ -108,7 +111,10 @@ const JOURNEY_AGE_RANGE: Range = [60_000, 24 * 60 * 60 * 1000];
 /** Range for a duration. The maximum is the largest delay a browser timer accepts. */
 const DURATION_RANGE: Range = [0, 2_147_483_647];
 
-/** Range for a count. Zero turns the limit off. */
+/** Range for a duration that must be at least 1 ms, because 0 would expire at once. */
+const POSITIVE_DURATION_RANGE: Range = [1, DURATION_RANGE[1]];
+
+/** Range for a count. Zero allows nothing. */
 const COUNT_RANGE: Range = [0, Number.MAX_SAFE_INTEGER];
 
 /** Range for a count that must be at least 1. */
@@ -119,6 +125,11 @@ const CLICK_WAIT_RANGE: Range = [100, 10_000];
 
 /** The keys of a policy section whose values are numbers. */
 type NumberKeys<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
+
+/** The keys of a policy section that take a number, or null for no limit. */
+type LimitKeys<T> = {
+  [K in keyof T]: T[K] extends number | null ? (null extends T[K] ? K : never) : never;
+}[keyof T];
 
 /** The policy sections resolvePolicy() checks. */
 type PolicySection =
@@ -160,6 +171,20 @@ const isFunctions = (value: unknown): boolean =>
 /** True for a function or null. */
 const isFunctionOrNull = (value: unknown): boolean => value === null || typeof value === "function";
 
+/** True for null. */
+const isNull = (value: unknown): boolean => value === null;
+
+/** Matches a URL that names its scheme, for example "https:". A relative URL has none. */
+const SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
+
+/** True for a sampling rate from 0 to 1. NaN fails both comparisons, so it's rejected too. */
+const isRate = (value: unknown): value is number =>
+  typeof value === "number" && value >= SAMPLING_RATE_MIN && value <= SAMPLING_RATE_MAX;
+
+/** How a hook value and a URL value read in a config.invalid message. */
+const HOOK_EXPECTED = "a function or null";
+const URL_EXPECTED = "a URL string or null";
+
 /** True for request headers: an object of strings, a function, or null. */
 const isHeaders = (value: unknown): boolean =>
   isFunctionOrNull(value) ||
@@ -173,9 +198,15 @@ const isRecord = (value: unknown): boolean =>
  * Builds the resolver for a key whose value isn't a number, a boolean or a string.
  * @param test Checks the value.
  * @param expected What the report says was expected.
+ * @param describe Describes a rejected value. A key whose text can hold a secret passes
+ * describeKind.
  * @returns The resolver. A value that fails the test is ignored, and the current one stays.
  */
-function keepKind(test: (value: unknown) => boolean, expected: string): CustomResolver {
+function keepKind(
+  test: (value: unknown) => boolean,
+  expected: string,
+  describe: (value: unknown) => string = describeValue,
+): CustomResolver {
   return (key, value, fallback, diagnostics) => {
     if (value === undefined) {
       return fallback;
@@ -186,15 +217,143 @@ function keepKind(test: (value: unknown) => boolean, expected: string): CustomRe
       return value;
     }
 
-    reportInvalid(diagnostics, key, expected, value, "the current value");
+    reportInvalid(diagnostics, key, expected, value, "the current value", describe);
     return fallback;
   };
+}
+
+/**
+ * Returns the URL that a relative destination resolves against. A worker has no document, so
+ * it uses its own location.
+ * @returns The base URL, or undefined when the scope has neither.
+ */
+function pageBase(): string | undefined {
+  if (typeof document !== "undefined") {
+    return document.baseURI;
+  }
+
+  return typeof location === "undefined" ? undefined : location.href;
+}
+
+/**
+ * Checks a destination URL and returns the form the library sends to. A relative URL resolves
+ * against the page, so the records go where the app's own requests go, and the report names
+ * that origin. A URL with a user name or a password is refused, because each request would
+ * carry it.
+ * @param key Config key.
+ * @param value The URL the consumer passed.
+ * @param fallback The current destination.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The URL, its absolute form for a relative URL, or the fallback for a refused URL.
+ */
+function absoluteUrl(
+  key: string,
+  value: string,
+  fallback: unknown,
+  diagnostics: Diagnostics,
+): unknown {
+  let url: URL;
+  try {
+    url = new URL(value, pageBase());
+  } catch (error) {
+    // The URL can hold a token, and this message can become a record.
+    diagnostics.report(
+      "config.invalid",
+      `${key} is not a valid URL. The library keeps the current value.`,
+      undefined,
+      error,
+    );
+    return fallback;
+  }
+
+  if (url.username !== "" || url.password !== "") {
+    diagnostics.report(
+      "config.invalid",
+      `${key} has a user name or a password. The library keeps the current value.`,
+    );
+    return fallback;
+  }
+
+  if (SCHEME_PATTERN.test(value)) {
+    return value;
+  }
+
+  diagnostics.report("config.invalid", `${key} is relative. The library sends to ${url.origin}.`);
+  return url.href;
+}
+
+/**
+ * Reads a destination that null turns off. An empty or blank string turns it off too, with a
+ * report, because an empty environment variable must not leave the records going to the old
+ * destination.
+ * @param key Config key.
+ * @param value The value the consumer passed.
+ * @param fallback The current destination.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The URL, null when it's off, or the fallback for a refused value.
+ */
+function resolveDestination(
+  key: string,
+  value: unknown,
+  fallback: unknown,
+  diagnostics: Diagnostics,
+): unknown {
+  if (typeof value !== "string") {
+    return keepKind(isNull, URL_EXPECTED, describeKind)(key, value, fallback, diagnostics);
+  }
+
+  if (value.trim() === "") {
+    diagnostics.report(
+      "config.invalid",
+      `${key} is empty. The library turns it off. Use null to turn it off.`,
+    );
+    return null;
+  }
+
+  // The current value passed the check already, so it gets no second report.
+  return value === fallback ? value : absoluteUrl(key, value, fallback, diagnostics);
+}
+
+/**
+ * Reads the endpoint. "" stays "", the value for "not set", so resolveConfig reports a missing
+ * endpoint. A blank string is refused, because it would send to the page itself.
+ * @param value The value the consumer passed.
+ * @param fallback The current endpoint.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The endpoint, null for console-only mode, or the fallback for a refused value.
+ */
+function resolveEndpoint(
+  value: unknown,
+  fallback: string | null,
+  diagnostics: Diagnostics,
+): string | null {
+  if (typeof value !== "string") {
+    return keepKind(isNull, URL_EXPECTED, describeKind)(
+      "endpoint",
+      value,
+      fallback,
+      diagnostics,
+    ) as string | null;
+  }
+
+  if (value === "" || value === fallback) {
+    return value;
+  }
+
+  if (value.trim() === "") {
+    diagnostics.report("config.invalid", "endpoint is blank. The library keeps the current value.");
+    return fallback;
+  }
+
+  return absoluteUrl("endpoint", value, fallback, diagnostics) as string | null;
 }
 
 /** Rules for one policy section. Every number key must have a range. */
 interface PolicyRules<T> {
   /** Accepted range for each number key. */
   ranges: Record<NumberKeys<T>, Range>;
+  /** Accepted range for each key that also takes null, which means no limit. */
+  limits: Record<LimitKeys<T>, Range>;
   /** Accepted values for each choice key. */
   choices?: Partial<Record<keyof T, readonly string[]>>;
   /** Resolver for each key with any other value type. */
@@ -208,6 +367,10 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       // A larger capacity fails as an invalid array allocation.
       breadcrumbs: [0, 1_000_000],
       errorDedupeMs: DURATION_RANGE,
+      // A window of 0 ms starts a new window for every event, so no rate limit would apply.
+      windowMs: POSITIVE_DURATION_RANGE,
+    },
+    limits: {
       maxErrorSignatures: COUNT_RANGE,
       errorsPerWindow: COUNT_RANGE,
       consolePerWindow: COUNT_RANGE,
@@ -216,25 +379,24 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       reportsPerWindow: COUNT_RANGE,
       resourcesPerWindow: COUNT_RANGE,
       lifecyclePerWindow: COUNT_RANGE,
-      windowMs: DURATION_RANGE,
       errorCeiling: COUNT_RANGE,
     },
   },
-  metadata: { ranges: {} },
-  persistence: { ranges: {} },
+  metadata: { ranges: {}, limits: {} },
+  persistence: { ranges: {}, limits: {} },
   diagnostics: {
     ranges: { throttleMs: DURATION_RANGE },
+    limits: {},
     custom: { records: resolveDiagnosticRecords },
   },
   correlation: {
-    ranges: {
-      sessionIdleMs: DURATION_RANGE,
-      sessionTouchMs: DURATION_RANGE,
-      traceMaxAgeMs: DURATION_RANGE,
-    },
+    ranges: { sessionTouchMs: DURATION_RANGE },
+    // 0 would end a session or a trace at once, so these start at 1, and null lifts them.
+    limits: { sessionIdleMs: POSITIVE_DURATION_RANGE, traceMaxAgeMs: POSITIVE_DURATION_RANGE },
   },
   metrics: {
-    ranges: {
+    ranges: {},
+    limits: {
       maxSeries: COUNT_RANGE,
       maxInstruments: COUNT_RANGE,
       maxHistogramBoundaries: COUNT_RANGE,
@@ -242,12 +404,12 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
   },
   buffering: {
     ranges: {
-      maxPendingRecords: COUNT_RANGE,
-      maxPendingBytes: COUNT_RANGE,
       // Two heads at least, or a full buffer keeps its first records but too few of the newest.
       // The maximum bounds the memory of a startup storm.
       maxHeldRecords: [2 * HOLD_BUFFER_HEAD_RECORDS, 10_000],
     },
+    // A buffer that holds nothing would drop every record, so these start at 1.
+    limits: { maxPendingRecords: POSITIVE_RANGE, maxPendingBytes: POSITIVE_RANGE },
     choices: { overflow: ["drop-oldest", "drop-newest", "persist"] },
   },
   delivery: {
@@ -259,29 +421,38 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       retryIdleDelayMs: DURATION_RANGE,
       batchesPerDrain: POSITIVE_RANGE,
     },
+    limits: {},
     choices: { priority: ["low", "auto", "high"] },
   },
-  debugBuffer: { ranges: { maxRecords: [1, 10_000], maxAgeMs: DURATION_RANGE } },
-  profiler: { ranges: { flushIntervalMs: [1000, 600_000], maxProbes: [1, PROFILER_PROBE_LIMIT] } },
+  debugBuffer: {
+    ranges: { maxRecords: [1, 10_000] },
+    limits: { maxAgeMs: POSITIVE_DURATION_RANGE },
+  },
+  profiler: {
+    ranges: { flushIntervalMs: [1000, 600_000], maxProbes: [1, PROFILER_PROBE_LIMIT] },
+    limits: {},
+  },
   replay: {
     ranges: {
       bufferMs: [5000, 600_000],
       maxBufferBytes: [100_000, 200_000_000],
       afterErrorMs: [0, 600_000],
-      uploadsPerWindow: COUNT_RANGE,
       batchSize: [1, 10_000],
       batchBytes: [10_000, 10_000_000],
       flushIntervalMs: [100, 60_000],
       maxQueueBytes: [100_000, 200_000_000],
       maxAttempts: [1, 10],
     },
+    limits: { uploadsPerWindow: COUNT_RANGE },
     choices: { mode: ["onError"] },
     custom: {
+      endpoint: resolveDestination,
       maskSelectors: keepKind(isStrings, "a list of strings"),
       blockSelectors: keepKind(isStrings, "a list of strings"),
-      loader: keepKind(isFunctionOrNull, "a function or null"),
-      onSegment: keepKind(isFunctionOrNull, "a function or null"),
-      headers: keepKind(isHeaders, "an object of strings, a function or null"),
+      loader: keepKind(isFunctionOrNull, HOOK_EXPECTED, describeKind),
+      onSegment: keepKind(isFunctionOrNull, HOOK_EXPECTED, describeKind),
+      // A string can be a token, so the report gives only the type.
+      headers: keepKind(isHeaders, "an object of strings, a function or null", describeKind),
       plugins: keepKind(isFunctions, "a list of functions"),
       recordOptions: keepKind(isRecord, "an object"),
     },
@@ -319,14 +490,14 @@ const TARGET_LIST_EXPECTED =
   'a list of origin URLs such as "https://api.example" and RegExp patterns';
 const ORIGIN_LIST_EXPECTED =
   'a list of origin URLs such as "https://app.example". For a sandboxed frame, set bus.mode: "sender" in the frame';
-const STRING_LIST_EXPECTED = "a list of strings";
+const LOG_TYPE_LIST_EXPECTED = `a list of log types: ${listOf(LOG_TYPE_VALUES)}`;
 const DIAGNOSTIC_RECORDS_EXPECTED = "true, false or a list of diagnostic codes";
 
 /** Function form of the headers option. */
 type HeadersFunction = () => Record<string, string> | Promise<Record<string, string>>;
 
-/** The headers option. */
-type HeadersOption = ObservabilityConfig["headers"];
+/** The headers option, after null has removed it. */
+type HeadersOption = NonNullable<ObservabilityConfig["headers"]> | undefined;
 
 /**
  * Formats a list of values as text, for example `"a", "b" or "c"`.
@@ -360,12 +531,31 @@ function describeValue(value: unknown): string {
 }
 
 /**
+ * Describes only the type of a value. A hook or a URL key can hold a token as a string, and
+ * a diagnostic can become a record, so its text must not appear.
+ * @param value The value the consumer passed.
+ * @returns The type, for example "a string".
+ */
+function describeKind(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return "a list";
+  }
+
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
+/**
  * Reports a value the option doesn't accept.
  * @param diagnostics Diagnostics reporter.
  * @param key Config key, for example `bus.mode`.
  * @param expected Describes the accepted values.
  * @param value The value the consumer passed.
  * @param kept Describes the value that stays in effect.
+ * @param describe Describes the value. A key whose text can hold a secret passes describeKind.
  */
 function reportInvalid(
   diagnostics: Diagnostics,
@@ -373,10 +563,11 @@ function reportInvalid(
   expected: string,
   value: unknown,
   kept: string,
+  describe: (value: unknown) => string = describeValue,
 ): void {
   diagnostics.report(
     "config.invalid",
-    `${key} must be ${expected}. The value is ${describeValue(value)}. The library keeps ${kept}.`,
+    `${key} must be ${expected}. The value is ${describe(value)}. The library keeps ${kept}.`,
   );
 }
 
@@ -405,7 +596,11 @@ function resolveChoice<T extends string>(
     return match;
   }
 
-  reportInvalid(diagnostics, key, listOf(accepted), value, `"${fallback}"`);
+  // The value isn't printed, because a string can be a token put into the wrong key.
+  diagnostics.report(
+    "config.invalid",
+    `${key} must be ${listOf(accepted)}. The library keeps "${fallback}".`,
+  );
   return fallback;
 }
 
@@ -492,28 +687,236 @@ function resolveInteger(
 }
 
 /**
- * Checks the logger cache limit. An invalid value keeps the current limit, including null.
- * @param value The limit the app supplied.
- * @param previous The current limit. Null allows an unlimited cache.
+ * Reads a limit that takes an integer in a range, or null for no limit.
+ * @param key Config key.
+ * @param value The value the consumer passed.
+ * @param range Lowest and highest accepted value.
+ * @param fallback The current limit. Null means no limit.
  * @param diagnostics Diagnostics reporter.
- * @returns The valid limit, or the current one.
+ * @returns The limit, or the fallback when the value isn't accepted.
  */
-function resolveCacheLimit(
+function resolveLimit(
+  key: string,
   value: unknown,
-  previous: number | null,
+  range: Range,
+  fallback: number | null,
   diagnostics: Diagnostics,
 ): number | null {
-  if (value === undefined) return previous;
-  if (value === null) return null;
-  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
-  reportInvalid(
-    diagnostics,
-    "loggerCache.maxEntries",
-    "a nonnegative safe integer or null",
-    value,
-    String(previous),
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  const [min, max] = range;
+  if (typeof value === "number" && Number.isInteger(value) && value >= min && value <= max) {
+    return value;
+  }
+
+  const expected = `an integer from ${String(min)} to ${String(max)}, or null for no limit`;
+  reportInvalid(diagnostics, key, expected, value, String(fallback));
+  return fallback;
+}
+
+/**
+ * Reads a hook. Undefined keeps the current hook and null removes it.
+ * @param key Config key.
+ * @param value The value the consumer passed.
+ * @param fallback The current hook.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The hook, or undefined when there is none.
+ */
+function resolveHook<T>(
+  key: string,
+  value: unknown,
+  fallback: T | undefined,
+  diagnostics: Diagnostics,
+): T | undefined {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === null) {
+    return undefined;
+  }
+
+  if (typeof value === "function") {
+    return value as T;
+  }
+
+  reportInvalid(diagnostics, key, HOOK_EXPECTED, value, "the current value", describeKind);
+  return fallback;
+}
+
+/**
+ * Stands in for a redact value that isn't a function when no redact hook was set before. The
+ * record builder drops each record while it's the hook, so a record the app meant to redact
+ * never leaves the page.
+ * @returns null, which drops the record.
+ */
+export const REFUSE_RECORDS = (): null => null;
+
+/**
+ * Reads the redact hook. A value that isn't a function keeps the current hook, or fails closed
+ * when there is none. Otherwise a typo such as `{ default: fn }` would send raw records.
+ * @param value The value the consumer passed.
+ * @param fallback The current hook.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The hook, REFUSE_RECORDS, or undefined when there is none.
+ */
+function resolveRedact(
+  value: unknown,
+  fallback: ResolvedConfig["redact"],
+  diagnostics: Diagnostics,
+): ResolvedConfig["redact"] {
+  if (value === undefined || value === null || typeof value === "function" || fallback) {
+    return resolveHook("redact", value, fallback, diagnostics);
+  }
+
+  diagnostics.report(
+    "config.invalid",
+    `redact must be ${HOOK_EXPECTED}. The value is ${describeKind(value)}. The library drops each record until redact is a function or null.`,
   );
-  return previous;
+  return REFUSE_RECORDS;
+}
+
+/**
+ * Reads the processors. A list with one entry that isn't a function is refused as a whole,
+ * because running the other processors without it could let a record through unmasked. With
+ * no current list, the library drops each record instead.
+ * @param value The value the consumer passed.
+ * @param fallback The current processors.
+ * @param diagnostics Diagnostics reporter.
+ * @returns A copy of the new list, the current list, or a list that drops each record.
+ */
+function resolveProcessors(
+  value: unknown,
+  fallback: ResolvedConfig["processors"],
+  diagnostics: Diagnostics,
+): ResolvedConfig["processors"] {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (isFunctions(value)) {
+    return [...(value as ResolvedConfig["processors"])];
+  }
+
+  if (fallback.length > 0) {
+    reportInvalid(
+      diagnostics,
+      "processors",
+      "a list of functions",
+      value,
+      "the current list",
+      describeKind,
+    );
+    return fallback;
+  }
+
+  // No list to keep, and the app meant to process each record, so fail closed.
+  diagnostics.report(
+    "config.invalid",
+    `processors must be a list of functions. The value is ${describeKind(value)}. The library drops each record until processors is a list of functions or [].`,
+  );
+  return [REFUSE_RECORDS];
+}
+
+/**
+ * Reads a string option.
+ * @param key Config key.
+ * @param value The value the consumer passed.
+ * @param fallback The current value.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The value, or the fallback when the value isn't a string.
+ */
+function resolveString(
+  key: string,
+  value: unknown,
+  fallback: string,
+  diagnostics: Diagnostics,
+): string {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  reportInvalid(diagnostics, key, "a string", value, "the current value");
+  return fallback;
+}
+
+/**
+ * Reads a sampling rate from 0 to 1.
+ * @param key Config key.
+ * @param value The value the consumer passed.
+ * @param fallback The current rate.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The rate, or the fallback when the value isn't accepted.
+ */
+function resolveRate(
+  key: string,
+  value: unknown,
+  fallback: number,
+  diagnostics: Diagnostics,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (isRate(value)) {
+    return value;
+  }
+
+  diagnostics.report(
+    "config.invalid",
+    `${key} must be 0..1. The value is ${describeValue(value)}. The library keeps ${String(fallback)}.`,
+  );
+  return fallback;
+}
+
+/**
+ * Reads sampling.rates. A new map replaces the current one, as minLevels does, so a later call
+ * can remove a namespace.
+ * @param value The value the consumer passed.
+ * @param fallback The current rates.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The rate for each namespace prefix.
+ */
+function resolveRates(
+  value: unknown,
+  fallback: Record<string, number>,
+  diagnostics: Diagnostics,
+): Record<string, number> {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (!isObject(value)) {
+    reportInvalid(diagnostics, "sampling.rates", "an object of rates", value, "the current value");
+    return fallback;
+  }
+
+  // A bad entry is left out, so the namespace falls back to a shorter prefix or defaultRate.
+  // An undefined entry is the same as no entry.
+  const rates: [string, number][] = [];
+  for (const [ns, rate] of Object.entries(value)) {
+    if (isRate(rate)) {
+      rates.push([ns, rate]);
+    } else if (rate !== undefined) {
+      diagnostics.report(
+        "config.invalid",
+        `sampling.rates["${ns}"] must be 0..1. The value is ${describeValue(rate)}. The library ignores this entry.`,
+      );
+    }
+  }
+
+  // fromEntries creates own properties, and it copies, so the app's object never changes.
+  return Object.fromEntries(rates);
 }
 
 /**
@@ -666,15 +1069,6 @@ function resolveList<T>(
 }
 
 /**
- * Accepts a function entry.
- * @param entry List entry.
- * @returns The entry, or undefined.
- */
-function toProcessor(entry: unknown): ResolvedConfig["processors"][number] | undefined {
-  return typeof entry === "function" ? (entry as ResolvedConfig["processors"][number]) : undefined;
-}
-
-/**
  * Accepts a capture plugin entry.
  * @param entry List entry.
  * @returns The entry, or undefined.
@@ -723,6 +1117,15 @@ function resolveDiagnosticRecords(
  */
 function toStringEntry(entry: unknown): string | undefined {
   return typeof entry === "string" ? entry : undefined;
+}
+
+/**
+ * Accepts a log type entry. An unknown type would never match a record, so it's rejected.
+ * @param entry List entry.
+ * @returns The log type, or undefined.
+ */
+function toLogType(entry: unknown): LogType | undefined {
+  return LOG_TYPE_VALUES.find((type) => type === entry);
 }
 
 /**
@@ -791,15 +1194,20 @@ function isStringRecord(value: unknown): value is Record<string, string> {
  * @param value The value the consumer passed.
  * @param fallback The current headers.
  * @param diagnostics Diagnostics reporter.
- * @returns The headers, undefined for an explicit undefined, or the fallback for a bad value.
+ * @returns The headers, undefined after null, or the fallback for undefined or a bad value.
  */
 function resolveHeaders(
   value: unknown,
   fallback: HeadersOption,
   diagnostics: Diagnostics,
 ): HeadersOption {
-  // An explicit undefined clears the headers, so the old token isn't sent after logout.
   if (value === undefined) {
+    return fallback;
+  }
+
+  // null clears the headers. undefined keeps them, so an unset variable can't drop a token the
+  // app still needs. With isolation on, configure() refuses the change and a logout rotates.
+  if (value === null) {
     return undefined;
   }
 
@@ -857,9 +1265,9 @@ function resolveSerializer(
 
   diagnostics.report(
     "config.invalid",
-    `serializer must be "${SERIALIZER_NAME_OTLP}", "${SERIALIZER_NAME_ECS}" or an implementation. The library uses "${SERIALIZER_NAME_OTLP}".`,
+    `serializer must be "${SERIALIZER_NAME_OTLP}", "${SERIALIZER_NAME_ECS}" or an implementation. The library keeps the current serializer.`,
   );
-  return SERIALIZER_NAME_OTLP;
+  return previous ?? SERIALIZER_NAME_OTLP;
 }
 
 /** The style keys the console option accepts. */
@@ -871,8 +1279,13 @@ const CONSOLE_STYLE_KEYS = new Set(Object.keys(CONSOLE_DEFAULT_STYLES));
  * @param diagnostics Diagnostics reporter.
  * @returns The valid styles.
  */
-function validStyles(styles: ConsoleStyles | undefined, diagnostics: Diagnostics): ConsoleStyles {
+function validStyles(styles: unknown, diagnostics: Diagnostics): ConsoleStyles {
   const valid: Record<string, string> = {};
+  if (styles !== undefined && !isObject(styles)) {
+    reportInvalid(diagnostics, "console.styles", "an object of CSS strings", styles, "the styles");
+    return valid;
+  }
+
   const entries: [string, unknown][] = Object.entries(styles ?? {});
 
   for (const [key, value] of entries) {
@@ -881,6 +1294,11 @@ function validStyles(styles: ConsoleStyles | undefined, diagnostics: Diagnostics
         "config.invalid",
         `The library ignores the unknown console.styles key "${key}". Check the spelling.`,
       );
+      continue;
+    }
+
+    // undefined keeps the current style, as it does for every other key.
+    if (value === undefined) {
       continue;
     }
 
@@ -903,15 +1321,16 @@ function validStyles(styles: ConsoleStyles | undefined, diagnostics: Diagnostics
  * @param requested The level the consumer passed.
  * @param previous The current console level. Null means the console is off.
  * @param diagnostics Diagnostics reporter.
- * @returns The level. An unknown level keeps the current one.
+ * @returns The level. An omitted or unknown level keeps the current one, also when it's off.
  */
 function resolveConsoleLevel(
   requested: unknown,
   previous: LogLevel | null,
   diagnostics: Diagnostics,
 ): LogLevel | null {
+  // An omitted level keeps the current one, so setting only the styles can't turn a console on.
   if (requested === undefined) {
-    return previous ?? CONSOLE_DEFAULT_LEVEL;
+    return previous;
   }
 
   const level = toLevel(requested);
@@ -976,7 +1395,7 @@ function resolveConsole(
 }
 
 /**
- * Merges and checks the sampling section. resolveConfig checks the rates after the merge.
+ * Merges and checks the sampling section.
  * @param input The sampling options the consumer passed.
  * @param base The current sampling options.
  * @param diagnostics Diagnostics reporter.
@@ -990,15 +1409,25 @@ function resolveSampling(
   const given = input ?? {};
 
   return {
-    ...base,
-    ...given,
-    rates: { ...base.rates, ...given.rates },
+    defaultRate: resolveRate(
+      "sampling.defaultRate",
+      given.defaultRate,
+      base.defaultRate,
+      diagnostics,
+    ),
+    remoteMaxRate: resolveRate(
+      "sampling.remoteMaxRate",
+      given.remoteMaxRate,
+      base.remoteMaxRate,
+      diagnostics,
+    ),
+    rates: resolveRates(given.rates, base.rates, diagnostics),
     alwaysSampleTypes: resolveList(
       "sampling.alwaysSampleTypes",
       given.alwaysSampleTypes,
       base.alwaysSampleTypes,
-      STRING_LIST_EXPECTED,
-      toStringEntry,
+      LOG_TYPE_LIST_EXPECTED,
+      toLogType,
       diagnostics,
     ),
     alwaysSampleFrom: resolveLevel(
@@ -1025,11 +1454,12 @@ function resolveBus(
 ): BusOptions {
   const given = input ?? {};
 
+  // A limit of 0 would stop every message, so each limit starts at 1 and null lifts it.
   return {
-    maxTrackedSources: resolveInteger(
+    maxTrackedSources: resolveLimit(
       "bus.maxTrackedSources",
       given.maxTrackedSources,
-      [0, Number.MAX_SAFE_INTEGER],
+      POSITIVE_RANGE,
       base.maxTrackedSources,
       diagnostics,
     ),
@@ -1047,24 +1477,24 @@ function resolveBus(
       base.validation,
       diagnostics,
     ),
-    maxMessageBytes: resolveInteger(
+    maxMessageBytes: resolveLimit(
       "bus.maxMessageBytes",
       given.maxMessageBytes,
-      [0, Number.MAX_SAFE_INTEGER],
+      POSITIVE_RANGE,
       base.maxMessageBytes,
       diagnostics,
     ),
-    maxRecordsPerMessage: resolveInteger(
+    maxRecordsPerMessage: resolveLimit(
       "bus.maxRecordsPerMessage",
       given.maxRecordsPerMessage,
-      [0, Number.MAX_SAFE_INTEGER],
+      POSITIVE_RANGE,
       base.maxRecordsPerMessage,
       diagnostics,
     ),
-    maxMessagesPerSecond: resolveInteger(
+    maxMessagesPerSecond: resolveLimit(
       "bus.maxMessagesPerSecond",
       given.maxMessagesPerSecond,
-      [0, Number.MAX_SAFE_INTEGER],
+      POSITIVE_RANGE,
       base.maxMessagesPerSecond,
       diagnostics,
     ),
@@ -1135,14 +1565,27 @@ function resolveRetention(
   const given = input ?? {};
 
   return {
-    mode: resolveChoice(
-      "retention.mode",
-      given.mode,
-      RETENTION_MODE_VALUES,
-      base.mode,
+    maxBatches: resolveInteger(
+      "retention.maxBatches",
+      given.maxBatches,
+      MAX_BATCHES_RANGE,
+      base.maxBatches,
       diagnostics,
     ),
-    ...resolveRanges("retention", given, base, RETENTION_RANGES, diagnostics),
+    maxAgeMs: resolveLimit(
+      "retention.maxAgeMs",
+      given.maxAgeMs,
+      RETENTION_AGE_RANGE,
+      base.maxAgeMs,
+      diagnostics,
+    ),
+    maxAttempts: resolveLimit(
+      "retention.maxAttempts",
+      given.maxAttempts,
+      RETENTION_ATTEMPTS_RANGE,
+      base.maxAttempts,
+      diagnostics,
+    ),
   };
 }
 
@@ -1202,7 +1645,18 @@ function resolveCapture(
   const given = input ?? {};
   const capture: CaptureOptions = {
     ...base,
-    ...given,
+    urlTransform: resolveHook(
+      "capture.urlTransform",
+      given.urlTransform,
+      base.urlTransform,
+      diagnostics,
+    ),
+    webVitalsLoader: resolveHook(
+      "capture.webVitalsLoader",
+      given.webVitalsLoader,
+      base.webVitalsLoader,
+      diagnostics,
+    ),
     remoteToggles: resolveList(
       "capture.remoteToggles",
       given.remoteToggles,
@@ -1417,42 +1871,24 @@ const SIGNAL_OFF = {
  * @param fallback The current value.
  * @param serializer Resolved serializer option.
  * @param diagnostics Diagnostics reporter.
- * @returns A valid absolute URL, or "" to turn the endpoint off.
+ * @returns A valid absolute URL, or null to turn the endpoint off.
  */
 function resolveSignalEndpoint(
   key: keyof typeof SIGNAL_OFF,
   value: unknown,
-  fallback: string,
+  fallback: string | null,
   serializer: SerializerChoice,
   diagnostics: Diagnostics,
-): string {
-  let url = fallback;
-
-  if (typeof value === "string" && value !== "") {
-    try {
-      new URL(value);
-      url = value;
-    } catch (error) {
-      diagnostics.report(
-        "config.invalid",
-        `${key} is not a valid absolute URL: ${recordedUrl(value, false)}. The library keeps the current value.`,
-        undefined,
-        error,
-      );
-    }
-  } else if (value === "") {
-    url = "";
-  } else if (value !== undefined) {
-    reportInvalid(diagnostics, key, "a URL string", value, "the current value");
-  }
+): string | null {
+  const url = resolveDestination(key, value, fallback, diagnostics) as string | null;
 
   // A custom or ECS serializer can't encode a metrics or traces request.
-  if (url !== "" && serializer !== SERIALIZER_NAME_OTLP) {
+  if (url !== null && serializer !== SERIALIZER_NAME_OTLP) {
     diagnostics.report(
       "config.invalid",
       `${key} needs serializer "${SERIALIZER_NAME_OTLP}". ${SIGNAL_OFF[key]}`,
     );
-    return "";
+    return null;
   }
 
   return url;
@@ -1462,6 +1898,8 @@ function resolveSignalEndpoint(
 interface PolicyLookup {
   /** Accepted range for each number key. */
   ranges: Partial<Record<string, Range>>;
+  /** Accepted range for each key that also takes null. */
+  limits: Partial<Record<string, Range>>;
   /** Accepted values for each choice key. */
   choices?: Partial<Record<string, readonly string[]>>;
   /** Resolver for each key with any other value type. */
@@ -1489,11 +1927,20 @@ function resolvePolicy<T extends object>(
     const value: unknown = input?.[key];
     const fallback: unknown = base[key];
     const range = rules.ranges[key];
+    const limit = rules.limits[key];
     const choice = rules.choices?.[key];
     const custom = rules.custom?.[key];
     let resolved: unknown = fallback;
     if (custom) {
       resolved = custom(`${name}.${key}`, value, fallback, diagnostics);
+    } else if (limit) {
+      resolved = resolveLimit(
+        `${name}.${key}`,
+        value,
+        limit,
+        fallback as number | null,
+        diagnostics,
+      );
     } else if (typeof fallback === "number" && range) {
       resolved = resolveInteger(`${name}.${key}`, value, range, fallback, diagnostics);
     } else if (typeof fallback === "boolean") {
@@ -1511,6 +1958,79 @@ function resolvePolicy<T extends object>(
 }
 
 /**
+ * Returns the input without a section that isn't an object, and reports each one. Otherwise
+ * the library would ignore a section such as `capture: null` with no report.
+ * @param input Partial consumer configuration options.
+ * @param diagnostics Diagnostics reporter.
+ * @returns The input, with every bad section left out so its current values stay.
+ */
+function checkSections(
+  input: Partial<ObservabilityConfig>,
+  diagnostics: Diagnostics,
+): Partial<ObservabilityConfig> {
+  let checked = input;
+
+  for (const section of CONFIG_SECTIONS) {
+    const value: unknown = input[section];
+    if (value !== undefined && !isObject(value)) {
+      reportInvalid(diagnostics, section, "an object", value, "the current values");
+      checked = { ...checked, [section]: undefined };
+    }
+  }
+
+  return checked;
+}
+
+/**
+ * Reports each pair of settings where one of them does nothing, so the app learns why. The
+ * values stay. Only a call that sets one of the pair reports it, so an unrelated later call
+ * stays quiet.
+ * @param input The options of this configure() call, after checkSections().
+ * @param config The resolved config.
+ * @param diagnostics Diagnostics reporter.
+ */
+function reportIneffective(
+  input: Partial<ObservabilityConfig>,
+  config: ResolvedConfig,
+  diagnostics: Diagnostics,
+): void {
+  const { capture, sampling } = config;
+  const noEffect = (key: string, condition: string): void => {
+    diagnostics.report("config.invalid", `${key} has no effect ${condition}. The value stays.`);
+  };
+
+  const setsTransport = input.transport !== undefined || input.transportWorker !== undefined;
+  if (setsTransport && config.transport && config.transportWorker) {
+    noEffect("transportWorker", "with transport");
+  }
+
+  const setsExit = input.transport !== undefined || input.transportOnExit !== undefined;
+  if (setsExit && config.transportOnExit && !config.transport) {
+    noEffect("transportOnExit", "without transport");
+  }
+
+  const setsToggles =
+    input.capture?.remoteToggles !== undefined || input.sampling?.remote !== undefined;
+  if (setsToggles && capture.remoteToggles.length > 0 && !sampling.remote) {
+    noEffect("capture.remoteToggles", "without sampling.remote");
+  }
+
+  // A remote rule can still turn on fetch or xhr, and then the targets apply.
+  const requests =
+    capture.fetch ||
+    capture.xhr ||
+    capture.remoteToggles.includes("fetch") ||
+    capture.remoteToggles.includes("xhr");
+  const setsTargets =
+    input.capture?.propagateTraceHeaderTo !== undefined ||
+    input.capture?.fetch !== undefined ||
+    input.capture?.xhr !== undefined;
+  if (setsTargets && capture.propagateTraceHeaderTo.length > 0 && !requests) {
+    noEffect("capture.propagateTraceHeaderTo", "without capture.fetch or capture.xhr");
+  }
+}
+
+/**
  * Resolves partial configuration input into a validated ResolvedConfig.
  * @param input Partial consumer configuration options.
  * @param diagnostics Diagnostics reporter.
@@ -1523,155 +2043,146 @@ export function resolveConfig(
   previous?: ResolvedConfig,
 ): ResolvedConfig {
   const base = previous ?? DEFAULT_CONFIG;
+  const given = checkSections(input, diagnostics);
 
   // Check every policy section against its own rules. POLICY_RULES key order is the report order.
   const policies = Object.fromEntries(
     (Object.keys(POLICY_RULES) as PolicySection[]).map((key) => [
       key,
-      resolvePolicy(key, input[key], base[key], POLICY_RULES[key], diagnostics),
+      resolvePolicy(key, given[key], base[key], POLICY_RULES[key], diagnostics),
     ]),
   ) as Pick<ResolvedConfig, PolicySection>;
+  // Every key is read on its own. Spreading the input would let undefined remove a hook.
   const merged: ResolvedConfig = {
     ...base,
-    ...input,
     ...policies,
 
     lockConfiguration: resolveBoolean(
       "lockConfiguration",
-      input.lockConfiguration,
+      given.lockConfiguration,
       base.lockConfiguration,
       diagnostics,
     ),
     loggerCache: {
-      maxEntries: resolveCacheLimit(
-        input.loggerCache?.maxEntries,
+      // 0 turns the cache off, and null lifts the limit.
+      maxEntries: resolveLimit(
+        "loggerCache.maxEntries",
+        given.loggerCache?.maxEntries,
+        COUNT_RANGE,
         base.loggerCache.maxEntries,
         diagnostics,
       ),
     },
     securityContext: {
+      // An empty id keeps the current one, and the runtime creates one at startup.
       id:
-        typeof input.securityContext?.id === "string"
-          ? input.securityContext.id || base.securityContext.id
-          : base.securityContext.id,
+        resolveString(
+          "securityContext.id",
+          given.securityContext?.id,
+          base.securityContext.id,
+          diagnostics,
+        ) || base.securityContext.id,
       isolation: resolveBoolean(
         "securityContext.isolation",
-        input.securityContext?.isolation,
+        given.securityContext?.isolation,
         base.securityContext.isolation,
         diagnostics,
       ),
     },
     // An unset environment variable arrives as undefined, so keep the current endpoint.
-    endpoint: input.endpoint === undefined ? base.endpoint : input.endpoint,
+    endpoint: resolveEndpoint(given.endpoint, base.endpoint, diagnostics),
+    serviceName: resolveString("serviceName", given.serviceName, base.serviceName, diagnostics),
+    serviceVersion: resolveString(
+      "serviceVersion",
+      given.serviceVersion,
+      base.serviceVersion,
+      diagnostics,
+    ),
+    environment: resolveString("environment", given.environment, base.environment, diagnostics),
     // A bad value reports config.invalid and the current value stays. Without this check, a bad
     // minLevel silently drops every record.
-    enabled: resolveBoolean("enabled", input.enabled, base.enabled, diagnostics),
+    enabled: resolveBoolean("enabled", given.enabled, base.enabled, diagnostics),
     payloadMode: resolveChoice(
       "payloadMode",
-      input.payloadMode,
+      given.payloadMode,
       ["copy", "defer"] as const,
       base.payloadMode,
       diagnostics,
     ),
-    minLevel: resolveLevel("minLevel", input.minLevel, base.minLevel, diagnostics),
-    minLevels: resolveMinLevels(input.minLevels, base.minLevels, diagnostics),
-    processors: resolveList(
-      "processors",
-      input.processors,
-      base.processors,
-      "a list of functions",
-      toProcessor,
-      diagnostics,
-    ),
+    minLevel: resolveLevel("minLevel", given.minLevel, base.minLevel, diagnostics),
+    minLevels: resolveMinLevels(given.minLevels, base.minLevels, diagnostics),
+    processors: resolveProcessors(given.processors, base.processors, diagnostics),
     compression: resolveChoice(
       "compression",
-      input.compression,
+      given.compression,
       COMPRESSION_VALUES,
       base.compression,
       diagnostics,
     ),
     credentials: resolveChoice(
       "credentials",
-      input.credentials,
+      given.credentials,
       CREDENTIALS_VALUES,
       base.credentials,
       diagnostics,
     ),
-    headers:
-      "headers" in input ? resolveHeaders(input.headers, base.headers, diagnostics) : base.headers,
-    storage: resolveChoice("storage", input.storage, STORAGE_VALUES, base.storage, diagnostics),
+    headers: resolveHeaders(given.headers, base.headers, diagnostics),
+    storage: resolveChoice("storage", given.storage, STORAGE_VALUES, base.storage, diagnostics),
     identity: resolveChoice(
       "identity",
-      input.identity,
+      given.identity,
       IDENTITY_VALUES,
       base.identity,
       diagnostics,
     ),
-    // Replaces the raw value from the object merge with the validated one. A name stays a name.
-    serializer: resolveSerializer(input.serializer, previous?.serializer, diagnostics),
-    console: resolveConsole(input.console, base.console, diagnostics),
-    sampling: resolveSampling(input.sampling, base.sampling, diagnostics),
-    bus: resolveBus(input.bus, base.bus, diagnostics),
+    // A name stays a name, because the transport picks the implementation.
+    serializer: resolveSerializer(given.serializer, previous?.serializer, diagnostics),
+    console: resolveConsole(given.console, base.console, diagnostics),
+    sampling: resolveSampling(given.sampling, base.sampling, diagnostics),
+    bus: resolveBus(given.bus, base.bus, diagnostics),
     batching: resolveRanges(
       "batching",
-      input.batching,
+      given.batching,
       base.batching,
       BATCHING_RANGES,
       diagnostics,
     ),
-    retention: resolveRetention(input.retention, base.retention, diagnostics),
-    limits: resolveRanges("limits", input.limits, base.limits, LIMIT_RANGES, diagnostics),
-    journey: resolveJourney(input.journey, base.journey, diagnostics),
-    capture: resolveCapture(input.capture, base.capture, diagnostics),
+    retention: resolveRetention(given.retention, base.retention, diagnostics),
+    limits: resolveRanges("limits", given.limits, base.limits, LIMIT_RANGES, diagnostics),
+    journey: resolveJourney(given.journey, base.journey, diagnostics),
+    capture: resolveCapture(given.capture, base.capture, diagnostics),
+    // Without a transport function, the pipeline drops every batch, so a bad value keeps the
+    // current one.
+    transport: resolveHook("transport", given.transport, base.transport, diagnostics),
+    transportOnExit: resolveHook(
+      "transportOnExit",
+      given.transportOnExit,
+      base.transportOnExit,
+      diagnostics,
+    ),
+    transportWorker: resolveHook(
+      "transportWorker",
+      given.transportWorker,
+      base.transportWorker,
+      diagnostics,
+    ),
+    otelLoader: resolveHook("otelLoader", given.otelLoader, base.otelLoader, diagnostics),
+    contextProvider: resolveHook(
+      "contextProvider",
+      given.contextProvider,
+      base.contextProvider,
+      diagnostics,
+    ),
+    redact: resolveRedact(given.redact, base.redact, diagnostics),
+    onDiagnostic: resolveHook("onDiagnostic", given.onDiagnostic, base.onDiagnostic, diagnostics),
+    onDrop: resolveHook("onDrop", given.onDrop, base.onDrop, diagnostics),
   };
 
   for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
-    merged[key] = resolveSignalEndpoint(key, input[key], base[key], merged.serializer, diagnostics);
+    merged[key] = resolveSignalEndpoint(key, given[key], base[key], merged.serializer, diagnostics);
   }
 
-  // Guard against a value that can't send and keep the current function. Without a transport,
-  // the pipeline drops every batch.
-  if (merged.transport !== undefined && typeof merged.transport !== "function") {
-    diagnostics.report(
-      "config.invalid",
-      "transport must be a function. The library ignores the value.",
-    );
-    merged.transport = base.transport;
-  }
-
-  if (merged.onDrop !== undefined && typeof merged.onDrop !== "function") {
-    diagnostics.report(
-      "config.invalid",
-      "onDrop must be a function. The library ignores the value.",
-    );
-    merged.onDrop = base.onDrop;
-  }
-
-  if (merged.contextProvider !== undefined && typeof merged.contextProvider !== "function") {
-    diagnostics.report(
-      "config.invalid",
-      "contextProvider must be a function. The library ignores the value.",
-    );
-    merged.contextProvider = base.contextProvider;
-  }
-
-  if (merged.transportWorker !== undefined && typeof merged.transportWorker !== "function") {
-    diagnostics.report(
-      "config.invalid",
-      "transportWorker must be a function. The library keeps the current value.",
-    );
-    merged.transportWorker = base.transportWorker;
-  }
-
-  if (merged.transportOnExit !== undefined && typeof merged.transportOnExit !== "function") {
-    diagnostics.report(
-      "config.invalid",
-      "transportOnExit must be a function. The library ignores the value.",
-    );
-    merged.transportOnExit = base.transportOnExit;
-  }
-
-  // null selects console-only mode and is valid, so report only an empty string.
+  // null selects console-only mode. "" is the default when no call has set an endpoint.
   // A custom transport needs no endpoint.
   if (merged.endpoint === "") {
     if (merged.transport === undefined) {
@@ -1680,22 +2191,11 @@ export function resolveConfig(
         "endpoint is missing. The library drops each record. Set endpoint: null for console-only mode.",
       );
     }
-  } else if (merged.endpoint !== null) {
-    try {
-      new URL(merged.endpoint);
-    } catch (error) {
-      diagnostics.report(
-        "config.invalid",
-        `endpoint is not a valid absolute URL: ${recordedUrl(merged.endpoint, false)}.`,
-        undefined,
-        error,
-      );
-    }
   }
 
   // Only the delivery stack sends, and it loads only with an endpoint or a custom transport.
   for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
-    if (merged[key] !== "" && merged.endpoint === null && !merged.transport) {
+    if (merged[key] !== null && merged.endpoint === null && !merged.transport) {
       diagnostics.report(
         "config.invalid",
         `${key} needs endpoint or transport. The library sends nothing to ${key}.`,
@@ -1709,39 +2209,6 @@ export function resolveConfig(
       `serviceName is missing. Every record reports service.name as '${UNKNOWN_SERVICE_NAME}'.`,
     );
     merged.serviceName = UNKNOWN_SERVICE_NAME;
-  }
-
-  const rate: unknown = merged.sampling.defaultRate;
-  if (typeof rate !== "number" || rate < SAMPLING_RATE_MIN || rate > SAMPLING_RATE_MAX) {
-    diagnostics.report(
-      "config.invalid",
-      `sampling.defaultRate must be 0..1. The value is ${String(rate)}. The library uses ${String(SAMPLING_RATE_FALLBACK)}.`,
-    );
-    merged.sampling.defaultRate = SAMPLING_RATE_FALLBACK;
-  }
-
-  const maxRate: unknown = merged.sampling.remoteMaxRate;
-  // The negated range test also rejects NaN.
-  if (
-    typeof maxRate !== "number" ||
-    !(maxRate >= SAMPLING_RATE_MIN && maxRate <= SAMPLING_RATE_MAX)
-  ) {
-    diagnostics.report(
-      "config.invalid",
-      `sampling.remoteMaxRate must be 0..1. The value is ${String(maxRate)}. The library uses ${String(SAMPLING_RATE_FALLBACK)}.`,
-    );
-    merged.sampling.remoteMaxRate = SAMPLING_RATE_FALLBACK;
-  }
-
-  const rates: [string, unknown][] = Object.entries(merged.sampling.rates);
-  for (const [ns, r] of rates) {
-    if (typeof r !== "number" || r < SAMPLING_RATE_MIN || r > SAMPLING_RATE_MAX) {
-      diagnostics.report(
-        "config.invalid",
-        `sampling.rates["${ns}"] must be 0..1. The value is ${String(r)}. The library uses ${String(SAMPLING_RATE_FALLBACK)}.`,
-      );
-      merged.sampling.rates[ns] = SAMPLING_RATE_FALLBACK;
-    }
   }
 
   // Swap the previous endpoints in the ignore list for the new ones to prevent a self-logging
@@ -1772,13 +2239,7 @@ export function resolveConfig(
     merged.delivery.retryBaseDelayMs = base.delivery.retryBaseDelayMs;
     merged.delivery.retryMaxDelayMs = base.delivery.retryMaxDelayMs;
   }
-  if (
-    merged.capture.urlTransform !== undefined &&
-    typeof merged.capture.urlTransform !== "function"
-  ) {
-    diagnostics.report("config.invalid", "capture.urlTransform must be a function.");
-    merged.capture.urlTransform = base.capture.urlTransform;
-  }
+  reportIneffective(given, merged, diagnostics);
   reportUnknownKeys(input, diagnostics);
 
   return merged;

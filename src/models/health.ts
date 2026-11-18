@@ -22,7 +22,13 @@ export interface ObservabilityHealth extends DeliveryStats {
   /** True if configure() cannot change the current settings. */
   configurationLocked: boolean;
   /** Codes for the current runtime or context failures. */
-  issues: ("runtime.version_mismatch" | "sender.unavailable" | "security.context_mismatch")[];
+  issues: (
+    | "runtime.version_mismatch"
+    | "sender.unavailable"
+    | "security.context_mismatch"
+    | "security.rotation_failed"
+    | "records.refused"
+  )[];
   /** Logger cache capacity and the number of cached loggers. */
   loggerCache: LoggerCacheOptions & { size: number };
   /** Active delivery context id and isolation rule. */

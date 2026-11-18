@@ -93,10 +93,10 @@ export function deferWrite(
   owner: object,
   work: () => void,
   diagnostics: Diagnostics,
-  limit: number,
+  limit: number | null,
 ): void {
   let queue = queues.get(owner);
-  const capacity = limit > 0 ? Math.min(limit, DEFER_QUEUE_LIMIT) : DEFER_QUEUE_LIMIT;
+  const capacity = limit === null ? DEFER_QUEUE_LIMIT : Math.min(limit, DEFER_QUEUE_LIMIT);
   if (queue && queue.work.length >= capacity && !queue.draining) {
     drain(owner, queue);
     queue = queues.get(owner);

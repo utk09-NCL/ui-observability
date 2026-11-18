@@ -24,7 +24,7 @@ const record = (body: string): LogRecord => ({
  */
 const policy =
   (over: Partial<DebugBufferPolicy> = {}) =>
-  (): DebugBufferPolicy => ({ enabled: true, maxRecords: 3, maxAgeMs: 0, ...over });
+  (): DebugBufferPolicy => ({ enabled: true, maxRecords: 3, maxAgeMs: null, ...over });
 
 describe("DebugBuffer", () => {
   it("keeps the newest records up to maxRecords and marks each one at drain", () => {
@@ -54,7 +54,7 @@ describe("DebugBuffer", () => {
 
   it("keeps nothing while it is off, and empties itself when it turns off", () => {
     let enabled = true;
-    const buffer = new DebugBuffer(() => ({ enabled, maxRecords: 3, maxAgeMs: 0 }));
+    const buffer = new DebugBuffer(() => ({ enabled, maxRecords: 3, maxAgeMs: null }));
 
     buffer.push(record("kept"));
     enabled = false;

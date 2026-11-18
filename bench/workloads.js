@@ -165,7 +165,7 @@ async function outageLog({ endpoint, records, callsPerTask, delivery }) {
     compression: "none",
     identity: "memory",
     // An outage must not use up a batch's attempts, or the count after recovery is short.
-    retention: { mode: "until-delivered" },
+    retention: { maxAgeMs: null, maxAttempts: null },
     delivery,
     bus: { mode: "off" },
     onDrop: noteDrop,

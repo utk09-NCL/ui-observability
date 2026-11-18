@@ -65,7 +65,7 @@ describe("collectDebugBundle", () => {
     expect(JSON.stringify(config)).not.toContain("secret");
   });
 
-  it("cuts a relative endpoint and each scheme, and names plugins and a serializer", async () => {
+  it("cuts the query of a resolved endpoint and each scheme, and names plugins and a serializer", async () => {
     start({
       endpoint: "/v1/logs?key=abc",
       serializer: { name: "custom", apiKey: "abc", serialize: vi.fn() } as never,
@@ -80,10 +80,11 @@ describe("collectDebugBundle", () => {
     const { config } = await collectDebugBundle();
     const capture = config.capture as Record<string, unknown>;
 
-    expect(config.endpoint).toBe("/v1/logs");
+    // The library resolves the relative endpoint against the page, and cuts its query.
+    expect(config.endpoint).toBe(`${location.origin}/v1/logs`);
     expect(config.serializer).toBe("custom");
     expect(capture.plugins).toEqual(["audit"]);
-    expect(capture.ignoreUrls).toEqual(["wss://socket.example/live", "/v1/logs"]);
+    expect(capture.ignoreUrls).toEqual(["wss://socket.example/live", `${location.origin}/v1/logs`]);
     expect(JSON.stringify(config)).not.toContain("abc");
   });
 

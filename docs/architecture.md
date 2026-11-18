@@ -231,10 +231,10 @@ After shutdown, each call goes to the stopped runtime and records nothing. The n
 
 ### Security-context rotation
 
-`rotateSecurityContext()` rejects when a rotation is in progress, when the options are invalid, or after shutdown. `rotateContext()` also rejects in a forwarder, for an unchanged id, and for invalid delivery settings. An invalid update keeps the old delivery stack.
+`rotateSecurityContext()` rejects after shutdown. A call during another rotation waits for it. `rotateContext()` rejects in a forwarder. `planRotation()` rejects for invalid options, for an unchanged id, and for a delivery value that it cannot apply. `planRotation()` first waits for a delivery stack load in progress. Then `closeDelivery()` sets `deliveryClosed`, stops the old sender with `Sender.pause()` and keeps it as `parkedSender`. A load that ends later parks its own sender, because `buildSender()` checks `deliveryClosed` and its generation. Each later record goes to `onDrop` with `security_context` until a rotation succeeds. That rotation retires `parkedSender` with its own `pending` rule, and `flush` becomes `discard`. A rotation in a forwarder rejects before this step, so its delivery stays open.
 
-1. `rotating` becomes true. The function waits for startup and for the delivery stack load.
-2. It resolves the next config on a base that has no old delivery values (`DELIVERY_RESET`).
+1. `rotating` becomes true. `rotateContext()` waits for startup, and `planRotation()` waits for the delivery stack load.
+2. `deliveryOf()` copies only the delivery keys. The function resolves the next config on a base that has no old delivery values (`DELIVERY_RESET`). `unapplied()` compares each delivery value with the resolved value.
 3. Under `closingContext`, it collects the metric points, ends the root span and ends the journey.
 4. It takes the boot buffer, the pending records and the forward buffer.
 5. `Sender.retire()` stops the old exit flush, retry engine, transport and pipeline. It applies the `pending` rule.
@@ -244,7 +244,7 @@ After shutdown, each call goes to the stopped runtime and records nothing. The n
 9. `rotating` becomes false. With `carry`, `Sender.adopt()` stores the old batches under the new id.
 10. It reports `security.rotated`.
 
-While `rotating` is true, a logger call counts `record.dropped_during_rotation`. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
+While `rotating` is true, a logger call counts `record.dropped_during_rotation`. A built record waits in `rotationHeld`. At the end of the rotation, `onDrop` reports it with `security_context`. A second call waits in the `rotation` promise chain and runs after the first. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
 
 The `pending` rules are in [Runtime policies, Security context rotation](runtime-policies.md#security-context-rotation). The default is `discard`. The default `timeoutMs` is 5000.
 

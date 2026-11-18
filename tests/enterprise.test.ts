@@ -327,16 +327,17 @@ describe("security context delivery", () => {
     ]);
   });
 
-  it("rejects invalid and overlapping rotations without changing identity", async () => {
+  it("rejects invalid rotations without changing identity, and runs overlapping ones in order", async () => {
     configure({ ...base, transport: transport() });
     await expect(rotateSecurityContext({ id: "", delivery: {} })).rejects.toThrow();
     await expect(rotateSecurityContext({ id: "A", delivery: {} })).rejects.toThrow();
+    expect(rt().config.securityContext.id).toBe("A");
     const first = rotateSecurityContext({ id: "B", delivery: {} });
-    await expect(rotateSecurityContext({ id: "C", delivery: {} })).rejects.toThrow(
-      "already running",
-    );
+    const second = rotateSecurityContext({ id: "C", delivery: {} });
     await first;
     expect(rt().config.securityContext.id).toBe("B");
+    await second;
+    expect(rt().config.securityContext.id).toBe("C");
   });
 });
 
@@ -463,11 +464,11 @@ describe("bus source policies", () => {
     deliver(records, source);
     deliver(records, source);
     expect(onRecords).toHaveBeenCalledTimes(1);
-    config.bus.maxMessagesPerSecond = 0;
+    config.bus.maxMessagesPerSecond = null;
     deliver({ ...records, records: [{} as LogRecord] }, source);
     config.bus.maxMessageBytes = 10;
     deliver(records, source);
-    config.bus.maxMessageBytes = 0;
+    config.bus.maxMessageBytes = null;
     config.bus.maxRecordsPerMessage = 1;
     deliver({ ...records, records: [record(), record()] }, source);
     deliver({ ...records, routingContextId: "B" }, source);
@@ -484,9 +485,9 @@ describe("bus source policies", () => {
       bus: {
         sourcePolicy: "trusted-origin",
         validation: "envelope",
-        maxMessageBytes: 0,
-        maxRecordsPerMessage: 0,
-        maxMessagesPerSecond: 0,
+        maxMessageBytes: null,
+        maxRecordsPerMessage: null,
+        maxMessagesPerSecond: null,
       },
     });
     deliver(

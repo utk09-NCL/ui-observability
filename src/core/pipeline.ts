@@ -270,12 +270,10 @@ export class LogPipeline {
       return false;
     }
     const full = (): boolean =>
-      Boolean(
-        (maxPendingRecords && this.held.size >= maxPendingRecords) ||
-        (maxPendingBytes && this.heldBytes + bytes > maxPendingBytes),
-      );
+      (maxPendingRecords !== null && this.held.size >= maxPendingRecords) ||
+      (maxPendingBytes !== null && this.heldBytes + bytes > maxPendingBytes);
     // A record larger than the byte budget never fits, so don't evict other records for it.
-    const fits = !maxPendingBytes || bytes <= maxPendingBytes;
+    const fits = maxPendingBytes === null || bytes <= maxPendingBytes;
     while (fits && full() && overflow === "drop-oldest" && this.evict()) {
       /* Remove complete groups until the new record fits or no group remains. */
     }

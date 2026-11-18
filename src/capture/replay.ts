@@ -4,7 +4,7 @@
 // events in memory. When an ERROR or FATAL record comes through, it uploads the buffer plus a
 // few seconds of what happens next. All text and input values are masked by default.
 
-import { REPLAY_ID_KEY, REPLAY_UNMASK_ATTRIBUTE } from "../constants";
+import { IGNORE_SELECTOR, REPLAY_ID_KEY, REPLAY_UNMASK_ATTRIBUTE } from "../constants";
 import type { LogRecord } from "../models/log-record";
 import type { ReplayEvent, ReplayPluginTools, ReplayRecord } from "../models/replay";
 import { newId } from "../utils/identity";
@@ -161,7 +161,7 @@ export class ReplayCapture implements Capture {
       return;
     }
 
-    if (!loader || (endpoint === "" && !onSegment)) {
+    if (!loader || (endpoint === null && !onSegment)) {
       diagnostics.report(
         "config.invalid",
         "The session replay needs replay.loader, and replay.endpoint or replay.onSegment. The session replay is off.",
@@ -306,7 +306,7 @@ export class ReplayCapture implements Capture {
    * missing mask would show text the app meant to hide.
    * @returns The selectors for the recorder, or undefined if one of them is invalid.
    */
-  private selectors(): { mask: string | undefined; block: string | undefined } | undefined {
+  private selectors(): { mask: string | undefined; block: string } | undefined {
     const { maskText, maskSelectors, blockSelectors } = this.ctx.config.replay;
 
     for (const selector of [...maskSelectors, ...blockSelectors]) {
@@ -326,7 +326,12 @@ export class ReplayCapture implements Capture {
     const join = (list: string[]): string | undefined =>
       list.length > 0 ? list.join(",") : undefined;
 
-    return { mask: maskText ? "*" : join(maskSelectors), block: join(blockSelectors) };
+    // Click capture skips the ignored regions, so a replay must not show them either. The app
+    // can't turn this off.
+    return {
+      mask: maskText ? "*" : join(maskSelectors),
+      block: [IGNORE_SELECTOR, ...blockSelectors].join(","),
+    };
   }
 
   /**

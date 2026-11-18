@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { METRIC_DEFAULT_BOUNDARIES, METRIC_MAX_SERIES } from "../src/constants";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { Meter } from "../src/core/meter";
+import type { MetricsPolicy } from "../src/models/config";
 import type { InstrumentDef } from "../src/models/metric";
 
 const counterDef = (name = "orders"): InstrumentDef => ({
@@ -11,11 +12,13 @@ const counterDef = (name = "orders"): InstrumentDef => ({
   boundaries: [],
 });
 
+/** A histogram with boundaries from the app, which the boundary limit applies to. */
 const histogramDef = (boundaries: readonly number[] = [10, 100]): InstrumentDef => ({
   name: "latency",
   kind: "histogram",
   unit: "ms",
   boundaries,
+  fromApp: true,
 });
 
 /**
@@ -39,6 +42,54 @@ function setup() {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("Meter limits", () => {
+  /** Builds a meter with the given limits that collects its points. */
+  function limited(policy: Partial<MetricsPolicy>) {
+    const points: Record<string, unknown>[] = [];
+    const meter = new Meter(
+      () => 1000,
+      (_name, attributes, fields) => {
+        points.push({ ...attributes, ...fields });
+      },
+      new Diagnostics(vi.fn(), 0),
+      { maxSeries: 100, maxInstruments: 1000, maxHistogramBoundaries: 50, ...policy },
+    );
+    return { meter, points };
+  }
+
+  it("drops every value with maxInstruments 0", () => {
+    const { meter, points } = limited({ maxInstruments: 0 });
+
+    meter.record(counterDef(), 1);
+    meter.collect();
+
+    expect(points).toEqual([]);
+  });
+
+  it("puts every value in the overflow set with maxSeries 0", () => {
+    const { meter, points } = limited({ maxSeries: 0 });
+
+    meter.record(counterDef(), 1, { venue: "LSE" });
+    meter.record(counterDef(), 2, { venue: "NYSE" });
+    meter.collect();
+
+    expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({ "otel.metric.overflow": true, "metric.value": 3 });
+  });
+
+  it("keeps every attribute set and every instrument with null limits", () => {
+    const { meter, points } = limited({ maxSeries: null, maxInstruments: null });
+
+    for (let i = 0; i < METRIC_MAX_SERIES + 1; i++) {
+      meter.record({ ...counterDef(), name: `orders.${String(i % 2)}` }, 1, { id: String(i) });
+    }
+    meter.collect();
+
+    expect(points).toHaveLength(METRIC_MAX_SERIES + 1);
+    expect(points.some((point) => point["otel.metric.overflow"] === true)).toBe(false);
+  });
 });
 
 describe("Meter", () => {
@@ -107,6 +158,17 @@ describe("Meter", () => {
 
     expect(points[0].point["metric.bounds"]).toEqual(METRIC_DEFAULT_BOUNDARIES);
     expect(events.map((event) => event.code)).toEqual(["config.invalid"]);
+  });
+
+  it("applies no boundary limit to a list from the library", () => {
+    const { meter, points, events } = setup();
+    const boundaries = Array.from({ length: 51 }, (_unused, i) => i);
+
+    meter.record({ ...histogramDef(boundaries), fromApp: false }, 1);
+    meter.collect();
+
+    expect(points[0].point["metric.bounds"]).toEqual(boundaries);
+    expect(events).toEqual([]);
   });
 
   it("copies the boundaries, so the app changing its array later has no effect", () => {

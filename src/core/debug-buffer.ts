@@ -75,7 +75,7 @@ export class DebugBuffer {
       return [];
     }
 
-    const oldest = maxAgeMs === 0 ? -Infinity : Date.now() - maxAgeMs;
+    const oldest = maxAgeMs === null ? -Infinity : Date.now() - maxAgeMs;
 
     return this.kept.slice(-maxRecords).filter((entry) => entry.at >= oldest);
   }

@@ -9,6 +9,7 @@ import {
   CLICK_TEXT_MAX_CHARS,
   DEAD_CLICK_CONTROLS,
   DEAD_CLICK_MS,
+  IGNORE_SELECTOR,
   RAGE_CLICK_COUNT,
   RAGE_CLICK_WINDOW_MS,
   SELECTOR_MAX_CLASSES,
@@ -150,8 +151,7 @@ export class InteractionCapture implements Capture {
     if (!(target instanceof Element)) return;
     const settings = this.ctx.config.capture.interactions;
     const options = typeof settings === "object" ? settings : {};
-    const ignore =
-      options.ignoreSelector === undefined ? "[data-observability-ignore]" : options.ignoreSelector;
+    const ignore = options.ignoreSelector === undefined ? IGNORE_SELECTOR : options.ignoreSelector;
     if (ignore && target.closest(ignore)) return;
     // A missing or empty attribute gives "", and the message is then "unknown-click".
     const attribute = options.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;

@@ -5,8 +5,8 @@ import type { ResolvedConfig } from "../models/config";
 interface CachedHeaders {
   source: unknown;
   endpoint: string | null;
-  metricsEndpoint: string;
-  tracesEndpoint: string;
+  metricsEndpoint: string | null;
+  tracesEndpoint: string | null;
   headers: Record<string, string>;
 }
 

@@ -12,7 +12,7 @@ export type { StormWindow } from "../utils/fixed-window";
 /**
  * Counts one event in a fixed window and reports every event over the limit.
  * @param window Window state to update.
- * @param limit Maximum events per window.
+ * @param limit Maximum events per window. 0 allows none, and null means no limit.
  * @param diagnostics Diagnostics reporter.
  * @param what Plural name of the events, for the diagnostic message.
  * @param windowMs Rate limit window, in milliseconds.
@@ -20,12 +20,12 @@ export type { StormWindow } from "../utils/fixed-window";
  */
 export function allowInWindow(
   window: StormWindow,
-  limit: number,
+  limit: number | null,
   diagnostics: Diagnostics,
   what: string,
   windowMs = ERROR_STORM_WINDOW_MS,
 ): boolean {
-  if (limit === 0 || countInWindow(window, limit, windowMs)) {
+  if (limit === null || countInWindow(window, limit, windowMs)) {
     return true;
   }
 

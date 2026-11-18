@@ -143,6 +143,39 @@ describe("ErrorCapture", () => {
     capture.uninstall();
   });
 
+  it("logs every repeat with maxErrorSignatures 0, because no signature is kept", () => {
+    const { ctx: c, logger } = ctx();
+    c.config.capturePolicy.maxErrorSignatures = 0;
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    for (let i = 0; i < 3; i++) {
+      dispatchEvent(new ErrorEvent("error", { error: new Error("boom"), message: "boom" }));
+    }
+
+    expect(logger.error).toHaveBeenCalledTimes(3);
+    capture.uninstall();
+  });
+
+  it("captures no error with errorsPerWindow 0, and every error with null", () => {
+    const { ctx: c, logger } = ctx();
+    c.config.capturePolicy.errorsPerWindow = 0;
+    const capture = new ErrorCapture(c);
+    capture.install();
+
+    dispatchEvent(new ErrorEvent("error", { error: new Error("first"), message: "first" }));
+    expect(logger.error).not.toHaveBeenCalled();
+
+    c.config.capturePolicy.errorsPerWindow = null;
+    for (let i = 0; i < 30; i++) {
+      const message = `storm ${String(i)}`;
+      dispatchEvent(new ErrorEvent("error", { error: new Error(message), message }));
+    }
+
+    expect(logger.error).toHaveBeenCalledTimes(30);
+    capture.uninstall();
+  });
+
   it("reports how many repeats it swallowed once the dedupe window rolls over", () => {
     vi.useFakeTimers();
     const { ctx: c, logger } = ctx();

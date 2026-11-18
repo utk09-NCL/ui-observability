@@ -682,6 +682,12 @@ export const CLICK_TEXT_MAX_CHARS = 50;
 /** Attribute that names a click action, unless the app configures a different one. */
 export const ACTION_ATTRIBUTE_DEFAULT = "data-observability-action";
 
+/**
+ * Selector for the regions the app keeps out of the records. Click capture skips them by
+ * default, and session replay always blocks them, so a hidden region can't leak through either.
+ */
+export const IGNORE_SELECTOR = "[data-observability-ignore]";
+
 /** How many clicks on one element make a rage click, by default. */
 export const RAGE_CLICK_COUNT = 3;
 
@@ -930,12 +936,6 @@ export const SAMPLING_RATE_MIN = 0;
 
 /** Highest sampling rate (keep everything). */
 export const SAMPLING_RATE_MAX = 1;
-
-/**
- * Fallback for an invalid sampling rate (keep everything).
- * @see {@link SAMPLING_RATE_MAX}
- */
-export const SAMPLING_RATE_FALLBACK = 1;
 
 /** The remote sampling rules version this library accepts. */
 export const REMOTE_SAMPLING_VERSION = 1;
@@ -1203,7 +1203,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   replay: {
     enabled: false,
     mode: "onError",
-    endpoint: "",
+    endpoint: null,
     requireConsent: false,
     bufferMs: 60_000,
     maxBufferBytes: 10_000_000,
@@ -1255,9 +1255,10 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   lockConfiguration: false,
   loggerCache: { maxEntries: 256 },
   securityContext: { id: "", isolation: true },
+  // "" means not set, so a configure() without an endpoint reports it. An app can't pass "".
   endpoint: "",
-  metricsEndpoint: "",
-  tracesEndpoint: "",
+  metricsEndpoint: null,
+  tracesEndpoint: null,
   serviceName: "",
   serviceVersion: "",
   environment: "",
@@ -1296,7 +1297,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     metricFlushIntervalMs: METRIC_FLUSH_INTERVAL_MS,
     metricBatchSize: METRIC_BATCH_SIZE,
   },
-  retention: { mode: "limited", ...STORAGE_LIMITS },
+  retention: { ...STORAGE_LIMITS },
   limits: { ...RECORD_LIMITS },
   capture: {
     errors: true,

@@ -135,6 +135,7 @@ function setup({
     diagnostics,
     drainForExit,
     flushAlive,
+    config: resolved,
     codes: () => events.map((event) => event.code),
   };
 }
@@ -393,10 +394,9 @@ describe("ExitFlush flush", () => {
 
   it("reports an endpoint that is not a URL, and keeps the buffer", () => {
     const fetchMock = stubFetch();
-    const { flush, pending, events } = setup({
-      records: [record("bye")],
-      config: { endpoint: "not-a-url" },
-    });
+    const { flush, pending, events, config } = setup({ records: [record("bye")] });
+    // resolveConfig() refuses such a value, so set it on the resolved config the way a bug would.
+    config.endpoint = "http://[::1";
 
     flush.flush("pagehide");
 

@@ -184,7 +184,7 @@ const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
 export function recordedUrl(
   url: string,
   fullUrls: boolean,
-  transform?: (url: string) => string | null,
+  transform?: ((url: string) => string | null) | null,
   diagnostics?: Diagnostics,
 ): string {
   if (transform) {

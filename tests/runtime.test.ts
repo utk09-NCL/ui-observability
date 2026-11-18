@@ -66,7 +66,7 @@ const base = {
   bus: {
     sourcePolicy: "trusted-origin" as const,
     validation: "envelope" as const,
-    maxMessagesPerSecond: 0,
+    maxMessagesPerSecond: null,
   },
   endpoint: "https://x/v1/logs",
   serviceName: "svc",
@@ -229,7 +229,7 @@ describe("runtime lifecycle", () => {
       ...base,
       storage: "memory",
       batching: { logBatchSize: 7, metricFlushIntervalMs: 5000 },
-      retention: { mode: "until-delivered", maxBatches: 40 },
+      retention: { maxAgeMs: null, maxAttempts: null, maxBatches: 40 },
     });
     await ready();
 
@@ -605,14 +605,15 @@ describe("runtime lifecycle", () => {
     configure({
       ...base,
       batching: { logBatchSize: 20 },
-      retention: { mode: "until-delivered" },
+      retention: { maxAgeMs: null, maxAttempts: null },
       limits: { maxBodyChars: 300 },
       journey: { maxAgeMs: 120_000 },
     });
     await ready();
 
     expect(runtime().config.batching.logBatchSize).toBe(20);
-    expect(runtime().config.retention.mode).toBe("until-delivered");
+    expect(runtime().config.retention.maxAgeMs).toBeNull();
+    expect(runtime().config.retention.maxAttempts).toBeNull();
     expect(runtime().builder["deps"].limits.maxBodyChars).toBe(300);
     expect(runtime().console["limits"]).toBe(runtime().builder["deps"].limits);
     expect(runtime().journey["options"].maxAgeMs).toBe(120_000);
@@ -1317,15 +1318,21 @@ describe("delivery stack loading", () => {
     configure({ ...base, endpoint: null, transport });
     await ready();
 
+    // undefined keeps the transport, so only null asks to remove it.
     configure({ transport: undefined });
+    expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
+    configure({ transport: null });
 
     // Without the transport, the retry engine would remove every stored batch as delivered.
     expect(runtime().config.transport).toBe(transport);
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
 
     await shutdown();
     configure(base);
     await ready();
 
+    // null on a stack without a transport changes nothing, so it isn't refused.
+    configure({ transport: null });
     configure({ transport });
 
     // The HTTP stack already exists and would silently ignore a new transport.
@@ -2844,7 +2851,7 @@ describe("runtime on Node", () => {
     await ready();
 
     expect(runtime().platform.platform).toBe("node");
-    expect(runtime().config).toMatchObject({ endpoint: null, tracesEndpoint: "" });
+    expect(runtime().config).toMatchObject({ endpoint: null, tracesEndpoint: null });
     expect(runtime()["captures"]).toEqual([]);
     expect(runtime()["sender"]).toBeUndefined();
     expect(localStorage.getItem(SESSION_ID_KEY)).toBeNull();
