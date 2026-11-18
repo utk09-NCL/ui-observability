@@ -528,7 +528,9 @@ describe("ExitFlush flush", () => {
     const onLoss = vi.fn<LossReporter>();
     const huge = Array.from({ length: 400 }, (_unused, i) => record("x".repeat(300) + String(i)));
 
-    setup({ records: huge, config: { storage: "memory" }, onLoss }).flush.flush("pagehide");
+    setup({ records: huge, config: { storage: { backend: "memory" } }, onLoss }).flush.flush(
+      "pagehide",
+    );
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(emergencyKeys()).toHaveLength(0);

@@ -22,7 +22,7 @@ import type { ObservabilityConfig } from "../src/models/config";
 const base = {
   endpoint: null,
   serviceName: "ops",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
@@ -36,7 +36,7 @@ it.each([
   "metrics",
   "correlation",
   "diagnostics",
-  "capturePolicy",
+  "captureLimits",
 ] as const)("validates %s numeric budgets and preserves previous settings", (section) => {
   const d = diagnostics();
   const before = resolveConfig(base, d);
@@ -55,7 +55,7 @@ it("validates choices, strings, booleans, backoff relationships and URL hooks", 
       ...base,
       delivery: { retryBaseDelayMs: 100, retryMaxDelayMs: 1, priority: "urgent" },
       buffering: { overflow: "bad" },
-      persistence: { namespace: 1 },
+      storage: { namespace: 1 },
       metadata: { userAgent: "yes" },
       capture: { urlTransform: 1 },
     } as never,
@@ -64,7 +64,7 @@ it("validates choices, strings, booleans, backoff relationships and URL hooks", 
   expect(c.delivery.retryBaseDelayMs).toBe(2000);
   expect(c.delivery.priority).toBe("low");
   expect(c.buffering.overflow).toBe("drop-oldest");
-  expect(c.persistence.namespace).toBe("");
+  expect(c.storage.namespace).toBe("");
   expect(c.metadata.userAgent).toBe(true);
   expect(c.capture.urlTransform).toBeUndefined();
 });
@@ -120,12 +120,12 @@ it("disables and resizes breadcrumbs at runtime and excludes selected resource m
   configure({
     ...base,
     transport: m.transport,
-    capturePolicy: { breadcrumbs: 0 },
+    captureLimits: { breadcrumbs: 0 },
     metadata: { pageUrl: false, userAgent: false, openfin: false },
   });
   getLogger("ops").info("one");
   expect(rt().breadcrumbs.snapshot()).toEqual([]);
-  configure({ capturePolicy: { breadcrumbs: 1 } });
+  configure({ captureLimits: { breadcrumbs: 1 } });
   getLogger("ops").info("two");
   getLogger("ops").info("three");
   expect(
@@ -193,20 +193,20 @@ it("queries indexed context partitions in FIFO order without returning legacy or
   await db.close();
 });
 
-it("isolates persistence namespaces and supports explicit deletion", async () => {
+it("isolates storage namespaces and supports explicit deletion", async () => {
   const m = createMemoryTransport();
   m.respondWith(503);
   const config: Partial<ObservabilityConfig> = {
     ...base,
-    storage: "localstorage",
+    storage: { backend: "localstorage" },
     transport: m.transport,
     securityContext: { id: "shared-login" },
   };
-  configure({ ...config, persistence: { namespace: "A" } });
+  configure({ ...config, storage: { backend: "localstorage", namespace: "A" } });
   getLogger("ops").info("A");
   await flush();
   await shutdown();
-  configure({ ...config, persistence: { namespace: "B" } });
+  configure({ ...config, storage: { backend: "localstorage", namespace: "B" } });
   await flush();
   expect((await getHealth()).stored).toBe(0);
   getLogger("ops").info("B");
@@ -214,7 +214,7 @@ it("isolates persistence namespaces and supports explicit deletion", async () =>
   await clearPersistedLogs();
   expect((await getHealth()).stored).toBe(0);
   await shutdown();
-  configure({ ...config, persistence: { namespace: "A" } });
+  configure({ ...config, storage: { backend: "localstorage", namespace: "A" } });
   await flush();
   expect((await getHealth()).stored).toBe(1);
   await clearPersistedLogs("namespace");
@@ -248,7 +248,7 @@ it.each([true, false])(
       expect(globalThis.WebSocket).not.toBe(Socket);
     });
     const socket = new WebSocket("wss://example.com/account/A");
-    await rotateSecurityContext({ id: "B", delivery: { transport: m.transport } });
+    await rotateSecurityContext({ id: "B", routing: { transport: m.transport } });
     socket.dispatchEvent(new Event("open"));
     socket.dispatchEvent(new Event("message"));
     socket.send("data");
@@ -262,26 +262,25 @@ it("uses indexed storage partition queries and keeps another context parked", as
   m.respondWith(503);
   configure({
     ...base,
-    storage: "indexeddb",
+    storage: { backend: "indexeddb", namespace: "indexed-ops" },
     transport: m.transport,
     securityContext: { id: "A" },
-    persistence: { namespace: "indexed-ops" },
   });
   getLogger("ops").info("offline A");
   await flush();
   expect((await getHealth()).stored).toBe(1);
   await rotateSecurityContext(
-    { id: "B", delivery: { transport: m.transport } },
+    { id: "B", routing: { transport: m.transport } },
     { pending: "retain" },
   );
   expect((await getHealth()).stored).toBe(0);
   await clearPersistedLogs("namespace");
-  await rotateSecurityContext({ id: "A", delivery: { transport: m.transport } });
+  await rotateSecurityContext({ id: "A", routing: { transport: m.transport } });
   expect((await getHealth()).stored).toBe(0);
 });
 
 it("clears storage without enabling delivery, including a retained memory partition", async () => {
-  configure({ ...base, storage: "localstorage", persistence: { namespace: "offline-purge" } });
+  configure({ ...base, storage: { backend: "localstorage", namespace: "offline-purge" } });
   await clearPersistedLogs();
   await clearPersistedLogs("namespace");
   await shutdown();
@@ -293,7 +292,7 @@ it("clears storage without enabling delivery, including a retained memory partit
   configure({ ...base, transport: m.transport, securityContext: { id: "A" } });
   getLogger("ops").info("park");
   await flush();
-  await rotateSecurityContext({ id: "B", delivery: {} }, { pending: "retain" });
+  await rotateSecurityContext({ id: "B", routing: {} }, { pending: "retain" });
   await clearPersistedLogs("namespace");
   await clearPersistedLogs();
 });
@@ -301,13 +300,13 @@ it("clears storage without enabling delivery, including a retained memory partit
 it("keeps startup policies stable and reinstalls capture for URL callback changes", async () => {
   configure({
     ...base,
-    correlation: { sessionIdleMs: null, traceMaxAgeMs: null, sessionTouchMs: 0 },
+    correlation: { sessionIdleMs: null, traceMaxAgeMs: null },
     capture: { urlTransform: (url) => url },
   });
   await flush();
-  configure({ correlation: { sessionIdleMs: 10 }, persistence: { namespace: "different" } });
+  configure({ correlation: { sessionIdleMs: 10 }, storage: { namespace: "different" } });
   expect(rt().config.correlation.sessionIdleMs).toBeNull();
-  expect(rt().config.persistence.namespace).toBe("");
+  expect(rt().config.storage.namespace).toBe("");
   configure({ capture: { urlTransform: () => null } });
   getLogger("ops").info("no URL");
 });
@@ -316,13 +315,13 @@ it("retains the breadcrumb tail when resizing an existing trail", async () => {
   configure(base);
   getLogger("ops").info("one");
   getLogger("ops").info("two");
-  configure({ capturePolicy: { breadcrumbs: 1 } });
+  configure({ captureLimits: { breadcrumbs: 1 } });
   expect(
     rt()
       .breadcrumbs.snapshot()
       .map((c) => c.message),
   ).toEqual(["two"]);
-  configure({ capturePolicy: { breadcrumbs: 0 } });
+  configure({ captureLimits: { breadcrumbs: 0 } });
   expect(rt().breadcrumbs.snapshot()).toEqual([]);
   await flush();
 });

@@ -101,7 +101,7 @@ const uploadPlugins: ReplayPluginLoader[] = [
 configure({
   transport: memory.transport,
   serviceName: "replay-example",
-  console: false,
+  consoleOutput: false,
   bus: { mode: "off" },
   // Both the library's network capture and the network plugin wrap fetch.
   capture: { errors: true, rejections: true, fetch: true },

@@ -48,7 +48,7 @@ describe("requestPersistence", () => {
   });
 });
 
-describe("persistence.requestPersistent", () => {
+describe("storage.requestPersistent", () => {
   it("asks for persistent storage and reports each state in getHealth()", async () => {
     let answer!: (granted: boolean) => void;
     const persist = vi.fn(
@@ -60,9 +60,8 @@ describe("persistence.requestPersistent", () => {
     stubPersist(persist);
     configure({
       ...base,
-      storage: "localstorage",
+      storage: { backend: "localstorage", requestPersistent: true },
       transport: createMemoryTransport().transport,
-      persistence: { requestPersistent: true },
     });
     await flush();
 
@@ -80,12 +79,12 @@ describe("persistence.requestPersistent", () => {
     stubPersist(persist);
     const transport = createMemoryTransport().transport;
 
-    configure({ ...base, storage: "memory", transport, persistence: { requestPersistent: true } });
+    configure({ ...base, storage: { backend: "memory", requestPersistent: true }, transport });
     await flush();
     expect((await getHealth()).storagePersistence).toBe("off");
     await shutdown();
 
-    configure({ ...base, storage: "localstorage", transport });
+    configure({ ...base, storage: { backend: "localstorage" }, transport });
     await flush();
     expect(persist).not.toHaveBeenCalled();
   });

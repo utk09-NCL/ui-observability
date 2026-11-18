@@ -125,7 +125,9 @@ export class LongFrameCapture implements Capture {
    * @returns Minimum frame duration to record, in milliseconds.
    */
   private readThreshold(): number {
-    const value: unknown = this.ctx.config.capture.longFrameMs;
+    const { longFrames } = this.ctx.config.capture;
+    const value: unknown =
+      typeof longFrames === "object" ? longFrames.thresholdMs : LONG_FRAME_THRESHOLD_MS;
 
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       return value;
@@ -133,7 +135,7 @@ export class LongFrameCapture implements Capture {
 
     this.ctx.diagnostics.report(
       "config.invalid",
-      `capture.longFrameMs must be a number of 0 or more. The library uses ${String(LONG_FRAME_THRESHOLD_MS)}.`,
+      `capture.longFrames.thresholdMs must be a number of 0 or more. The library uses ${String(LONG_FRAME_THRESHOLD_MS)}.`,
     );
     return LONG_FRAME_THRESHOLD_MS;
   }
@@ -152,10 +154,10 @@ export class LongFrameCapture implements Capture {
     if (
       !allowInWindow(
         this.window,
-        this.ctx.config.capturePolicy.longFramesPerWindow,
+        this.ctx.config.captureLimits.longFramesPerWindow,
         diagnostics,
         "long frames",
-        this.ctx.config.capturePolicy.windowMs,
+        this.ctx.config.captureLimits.windowMs,
       )
     ) {
       return;

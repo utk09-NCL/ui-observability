@@ -47,7 +47,7 @@ async function sendSignals(options: RunOptions): Promise<RunReport> {
     serviceName: options.serviceName,
     compression: options.compression,
     // Nothing is stored, so the second run can't send a batch that the first run left behind.
-    storage: "none",
+    storage: { backend: "none" },
     identity: "memory",
     // The page has no frame and no worker, and an open bus reports its role as a diagnostic.
     bus: { mode: "off" },

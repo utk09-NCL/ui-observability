@@ -42,7 +42,7 @@ const OVERHEAD = "profile.overhead_ns";
 const base = {
   endpoint: null,
   serviceName: "svc",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
@@ -585,7 +585,7 @@ describe("clock tick of a profiler restart", () => {
 
 describe("interval timer", () => {
   it("sends a record after the interval without a flush() call", async () => {
-    await start({ profiler: { enabled: true, flushIntervalMs: 1000 } });
+    await start({ profiler: { enabled: true }, metrics: { intervalMs: 1000 } });
     const { clock } = stubClock();
     const emit = vi.spyOn(runtime(), "emit");
     fakeTimers();
@@ -598,8 +598,8 @@ describe("interval timer", () => {
     expect(emitted(emit).map((one) => one.attributes["metric.count"])).toEqual([1]);
   });
 
-  it("applies a new flushIntervalMs to the next interval", async () => {
-    await start({ profiler: { enabled: true, flushIntervalMs: 1000 } });
+  it("applies a new metrics.intervalMs to the next interval", async () => {
+    await start({ profiler: { enabled: true }, metrics: { intervalMs: 1000 } });
     const { clock } = stubClock();
     const emit = vi.spyOn(runtime(), "emit");
     fakeTimers();
@@ -608,7 +608,7 @@ describe("interval timer", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(emitted(emit)).toHaveLength(1);
 
-    configure({ profiler: { flushIntervalMs: 5000 } });
+    configure({ metrics: { intervalMs: 5000 } });
     span(probe, clock, 3);
     await vi.advanceTimersByTimeAsync(4999);
     expect(emitted(emit)).toHaveLength(1);
@@ -618,7 +618,7 @@ describe("interval timer", () => {
   });
 
   it("reports the overhead value in a timer collect", async () => {
-    await start({ profiler: { enabled: true, flushIntervalMs: 1000 } });
+    await start({ profiler: { enabled: true }, metrics: { intervalMs: 1000 } });
     const { clock } = stubClock();
     const emit = vi.spyOn(runtime(), "emit");
     fakeTimers();
@@ -635,7 +635,7 @@ describe("interval timer", () => {
 
   it("keeps a point for the new destination when the timer fires during a rotation", async () => {
     const next = createMemoryTransport();
-    await start({ profiler: { enabled: true, flushIntervalMs: 1000 } });
+    await start({ profiler: { enabled: true }, metrics: { intervalMs: 1000 } });
     const { clock } = stubClock();
     const probe = profiler.probe("rotating");
     const emit = vi.spyOn(runtime(), "emit");
@@ -650,7 +650,7 @@ describe("interval timer", () => {
     });
     fakeTimers();
 
-    const rotation = rotateSecurityContext({ id: "new", delivery: { transport: next.transport } });
+    const rotation = rotateSecurityContext({ id: "new", routing: { transport: next.transport } });
     await reached.promise;
     expect((await getHealth()).status).toBe("rotating");
 
@@ -689,7 +689,8 @@ describe("interval timer", () => {
     await start({
       transport: slow,
       securityContext: { id: "old", isolation: false },
-      profiler: { enabled: true, flushIntervalMs: 1000 },
+      profiler: { enabled: true },
+      metrics: { intervalMs: 1000 },
     });
     const { clock } = stubClock();
     const probe = profiler.probe("held");
@@ -697,7 +698,7 @@ describe("interval timer", () => {
     span(probe, clock, 3);
 
     const rotation = rotateSecurityContext(
-      { id: "new", delivery: { transport: next.transport } },
+      { id: "new", routing: { transport: next.transport } },
       { pending: "flush" },
     );
     await reached.promise;
@@ -747,7 +748,7 @@ describe("profiler.maxProbes", () => {
     events.length = 0;
 
     configure({ profiler: { maxProbes: 2 } });
-    configure({ profiler: { flushIntervalMs: 2000 } });
+    configure({ metrics: { intervalMs: 2000 } });
 
     expect(invalid(events)).toEqual([]);
     expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
@@ -793,7 +794,7 @@ describe("limit report at a collect", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       capture: { errors: false, rejections: false },
@@ -840,7 +841,7 @@ describe("limit report at a collect", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       capture: { errors: false, rejections: false },
@@ -865,11 +866,11 @@ describe("limit report at a collect", () => {
 
     vi.setSystemTime(Date.now() + 1500);
     await flush();
-    configure({ profiler: { flushIntervalMs: 5 } });
+    configure({ metrics: { intervalMs: 5 } });
 
     expect(
       invalid(events).filter((event) =>
-        event.message.includes("profiler.flushIntervalMs must be an integer from 1000 to 600000"),
+        event.message.includes("metrics.intervalMs must be an integer from 1000 to 600000"),
       ),
     ).toHaveLength(1);
     expect(limit()).toHaveLength(1);
@@ -934,7 +935,7 @@ describe("collect sites", () => {
     span(probe, clock, 3);
 
     await rotateSecurityContext(
-      { id: "new", delivery: { transport: next.transport } },
+      { id: "new", routing: { transport: next.transport } },
       { pending: "flush" },
     );
     // The span has to begin after the clock value of the rotation's reset.
@@ -1001,7 +1002,7 @@ describe("identity isolation", () => {
 
     const token = probe.begin();
     clock.now += 50;
-    await rotateSecurityContext({ id: "new", delivery: { transport: next.transport } });
+    await rotateSecurityContext({ id: "new", routing: { transport: next.transport } });
     clock.now += 25;
     probe.end(token);
     await flush();
@@ -1029,7 +1030,7 @@ describe("identity isolation", () => {
     ];
     await start();
 
-    await rotateSecurityContext({ id: "new", delivery: { transport: next.transport } });
+    await rotateSecurityContext({ id: "new", routing: { transport: next.transport } });
     newSession();
 
     for (const spy of touched) {

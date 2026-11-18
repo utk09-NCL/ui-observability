@@ -43,13 +43,13 @@ describe("resolveConfig", () => {
     expect(resolved.minLevel).toBe("INFO");
     expect(resolved.compression).toBe("gzip");
     expect(resolved.credentials).toBe("omit");
-    expect(resolved.storage).toBe("auto");
+    expect(resolved.storage).toEqual({ backend: "auto", namespace: "", requestPersistent: false });
     expect(resolved.sampling.defaultRate).toBe(1);
     expect(resolved.sampling.alwaysSampleTypes).toEqual(["action"]);
     expect(resolved.bus.mode).toBe("auto");
     expect(resolved.capture.errors).toBe(true);
     expect(resolved.capture.fullUrls).toBe(false);
-    expect(resolved.console.level).toBeNull();
+    expect(resolved.consoleOutput.level).toBeNull();
 
     // The only problem must be the missing serviceName.
     expect(messages(events)).toHaveLength(1);
@@ -59,56 +59,62 @@ describe("resolveConfig", () => {
   it("reads the console option as off, on, or an explicit level", () => {
     const { diagnostics } = collect();
 
-    expect(resolveConfig({ ...valid(), console: true }, diagnostics).console.level).toBe("DEBUG");
-    expect(resolveConfig({ ...valid(), console: "WARN" }, diagnostics).console.level).toBe("WARN");
+    expect(
+      resolveConfig({ ...valid(), consoleOutput: true }, diagnostics).consoleOutput.level,
+    ).toBe("DEBUG");
+    expect(
+      resolveConfig({ ...valid(), consoleOutput: "WARN" }, diagnostics).consoleOutput.level,
+    ).toBe("WARN");
 
     // false has to turn off a level already in effect, not fall through to it.
-    const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
-    expect(resolveConfig({ console: false }, diagnostics, live).console.level).toBeNull();
+    const live = resolveConfig({ ...valid(), consoleOutput: "WARN" }, diagnostics);
+    expect(
+      resolveConfig({ consoleOutput: false }, diagnostics, live).consoleOutput.level,
+    ).toBeNull();
   });
 
   it("reads the object form of console and merges its styles onto the defaults", () => {
     const { events, diagnostics } = collect();
 
     const resolved = resolveConfig(
-      { ...valid(), console: { styles: { INFO: "color:#0a7" } } },
+      { ...valid(), consoleOutput: { styles: { INFO: "color:#0a7" } } },
       diagnostics,
     );
 
     // An object with no level keeps the current level, so the console stays off.
-    expect(resolved.console.level).toBeNull();
-    expect(resolved.console.styles.INFO).toBe("color:#0a7");
-    expect(resolved.console.styles.WARN).toBe(CONSOLE_DEFAULT_STYLES.WARN);
+    expect(resolved.consoleOutput.level).toBeNull();
+    expect(resolved.consoleOutput.styles.INFO).toBe("color:#0a7");
+    expect(resolved.consoleOutput.styles.WARN).toBe(CONSOLE_DEFAULT_STYLES.WARN);
     expect(events).toEqual([]);
   });
 
   it("keeps the current level and styles on a later partial console change", () => {
     const { diagnostics } = collect();
     const live = resolveConfig(
-      { ...valid(), console: { level: "WARN", styles: { WARN: "color:orange" } } },
+      { ...valid(), consoleOutput: { level: "WARN", styles: { WARN: "color:orange" } } },
       diagnostics,
     );
 
     const restyled = resolveConfig(
-      { console: { styles: { ERROR: "color:red" } } },
+      { consoleOutput: { styles: { ERROR: "color:red" } } },
       diagnostics,
       live,
     );
-    const relevelled = resolveConfig({ console: "INFO" }, diagnostics, restyled);
+    const relevelled = resolveConfig({ consoleOutput: "INFO" }, diagnostics, restyled);
 
-    expect(restyled.console.level).toBe("WARN");
-    expect(relevelled.console.level).toBe("INFO");
-    expect(relevelled.console.styles.WARN).toBe("color:orange");
-    expect(relevelled.console.styles.ERROR).toBe("color:red");
+    expect(restyled.consoleOutput.level).toBe("WARN");
+    expect(relevelled.consoleOutput.level).toBe("INFO");
+    expect(relevelled.consoleOutput.styles.WARN).toBe("color:orange");
+    expect(relevelled.consoleOutput.styles.ERROR).toBe("color:red");
   });
 
   it("reads a console object that sets the level only, and keeps the default styles", () => {
     const { events, diagnostics } = collect();
 
-    const resolved = resolveConfig({ ...valid(), console: { level: "WARN" } }, diagnostics);
+    const resolved = resolveConfig({ ...valid(), consoleOutput: { level: "WARN" } }, diagnostics);
 
-    expect(resolved.console.level).toBe("WARN");
-    expect(resolved.console.styles).toEqual(CONSOLE_DEFAULT_STYLES);
+    expect(resolved.consoleOutput.level).toBe("WARN");
+    expect(resolved.consoleOutput.styles).toEqual(CONSOLE_DEFAULT_STYLES);
     expect(events).toEqual([]);
   });
 
@@ -191,18 +197,18 @@ describe("resolveConfig", () => {
 
   it("reports a null console value and keeps the current console settings", () => {
     const { events, diagnostics } = collect();
-    const live = resolveConfig({ ...valid(), console: "WARN" }, diagnostics);
-    const nothing = null as unknown as ObservabilityConfig["console"];
+    const live = resolveConfig({ ...valid(), consoleOutput: "WARN" }, diagnostics);
+    const nothing = null as unknown as ObservabilityConfig["consoleOutput"];
 
-    const number = 42 as unknown as ObservabilityConfig["console"];
+    const number = 42 as unknown as ObservabilityConfig["consoleOutput"];
 
-    const resolved = resolveConfig({ console: nothing }, diagnostics, live);
-    const fromNumber = resolveConfig({ console: number }, diagnostics, live);
+    const resolved = resolveConfig({ consoleOutput: nothing }, diagnostics, live);
+    const fromNumber = resolveConfig({ consoleOutput: number }, diagnostics, live);
 
-    expect(resolved.console).toBe(live.console);
-    expect(fromNumber.console).toBe(live.console);
+    expect(resolved.consoleOutput).toBe(live.consoleOutput);
+    expect(fromNumber.consoleOutput).toBe(live.consoleOutput);
     expect(messages(events)).toHaveLength(2);
-    expect(messages(events)[0]).toContain("console must be a boolean, a level or an object");
+    expect(messages(events)[0]).toContain("consoleOutput must be a boolean, a level or an object");
   });
 
   it("accepts a style that sets both the text color and the background", () => {
@@ -210,24 +216,24 @@ describe("resolveConfig", () => {
     const badge = "color:#fff;background:#1e6fd9;padding:0 4px;border-radius:3px";
 
     const resolved = resolveConfig(
-      { ...valid(), console: { styles: { INFO: badge } } },
+      { ...valid(), consoleOutput: { styles: { INFO: badge } } },
       diagnostics,
     );
 
-    expect(resolved.console.styles.INFO).toBe(badge);
+    expect(resolved.consoleOutput.styles.INFO).toBe(badge);
   });
 
   it("reports an unknown console style key and a style that is not a string", () => {
     const { events, diagnostics } = collect();
     const styles = { NOTICE: "color:blue", INFO: 42 } as unknown as ConsoleStyles;
 
-    const resolved = resolveConfig({ ...valid(), console: { styles } }, diagnostics);
+    const resolved = resolveConfig({ ...valid(), consoleOutput: { styles } }, diagnostics);
 
     expect(messages(events)).toEqual([
-      expect.stringContaining('console.styles key "NOTICE"'),
-      expect.stringContaining("console.styles.INFO must be a string"),
+      expect.stringContaining('consoleOutput.styles key "NOTICE"'),
+      expect.stringContaining("consoleOutput.styles.INFO must be a string"),
     ]);
-    expect(resolved.console.styles.INFO).toBe(CONSOLE_DEFAULT_STYLES.INFO);
+    expect(resolved.consoleOutput.styles.INFO).toBe(CONSOLE_DEFAULT_STYLES.INFO);
   });
 
   it("reports a missing endpoint and still returns a usable config", () => {
@@ -794,14 +800,10 @@ describe("resolveConfig", () => {
       expect(messages(events)[0]).toContain('unknown config key "capture.webVital"');
     });
 
-    it("treats capture.webVitalsLoader as known despite being absent from the defaults", () => {
+    it("treats capture.urlTransform as known despite being absent from the defaults", () => {
       const { events, diagnostics } = collect();
-      const input = {
-        ...valid(),
-        capture: { webVitalsLoader: () => Promise.resolve({}) },
-      } as unknown as Partial<ObservabilityConfig>;
 
-      resolveConfig(input, diagnostics);
+      resolveConfig({ ...valid(), capture: { urlTransform: (url) => url } }, diagnostics);
 
       expect(events).toEqual([]);
     });
@@ -896,10 +898,10 @@ describe("resolveConfig", () => {
     }
 
     it("reads a level name in any case", () => {
-      const { config, texts } = resolveLoose({ minLevel: "warn", console: "debug" });
+      const { config, texts } = resolveLoose({ minLevel: "warn", consoleOutput: "debug" });
 
       expect(config.minLevel).toBe("WARN");
-      expect(config.console.level).toBe("DEBUG");
+      expect(config.consoleOutput.level).toBe("DEBUG");
       expect(texts).toEqual([]);
     });
 
@@ -926,13 +928,13 @@ describe("resolveConfig", () => {
     });
 
     it("reports an unknown console level and keeps the current console settings", () => {
-      const asString = resolveLoose({ console: "loud" });
-      const asObject = resolveLoose({ console: { level: 3 } });
+      const asString = resolveLoose({ consoleOutput: "loud" });
+      const asObject = resolveLoose({ consoleOutput: { level: 3 } });
 
-      expect(asString.config.console.level).toBeNull();
-      expect(asObject.config.console.level).toBeNull();
-      expect(asString.texts[0]).toContain("console must be a level name");
-      expect(asObject.texts[0]).toContain("console.level must be a level name");
+      expect(asString.config.consoleOutput.level).toBeNull();
+      expect(asObject.config.consoleOutput.level).toBeNull();
+      expect(asString.texts[0]).toContain("consoleOutput must be a level name");
+      expect(asObject.texts[0]).toContain("consoleOutput.level must be a level name");
     });
 
     it("reports each top-level value outside its choices and keeps the default", () => {
@@ -940,7 +942,7 @@ describe("resolveConfig", () => {
         enabled: "yes",
         compression: "brotli",
         credentials: "all",
-        storage: "session",
+        storage: { backend: "session" },
         identity: "cookie",
         headers: 42,
       });
@@ -949,17 +951,26 @@ describe("resolveConfig", () => {
         enabled: true,
         compression: "gzip",
         credentials: "omit",
-        storage: "auto",
+        storage: { backend: "auto" },
         identity: "storage",
       });
       expect(config.headers).toBeUndefined();
       expect(texts).toEqual([
+        'storage.backend must be "auto", "indexeddb", "localstorage", "memory" or "none". The library keeps "auto".',
         'enabled must be true or false. The value is "yes". The library keeps true.',
         'compression must be "gzip" or "none". The library keeps "gzip".',
         'credentials must be "omit", "same-origin" or "include". The library keeps "omit".',
         "headers must be an object of strings or a function. The library keeps the current headers.",
-        'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The library keeps "auto".',
         'identity must be "storage" or "memory". The library keeps "storage".',
+      ]);
+    });
+
+    it("reports the storage backend given as a string, and keeps the storage section", () => {
+      const { config, texts } = resolveLoose({ storage: "memory" });
+
+      expect(config.storage).toEqual({ backend: "auto", namespace: "", requestPersistent: false });
+      expect(texts).toEqual([
+        'storage must be an object. The value is "memory". The library keeps the current values.',
       ]);
     });
 
@@ -1053,7 +1064,7 @@ describe("resolveConfig", () => {
         capture: {
           fetch: "yes",
           console: "error",
-          longFrameMs: -1,
+          longFrames: { thresholdMs: -1 },
           propagateTraceHeaderTo: "https://api.internal",
         },
       });
@@ -1061,30 +1072,120 @@ describe("resolveConfig", () => {
       expect(config.capture).toMatchObject({
         fetch: false,
         console: false,
-        longFrameMs: 100,
+        longFrames: { thresholdMs: 100 },
         propagateTraceHeaderTo: [],
       });
       expect(texts).toHaveLength(4);
       expect(texts).toContain(
         'capture.fetch must be true or false. The value is "yes". The library keeps false.',
       );
+      expect(texts).toContain("capture.console must be a boolean or an options object.");
       expect(texts).toContain(
-        "capture.longFrameMs must be a finite number of 0 or more. The value is -1. The library keeps 100.",
+        "capture.longFrames.thresholdMs must be a finite number of 0 or more. The value is -1. The library keeps 100.",
       );
+    });
+
+    it("reports an unknown key inside a capture options object and keeps the known values", () => {
+      const { config, texts } = resolveLoose({
+        capture: {
+          longFrames: { threshold: 50 },
+          console: { levels: ["warn"], level: "error" },
+        },
+      });
+
+      expect(config.capture).toMatchObject({
+        longFrames: { thresholdMs: 100 },
+        console: { levels: ["warn"] },
+      });
+      expect(texts).toEqual([
+        'The library ignores the unknown config key "capture.console.level". Check the spelling.',
+        'The library ignores the unknown config key "capture.longFrames.threshold". Check the spelling.',
+      ]);
     });
 
     it("keeps the valid entries of each capture list and reports the others", () => {
       const pattern = /internal/;
       const { config, texts } = resolveLoose({
-        capture: { console: ["error", "debug"], ignoreUrls: [pattern, "health", 5] },
+        capture: {
+          console: { levels: ["error", "debug"] },
+          userTiming: { include: ["grid", 5] },
+          ignoreUrls: [pattern, "health", 5],
+        },
       });
 
-      expect(config.capture.console).toEqual(["error"]);
+      expect(config.capture.console).toEqual({ levels: ["error"] });
+      expect(config.capture.userTiming).toEqual({ include: ["grid"] });
       expect(config.capture.ignoreUrls).toEqual([pattern, "health", ENDPOINT]);
       expect(texts).toEqual([
-        'The library ignores the capture.console entry "debug". capture.console must be true, false or a list of "error", "warn", "info" or "log".',
+        'The library ignores the capture.console.levels entry "debug". capture.console.levels must be a list of "error", "warn", "info" or "log".',
+        "The library ignores the capture.userTiming.include entry 5. capture.userTiming.include must be a list of strings and RegExp patterns.",
         "The library ignores the capture.ignoreUrls entry 5. capture.ignoreUrls must be a list of strings and RegExp patterns.",
       ]);
+    });
+
+    it("reads true as the defaults of a capture that takes options", () => {
+      const { config, texts } = resolveLoose({
+        capture: { console: true, longFrames: true, userTiming: true, webVitals: true },
+      });
+
+      expect(config.capture).toMatchObject({
+        console: true,
+        longFrames: true,
+        userTiming: true,
+        webVitals: true,
+      });
+      expect(texts).toEqual([]);
+    });
+
+    it("keeps the current options of a capture when a later object leaves them out", () => {
+      const { diagnostics } = collect();
+      const loader = () => Promise.resolve({}) as never;
+      const first = resolveConfig(
+        {
+          ...valid(),
+          capture: {
+            console: { levels: ["log"] },
+            longFrames: { thresholdMs: 50 },
+            userTiming: { include: ["grid"] },
+            webVitals: { loader },
+          },
+        },
+        diagnostics,
+      );
+
+      const next = resolveConfig(
+        { capture: { console: {}, longFrames: {}, userTiming: {}, webVitals: {} } },
+        diagnostics,
+        first,
+      );
+
+      expect(next.capture).toMatchObject({
+        console: { levels: ["log"] },
+        longFrames: { thresholdMs: 50 },
+        userTiming: { include: ["grid"] },
+        webVitals: { loader },
+      });
+    });
+
+    it("gives an object that follows true the default options", () => {
+      const { diagnostics } = collect();
+      const first = resolveConfig(
+        { ...valid(), capture: { console: true, longFrames: true, userTiming: true } },
+        diagnostics,
+      );
+
+      const next = resolveConfig(
+        { capture: { console: {}, longFrames: {}, userTiming: {}, webVitals: {} } },
+        diagnostics,
+        first,
+      );
+
+      expect(next.capture).toMatchObject({
+        console: { levels: ["error", "warn"] },
+        longFrames: { thresholdMs: 100 },
+        userTiming: { include: [] },
+        webVitals: { loader: undefined },
+      });
     });
 
     it("reports a sampling list entry and a remote flag of the wrong type", () => {
@@ -1118,8 +1219,9 @@ describe("resolveConfig", () => {
         maxBufferBytes: 10_000_000,
         afterErrorMs: 5000,
         uploadsPerWindow: 3,
-        batchSize: 200,
-        batchBytes: 512_000,
+        uploadWindowMs: 10_000,
+        maxSegmentEvents: 200,
+        maxSegmentBytes: 512_000,
         flushIntervalMs: 2000,
         maxQueueBytes: 20_000_000,
         maxAttempts: 3,
@@ -1155,8 +1257,9 @@ describe("resolveConfig", () => {
           maxBufferBytes: 100_000,
           afterErrorMs: 0,
           uploadsPerWindow: 0,
-          batchSize: 1,
-          batchBytes: 10_000,
+          uploadWindowMs: 1,
+          maxSegmentEvents: 1,
+          maxSegmentBytes: 10_000,
           flushIntervalMs: 100,
           maxQueueBytes: 100_000,
           maxAttempts: 10,
@@ -1189,8 +1292,9 @@ describe("resolveConfig", () => {
           "an integer from 0 to 9007199254740991, or null for no limit",
           "3",
         ],
-        ["batchSize", 0, "an integer from 1 to 10000", "200"],
-        ["batchBytes", 9999, "an integer from 10000 to 10000000", "512000"],
+        ["uploadWindowMs", 0, "an integer from 1 to 2147483647", "10000"],
+        ["maxSegmentEvents", 0, "an integer from 1 to 10000", "200"],
+        ["maxSegmentBytes", 9999, "an integer from 10000 to 10000000", "512000"],
         ["flushIntervalMs", 60_001, "an integer from 100 to 60000", "2000"],
         ["maxQueueBytes", "big", "an integer from 100000 to 200000000", "20000000"],
         ["maxAttempts", 11, "an integer from 1 to 10", "3"],
@@ -1300,7 +1404,6 @@ describe("resolveConfig", () => {
     describe("profiler", () => {
       const PROFILER_DEFAULTS = {
         enabled: false,
-        flushIntervalMs: 10_000,
         maxProbes: 64,
         framePhases: false,
         framePacing: false,
@@ -1314,47 +1417,57 @@ describe("resolveConfig", () => {
       });
 
       it("accepts each limit of the profiler ranges and the enabled flag", () => {
-        const lower = resolveLoose({
-          profiler: { enabled: true, flushIntervalMs: 1000, maxProbes: 1 },
-        });
-        const upper = resolveLoose({ profiler: { flushIntervalMs: 600_000, maxProbes: 1024 } });
+        const lower = resolveLoose({ profiler: { enabled: true, maxProbes: 1 } });
+        const upper = resolveLoose({ profiler: { maxProbes: 1024 } });
 
         expect(lower.config.profiler).toEqual({
           ...PROFILER_DEFAULTS,
           enabled: true,
-          flushIntervalMs: 1000,
           maxProbes: 1,
         });
-        expect(upper.config.profiler).toEqual({
-          ...PROFILER_DEFAULTS,
-          flushIntervalMs: 600_000,
-          maxProbes: 1024,
-        });
+        expect(upper.config.profiler).toEqual({ ...PROFILER_DEFAULTS, maxProbes: 1024 });
         expect(lower.texts).toEqual([]);
         expect(upper.texts).toEqual([]);
       });
 
       it.each([
+        [1000, 1000],
+        [600_000, 600_000],
+      ])("accepts metrics.intervalMs %j", (value, expected) => {
+        const { config, texts } = resolveLoose({ metrics: { intervalMs: value } });
+
+        expect(config.metrics.intervalMs).toBe(expected);
+        expect(texts).toEqual([]);
+      });
+
+      it.each([
         [
-          "flushIntervalMs",
           999,
-          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 999. The library keeps 10000.",
+          "metrics.intervalMs must be an integer from 1000 to 600000. The value is 999. The library keeps 10000.",
         ],
         [
-          "flushIntervalMs",
           600_001,
-          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 600001. The library keeps 10000.",
+          "metrics.intervalMs must be an integer from 1000 to 600000. The value is 600001. The library keeps 10000.",
         ],
         [
-          "flushIntervalMs",
           1500.5,
-          "profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is 1500.5. The library keeps 10000.",
+          "metrics.intervalMs must be an integer from 1000 to 600000. The value is 1500.5. The library keeps 10000.",
         ],
         [
-          "flushIntervalMs",
           "10000",
-          'profiler.flushIntervalMs must be an integer from 1000 to 600000. The value is "10000". The library keeps 10000.',
+          'metrics.intervalMs must be an integer from 1000 to 600000. The value is "10000". The library keeps 10000.',
         ],
+      ])(
+        "refuses metrics.intervalMs with the value %j and keeps the current value",
+        (value, text) => {
+          const { config, texts } = resolveLoose({ metrics: { intervalMs: value } });
+
+          expect(config.metrics.intervalMs).toBe(10_000);
+          expect(texts).toEqual([text]);
+        },
+      );
+
+      it.each([
         [
           "maxProbes",
           0,
@@ -1423,7 +1536,7 @@ describe("resolveConfig", () => {
       it("merges a later profiler change onto the current values", () => {
         const { events, diagnostics } = collect();
         const first = resolveConfig(
-          { ...valid(), profiler: { flushIntervalMs: 20_000, maxProbes: 128 } },
+          { ...valid(), profiler: { framePacing: true, maxProbes: 128 } },
           diagnostics,
         );
 
@@ -1432,7 +1545,7 @@ describe("resolveConfig", () => {
         expect(second.profiler).toEqual({
           ...PROFILER_DEFAULTS,
           enabled: true,
-          flushIntervalMs: 20_000,
+          framePacing: true,
           maxProbes: 128,
         });
         expect(resolveConfig({}, diagnostics, second).profiler).toEqual(second.profiler);
@@ -1503,7 +1616,6 @@ describe("tunable sections", () => {
     expect(config.batching).toEqual({
       logFlushIntervalMs: 2000,
       logBatchSize: 100,
-      metricFlushIntervalMs: 10_000,
       metricBatchSize: 500,
     });
     expect(config.retention).toEqual({
@@ -1536,7 +1648,6 @@ describe("tunable sections", () => {
     expect(config.batching).toEqual({
       logFlushIntervalMs: 2000,
       logBatchSize: 1,
-      metricFlushIntervalMs: 10_000,
       metricBatchSize: 1000,
     });
     expect(config.retention).toEqual({
@@ -1633,7 +1744,7 @@ describe("applyResolvedConfig", () => {
   it("leaves sections that the reconfigure did not mention at their current values", () => {
     const { diagnostics } = collect();
     const live = resolveConfig(
-      { ...valid(), sampling: { defaultRate: 0.25 }, console: "WARN" },
+      { ...valid(), sampling: { defaultRate: 0.25 }, consoleOutput: "WARN" },
       diagnostics,
     );
 
@@ -1642,6 +1753,6 @@ describe("applyResolvedConfig", () => {
 
     expect(live.minLevel).toBe("ERROR");
     expect(live.sampling.defaultRate).toBe(0.25);
-    expect(live.console.level).toBe("WARN");
+    expect(live.consoleOutput.level).toBe("WARN");
   });
 });

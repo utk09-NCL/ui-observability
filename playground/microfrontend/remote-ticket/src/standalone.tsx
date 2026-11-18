@@ -8,7 +8,7 @@ configure({
   serviceName: "example-ticket-standalone",
   environment: "local",
   minLevel: "TRACE",
-  console: true,
+  consoleOutput: true,
 });
 
 const { mount } = await import("./mount");

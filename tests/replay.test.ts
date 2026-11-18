@@ -9,7 +9,7 @@ import type { CaptureContext, CaptureOnce } from "../src/capture/types";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import type { ObservabilityConfig, ReplayPolicy } from "../src/models/config";
+import type { ObservabilityConfig, ReplayOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import type { ReplayPluginTools, ReplayRecord, ReplaySegment } from "../src/models/replay";
 import { runAsLibraryRequest } from "../src/utils/library-request";
@@ -77,7 +77,7 @@ function fakeRecorder(withSnapshot = true) {
  * @returns The capture and everything it writes to.
  */
 function setup(
-  replay: Partial<ReplayPolicy> = {},
+  replay: Partial<ReplayOptions> = {},
   over: {
     config?: Partial<ObservabilityConfig>;
     once?: CaptureOnce;
@@ -425,7 +425,7 @@ describe("start of the recorder", () => {
     expect(recorder.record).toHaveBeenCalledTimes(1);
   });
 
-  it.each<[string, Partial<ReplayPolicy>]>([
+  it.each<[string, Partial<ReplayOptions>]>([
     ["no loader", { loader: null }],
     ["no endpoint and no segment function", { onSegment: null }],
   ])("reports %s and stays off", async (_label, replay) => {
@@ -465,7 +465,7 @@ describe("start of the recorder", () => {
     ]);
   });
 
-  it.each<[string, Partial<ReplayPolicy>]>([
+  it.each<[string, Partial<ReplayOptions>]>([
     ["mask", { maskSelectors: [".ok", "div["] }],
     ["block", { blockSelectors: ["div["] }],
   ])("stays off for a %s selector that is not valid", async (_label, replay) => {
@@ -594,7 +594,7 @@ describe("plugins", () => {
    * @returns The helper and the events.
    */
   async function requestTool(
-    replay: Partial<ReplayPolicy> = {},
+    replay: Partial<ReplayOptions> = {},
     config: Partial<ObservabilityConfig> = {},
   ) {
     let tool: ReplayPluginTools["transformRequest"] | undefined;
@@ -798,7 +798,7 @@ describe("events that the recorder mask does not cover", () => {
    * @returns The uploaded event, and the event object the recorder handed over.
    */
   async function scrubbed(
-    replay: Partial<ReplayPolicy>,
+    replay: Partial<ReplayOptions>,
     mirror: { getNode: (id: number) => Node | null } | undefined,
   ) {
     const { run, fail, segments, recorder } = setup({ afterErrorMs: 0, ...replay });
@@ -970,10 +970,11 @@ describe("upload after an error", () => {
   });
 
   it("keeps the upload limit under a stream of errors", async () => {
-    const { run, fail, segments, events } = setup(
-      { afterErrorMs: 5000, uploadsPerWindow: 1 },
-      { config: { capturePolicy: { windowMs: 60_000 } } },
-    );
+    const { run, fail, segments, events } = setup({
+      afterErrorMs: 5000,
+      uploadsPerWindow: 1,
+      uploadWindowMs: 60_000,
+    });
     vi.setSystemTime(1_700_000_000_000);
     const { emit } = await run();
 
@@ -1045,6 +1046,24 @@ describe("upload after an error", () => {
     expect(segments).toHaveLength(1);
     expect(events.map(({ code }) => code)).toEqual(["capture.rate_limited"]);
     expect(events[0].message).toContain("replay uploads");
+  });
+
+  it("counts uploads in replay.uploadWindowMs, not in the capture window", async () => {
+    const { run, fail, segments } = setup(
+      { afterErrorMs: 0, uploadsPerWindow: 1, uploadWindowMs: 1000 },
+      { config: { captureLimits: { windowMs: 60_000 } } },
+    );
+    vi.setSystemTime(1_700_000_000_000);
+    const { emit } = await run();
+
+    emit({ type: 4 });
+    fail();
+    await vi.advanceTimersByTimeAsync(1001);
+    emit({ type: 3 });
+    fail();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(segments).toHaveLength(2);
   });
 
   it("reports a part over the buffer size once, and the lost events at the upload", async () => {

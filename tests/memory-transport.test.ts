@@ -90,7 +90,7 @@ describe("createMemoryTransport through the public API", () => {
     configure({
       serviceName: "orders",
       transport: memory.transport,
-      storage: "none",
+      storage: { backend: "none" },
       bus: { mode: "off" },
       identity: "memory",
     });

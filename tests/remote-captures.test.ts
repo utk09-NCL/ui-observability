@@ -108,22 +108,47 @@ describe("Remote captures in the runtime", () => {
     );
   });
 
-  it("keeps resource options when a remote rule enables the capture", async () => {
+  it("keeps the local options of a capture when a remote rule turns it on", async () => {
     const { runtime, config } = await setup({
       resourceTiming: { slowMs: 75 },
       interactions: { text: false },
-      console: ["warn"],
-      remoteToggles: ["resourceTiming", "interactions", "console"],
+      console: { levels: ["warn"] },
+      longFrames: { thresholdMs: 50 },
+      userTiming: { include: ["grid"] },
+      remoteToggles: ["resourceTiming", "interactions", "console", "longFrames", "userTiming"],
     });
     applyRemote(runtime["remote"], config, {
       ttlMs: 1000,
-      rules: { rates: {}, capture: { resourceTiming: true, interactions: true, console: true } },
+      rules: {
+        rates: {},
+        capture: {
+          resourceTiming: true,
+          interactions: true,
+          console: true,
+          longFrames: true,
+          userTiming: true,
+        },
+      },
     });
     expect(runtime["effectiveCapture"]()).toMatchObject({
       resourceTiming: { slowMs: 75 },
       interactions: { text: false },
-      console: ["warn"],
+      console: { levels: ["warn"] },
+      longFrames: { thresholdMs: 50 },
+      userTiming: { include: ["grid"] },
     });
+  });
+
+  it("turns off a capture with options when a remote rule turns it off", async () => {
+    const { runtime, config } = await setup({
+      longFrames: { thresholdMs: 50 },
+      remoteToggles: ["longFrames"],
+    });
+    applyRemote(runtime["remote"], config, {
+      ttlMs: 1000,
+      rules: { rates: {}, capture: { longFrames: false } },
+    });
+    expect(runtime["effectiveCapture"]().longFrames).toBe(false);
   });
 
   it("applies allowlist changes and remote off at reconfigure", async () => {

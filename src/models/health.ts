@@ -33,17 +33,12 @@ export interface ObservabilityHealth extends DeliveryStats {
   loggerCache: LoggerCacheOptions & { size: number };
   /** Active delivery context id and isolation rule. */
   securityContext: SecurityContextOptions;
-  /** State of the `persistence.requestPersistent` request. */
+  /** State of the `storage.requestPersistent` request. */
   storagePersistence: StoragePersistence;
-  /** The bus's source, validation and capacity rules. */
+  /** The bus's source and capacity rules. */
   bus: Pick<
     BusOptions,
-    | "sourcePolicy"
-    | "validation"
-    | "maxMessageBytes"
-    | "maxRecordsPerMessage"
-    | "maxMessagesPerSecond"
-    | "maxTrackedSources"
+    "sourcePolicy" | "maxMessageBytes" | "maxRecordsPerMessage" | "maxMessagesPerSecond"
   >;
 }
 

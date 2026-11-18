@@ -6,6 +6,7 @@ import {
   BUS_CHANNEL_NAME,
   BUS_HANDSHAKE_TIMEOUT_MS,
   BUS_MAX_HANDSHAKE_ATTEMPTS,
+  BUS_MAX_TRACKED_SOURCES,
   BUS_TYPE,
   REMOTE_SAMPLING_POLL_MS,
 } from "../constants";
@@ -536,7 +537,7 @@ export class Bus {
     try {
       accepted = this.passesChecks(message, source, child);
     } catch {
-      // Either a value JSON can't encode or a non-finite number under strict validation.
+      // Either a value JSON can't encode or a non-finite number fails the checks.
       // The count below reports the rejection.
       accepted = false;
     }
@@ -579,11 +580,7 @@ export class Bus {
           this.channelRates.delete(peer);
         }
       }
-      if (
-        bus.maxTrackedSources !== null &&
-        this.channelRates.size >= bus.maxTrackedSources &&
-        !this.channelRates.has(key)
-      ) {
+      if (this.channelRates.size >= BUS_MAX_TRACKED_SOURCES && !this.channelRates.has(key)) {
         return false;
       }
       this.channelRates.set(key, rate);
@@ -596,7 +593,7 @@ export class Bus {
     }
 
     const encoded = JSON.stringify(message, (_key, value: unknown) => {
-      if (bus.validation === "strict" && typeof value === "number" && !Number.isFinite(value)) {
+      if (typeof value === "number" && !Number.isFinite(value)) {
         throw new Error("Non-finite value");
       }
       return value;
@@ -607,7 +604,7 @@ export class Bus {
     ) {
       return false;
     }
-    if (bus.validation === "strict" && !validMessage(message)) {
+    if (!validMessage(message)) {
       return false;
     }
     if (

@@ -18,7 +18,7 @@ const start = (over: Partial<ObservabilityConfig> = {}): void => {
     endpoint: "https://ingest.example/v1/logs?token=abc#part",
     transport: createMemoryTransport().transport,
     serviceName: "svc",
-    storage: "memory",
+    storage: { backend: "memory" },
     identity: "memory",
     bus: { mode: "off" },
     headers: { Authorization: "Bearer secret" },

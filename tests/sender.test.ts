@@ -42,7 +42,13 @@ async function setup(over: Partial<ObservabilityConfig> = {}) {
     events.push(event);
   }, 0);
   const config = resolveConfig(
-    { endpoint: ENDPOINT, serviceName: "svc", storage: "memory", compression: "none", ...over },
+    {
+      endpoint: ENDPOINT,
+      serviceName: "svc",
+      storage: { backend: "memory" },
+      compression: "none",
+      ...over,
+    },
     diagnostics,
   );
   const onLoss = vi.fn<LossReporter>();

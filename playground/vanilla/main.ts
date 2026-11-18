@@ -105,7 +105,7 @@ configure({
   environment: "local",
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console from DEBUG up.
-  console: "DEBUG",
+  consoleOutput: "DEBUG",
   // Reads sampling rules from the mock server's X-UiObs-Sampling header.
   sampling: { remote: true },
   capture: {
@@ -118,18 +118,16 @@ configure({
     // Records ui.rage_click and ui.dead_click with the action name only.
     interactions: { rageClicks: true, deadClicks: true },
     navigation: true,
-    webVitals: true,
-    // Required, because the library never imports web-vitals by name. Without it the library
-    // reports config.invalid and LCP, CLS and INP stay off.
-    webVitalsLoader: () => import("web-vitals"),
+    // The loader is required, because the library never imports web-vitals by name. Without it
+    // the library reports config.invalid and LCP, CLS and INP stay off.
+    webVitals: { loader: () => import("web-vitals") },
     longFrames: true,
     // Records console.error and console.warn. console.info becomes a breadcrumb.
-    console: ["error", "warn", "info"],
+    console: { levels: ["error", "warn", "info"] },
     // Reports WARN ui.unclean_exit when this tab's previous page crashed.
     uncleanExit: true,
     // Records performance.measure() calls whose names start with "playground.".
-    userTiming: true,
-    userTimingInclude: [/^playground\./],
+    userTiming: { include: [/^playground\./] },
   },
   onDiagnostic: (event) => {
     note(event.code, event.message);

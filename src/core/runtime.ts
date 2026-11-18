@@ -16,6 +16,7 @@ import {
   DIAGNOSTICS_NAMESPACE,
   GAP_REPORT_THROTTLE_MS,
   METRIC_NAMESPACE,
+  ROUTING_KEYS,
   RUNTIME_GLOBAL_KEY,
   RUNTIME_STOPPED_KEY,
   STORAGE_NAMESPACE,
@@ -29,11 +30,9 @@ import type { BusMessage, BusRole } from "../models/bus";
 import type { FrameOptions, SourceOptions } from "../models/bus";
 import type {
   CaptureOptions,
-  DeliveryOptions,
   IdentityStrategy,
   ObservabilityConfig,
   ResolvedConfig,
-  StorageStrategy,
   SecurityContextUpdate,
   SecurityContextRotationOptions,
 } from "../models/config";
@@ -83,6 +82,7 @@ import { makeCounter, makeHistogram, Meter, type RecordMetric } from "./meter";
 import { profilerCore, type ProfilerSink } from "./profiler";
 import { RecordBuilder } from "./record";
 import type { RemoteSlot } from "./remote-sampling";
+import type { RotationHost, rotateContext } from "./rotation";
 import { sampleKey, shouldSample } from "./sampling";
 import type { Sender } from "./sender";
 import { rootSpan, type SpanData, spanFields } from "./spans";
@@ -168,72 +168,6 @@ const SENDER_SECTIONS = ["batching", "retention"] as const;
 /** Config sections a later configure() can't change. */
 type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
 
-/**
- * Delivery settings a rotation resets when the update leaves them out. The rotation also spreads
- * this into its base, where undefined means no hook, so an undefined key in the update resets too.
- */
-const DELIVERY_RESET = {
-  endpoint: null,
-  metricsEndpoint: null,
-  tracesEndpoint: null,
-  headers: undefined,
-  credentials: "omit",
-  transport: undefined,
-  transportOnExit: undefined,
-  transportWorker: undefined,
-} as const;
-
-/** Delivery settings configure() can't change while isolation is on. */
-const ROUTING_KEYS = Object.keys(DELIVERY_RESET) as (keyof typeof DELIVERY_RESET)[];
-
-/** The delivery settings that hold a URL. */
-const URL_KEYS: ReadonlySet<string> = new Set(["endpoint", "metricsEndpoint", "tracesEndpoint"]);
-
-/** A checked rotation, ready to apply. */
-interface RotationPlan {
-  /** The config of the next context. */
-  next: ResolvedConfig;
-  /** The next context's ambient attributes, or undefined to clear them. */
-  context: Record<string, unknown> | undefined;
-  /** What to do with the old context's records. */
-  pending: "discard" | "flush" | "retain" | "carry";
-  /** Maximum wait for an old-context flush, in milliseconds. */
-  timeoutMs: number;
-  /** The old context's id. */
-  previous: string;
-}
-
-/**
- * Returns the delivery keys that the next config doesn't hold as the rotation gave them. A
- * warning, for example a pair of settings that does nothing, isn't such a key.
- * @param input The rotation's delivery settings.
- * @param next The resolved config of the next context.
- * @returns The keys whose value couldn't be applied.
- */
-function unapplied(input: Partial<ObservabilityConfig>, next: ResolvedConfig): string[] {
-  return ROUTING_KEYS.filter((key) => {
-    const given: unknown = input[key];
-    const applied: unknown = next[key];
-
-    // null removes a setting.
-    if (given === null) {
-      return applied !== null && applied !== undefined;
-    }
-
-    // A blank string turns a signal endpoint off. On endpoint, only "" means "not set".
-    if (typeof given === "string" && given.trim() === "") {
-      return key === "endpoint" ? given !== "" : applied !== null;
-    }
-
-    // A relative URL is applied in its absolute form. A refused URL keeps the reset value, null.
-    if (typeof given === "string" && URL_KEYS.has(key)) {
-      return applied === null;
-    }
-
-    return given !== undefined && applied !== given;
-  });
-}
-
 /** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
   "bus.role_resolved",
@@ -254,10 +188,18 @@ function captureKey(capture: CaptureOptions): string {
   return JSON.stringify({
     ...capture,
     urlTransform: capture.urlTransform ? pluginId(capture.urlTransform) : undefined,
-    webVitalsLoader: capture.webVitalsLoader !== undefined,
+    // Only a loader's presence counts, so a new inline loader on each call reinstalls nothing.
+    webVitals:
+      typeof capture.webVitals === "object"
+        ? { loader: capture.webVitals.loader !== undefined }
+        : capture.webVitals,
     ignoreUrls: capture.ignoreUrls.map(String),
     propagateTraceHeaderTo: capture.propagateTraceHeaderTo.map(String),
-    userTimingInclude: capture.userTimingInclude.map(String),
+    // A RegExp has no JSON form.
+    userTiming:
+      typeof capture.userTiming === "object"
+        ? { include: capture.userTiming.include?.map(String) }
+        : capture.userTiming,
     plugins: capture.plugins.map(pluginId),
   });
 }
@@ -285,7 +227,7 @@ function recordDetail(detail: unknown): unknown {
 }
 
 /**
- * Removes the delivery settings from a configuration. A console-only runtime must not send
+ * Removes the routing settings from a configuration. A console-only runtime must not send
  * or join a bus, because the other version's runtime does both.
  * @param input Consumer configuration options.
  * @returns The options with no endpoint, no transport and bus mode "off".
@@ -488,8 +430,8 @@ export class ObservabilityRuntime {
   /** Promise for the bus load and start. Undefined until first needed. */
   private busLoad?: Promise<Bus | null>;
 
-  /** The adapter's storage strategy, set when the build starts. */
-  private storageBuiltAs?: StorageStrategy;
+  /** True once a delivery stack load has built the storage adapter from the storage section. */
+  private storageBuilt = false;
 
   /**
    * Delivery stack. Set in the sender role with an endpoint or a custom transport, once the
@@ -506,14 +448,6 @@ export class ObservabilityRuntime {
   });
 
   /**
-   * Records built during a rotation. They belong to neither context. A rotation that fails
-   * reports them with onDrop, and one that succeeds drops them on purpose.
-   */
-  private readonly rotationHeld = new HoldBuffer((record) => {
-    this.drops.add("security_context", [record]);
-  });
-
-  /**
    * True after a rotation fails. The app asked to leave the context, so the runtime sends no
    * record with its endpoint or headers until a rotation succeeds.
    */
@@ -524,9 +458,6 @@ export class ObservabilityRuntime {
    * succeeds retires it with its own rule, so the old records don't stay or move by accident.
    */
   private parkedSender: Sender | undefined;
-
-  /** Counts the delivery stack loads, so a load that a newer one replaced can stop itself. */
-  private senderGeneration = 0;
 
   /**
    * True after the first configure() call failed. The runtime then installs no capture and
@@ -641,10 +572,9 @@ export class ObservabilityRuntime {
     this.sessionTouch = new SessionTouch(
       this.diagnostics,
       this.stores,
-      this.config.correlation.sessionTouchMs,
       this.config.correlation.sessionIdleMs,
     );
-    this.breadcrumbs = new BreadcrumbBuffer(this.config.capturePolicy.breadcrumbs);
+    this.breadcrumbs = new BreadcrumbBuffer(this.config.captureLimits.breadcrumbs);
     // Sample a span by its trace, so the whole trace stays or goes.
     const keeps = (traceId: string): boolean =>
       sampleKey(traceId, this.config.sampling.defaultRate);
@@ -666,7 +596,7 @@ export class ObservabilityRuntime {
     void this.tracing.loadOtel();
     // The startup values stick. A later configure() can't change the limits or the journey age.
     this.limits = { ...this.config.limits };
-    this.console = new ConsoleSink(this.config.console, this.diagnostics, this.limits);
+    this.console = new ConsoleSink(this.config.consoleOutput, this.diagnostics, this.limits);
     this.drops = new DropReporter(this.config, this.diagnostics);
     this.journeyOptions = { ...JOURNEY_OPTIONS, maxAgeMs: this.config.journey.maxAgeMs };
 
@@ -695,7 +625,7 @@ export class ObservabilityRuntime {
     });
 
     this.meter = new Meter(
-      () => this.config.batching.metricFlushIntervalMs,
+      () => this.config.metrics.intervalMs,
       (name, attributes, fields) => {
         this.emitPoint(name, attributes, fields);
       },
@@ -901,7 +831,7 @@ export class ObservabilityRuntime {
     // Profiler points take the same path as meter points, so hooks and transports apply.
     const sink: ProfilerSink = {
       capacity: this.config.profiler.maxProbes,
-      intervalMs: () => this.config.profiler.flushIntervalMs,
+      intervalMs: () => this.config.metrics.intervalMs,
       emit: (name, attributes, fields) => {
         this.emitPoint(name, attributes, fields);
       },
@@ -947,13 +877,16 @@ export class ObservabilityRuntime {
 
   /**
    * Starts a new identity epoch. With isolation on, the profiler also drops its data and open
-   * spans, so a span from the old identity can't add to the new one.
+   * spans, so a span from the old identity can't add to the new one. The old identity's remote
+   * rules and capture switches don't apply to the new one.
    */
   private advanceIdentity(): void {
     this.identityEpoch++;
     if (this.profilerOn && this.config.securityContext.isolation) {
       profilerCore().reset();
     }
+    this.remote.sampling = null;
+    this.refreshCaptures();
   }
 
   /**
@@ -1172,15 +1105,19 @@ export class ObservabilityRuntime {
       this.explicitSecurityContext = true;
     }
     const next = resolveConfig(accepted, this.diagnostics, this.config);
-    for (const key of ["correlation", "persistence"] as const) {
-      // The sender reads the namespace when it loads. Until then, the first configure() can set it.
-      if (key === "persistence" && !this.tunablesLocked && this.senderLoad === undefined) {
+    for (const key of ["correlation", "storage"] as const) {
+      // The sender reads the storage section when it loads. Until then, the first configure() of
+      // a runtime that an early log call started can set it.
+      if (key === "storage" && !this.tunablesLocked && !this.storageBuilt) {
         continue;
       }
       // Compare resolved values, so an undefined or invalid key isn't a change. Restore the
       // section in the next config, never in the app's own object.
       if (!sameConfig(next[key], this.config[key])) {
-        this.diagnostics.report("config.invalid", `${key} cannot change after startup.`);
+        this.diagnostics.report(
+          "config.invalid",
+          `${key} cannot change after startup. The library keeps the current settings.`,
+        );
         Object.assign(next, { [key]: this.config[key] });
       }
     }
@@ -1196,7 +1133,7 @@ export class ObservabilityRuntime {
     if (this.config.redact !== redact || this.config.processors !== processors) {
       this.debugBuffer.clear();
     }
-    this.breadcrumbs.resize(this.config.capturePolicy.breadcrumbs);
+    this.breadcrumbs.resize(this.config.captureLimits.breadcrumbs);
     this.diagnostics.setHandler(this.diagnosticHandler());
     this.diagnostics.setPolicy(
       this.config.diagnostics.throttleMs,
@@ -1204,8 +1141,7 @@ export class ObservabilityRuntime {
     );
 
     this.builder.invalidateResource();
-    this.console.update(this.config.console);
-    this.keepBuiltStorage();
+    this.console.update(this.config.consoleOutput);
     this.keepBuiltIdentity();
     // The handler and the resource are up to date now, and points and diagnostics use both.
     this.syncProfiler();
@@ -1231,7 +1167,7 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Removes the delivery settings from a console-only runtime's input. On a server, it
+   * Removes the routing settings from a console-only runtime's input. On a server, it
    * reports a destination once.
    * @param input Consumer configuration options.
    * @returns The options the runtime accepts.
@@ -1253,9 +1189,9 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Removes delivery and identity changes while isolation is on. The other settings still apply.
+   * Removes routing and identity changes while isolation is on. The other settings still apply.
    * @param input Consumer configuration options.
-   * @returns The options without the refused delivery or identity changes.
+   * @returns The options without the refused routing or identity changes.
    */
   private keepRouting(input: Partial<ObservabilityConfig>): Partial<ObservabilityConfig> {
     if (!this.tunablesLocked || this.degraded || !this.config.securityContext.isolation) {
@@ -1315,6 +1251,18 @@ export class ObservabilityRuntime {
 
     this.keepSections(next, ["limits"]);
 
+    // The bus reads its role settings once, when it starts.
+    for (const key of ["mode", "openFinRole"] as const) {
+      if (next.bus[key] !== this.config.bus[key]) {
+        this.diagnostics.report(
+          "config.invalid",
+          `bus.${key} cannot change after startup. The library keeps "${this.config.bus[key]}".`,
+          { requested: next.bus[key] },
+        );
+        Object.assign(next.bus, { [key]: this.config.bus[key] });
+      }
+    }
+
     const { maxAgeMs } = this.config.journey;
     if (next.journey.maxAgeMs !== maxAgeMs) {
       this.diagnostics.report(
@@ -1354,26 +1302,6 @@ export class ObservabilityRuntime {
       );
       Object.assign(next, { [section]: this.config[section] });
     }
-  }
-
-  /**
-   * Restores the built adapter's storage strategy. Every other key is read live, but the
-   * adapter is built only once. A new adapter would strand the batches in the old one, and
-   * that loss is worse than a refused change.
-   */
-  private keepBuiltStorage(): void {
-    const built = this.storageBuiltAs;
-
-    if (built === undefined || this.config.storage === built) {
-      return;
-    }
-
-    this.diagnostics.report(
-      "config.invalid",
-      `storage cannot change after startup. It stays ${built}.`,
-      { requested: this.config.storage },
-    );
-    this.config.storage = built;
   }
 
   /**
@@ -1589,9 +1517,6 @@ export class ObservabilityRuntime {
                 );
                 this.rotating = rotating;
                 this.advanceIdentity();
-                // The old owner's rules must not apply to the new identity.
-                this.remote.sampling = null;
-                this.refreshCaptures();
               }
               this.config.securityContext.id = id;
             }
@@ -1670,8 +1595,7 @@ export class ObservabilityRuntime {
    * Never rejects.
    */
   private async buildSender(): Promise<void> {
-    this.storageBuiltAs = this.config.storage;
-    const generation = ++this.senderGeneration;
+    this.storageBuilt = true;
 
     try {
       const { Sender } = await import("./sender");
@@ -1703,9 +1627,9 @@ export class ObservabilityRuntime {
         return;
       }
 
-      // A failed rotation or a newer load came first. This sender must not send the old
-      // context's batches, so it stops and keeps them for the next rotation's rule.
-      if (this.deliveryClosed || generation !== this.senderGeneration) {
+      // A failed rotation closed the context during the load. This sender must not send the
+      // old context's batches, so it stops and keeps them for the next rotation's rule.
+      if (this.deliveryClosed) {
         await this.parkSender(sender);
         return;
       }
@@ -1859,9 +1783,10 @@ export class ObservabilityRuntime {
       names.push("longFrames");
     }
     // An empty list wraps nothing, so don't load the chunk for it.
-    const consoleOn = Array.isArray(settings.console)
-      ? settings.console.length > 0
-      : settings.console;
+    const consoleOn =
+      typeof settings.console === "object"
+        ? settings.console.levels?.length !== 0
+        : settings.console;
 
     if (consoleOn) {
       names.push("console");
@@ -2150,7 +2075,7 @@ export class ObservabilityRuntime {
     this.parkedSender = undefined;
     await this.diagnostics.guardAsync(
       "pipeline.crashed",
-      "The delivery stack of the old context did not stop.",
+      "The delivery stack of the old context did not stop at shutdown. The library leaves its stored batches in storage.",
       async () => parked?.retire("retain", 0, this.config.securityContext.id),
     );
     await this.memoryStorage?.close();
@@ -2173,8 +2098,9 @@ export class ObservabilityRuntime {
       return;
     }
 
+    // A record built during a rotation belongs to neither context.
     if (this.rotating && !this.closingContext) {
-      this.rotationHeld.push(record, this.config.buffering.maxHeldRecords);
+      this.drops.add("security_context", [record]);
       return;
     }
 
@@ -2428,7 +2354,7 @@ export class ObservabilityRuntime {
   /**
    * Changes the delivery context in one operation. Rotations run in call order, so a logout
    * that starts during a login still runs, after the login.
-   * @param update New identity, delivery settings and context attributes.
+   * @param update New identity, routing settings and context attributes.
    * @param options What to do with the old context's records, and the flush deadline.
    * @returns Promise that resolves when the change completes. Invalid settings reject it.
    */
@@ -2438,15 +2364,14 @@ export class ObservabilityRuntime {
   ): Promise<void> {
     if (this.destroyed) return Promise.reject(new Error("The runtime has stopped."));
 
-    // A record from this call on belongs to neither context, so it waits from here.
+    // A record from this call on belongs to neither context, so it's dropped from here.
     drainDeferred(this);
     this.rotating = true;
     const seq = ++this.rotationSeq;
     // Check the promise, not the flag. "carry" clears the flag before it stores old batches again.
-    const earlier = this.rotation;
-    const run = earlier
-      ? earlier.catch(() => undefined).then(() => this.runRotation(update, options, seq))
-      : this.runRotation(update, options, seq);
+    const run = (this.rotation ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.runRotation(update, options, seq));
     this.rotation = run;
     const settle = (): void => {
       if (this.rotation === run) {
@@ -2459,8 +2384,8 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Runs one rotation once the earlier ones are done.
-   * @param update New identity, delivery settings and context attributes.
+   * Runs one rotation once the earlier ones are done. The rotation code loads on the first call.
+   * @param update New identity, routing settings and context attributes.
    * @param options What to do with the old context's records, and the flush deadline.
    * @param seq Number of this call.
    * @returns Promise that resolves when the change completes.
@@ -2474,175 +2399,97 @@ export class ObservabilityRuntime {
       throw new Error("The runtime has stopped.");
     }
 
-    // The carry of an earlier rotation can clear the flag.
-    this.rotating = true;
-    await this.rotateContext(update, options, seq);
-  }
-
-  /**
-   * Checks the new settings, stops the old delivery and starts the new context. A rejection
-   * closes the old context's delivery, because the app asked to leave it.
-   * @param update New identity, delivery settings and attributes.
-   * @param options What to do with the old records, and the flush deadline.
-   * @param seq Number of this call.
-   * @returns Promise that resolves when the context change completes.
-   */
-  private async rotateContext(
-    update: SecurityContextUpdate,
-    options: SecurityContextRotationOptions,
-    seq: number,
-  ): Promise<void> {
     // A forwarder sends through its owner, so this is a usage error and its delivery stays open.
     await this.started;
-    if (this.role() === "forwarder")
+    if (this.role() === "forwarder") {
       throw new Error(
         "Rotate the security context on the upstream owner, or use bus.mode: sender for an independent identity.",
       );
+    }
 
-    let plan: RotationPlan;
+    let rotate: typeof rotateContext;
     try {
-      plan = await this.planRotation(update, options);
+      rotate = (await import("./rotation")).rotateContext;
     } catch (error) {
+      // The app asked to leave this context, so a rotation that can't run closes it.
+      this.diagnostics.report(
+        "pipeline.crashed",
+        "The library could not load the security-context rotation.",
+        undefined,
+        error,
+      );
       await this.closeDelivery();
       throw error;
     }
 
-    const { next, context, pending, timeoutMs, previous } = plan;
-
-    // The plan's base has no endpoints, so remove the old endpoints from the ignore list here.
-    // If they stayed, network capture would ignore calls to the old destination.
-    const oldUrls = new Set<unknown>([
-      this.config.endpoint,
-      this.config.metricsEndpoint,
-      this.config.tracesEndpoint,
-    ]);
-    const newUrls = new Set<unknown>([next.endpoint, next.metricsEndpoint, next.tracesEndpoint]);
-    next.capture.ignoreUrls = next.capture.ignoreUrls.filter(
-      (url) => !oldUrls.has(url) || newUrls.has(url),
-    );
-
-    this.closingContext = true;
-    try {
-      this.collectPoints();
-      this.tracing.end();
-      this.journey.end();
-    } finally {
-      this.closingContext = false;
+    // shutdown() ran during the load, so a rotation now would delete stored batches unreported.
+    if (this.isDestroyed()) {
+      throw new Error("The runtime has stopped.");
     }
-    const held = [...this.bootBuffer.take(), ...this.pendingRecords.take(), ...this.forwardBuffer];
-    this.forwardBuffer = [];
-    // After a failed rotation, the parked sender holds the closed context's records. They must
-    // never go out with the old settings, so "flush" removes them as "discard" does.
-    const old = this.sender ?? this.parkedSender;
-    const rule = this.deliveryClosed && pending === "flush" ? "discard" : pending;
-    this.sender = undefined;
-    this.senderLoad = undefined;
-    this.parkedSender = undefined;
-    const retired = (await old?.retire(rule, timeoutMs, previous)) ?? {
-      buffered: [],
-      stored: [],
+
+    await rotate(this.rotationHost(), update, options, seq);
+  }
+
+  /**
+   * Returns the changes the rotation code can make to this runtime's private state.
+   * @returns The rotation host.
+   */
+  private rotationHost(): RotationHost {
+    return {
+      runtime: this,
+      quiet: new Diagnostics(),
+      senderLoaded: async () => {
+        await this.senderLoad;
+      },
+      allowed: (input) => this.allowed(input),
+      closeDelivery: () => this.closeDelivery(),
+      closeContext: () => {
+        // The old context's last points and root span still go to its own sender.
+        this.closingContext = true;
+        try {
+          this.collectPoints();
+          this.tracing.end();
+          this.journey.end();
+        } finally {
+          this.closingContext = false;
+        }
+      },
+      takeOld: () => {
+        const held = [
+          ...this.bootBuffer.take(),
+          ...this.pendingRecords.take(),
+          ...this.forwardBuffer,
+        ];
+        const sender = this.sender ?? this.parkedSender;
+        this.forwardBuffer = [];
+        this.sender = undefined;
+        this.senderLoad = undefined;
+        this.parkedSender = undefined;
+        return { held, sender, closed: this.deliveryClosed };
+      },
+      drop: (records) => {
+        this.drops.add("security_context", records);
+      },
+      advanceIdentity: () => {
+        this.advanceIdentity();
+      },
+      openDelivery: async () => {
+        this.deliveryClosed = false;
+        await this.syncSender();
+        this.bus?.rotateContext();
+      },
+      endRotation: (seq) => {
+        // A queued rotation keeps the flag up, because a later record belongs to its context.
+        this.rotating = seq !== this.rotationSeq;
+      },
+      route: (record) => {
+        this.route(record);
+      },
+      adopt: async (stored) => {
+        // With no new sender, the stored batches stay parked under the old id, so none is lost.
+        await this.sender?.adopt(stored, this.config.securityContext.id);
+      },
     };
-    if (this.destroyed) return;
-    const live = [...held, ...retired.buffered];
-    const stored = retired.stored.flatMap((batch) => batch.records);
-    if (rule !== "retain" && rule !== "carry") {
-      this.drops.add("security_context", [...live, ...stored]);
-    }
-    // Keep a lock change the app made during the rotation.
-    next.lockConfiguration = this.config.lockConfiguration;
-    // Replace all delivery settings together. Don't keep old credentials or signal endpoints.
-    applyResolvedConfig(this.config, next);
-    this.advanceIdentity();
-    this.remote.sampling = null;
-    this.refreshCaptures();
-    this.context.clear();
-    if (context) this.context.setMany(context);
-    this.breadcrumbs.clear();
-    this.newSession();
-    this.builder.invalidateResource();
-    this.deliveryClosed = false;
-    await this.syncSender();
-    this.bus?.rotateContext();
-    // New calls go to the new sender from here, so a long carry drops no logger call and the
-    // report below can produce a record. A queued rotation keeps the flag up, because a record
-    // from now on belongs to its context, not to this one.
-    this.rotating = seq !== this.rotationSeq;
-    this.drops.add("security_context", this.rotationHeld.take());
-    if (pending === "carry") {
-      await this.carry(live, retired.stored);
-    }
-    this.diagnostics.report("security.rotated", "The runtime rotated its security context.", {
-      pending,
-    });
-  }
-
-  /**
-   * Checks a rotation's arguments and builds the next config. Nothing changes before it returns.
-   * @param update New identity, delivery settings and attributes.
-   * @param options What to do with the old records, and the flush deadline.
-   * @returns The checked rotation. It rejects for a setting it can't apply.
-   */
-  private async planRotation(
-    update: SecurityContextUpdate,
-    options: SecurityContextRotationOptions,
-  ): Promise<RotationPlan> {
-    // Wait for a delivery stack load first. A rejection then closes the sender that the load
-    // built, and no late sender can drain the old batches afterwards.
-    await this.senderLoad;
-    const pending = options.pending ?? "discard";
-    const timeoutMs = options.timeoutMs ?? 5000;
-    if (
-      !isObject(update) ||
-      !isObject(update.delivery) ||
-      !["discard", "flush", "retain", "carry"].includes(pending) ||
-      !Number.isFinite(timeoutMs) ||
-      timeoutMs < 0 ||
-      (update.id !== undefined && (typeof update.id !== "string" || update.id.length === 0))
-    ) {
-      throw new Error("Invalid security-context rotation options.");
-    }
-
-    const previous = this.config.securityContext.id;
-    const nextId = update.id ?? newId(this.diagnostics);
-    if (nextId === previous)
-      throw new Error("A rotation requires a different security-context id.");
-
-    const input = this.allowed({
-      ...this.deliveryOf(update.delivery),
-      securityContext: { id: nextId },
-    });
-    // The base has no old delivery values, so an invalid new value can't fall back to an old one.
-    const next = resolveConfig(input, this.diagnostics, { ...this.config, ...DELIVERY_RESET });
-    if (unapplied(input, next).length > 0)
-      throw new Error("Invalid delivery settings for the next security context.");
-    // Copy the context now, so a throwing getter rejects before the old sender stops.
-    const context = update.context ? Object.fromEntries(Object.entries(update.context)) : undefined;
-
-    return { next, context, pending, timeoutMs, previous };
-  }
-
-  /**
-   * Copies the delivery settings of a rotation update. Each other key is reported and left out,
-   * so a rotation can't remove redact or change a capture setting.
-   * @param delivery The update's delivery settings.
-   * @returns The reset delivery settings with the update's values on top.
-   */
-  private deliveryOf(delivery: DeliveryOptions): Partial<ObservabilityConfig> {
-    const copy: Partial<ObservabilityConfig> = { ...DELIVERY_RESET };
-
-    for (const key of Object.keys(delivery)) {
-      if ((ROUTING_KEYS as readonly string[]).includes(key)) {
-        const value: unknown = Reflect.get(delivery, key);
-        Object.assign(copy, { [key]: value });
-      } else {
-        this.diagnostics.report(
-          "config.invalid",
-          `rotateSecurityContext() ignores delivery.${key}. A rotation changes only the delivery settings.`,
-        );
-      }
-    }
-
-    return copy;
   }
 
   /**
@@ -2667,46 +2514,22 @@ export class ObservabilityRuntime {
     }
 
     // These records arrived during the rotation, so they belong to the context the app left.
-    this.drops.add("security_context", [
-      ...this.rotationHeld.take(),
-      ...this.pendingRecords.take(),
-    ]);
+    this.drops.add("security_context", this.pendingRecords.take());
   }
 
   /**
    * Stops a sender of a closed context and keeps it, so the next rotation that succeeds can
-   * apply its rule to the records of that context. One parked sender is enough, because each
-   * one holds the same store.
+   * apply its rule to the records of that context.
    * @param sender The sender to stop.
    */
   private async parkSender(sender: Sender): Promise<void> {
-    const contextId = this.config.securityContext.id;
-    const parked = this.parkedSender;
-    this.parkedSender ??= sender;
+    this.parkedSender = sender;
 
     await this.diagnostics.guardAsync(
       "pipeline.crashed",
-      "The delivery stack of the old context did not stop.",
-      async () => (parked ? sender.retire("retain", 0, contextId) : sender.pause(contextId)),
+      "The delivery stack of the old context did not stop. The next rotation that succeeds retires it.",
+      () => sender.pause(this.config.securityContext.id),
     );
-  }
-
-  /**
-   * Moves the old context's records into the new context.
-   * @param live Records that were in memory. They go through the live buffer.
-   * @param stored Batches that were stored. The new sender stores them again.
-   * @returns Promise that resolves once the stored batches are stored again.
-   */
-  private async carry(live: LogRecord[], stored: LogBatch[]): Promise<void> {
-    for (const record of live) {
-      this.route(record);
-    }
-
-    // The live buffer doesn't take the stored backlog, which would exceed the buffer budget.
-    // Without a new sender, the stored batches stay parked under the old id and nothing is lost.
-    if (this.sender) {
-      await this.sender.adopt(stored, this.config.securityContext.id);
-    }
   }
 
   /**
@@ -2762,14 +2585,8 @@ export class ObservabilityRuntime {
     } else if (this.ready && this.hasDestination() && this.role() === "sender" && !this.sender) {
       issues.push("sender.unavailable");
     }
-    const {
-      sourcePolicy,
-      validation,
-      maxMessageBytes,
-      maxRecordsPerMessage,
-      maxMessagesPerSecond,
-      maxTrackedSources,
-    } = this.config.bus;
+    const { sourcePolicy, maxMessageBytes, maxRecordsPerMessage, maxMessagesPerSecond } =
+      this.config.bus;
     return {
       ...delivery,
       pending:
@@ -2777,7 +2594,7 @@ export class ObservabilityRuntime {
         this.bootBuffer.length +
         this.pendingRecords.length +
         this.forwardBuffer.length,
-      stored: (await this.sender?.queueDepth()) ?? 0,
+      stored: await this.storedBatches(),
       sdkVersion: this.sdkVersion,
       owningSdkVersion: this.mismatchVersion,
       status: this.destroyed
@@ -2801,14 +2618,7 @@ export class ObservabilityRuntime {
       issues,
       securityContext: { ...this.config.securityContext },
       storagePersistence: this.storagePersistence,
-      bus: {
-        sourcePolicy,
-        validation,
-        maxMessageBytes,
-        maxRecordsPerMessage,
-        maxMessagesPerSecond,
-        maxTrackedSources,
-      },
+      bus: { sourcePolicy, maxMessageBytes, maxRecordsPerMessage, maxMessagesPerSecond },
     };
   }
 
@@ -2849,11 +2659,11 @@ export class ObservabilityRuntime {
       import("../models/storage"),
       import("../storage/emergency-queue"),
     ]);
-    const namespace = this.config.persistence.namespace;
+    const { backend, namespace } = this.config.storage;
     const backing =
       this.memoryStorage ??
       (await createStorage(
-        this.config.storage,
+        backend,
         storageName(namespace),
         storageLimits(this.config.retention),
         this.diagnostics,
@@ -2882,7 +2692,16 @@ export class ObservabilityRuntime {
    */
   async queueDepth(): Promise<number> {
     await this.senderLoad;
-    return (await this.sender?.queueDepth()) ?? 0;
+    return this.storedBatches();
+  }
+
+  /**
+   * Counts the stored batches. After a failed rotation, the parked sender's store still holds
+   * the closed context's batches, and they count until a rotation retires them.
+   * @returns Promise that resolves to the number of stored batches.
+   */
+  private async storedBatches(): Promise<number> {
+    return (await (this.sender ?? this.parkedSender)?.queueDepth()) ?? 0;
   }
 
   /**

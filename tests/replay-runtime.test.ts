@@ -16,14 +16,14 @@ import {
   startReplay,
   stopReplay,
 } from "../src/index";
-import type { ObservabilityConfig, ReplayPolicy, Transport } from "../src/models/config";
+import type { ObservabilityConfig, ReplayOptions, Transport } from "../src/models/config";
 import type { ReplayRecord, ReplaySegment } from "../src/models/replay";
 
 /** Settings for a runtime with no network and no other captures. */
 const base = {
   endpoint: null,
   serviceName: "svc",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
@@ -41,7 +41,7 @@ afterEach(async () => {
  * @param over Other settings for the test.
  * @returns The transport, the segments and the fake recorder.
  */
-async function start(replay: Partial<ReplayPolicy> = {}, over: ObservabilityConfig = {}) {
+async function start(replay: Partial<ReplayOptions> = {}, over: ObservabilityConfig = {}) {
   const memory = createMemoryTransport();
   const segments: ReplaySegment[] = [];
   const emits: ((event: unknown, isCheckout?: boolean) => void)[] = [];
@@ -228,8 +228,8 @@ describe("session replay in the runtime", () => {
 
     configure({
       replay: {
-        batchSize: 1,
-        batchBytes: 20_000,
+        maxSegmentEvents: 1,
+        maxSegmentBytes: 20_000,
         flushIntervalMs: 500,
         maxBufferBytes: 200_000,
         maxQueueBytes: 200_000,
@@ -243,7 +243,7 @@ describe("session replay in the runtime", () => {
     expect(stop).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledTimes(1);
 
-    // The new batch size applies to the running recorder: one event per segment.
+    // The new segment size applies to the running recorder: one event per segment.
     emits[0]({ type: 4 });
     emits[0]({ type: 2 });
     getLogger("app").error("failed", new Error("x"));
@@ -478,7 +478,7 @@ describe("session replay in the runtime", () => {
     [
       "rotateSecurityContext()",
       (transport: Transport): Promise<void> =>
-        rotateSecurityContext({ id: "user-b", delivery: { transport } }),
+        rotateSecurityContext({ id: "user-b", routing: { transport } }),
     ],
   ])(
     "drops the buffer of the old user at %s and starts a new recording",

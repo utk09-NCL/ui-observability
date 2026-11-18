@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DebugBuffer } from "../src/core/debug-buffer";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { configure, createMemoryTransport, flush, getLogger, newSession } from "../src/index";
-import type { DebugBufferPolicy, ObservabilityConfig } from "../src/models/config";
+import type { DebugBufferOptions, ObservabilityConfig } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 
 const record = (body: string): LogRecord => ({
@@ -23,8 +23,8 @@ const record = (body: string): LogRecord => ({
  * @returns The getter.
  */
 const policy =
-  (over: Partial<DebugBufferPolicy> = {}) =>
-  (): DebugBufferPolicy => ({ enabled: true, maxRecords: 3, maxAgeMs: null, ...over });
+  (over: Partial<DebugBufferOptions> = {}) =>
+  (): DebugBufferOptions => ({ enabled: true, maxRecords: 3, maxAgeMs: null, ...over });
 
 describe("DebugBuffer", () => {
   it("keeps the newest records up to maxRecords and marks each one at drain", () => {
@@ -87,7 +87,7 @@ describe("DebugBuffer", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       transport: memory.transport,
@@ -108,7 +108,7 @@ describe("DebugBuffer", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       transport: memory.transport,
@@ -157,7 +157,7 @@ describe("debugBuffer in the runtime", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       transport: memory.transport,

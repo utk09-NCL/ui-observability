@@ -20,6 +20,7 @@ import {
   DEFAULT_CONFIG,
   HOLD_BUFFER_HEAD_RECORDS,
   LEVEL_ORDER,
+  LONG_FRAME_THRESHOLD_MS,
   PROFILER_PROBE_LIMIT,
   REMOTE_CAPTURE_FLAGS,
   RESOURCE_SLOW_MS,
@@ -38,10 +39,10 @@ import type {
   BusOptions,
   CaptureOptions,
   CapturedConsoleMethod,
-  ConsoleOption,
   ConsoleStyles,
+  InteractionOptions,
   JourneyOptions,
-  LimitOptions,
+  LimitsOptions,
   ObservabilityConfig,
   ResolvedConfig,
   ResolvedConsole,
@@ -52,7 +53,7 @@ import type {
 import type { LogLevel, LogType } from "../models/log-record";
 import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
-import { isObject } from "../utils/guards";
+import { hasOwn, isObject } from "../utils/guards";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -76,7 +77,6 @@ type Range = readonly [min: number, max: number];
 const BATCHING_RANGES: Record<keyof BatchingOptions, Range> = {
   logFlushIntervalMs: [100, 60_000],
   logBatchSize: [1, 1000],
-  metricFlushIntervalMs: [100, 60_000],
   metricBatchSize: [1, 1000],
 };
 
@@ -94,7 +94,7 @@ const RETENTION_ATTEMPTS_RANGE: Range = [1, 20];
  * and error fields don't count toward it. An exit batch larger than one beacon goes to the
  * emergency queue.
  */
-const LIMIT_RANGES: Record<keyof LimitOptions, Range> = {
+const LIMIT_RANGES: Record<keyof LimitsOptions, Range> = {
   maxBodyChars: [256, 65_536],
   maxAttributeChars: [256, 65_536],
   maxAttributeCount: [1, 1024],
@@ -133,9 +133,9 @@ type LimitKeys<T> = {
 
 /** The policy sections resolvePolicy() checks. */
 type PolicySection =
-  | "capturePolicy"
+  | "captureLimits"
   | "metadata"
-  | "persistence"
+  | "storage"
   | "diagnostics"
   | "correlation"
   | "metrics"
@@ -285,14 +285,14 @@ function absoluteUrl(
 /**
  * Reads a destination that null turns off. An empty or blank string turns it off too, with a
  * report, because an empty environment variable must not leave the records going to the old
- * destination.
+ * destination. A rotation runs it too, to find a refused URL.
  * @param key Config key.
  * @param value The value the consumer passed.
  * @param fallback The current destination.
  * @param diagnostics Diagnostics reporter.
  * @returns The URL, null when it's off, or the fallback for a refused value.
  */
-function resolveDestination(
+export function resolveDestination(
   key: string,
   value: unknown,
   fallback: unknown,
@@ -316,24 +316,20 @@ function resolveDestination(
 
 /**
  * Reads the endpoint. "" stays "", the value for "not set", so resolveConfig reports a missing
- * endpoint. A blank string is refused, because it would send to the page itself.
+ * endpoint. A blank string is refused, because it would send to the page itself. A rotation
+ * runs it too, to find a refused URL.
  * @param value The value the consumer passed.
  * @param fallback The current endpoint.
  * @param diagnostics Diagnostics reporter.
  * @returns The endpoint, null for console-only mode, or the fallback for a refused value.
  */
-function resolveEndpoint(
+export function resolveEndpoint(
   value: unknown,
-  fallback: string | null,
+  fallback: unknown,
   diagnostics: Diagnostics,
-): string | null {
+): unknown {
   if (typeof value !== "string") {
-    return keepKind(isNull, URL_EXPECTED, describeKind)(
-      "endpoint",
-      value,
-      fallback,
-      diagnostics,
-    ) as string | null;
+    return keepKind(isNull, URL_EXPECTED, describeKind)("endpoint", value, fallback, diagnostics);
   }
 
   if (value === "" || value === fallback) {
@@ -345,7 +341,7 @@ function resolveEndpoint(
     return fallback;
   }
 
-  return absoluteUrl("endpoint", value, fallback, diagnostics) as string | null;
+  return absoluteUrl("endpoint", value, fallback, diagnostics);
 }
 
 /** Rules for one policy section. Every number key must have a range. */
@@ -362,7 +358,7 @@ interface PolicyRules<T> {
 
 /** Rules for every policy section. A new number key without a range won't compile. */
 const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
-  capturePolicy: {
+  captureLimits: {
     ranges: {
       // A larger capacity fails as an invalid array allocation.
       breadcrumbs: [0, 1_000_000],
@@ -371,7 +367,6 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       windowMs: POSITIVE_DURATION_RANGE,
     },
     limits: {
-      maxErrorSignatures: COUNT_RANGE,
       errorsPerWindow: COUNT_RANGE,
       consolePerWindow: COUNT_RANGE,
       longFramesPerWindow: COUNT_RANGE,
@@ -379,23 +374,22 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       reportsPerWindow: COUNT_RANGE,
       resourcesPerWindow: COUNT_RANGE,
       lifecyclePerWindow: COUNT_RANGE,
-      errorCeiling: COUNT_RANGE,
     },
   },
   metadata: { ranges: {}, limits: {} },
-  persistence: { ranges: {}, limits: {} },
+  storage: { ranges: {}, limits: {}, choices: { backend: STORAGE_VALUES } },
   diagnostics: {
     ranges: { throttleMs: DURATION_RANGE },
     limits: {},
     custom: { records: resolveDiagnosticRecords },
   },
   correlation: {
-    ranges: { sessionTouchMs: DURATION_RANGE },
+    ranges: {},
     // 0 would end a session or a trace at once, so these start at 1, and null lifts them.
     limits: { sessionIdleMs: POSITIVE_DURATION_RANGE, traceMaxAgeMs: POSITIVE_DURATION_RANGE },
   },
   metrics: {
-    ranges: {},
+    ranges: { intervalMs: [1000, 600_000] },
     limits: {
       maxSeries: COUNT_RANGE,
       maxInstruments: COUNT_RANGE,
@@ -418,8 +412,6 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       maxConcurrentRequests: POSITIVE_RANGE,
       retryBaseDelayMs: DURATION_RANGE,
       retryMaxDelayMs: DURATION_RANGE,
-      retryIdleDelayMs: DURATION_RANGE,
-      batchesPerDrain: POSITIVE_RANGE,
     },
     limits: {},
     choices: { priority: ["low", "auto", "high"] },
@@ -429,7 +421,7 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
     limits: { maxAgeMs: POSITIVE_DURATION_RANGE },
   },
   profiler: {
-    ranges: { flushIntervalMs: [1000, 600_000], maxProbes: [1, PROFILER_PROBE_LIMIT] },
+    ranges: { maxProbes: [1, PROFILER_PROBE_LIMIT] },
     limits: {},
   },
   replay: {
@@ -437,8 +429,10 @@ const POLICY_RULES: { [K in PolicySection]: PolicyRules<ResolvedConfig[K]> } = {
       bufferMs: [5000, 600_000],
       maxBufferBytes: [100_000, 200_000_000],
       afterErrorMs: [0, 600_000],
-      batchSize: [1, 10_000],
-      batchBytes: [10_000, 10_000_000],
+      // A window of 0 ms starts a new window for every upload, so the limit would never apply.
+      uploadWindowMs: POSITIVE_DURATION_RANGE,
+      maxSegmentEvents: [1, 10_000],
+      maxSegmentBytes: [10_000, 10_000_000],
       flushIntervalMs: [100, 60_000],
       maxQueueBytes: [100_000, 200_000_000],
       maxAttempts: [1, 10],
@@ -468,12 +462,9 @@ const CAPTURE_FLAG_KEYS = [
   "xhr",
   "httpMetrics",
   "navigation",
-  "webVitals",
-  "longFrames",
   "fullUrls",
   "webSocket",
   "uncleanExit",
-  "userTiming",
   "serverTiming",
   "reports",
   "lifecycle",
@@ -484,7 +475,7 @@ const SANDBOX_ORIGIN = "null";
 
 /** How each expected value reads in a config.invalid message. */
 const LEVEL_EXPECTED = `a level name: ${listOf(LEVEL_NAMES)}`;
-const CONSOLE_CAPTURE_EXPECTED = `true, false or a list of ${listOf(CONSOLE_METHOD_VALUES)}`;
+const CONSOLE_LEVELS_EXPECTED = `a list of ${listOf(CONSOLE_METHOD_VALUES)}`;
 const PATTERN_LIST_EXPECTED = "a list of strings and RegExp patterns";
 const TARGET_LIST_EXPECTED =
   'a list of origin URLs such as "https://api.example" and RegExp patterns';
@@ -1282,7 +1273,13 @@ const CONSOLE_STYLE_KEYS = new Set(Object.keys(CONSOLE_DEFAULT_STYLES));
 function validStyles(styles: unknown, diagnostics: Diagnostics): ConsoleStyles {
   const valid: Record<string, string> = {};
   if (styles !== undefined && !isObject(styles)) {
-    reportInvalid(diagnostics, "console.styles", "an object of CSS strings", styles, "the styles");
+    reportInvalid(
+      diagnostics,
+      "consoleOutput.styles",
+      "an object of CSS strings",
+      styles,
+      "the styles",
+    );
     return valid;
   }
 
@@ -1292,7 +1289,7 @@ function validStyles(styles: unknown, diagnostics: Diagnostics): ConsoleStyles {
     if (!CONSOLE_STYLE_KEYS.has(key)) {
       diagnostics.report(
         "config.invalid",
-        `The library ignores the unknown console.styles key "${key}". Check the spelling.`,
+        `The library ignores the unknown consoleOutput.styles key "${key}". Check the spelling.`,
       );
       continue;
     }
@@ -1305,7 +1302,7 @@ function validStyles(styles: unknown, diagnostics: Diagnostics): ConsoleStyles {
     if (typeof value !== "string") {
       diagnostics.report(
         "config.invalid",
-        `console.styles.${key} must be a string. The library keeps the current style.`,
+        `consoleOutput.styles.${key} must be a string. The library keeps the current style.`,
       );
       continue;
     }
@@ -1317,7 +1314,7 @@ function validStyles(styles: unknown, diagnostics: Diagnostics): ConsoleStyles {
 }
 
 /**
- * Reads the level from the console option's object form.
+ * Reads the level from the consoleOutput option's object form.
  * @param requested The level the consumer passed.
  * @param previous The current console level. Null means the console is off.
  * @param diagnostics Diagnostics reporter.
@@ -1340,7 +1337,7 @@ function resolveConsoleLevel(
 
   reportInvalid(
     diagnostics,
-    "console.level",
+    "consoleOutput.level",
     LEVEL_EXPECTED,
     requested,
     "the current console level",
@@ -1349,14 +1346,14 @@ function resolveConsoleLevel(
 }
 
 /**
- * Normalizes the console option into a level and a set of styles.
- * @param requested Consumer console option.
+ * Normalizes the consoleOutput option into a level and a set of styles.
+ * @param requested Consumer consoleOutput option.
  * @param previous The current console settings.
  * @param diagnostics Diagnostics reporter.
  * @returns Console settings. The level is null when the console is off.
  */
 function resolveConsole(
-  requested: ConsoleOption | undefined,
+  requested: ObservabilityConfig["consoleOutput"],
   previous: ResolvedConsole,
   diagnostics: Diagnostics,
 ): ResolvedConsole {
@@ -1372,7 +1369,13 @@ function resolveConsole(
   if (typeof requested === "string") {
     const level = toLevel(requested);
     if (level === undefined) {
-      reportInvalid(diagnostics, "console", LEVEL_EXPECTED, requested, "the current console level");
+      reportInvalid(
+        diagnostics,
+        "consoleOutput",
+        LEVEL_EXPECTED,
+        requested,
+        "the current console level",
+      );
       return previous;
     }
 
@@ -1383,7 +1386,7 @@ function resolveConsole(
   if (typeof requested !== "object" || (requested as unknown) === null) {
     diagnostics.report(
       "config.invalid",
-      "console must be a boolean, a level or an object. The current console settings stay.",
+      "consoleOutput must be a boolean, a level or an object. The current console settings stay.",
     );
     return previous;
   }
@@ -1436,6 +1439,21 @@ function resolveSampling(
       base.alwaysSampleFrom,
       diagnostics,
     ),
+    errorCeiling: resolveLimit(
+      "sampling.errorCeiling",
+      given.errorCeiling,
+      COUNT_RANGE,
+      base.errorCeiling,
+      diagnostics,
+    ),
+    // A window of 0 ms starts a new window for every record, so the ceiling would never apply.
+    errorCeilingWindowMs: resolveInteger(
+      "sampling.errorCeilingWindowMs",
+      given.errorCeilingWindowMs,
+      POSITIVE_DURATION_RANGE,
+      base.errorCeilingWindowMs,
+      diagnostics,
+    ),
     remote: resolveBoolean("sampling.remote", given.remote, base.remote, diagnostics),
   };
 }
@@ -1456,25 +1474,11 @@ function resolveBus(
 
   // A limit of 0 would stop every message, so each limit starts at 1 and null lifts it.
   return {
-    maxTrackedSources: resolveLimit(
-      "bus.maxTrackedSources",
-      given.maxTrackedSources,
-      POSITIVE_RANGE,
-      base.maxTrackedSources,
-      diagnostics,
-    ),
     sourcePolicy: resolveChoice(
       "bus.sourcePolicy",
       given.sourcePolicy,
       ["registered", "trusted-origin"],
       base.sourcePolicy,
-      diagnostics,
-    ),
-    validation: resolveChoice(
-      "bus.validation",
-      given.validation,
-      ["strict", "envelope"],
-      base.validation,
       diagnostics,
     ),
     maxMessageBytes: resolveLimit(
@@ -1590,44 +1594,48 @@ function resolveRetention(
 }
 
 /**
- * Reads capture.console.
+ * Reads a capture key that takes a boolean or an options object, where true means the defaults.
+ * @param key Capture key, for example `longFrames`.
  * @param value The value the consumer passed.
- * @param fallback The current value.
+ * @param base The current value.
  * @param diagnostics Diagnostics reporter.
- * @returns A boolean, or the accepted method names.
+ * @param fields Checks each field of an object. It gets the current object, or {} after a
+ * boolean, so an omitted field keeps its current value.
+ * @returns The boolean, the checked object, or the current value for a bad value.
  */
-function resolveCaptureConsole(
+function resolveCaptureOptions<T extends object>(
+  key: string,
   value: unknown,
-  fallback: boolean | CapturedConsoleMethod[],
+  base: boolean | T,
   diagnostics: Diagnostics,
-): boolean | CapturedConsoleMethod[] {
+  fields: (given: Record<string, unknown>, previous: Partial<T>) => T,
+): boolean | T {
   if (value === undefined) {
-    return fallback;
+    return base;
   }
 
   if (typeof value === "boolean") {
     return value;
   }
 
-  if (!Array.isArray(value)) {
-    reportInvalid(
-      diagnostics,
-      "capture.console",
-      CONSOLE_CAPTURE_EXPECTED,
-      value,
-      "the current value",
-    );
-    return fallback;
+  if (!isObject(value)) {
+    diagnostics.report("config.invalid", `capture.${key} must be a boolean or an options object.`);
+    return base;
   }
 
-  return resolveList(
-    "capture.console",
-    value,
-    [],
-    CONSOLE_CAPTURE_EXPECTED,
-    toConsoleMethod,
-    diagnostics,
-  );
+  const resolved = fields(value, typeof base === "object" ? base : {});
+
+  // The resolved object has each known option, so a typo such as `threshold` isn't silent.
+  for (const name of Object.keys(value)) {
+    if (!hasOwn(resolved, name)) {
+      diagnostics.report(
+        "config.invalid",
+        `The library ignores the unknown config key "capture.${key}.${name}". Check the spelling.`,
+      );
+    }
+  }
+
+  return resolved;
 }
 
 /**
@@ -1651,12 +1659,6 @@ function resolveCapture(
       base.urlTransform,
       diagnostics,
     ),
-    webVitalsLoader: resolveHook(
-      "capture.webVitalsLoader",
-      given.webVitalsLoader,
-      base.webVitalsLoader,
-      diagnostics,
-    ),
     remoteToggles: resolveList(
       "capture.remoteToggles",
       given.remoteToggles,
@@ -1665,27 +1667,86 @@ function resolveCapture(
       (value) => REMOTE_CAPTURE_FLAGS.find((key) => key === value),
       diagnostics,
     ),
-    resourceTiming: resolveResourceTiming(given.resourceTiming, base.resourceTiming, diagnostics),
-    interactions: resolveInteractions(given.interactions, base.interactions, diagnostics),
-    console: resolveCaptureConsole(given.console, base.console, diagnostics),
-    longFrameMs: resolveNonNegative(
-      "capture.longFrameMs",
-      given.longFrameMs,
-      base.longFrameMs,
+    resourceTiming: resolveCaptureOptions(
+      "resourceTiming",
+      given.resourceTiming,
+      base.resourceTiming,
       diagnostics,
+      (value, previous) => ({
+        slowMs: resolveNonNegative(
+          "capture.resourceTiming.slowMs",
+          value.slowMs,
+          previous.slowMs ?? RESOURCE_SLOW_MS,
+          diagnostics,
+        ),
+      }),
+    ),
+    interactions: resolveCaptureOptions(
+      "interactions",
+      given.interactions,
+      base.interactions,
+      diagnostics,
+      (value, previous) => resolveInteractions(value, previous, diagnostics),
+    ),
+    console: resolveCaptureOptions(
+      "console",
+      given.console,
+      base.console,
+      diagnostics,
+      (value, previous) => ({
+        levels: resolveList(
+          "capture.console.levels",
+          value.levels,
+          previous.levels ?? ["error", "warn"],
+          CONSOLE_LEVELS_EXPECTED,
+          toConsoleMethod,
+          diagnostics,
+        ),
+      }),
+    ),
+    longFrames: resolveCaptureOptions(
+      "longFrames",
+      given.longFrames,
+      base.longFrames,
+      diagnostics,
+      (value, previous) => ({
+        thresholdMs: resolveNonNegative(
+          "capture.longFrames.thresholdMs",
+          value.thresholdMs,
+          previous.thresholdMs ?? LONG_FRAME_THRESHOLD_MS,
+          diagnostics,
+        ),
+      }),
+    ),
+    userTiming: resolveCaptureOptions(
+      "userTiming",
+      given.userTiming,
+      base.userTiming,
+      diagnostics,
+      (value, previous) => ({
+        include: resolveList(
+          "capture.userTiming.include",
+          value.include,
+          previous.include ?? [],
+          PATTERN_LIST_EXPECTED,
+          toPattern,
+          diagnostics,
+        ),
+      }),
+    ),
+    webVitals: resolveCaptureOptions(
+      "webVitals",
+      given.webVitals,
+      base.webVitals,
+      diagnostics,
+      (value, previous) => ({
+        loader: resolveHook("capture.webVitals.loader", value.loader, previous.loader, diagnostics),
+      }),
     ),
     ignoreUrls: resolveList(
       "capture.ignoreUrls",
       given.ignoreUrls,
       base.ignoreUrls,
-      PATTERN_LIST_EXPECTED,
-      toPattern,
-      diagnostics,
-    ),
-    userTimingInclude: resolveList(
-      "capture.userTimingInclude",
-      given.userTimingInclude,
-      base.userTimingInclude,
       PATTERN_LIST_EXPECTED,
       toPattern,
       diagnostics,
@@ -1717,58 +1778,18 @@ function resolveCapture(
   return capture;
 }
 
-/** Checks the resource timing settings. An invalid value keeps the current settings. */
-function resolveResourceTiming(
-  value: unknown,
-  base: CaptureOptions["resourceTiming"],
-  diagnostics: Diagnostics,
-): CaptureOptions["resourceTiming"] {
-  if (value === undefined) {
-    return base;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (!isObject(value)) {
-    diagnostics.report(
-      "config.invalid",
-      "capture.resourceTiming must be a boolean or an options object.",
-    );
-    return base;
-  }
-
-  return {
-    slowMs: resolveNonNegative(
-      "capture.resourceTiming.slowMs",
-      value.slowMs,
-      typeof base === "object" ? (base.slowMs ?? RESOURCE_SLOW_MS) : RESOURCE_SLOW_MS,
-      diagnostics,
-    ),
-  };
-}
-
 /**
  * Checks the click settings. An invalid value never turns on text or selector capture.
  * @param value The settings the app supplied.
- * @param base The current settings.
+ * @param previous The current settings, or {} when the capture was a boolean.
  * @param diagnostics Diagnostics reporter.
  * @returns The valid settings, with invalid values replaced by the current ones.
  */
 function resolveInteractions(
-  value: CaptureOptions["interactions"] | undefined,
-  base: CaptureOptions["interactions"],
+  value: Record<string, unknown>,
+  previous: InteractionOptions,
   diagnostics: Diagnostics,
-): CaptureOptions["interactions"] {
-  if (value === undefined) return base;
-  if (typeof value === "boolean") return value;
-  if (!isObject(value)) {
-    diagnostics.report(
-      "config.invalid",
-      "capture.interactions must be a boolean or an options object.",
-    );
-    return base;
-  }
-  const previous = typeof base === "object" ? base : {};
+): InteractionOptions {
   const ignore = value.ignoreSelector;
   let ignoreSelector = ignore === undefined ? previous.ignoreSelector : ignore;
   if (ignoreSelector !== undefined && ignoreSelector !== null) {
@@ -2090,7 +2111,7 @@ export function resolveConfig(
       ),
     },
     // An unset environment variable arrives as undefined, so keep the current endpoint.
-    endpoint: resolveEndpoint(given.endpoint, base.endpoint, diagnostics),
+    endpoint: resolveEndpoint(given.endpoint, base.endpoint, diagnostics) as string | null,
     serviceName: resolveString("serviceName", given.serviceName, base.serviceName, diagnostics),
     serviceVersion: resolveString(
       "serviceVersion",
@@ -2127,7 +2148,6 @@ export function resolveConfig(
       diagnostics,
     ),
     headers: resolveHeaders(given.headers, base.headers, diagnostics),
-    storage: resolveChoice("storage", given.storage, STORAGE_VALUES, base.storage, diagnostics),
     identity: resolveChoice(
       "identity",
       given.identity,
@@ -2137,7 +2157,7 @@ export function resolveConfig(
     ),
     // A name stays a name, because the transport picks the implementation.
     serializer: resolveSerializer(given.serializer, previous?.serializer, diagnostics),
-    console: resolveConsole(given.console, base.console, diagnostics),
+    consoleOutput: resolveConsole(given.consoleOutput, base.consoleOutput, diagnostics),
     sampling: resolveSampling(given.sampling, base.sampling, diagnostics),
     bus: resolveBus(given.bus, base.bus, diagnostics),
     batching: resolveRanges(

@@ -155,11 +155,22 @@ export interface SamplingOptions {
    */
   alwaysSampleTypes: LogType[];
   /**
-   * Lowest level that the sampling rate never drops. `capturePolicy.errorCeiling` limits
-   * the log records at this level and higher.
+   * Lowest level that the sampling rate never drops. `errorCeiling` limits the log records at
+   * this level and higher.
    * @default "ERROR"
    */
   alwaysSampleFrom: LogLevel;
+  /**
+   * Maximum log records at or above `alwaysSampleFrom` in one `errorCeilingWindowMs` window.
+   * Metric points and spans do not count. Set 0 to drop every one, or null for no limit.
+   * @default 500
+   */
+  errorCeiling: number | null;
+  /**
+   * Length of the `errorCeiling` window, in milliseconds, 1 or more.
+   * @default 10000
+   */
+  errorCeilingWindowMs: number;
   /**
    * Read sampling rules from the `X-UiObs-Sampling` header of every accepted batch. The rules
    * stay in effect for their `ttlMs`. Set this in every context on the page.
@@ -183,12 +194,6 @@ export interface BusOptions {
    */
   sourcePolicy: "registered" | "trusted-origin";
   /**
-   * Message checks. "strict" checks every record and control message, while "envelope" checks
-   * only the protocol tag.
-   * @default "strict"
-   */
-  validation: "strict" | "envelope";
-  /**
    * Maximum encoded bytes in one message, 1 or more. Set null for no size limit.
    * @default 262144
    */
@@ -204,27 +209,22 @@ export interface BusOptions {
    */
   maxMessagesPerSecond: number | null;
   /**
-   * Maximum named sources to track, for example OpenFin identities, 1 or more. Set null for no
-   * limit.
-   * @default 256
-   */
-  maxTrackedSources: number | null;
-  /**
-   * This context's role.
+   * This context's role. Can't be changed after startup.
    * @default "auto"
    */
   mode: BusMode;
   /**
    * Additional trusted parent origins. With sourcePolicy "trusted-origin", the list also
    * permits child origins. A registered child uses the exact origin from its registration.
-   * "null" is never accepted, so a sandboxed frame must set `mode: "sender"`.
+   * "null" is never accepted, so a sandboxed frame must set `mode: "sender"`. A new entry
+   * doesn't reconnect a parent link that already exists.
    * @default []
    */
   trustedOrigins: string[];
   /**
    * Which OpenFin context this is. Only the platform provider answers a handshake, so with
    * the wrong value every view sends its own records. "auto" treats the window whose name
-   * equals its application uuid as the provider.
+   * equals its application uuid as the provider. Can't be changed after startup.
    * @default "auto"
    */
   openFinRole: "auto" | "provider" | "client";
@@ -256,23 +256,21 @@ export interface JourneyOptions {
   maxAgeMs: number;
 }
 
-/** Batch size and flush interval for each record stream. Can't be changed after startup. */
+/**
+ * Batch sizes, and the flush interval of log and span batches. The log keys also apply to spans.
+ * A metric batch waits `metrics.intervalMs`. Can't be changed after startup.
+ */
 export interface BatchingOptions {
   /**
-   * How long a partial log batch waits before it is sent, in milliseconds. 100 to 60000.
+   * How long a partial log or span batch waits before it is sent, in milliseconds. 100 to 60000.
    * @default 2000
    */
   logFlushIntervalMs: number;
   /**
-   * Maximum records in one log batch. 1 to 1000.
+   * Maximum records in one log or span batch. 1 to 1000.
    * @default 100
    */
   logBatchSize: number;
-  /**
-   * How long a partial metric batch waits before it is sent, in milliseconds. 100 to 60000.
-   * @default 10000
-   */
-  metricFlushIntervalMs: number;
   /**
    * Maximum records in one metric batch. 1 to 1000.
    * @default 500
@@ -306,7 +304,7 @@ export interface RetentionOptions {
 }
 
 /** Size limits for each record. Can't be changed after startup. */
-export interface LimitOptions {
+export interface LimitsOptions {
   /**
    * Maximum body length, in characters. 256 to 65536.
    * @default 4096
@@ -352,6 +350,46 @@ export interface LimitOptions {
 
 /** Console method that the console capture can wrap. */
 export type CapturedConsoleMethod = "error" | "warn" | "info" | "log";
+
+/** Console capture settings. An object turns the capture on, and true uses the defaults below. */
+export interface ConsoleCaptureOptions {
+  /**
+   * Console methods to wrap. `error` produces an ERROR record and `warn` a WARN record, while
+   * `info` and `log` only add a breadcrumb. An empty list wraps nothing.
+   * @default ["error", "warn"]
+   */
+  levels?: CapturedConsoleMethod[];
+}
+
+/** Long frame settings. An object turns the capture on, and true uses the defaults below. */
+export interface LongFramesOptions {
+  /**
+   * Minimum frame duration to report, in milliseconds, 0 or more.
+   * @default 100
+   */
+  thresholdMs?: number;
+}
+
+/** User timing settings. An object turns the capture on, and true uses the defaults below. */
+export interface UserTimingOptions {
+  /**
+   * Names of the marks and measures to record, as strings and RegExp patterns. A string matches
+   * any part of the name. An empty list records every name.
+   * @default []
+   */
+  include?: (string | RegExp)[];
+}
+
+/** Web vitals settings. An object turns the capture on, and true uses the defaults below. */
+export interface WebVitalsOptions {
+  /**
+   * Supplies the `web-vitals` module without a hard dependency on the package, for example
+   * `() => import("web-vitals")`. Without it, the library reports `config.invalid` and records
+   * only the navigation timing. Set null to remove it.
+   * @returns A promise that resolves to the `web-vitals` module.
+   */
+  loader?: (() => Promise<WebVitalsModule>) | null;
+}
 
 /** Resource timing settings. Passing an object turns the capture on. */
 export interface ResourceTimingOptions {
@@ -439,15 +477,18 @@ export interface SecurityContextOptions {
   /** Stable id for delivery after a page reload. With an empty id, the runtime creates one. */
   id: string;
   /**
-   * Keep stored batches in separate contexts. When true, change delivery settings through
+   * Keep stored batches in separate contexts. When true, change the routing settings through
    * rotateSecurityContext() instead of configure().
    * @default true
    */
   isolation: boolean;
 }
 
-/** Delivery settings that the runtime replaces together when the security context changes. */
-export type DeliveryOptions = Pick<
+/**
+ * Routing settings: where records go and how a request authenticates. The runtime replaces
+ * them together when the security context changes.
+ */
+export type RoutingOptions = Pick<
   ObservabilityConfig,
   | "endpoint"
   | "metricsEndpoint"
@@ -459,17 +500,17 @@ export type DeliveryOptions = Pick<
   | "transportWorker"
 >;
 
-/** New security context. Any delivery field that is left out or undefined resets to its default. */
+/** New security context. Any routing field that is left out or undefined resets to its default. */
 export interface SecurityContextUpdate {
   /** New delivery context id. If omitted, the runtime creates one. */
   id?: string;
   /**
-   * New delivery settings. Any field that is left out or undefined resets to its default, unlike
+   * New routing settings. Any field that is left out or undefined resets to its default, unlike
    * configure(), because a rotation must not carry an old token into the new context. A key that
-   * isn't a delivery setting reports `config.invalid` and the rotation ignores it, so the other
+   * isn't a routing setting reports `config.invalid` and the rotation ignores it, so the other
    * settings stay.
    */
-  delivery: DeliveryOptions;
+  routing: RoutingOptions;
   /** New ambient attributes. If omitted, the runtime removes the old ones. */
   context?: Record<string, unknown>;
 }
@@ -484,7 +525,8 @@ export interface SecurityContextRotationOptions {
    */
   pending?: "discard" | "flush" | "retain" | "carry";
   /**
-   * How long to wait for the old records to flush, in milliseconds.
+   * How long to wait for the old records to flush, in milliseconds. 0 to 600000. A value
+   * outside the range rejects the rotation.
    * @default 5000
    */
   timeoutMs?: number;
@@ -492,7 +534,7 @@ export interface SecurityContextRotationOptions {
 
 /**
  * What the library instruments automatically. By default, only `errors` and `rejections`
- * are on.
+ * are on. A capture that takes an options object also takes true for its defaults.
  */
 export interface CaptureOptions {
   /**
@@ -545,28 +587,22 @@ export interface CaptureOptions {
    */
   navigation: boolean;
   /**
-   * Report web vitals as metrics. Needs `webVitalsLoader`.
+   * Report web vitals as metrics, and the navigation timing. LCP, CLS and INP need a loader.
    * @default false
    */
-  webVitals: boolean;
+  webVitals: boolean | WebVitalsOptions;
   /**
    * Report long animation frames as the `ui.long_frame.duration` histogram. A long frame
    * freezes the page. Browsers without `long-animation-frame` report `longtask` entries.
    * @default false
    */
-  longFrames: boolean;
+  longFrames: boolean | LongFramesOptions;
   /**
-   * Minimum frame duration that `longFrames` reports, in milliseconds.
-   * @default 100
-   */
-  longFrameMs: number;
-  /**
-   * Record the app's console calls. `true` wraps `error` and `warn`, and a list picks the
-   * methods. `error` produces an ERROR record and `warn` a WARN record, while `info` and `log`
-   * only add a breadcrumb.
+   * Record the app's console calls. `true` wraps `error` and `warn`, and `levels` picks the
+   * methods.
    * @default false
    */
-  console: boolean | CapturedConsoleMethod[];
+  console: boolean | ConsoleCaptureOptions;
   /**
    * Keep the query string and fragment on every URL the library records. When off, they are
    * removed from page URLs, request targets and failed resource URLs.
@@ -604,13 +640,7 @@ export interface CaptureOptions {
    * breadcrumb. Names follow `fullUrls`.
    * @default false
    */
-  userTiming: boolean;
-  /**
-   * Names of the marks and measures that userTiming records, as strings and RegExp patterns.
-   * A string matches any part of the name. An empty list records every name.
-   * @default []
-   */
-  userTimingInclude: (string | RegExp)[];
+  userTiming: boolean | UserTimingOptions;
   /**
    * Capture switches that remote sampling rules can change for their TTL. Privacy controls stay local.
    * Needs `sampling.remote`.
@@ -643,12 +673,6 @@ export interface CaptureOptions {
    * @default []
    */
   plugins: CapturePlugin[];
-  /**
-   * Supplies the `web-vitals` module without a hard dependency on the package. Set null to
-   * remove it.
-   * @returns A promise that resolves to the `web-vitals` module.
-   */
-  webVitalsLoader?: (() => Promise<WebVitalsModule>) | null;
 }
 
 /**
@@ -666,8 +690,8 @@ export type ConsoleStyleKey = "namespace" | LogLevel;
  */
 export type ConsoleStyles = Partial<Record<ConsoleStyleKey, string>>;
 
-/** Object form of the console option. */
-export interface ConsoleOptions {
+/** Object form of the consoleOutput option. */
+export interface ConsoleOutputOptions {
   /**
    * Lowest level the console prints. If you leave it unset, the current level stays, and a
    * console that is off stays off.
@@ -676,12 +700,6 @@ export interface ConsoleOptions {
   /** CSS for the namespace and for each level. Any key you leave unset keeps its style. */
   styles?: ConsoleStyles;
 }
-
-/**
- * Console mirroring. `false` turns it off. `true` prints records at DEBUG and above.
- * A level prints records at that level and above. An object sets the level and the styles.
- */
-export type ConsoleOption = boolean | LogLevel | ConsoleOptions;
 
 /** Console settings after resolution. */
 export interface ResolvedConsole {
@@ -760,7 +778,7 @@ export type Transport = (request: TransportRequest) => Promise<TransportResponse
 export type ExitTransport = (request: TransportRequest) => boolean;
 
 /** Request timing, retry timing and delivery capacity. Durations are in milliseconds. */
-export interface DeliveryPolicy {
+export interface DeliveryOptions {
   /**
    * Maximum wait for one request. Must be at least 1.
    * @default 15000
@@ -782,16 +800,6 @@ export interface DeliveryPolicy {
    */
   retryMaxDelayMs: number;
   /**
-   * Wait before the next check for stored work.
-   * @default 30000
-   */
-  retryIdleDelayMs: number;
-  /**
-   * Maximum batches in one delivery pass. Must be at least 1.
-   * @default 20
-   */
-  batchesPerDrain: number;
-  /**
    * Fetch priority of every batch request. With "low", the app's own requests go first. The
    * exit flush and a keepalive send from a hidden page use the browser default.
    * @default "low"
@@ -800,7 +808,7 @@ export interface DeliveryPolicy {
 }
 
 /** Record and byte limits for the live delivery buffers, and the cap of a hold buffer. */
-export interface BufferingPolicy {
+export interface BufferingOptions {
   /**
    * Maximum records in the buffers and requests, 1 or more. Set null for no record limit.
    * @default 10000
@@ -828,8 +836,14 @@ export interface BufferingPolicy {
   overflow: "drop-oldest" | "drop-newest" | "persist";
 }
 
-/** Metric capacity in one collection interval. */
-export interface MetricsPolicy {
+/** The metric interval, and the metric capacity in one interval. */
+export interface MetricsOptions {
+  /**
+   * How often counters, histograms and profiler probes send their points, in milliseconds. A
+   * partial metric batch also waits this long before it is sent. 1000 to 600000.
+   * @default 10000
+   */
+  intervalMs: number;
   /**
    * Maximum histogram boundaries. With 0, only a histogram without boundaries is valid. Set
    * null for no limit.
@@ -851,18 +865,13 @@ export interface MetricsPolicy {
 }
 
 /** Session and trace timing. The runtime sets these values at startup. */
-export interface CorrelationPolicy {
+export interface CorrelationOptions {
   /**
    * How long a stored session can stay idle, in milliseconds, 1 or more. Set null for no idle
    * expiration.
    * @default 1800000
    */
   sessionIdleMs: number | null;
-  /**
-   * Minimum wait between session activity writes, in milliseconds. Set 0 to write every time.
-   * @default 60000
-   */
-  sessionTouchMs: number;
   /**
    * Maximum age of an ambient trace, in milliseconds, 1 or more. The age counts from the trace's
    * start, and the next record after it gets a new trace. Set null for no age limit.
@@ -872,7 +881,7 @@ export interface CorrelationPolicy {
 }
 
 /** Rules for diagnostic reports and the console fallback. */
-export interface DiagnosticsPolicy {
+export interface DiagnosticsOptions {
   /**
    * Minimum wait between reports of one code, in milliseconds. Set 0 to report every event.
    * @default 1000
@@ -893,8 +902,13 @@ export interface DiagnosticsPolicy {
   records: boolean | DiagnosticCode[];
 }
 
-/** Application storage settings. The runtime sets these values at startup. */
-export interface PersistencePolicy {
+/** Storage of undelivered batches. Can't be changed after startup. */
+export interface StorageOptions {
+  /**
+   * Backing store for undelivered batches. "auto" picks the best one the host supports.
+   * @default "auto"
+   */
+  backend: StorageStrategy;
   /**
    * Namespace for batch storage and emergency queues. An empty value uses the previous storage keys.
    * @default ""
@@ -909,7 +923,7 @@ export interface PersistencePolicy {
 }
 
 /** Resource and page fields that the SDK records. */
-export interface MetadataPolicy {
+export interface MetadataOptions {
   /**
    * Record the page URL. When false, page.url is empty.
    * @default true
@@ -934,7 +948,7 @@ export interface MetadataPolicy {
 }
 
 /** Capture capacity, duplicate checks and rate limits. */
-export interface CapturePolicy {
+export interface CaptureLimitsOptions {
   /**
    * Maximum breadcrumbs to keep. Set 0 to keep none.
    * @default 50
@@ -945,12 +959,6 @@ export interface CapturePolicy {
    * @default 5000
    */
   errorDedupeMs: number;
-  /**
-   * Maximum error signatures to keep for duplicate checks. With 0, no error is a duplicate.
-   * Set null for no limit.
-   * @default 200
-   */
-  maxErrorSignatures: number | null;
   /**
    * Maximum captured errors in one window. Set 0 to capture none, or null for no limit.
    * @default 20
@@ -985,21 +993,15 @@ export interface CapturePolicy {
    */
   lifecyclePerWindow: number | null;
   /**
-   * Rate limit window, in milliseconds, 1 or more. To turn the rate limits off, set the limits
-   * of each window to null.
+   * Window of the capture rate limits above, in milliseconds, 1 or more. To turn the rate
+   * limits off, set the limits of each window to null.
    * @default 10000
    */
   windowMs: number;
-  /**
-   * Maximum log records at or above `sampling.alwaysSampleFrom` in one window. Metric points
-   * and spans do not count. Set 0 to drop every one, or null for no limit.
-   * @default 500
-   */
-  errorCeiling: number | null;
 }
 
 /** Records that minLevel or sampling drops, kept for the next error. */
-export interface DebugBufferPolicy {
+export interface DebugBufferOptions {
   /**
    * Keep the records that minLevel or sampling drops. An ERROR or FATAL record from this
    * context sends them first, with `uiobs.debug_buffer: true`. A later change to `redact` or
@@ -1021,17 +1023,12 @@ export interface DebugBufferPolicy {
 }
 
 /** Duration probes. Each probe is reported as a histogram summary record. */
-export interface ProfilerPolicy {
+export interface ProfilerOptions {
   /**
    * Record probe durations. When false, probes do nothing and don't even read the clock.
    * @default false
    */
   enabled: boolean;
-  /**
-   * How often the profiler sends its summary records, in milliseconds. 1000 to 600000.
-   * @default 10000
-   */
-  flushIntervalMs: number;
   /**
    * Maximum number of probes, 1 to 1024. Can't be changed after startup.
    * @default 64
@@ -1056,7 +1053,7 @@ export interface ProfilerPolicy {
  * Session replay. The app's recorder records the DOM, and the library keeps the recent events
  * in memory and sends them in segments after an error.
  */
-export interface ReplayPolicy {
+export interface ReplayOptions {
   /**
    * Record the DOM. Needs `loader`, plus either `endpoint` or `onSegment`.
    * @default false
@@ -1097,22 +1094,27 @@ export interface ReplayPolicy {
    */
   afterErrorMs: number;
   /**
-   * Maximum uploads per `capturePolicy.windowMs` window. Set 0 to upload nothing, or null for
-   * no limit.
+   * Maximum uploads in one `uploadWindowMs` window. Set 0 to upload nothing, or null for no
+   * limit.
    * @default 3
    */
   uploadsPerWindow: number | null;
   /**
-   * Maximum events per segment. 1 to 10000.
+   * Length of the `uploadsPerWindow` window, in milliseconds, 1 or more.
+   * @default 10000
+   */
+  uploadWindowMs: number;
+  /**
+   * Maximum events in one segment. 1 to 10000.
    * @default 200
    */
-  batchSize: number;
+  maxSegmentEvents: number;
   /**
    * Maximum segment size, measured as the JSON length of its events. A single event larger
    * than this gets a segment to itself. 10000 to 10000000.
    * @default 512000
    */
-  batchBytes: number;
+  maxSegmentBytes: number;
   /**
    * How long a partial segment waits before it is sent, in milliseconds. 100 to 60000.
    * @default 2000
@@ -1193,27 +1195,25 @@ export interface ReplayPolicy {
 /** Options passed to `configure()`. */
 export interface ObservabilityConfig {
   /** Capture capacity and rate limits. */
-  capturePolicy?: Partial<CapturePolicy>;
+  captureLimits?: Partial<CaptureLimitsOptions>;
   /** Resource and page fields to record. */
-  metadata?: Partial<MetadataPolicy>;
-  /** Application storage namespace. */
-  persistence?: Partial<PersistencePolicy>;
+  metadata?: Partial<MetadataOptions>;
   /** Diagnostic report and console fallback settings. */
-  diagnostics?: Partial<DiagnosticsPolicy>;
+  diagnostics?: Partial<DiagnosticsOptions>;
   /** Session and trace timing. */
-  correlation?: Partial<CorrelationPolicy>;
-  /** Metric capacity in one interval. */
-  metrics?: Partial<MetricsPolicy>;
+  correlation?: Partial<CorrelationOptions>;
+  /** The metric interval and the metric capacity in one interval. */
+  metrics?: Partial<MetricsOptions>;
   /** Live buffer capacity and the overflow rule. */
-  buffering?: Partial<BufferingPolicy>;
+  buffering?: Partial<BufferingOptions>;
   /** Request timing and delivery capacity. */
-  delivery?: Partial<DeliveryPolicy>;
+  delivery?: Partial<DeliveryOptions>;
   /** Records that minLevel or sampling drops, kept for the next error. */
-  debugBuffer?: Partial<DebugBufferPolicy>;
+  debugBuffer?: Partial<DebugBufferOptions>;
   /** Duration probes. Each probe is reported as a histogram summary record. */
-  profiler?: Partial<ProfilerPolicy>;
+  profiler?: Partial<ProfilerOptions>;
   /** Session replay. Off by default. */
-  replay?: Partial<ReplayPolicy>;
+  replay?: Partial<ReplayOptions>;
   /**
    * Refuse changes through configure(). Call setConfigurationLocked(false) to permit changes again.
    * @default false
@@ -1225,7 +1225,7 @@ export interface ObservabilityConfig {
   securityContext?: Partial<SecurityContextOptions>;
   /**
    * Ingest endpoint URL. Set `null` for console-only mode, where the library sends nothing
-   * and writes records to the console only if you set `console`. If the key is missing or
+   * and writes records to the console only if you set `consoleOutput`. If the key is missing or
    * `""`, the library reports `config.invalid`. A relative URL resolves against the page, and a
    * URL with a user name or a password is refused.
    */
@@ -1311,7 +1311,7 @@ export interface ObservabilityConfig {
   /**
    * Extra request headers, or a function returning them. undefined keeps the current headers.
    * With isolation off, null removes them. With isolation on, the default, use
-   * rotateSecurityContext() at logout, because configure() refuses a delivery change. The
+   * rotateSecurityContext() at logout, because configure() refuses a routing change. The
    * library has no default headers.
    */
   headers?:
@@ -1320,10 +1320,11 @@ export interface ObservabilityConfig {
     | null;
 
   /**
-   * Backing store for undelivered records. Can't be changed after startup.
-   * @default "auto"
+   * Backing store, namespace and persistence request for undelivered batches. Can't be changed
+   * after startup.
+   * @see {@link StorageOptions}
    */
-  storage?: StorageStrategy;
+  storage?: Partial<StorageOptions>;
   /**
    * Where the library keeps session, tab and journey ids. "memory" writes no key to
    * localStorage or sessionStorage, so every page load starts a new session. Can't be changed
@@ -1358,19 +1359,21 @@ export interface ObservabilityConfig {
   retention?: Partial<RetentionOptions>;
   /**
    * Size limits for each record.
-   * @see {@link LimitOptions}
+   * @see {@link LimitsOptions}
    */
-  limits?: Partial<LimitOptions>;
+  limits?: Partial<LimitsOptions>;
   /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}
    */
   capture?: Partial<CaptureOptions>;
   /**
-   * Console mirroring. The line format is `[namespace][LEVEL] message`.
+   * Prints records to the browser console. The line format is `[namespace][LEVEL] message`.
+   * `false` turns it off, and `true` prints records at DEBUG and above. A level prints records
+   * at that level and above. An object sets the level and the styles.
    * @default false
    */
-  console?: ConsoleOption;
+  consoleOutput?: boolean | LogLevel | ConsoleOutputOptions;
 
   /**
    * Sends batches through one of the app's own channels instead of HTTP. With `transport`,
@@ -1451,27 +1454,25 @@ export interface ObservabilityConfig {
 /** Fully resolved configuration that the runtime holds. */
 export interface ResolvedConfig {
   /** Capture capacity and rate limits. */
-  capturePolicy: CapturePolicy;
+  captureLimits: CaptureLimitsOptions;
   /** Resource and page fields to record. */
-  metadata: MetadataPolicy;
-  /** Application storage namespace. */
-  persistence: PersistencePolicy;
+  metadata: MetadataOptions;
   /** Diagnostic report and console fallback settings. */
-  diagnostics: DiagnosticsPolicy;
+  diagnostics: DiagnosticsOptions;
   /** Session and trace timing. */
-  correlation: CorrelationPolicy;
-  /** Metric capacity in one interval. */
-  metrics: MetricsPolicy;
+  correlation: CorrelationOptions;
+  /** The metric interval and the metric capacity in one interval. */
+  metrics: MetricsOptions;
   /** Live buffer capacity and the overflow rule. */
-  buffering: BufferingPolicy;
+  buffering: BufferingOptions;
   /** Request timing and delivery capacity. */
-  delivery: DeliveryPolicy;
+  delivery: DeliveryOptions;
   /** Records that minLevel or sampling drops, kept for the next error. */
-  debugBuffer: DebugBufferPolicy;
+  debugBuffer: DebugBufferOptions;
   /** Duration probes. Each probe is reported as a histogram summary record. */
-  profiler: ProfilerPolicy;
+  profiler: ProfilerOptions;
   /** Session replay settings. */
-  replay: ReplayPolicy;
+  replay: ReplayOptions;
   /** True if configure() must refuse changes to the active settings. */
   lockConfiguration: boolean;
   /** Logger cache capacity. */
@@ -1504,8 +1505,8 @@ export interface ResolvedConfig {
   compression: "gzip" | "none";
   /** Passed to `fetch`. */
   credentials: RequestCredentials;
-  /** Backing store for undelivered records. */
-  storage: StorageStrategy;
+  /** Backing store, namespace and persistence request for undelivered batches. */
+  storage: StorageOptions;
   /** Where session, tab and journey ids are kept. */
   identity: IdentityStrategy;
   /**
@@ -1535,16 +1536,16 @@ export interface ResolvedConfig {
   retention: RetentionOptions;
   /**
    * Size limits for each record.
-   * @see {@link LimitOptions}
+   * @see {@link LimitsOptions}
    */
-  limits: LimitOptions;
+  limits: LimitsOptions;
   /**
    * Automatic instrumentation.
    * @see {@link CaptureOptions}
    */
   capture: CaptureOptions;
-  /** Console level and styles. */
-  console: ResolvedConsole;
+  /** Console output level and styles. */
+  consoleOutput: ResolvedConsole;
   /** Payload format name, or a custom implementation. */
   serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */

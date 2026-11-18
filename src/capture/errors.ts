@@ -2,6 +2,7 @@
 //
 // Captures uncaught errors, unhandled rejections and failed resource loads.
 
+import { MAX_TRACKED_ERROR_SIGNATURES } from "../constants";
 import { isErrorLike } from "../utils/error-like";
 import { recordedUrl } from "../utils/platform";
 import { allowInWindow, type StormWindow } from "./storm";
@@ -163,10 +164,10 @@ export class ErrorCapture implements Capture {
     if (
       !allowInWindow(
         this.window,
-        this.ctx.config.capturePolicy.errorsPerWindow,
+        this.ctx.config.captureLimits.errorsPerWindow,
         this.ctx.diagnostics,
         "errors",
-        this.ctx.config.capturePolicy.windowMs,
+        this.ctx.config.captureLimits.windowMs,
       )
     ) {
       return;
@@ -182,7 +183,7 @@ export class ErrorCapture implements Capture {
     ) ?? { message: "", key: `${typeof error}||` };
     const previous = this.seen.get(key);
 
-    if (previous && now - previous.at < this.ctx.config.capturePolicy.errorDedupeMs) {
+    if (previous && now - previous.at < this.ctx.config.captureLimits.errorDedupeMs) {
       previous.count++;
       previous.at = now;
       return;
@@ -198,10 +199,8 @@ export class ErrorCapture implements Capture {
     this.seen.set(key, { at: now, count: 1 });
 
     // A page can throw with a new message on every render, for example from a template literal
-    // in a loop. Without this cap, the map grows until the document closes. With a cap of 0 the
-    // new key goes at once, so no error counts as a duplicate.
-    const { maxErrorSignatures } = this.ctx.config.capturePolicy;
-    if (maxErrorSignatures !== null && this.seen.size > maxErrorSignatures) {
+    // in a loop. Without this cap, the map grows until the document closes.
+    if (this.seen.size > MAX_TRACKED_ERROR_SIGNATURES) {
       const [oldest] = this.seen.keys();
       this.seen.delete(oldest);
     }

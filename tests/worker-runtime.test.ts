@@ -39,7 +39,7 @@ async function setup(over: ObservabilityConfig = {}) {
     serviceName: "svc",
     transportWorker: factory,
     bus: { mode: "off" },
-    storage: "memory",
+    storage: { backend: "memory" },
     identity: "memory",
     compression: "none",
     capture: { errors: false, rejections: false },
@@ -130,7 +130,7 @@ describe("Worker transport in the runtime", () => {
     const next = new FakeWorker();
     await rotateSecurityContext({
       id: "new",
-      delivery: {
+      routing: {
         endpoint: "https://next.example/logs",
         headers: { authorization: "new" },
         transportWorker: () => next as unknown as Worker,

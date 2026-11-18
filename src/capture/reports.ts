@@ -91,14 +91,14 @@ export class ReportCapture implements Capture {
       return;
     }
 
-    const { capturePolicy, limits } = this.ctx.config;
+    const { captureLimits, limits } = this.ctx.config;
     if (
       !allowInWindow(
         this.window,
-        capturePolicy.reportsPerWindow,
+        captureLimits.reportsPerWindow,
         this.ctx.diagnostics,
         "browser reports",
-        capturePolicy.windowMs,
+        captureLimits.windowMs,
       )
     ) {
       return;

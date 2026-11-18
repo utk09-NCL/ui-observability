@@ -39,11 +39,12 @@ export class WebVitalsCapture implements Capture {
 
     // Don't import the peer by name, because the Vite dev server fails if it isn't installed.
     // Don't set `once` here either. A later configure() call with a loader must still subscribe.
-    const loader = this.ctx.config.capture.webVitalsLoader;
+    const { webVitals } = this.ctx.config.capture;
+    const loader = typeof webVitals === "object" ? webVitals.loader : undefined;
     if (!loader) {
       this.ctx.diagnostics.report(
         "config.invalid",
-        "capture.webVitals needs capture.webVitalsLoader. LCP, CLS and INP are off. Navigation timing continues.",
+        "capture.webVitals needs capture.webVitals.loader. LCP, CLS and INP are off. Navigation timing continues.",
       );
       return;
     }

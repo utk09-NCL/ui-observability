@@ -31,7 +31,7 @@ async function setup(options: ObservabilityConfig = {}) {
     endpoint: null,
     serviceName: "svc",
     transport: memory.transport,
-    storage: "none",
+    storage: { backend: "none" },
     identity: "memory",
     bus: { mode: "off" },
     payloadMode: "defer",
@@ -143,7 +143,7 @@ describe("Deferred logger payloads", () => {
     const { log } = await setup({ transport: old.transport, securityContext: { id: "old" } });
     log.info("old record", { value: 1 });
     await rotateSecurityContext(
-      { id: "new", delivery: { transport: next.transport } },
+      { id: "new", routing: { transport: next.transport } },
       { pending: "flush" },
     );
     log.info("new record");
@@ -213,7 +213,7 @@ describe("Deferred logger payloads", () => {
   it("processes deferred console records below the delivery level", async () => {
     const { log, runtime, memory } = await setup({
       minLevel: "FATAL",
-      console: "DEBUG",
+      consoleOutput: "DEBUG",
       redact: (record) => ({ ...record, body: `screen ${record.body}` }),
     });
     const print = vi.spyOn(runtime.console, "write").mockImplementation(() => undefined);

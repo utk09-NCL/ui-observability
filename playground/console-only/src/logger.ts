@@ -11,11 +11,11 @@ configure({
   // Keep the session, tab and journey ids in memory, so the library writes no storage key.
   identity: "memory",
   // Don't keep undelivered records.
-  storage: "none",
+  storage: { backend: "none" },
   // Don't start the bus.
   bus: { mode: "off" },
   // Mirror DEBUG and up in development, WARN and up in a production build.
-  console: import.meta.env.DEV ? "DEBUG" : "WARN",
+  consoleOutput: import.meta.env.DEV ? "DEBUG" : "WARN",
 });
 
 export { getLogger };

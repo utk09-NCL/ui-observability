@@ -143,7 +143,7 @@ export async function startInMemory(extra = {}) {
   configure({
     serviceName: "bench",
     transport: memory.transport,
-    storage: "memory",
+    storage: { backend: "memory" },
     identity: "memory",
     bus: { mode: "off" },
     onDrop: noteDrop,

@@ -256,7 +256,7 @@ describe("capture.uncleanExit in the runtime", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "storage",
       bus: { mode: "off" },
       transport: memory.transport,

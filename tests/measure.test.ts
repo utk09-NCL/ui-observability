@@ -158,7 +158,7 @@ describe("startMeasure in the runtime", () => {
       tracesEndpoint: "https://x.example/v1/traces",
       serviceName: "svc",
       bus: { mode: "off" },
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       compression: "none",
       capture: { errors: false, rejections: false },
@@ -245,7 +245,7 @@ describe("startMeasure in the runtime", () => {
     const measure = startMeasure("checkout");
     await rotateSecurityContext({
       id: "new",
-      delivery: {
+      routing: {
         endpoint: "https://y.example/v1/logs",
         tracesEndpoint: "https://y.example/v1/traces",
       },

@@ -475,7 +475,7 @@ export class OneLogger {
     const { record, dropped } = runtime.builder.build(input);
     const hooks = Boolean(runtime.config.redact) || runtime.config.processors.length > 0;
     // Only run the hooks on a sampled-out record if a breadcrumb keeps its message.
-    const keepsCrumb = type !== "metric" && runtime.config.capturePolicy.breadcrumbs > 0;
+    const keepsCrumb = type !== "metric" && runtime.config.captureLimits.breadcrumbs > 0;
     const protectedCrumb =
       dropped === "sampling" && hooks && keepsCrumb
         ? runtime.builder.build(input, true)

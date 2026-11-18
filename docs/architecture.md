@@ -143,15 +143,15 @@ Rules for the pipeline budget.
 
 A stored batch belongs to the storage adapter. The pipeline, the retry engine and the sender use the adapter through `ContextStorage`.
 
-| Who removes a stored batch | When                                                                                                    | Report                                                    |
-| -------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| The adapter, in `prune()`  | The batch is older than `retention.maxAgeMs`, or the store has more than `retention.maxBatches` batches | `expired` or `over_capacity` through `onGap`              |
-| The adapter, in `save()`   | The browser refuses the write, or the adapter keeps nothing                                             | `quota` or `not_stored` through `onGap`                   |
-| `RetryEngine.deliver()`    | The server accepts the batch                                                                            | None. It is not a loss.                                   |
-| `RetryEngine.deliver()`    | `attempts` reaches `retention.maxAttempts`                                                              | `max_attempts` and `storage.dead_lettered`                |
-| `RetryEngine.toStorable()` | A permanent refusal, or a 413 for a batch of one record                                                 | `rejected`                                                |
-| `Sender.retire()`          | A rotation with `pending` set to `discard` or `flush`                                                   | `security_context`, from `rotateContext()` in the runtime |
-| `Sender.clearPersisted()`  | The application calls `clearPersistedLogs()`                                                            | See "Open items"                                          |
+| Who removes a stored batch | When                                                                                                    | Report                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| The adapter, in `prune()`  | The batch is older than `retention.maxAgeMs`, or the store has more than `retention.maxBatches` batches | `expired` or `over_capacity` through `onGap`                         |
+| The adapter, in `save()`   | The browser refuses the write, or the adapter keeps nothing                                             | `quota` or `not_stored` through `onGap`                              |
+| `RetryEngine.deliver()`    | The server accepts the batch                                                                            | None. It is not a loss.                                              |
+| `RetryEngine.deliver()`    | `attempts` reaches `retention.maxAttempts`                                                              | `max_attempts` and `storage.dead_lettered`                           |
+| `RetryEngine.toStorable()` | A permanent refusal, or a 413 for a batch of one record                                                 | `rejected`                                                           |
+| `Sender.retire()`          | A rotation with `pending` set to `discard` or `flush`                                                   | `security_context`, from `rotateContext()` in `src/core/rotation.ts` |
+| `Sender.clearPersisted()`  | The application calls `clearPersistedLogs()`                                                            | See "Open items"                                                     |
 
 - `src/storage/eviction.ts` selects the batches to evict. A batch with no action record goes first.
 - `reportGap()` in `src/core/runtime.ts` receives each `onGap` call. It reports to `onDrop` and writes one throttled warning record.
@@ -184,7 +184,7 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 | Console-only start | `startDegraded()`                                                                     | Another version owns the page runtime. A local runtime starts and stays off the global key. It reports `runtime.version_mismatch`. |
 | Reconfigure        | `configure()` with a live runtime calls `reconfigure()`                               | The config changes in place through `applyResolvedConfig()`. It reports `config.reconfigured`.                                     |
 | Shutdown           | `shutdown()` calls `destroy()` on the current runtime                                 | `destroyed` is true. The runtime moves from the global key to the stopped-runtime key.                                             |
-| Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new delivery settings, a new delivery stack and a new session.                                         |
+| Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new routing settings, a new delivery stack and a new session.                                          |
 | New session        | `newSession()`                                                                        | A new `session.id`. The delivery stack and its buffers do not change.                                                              |
 
 ### Implicit start
@@ -192,7 +192,7 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 - A logger call, `getHealth()`, `flush()` and most other functions call `requireRuntime()`. Each one can start the default runtime.
 - `shutdown()` does not start a runtime. It reads `ObservabilityRuntime.current()` only.
 - `boot()` never rejects. A startup fault reports `pipeline.crashed`, and `ready` still becomes true.
-- The first `configure()` after an implicit start sets `limits` and `journey.maxAgeMs`. It also sets `persistence` when the delivery stack has not started to load. `correlation` stays fixed in this case too.
+- The first `configure()` after an implicit start sets `limits`, `journey.maxAgeMs` and `profiler.maxProbes`. It also sets the `storage` section when the delivery stack has not started to load. `correlation` stays fixed in this case too.
 
 ### `configure()` on a live runtime
 
@@ -203,15 +203,14 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 
 A fixed key keeps its value and reports `config.invalid`. The other keys of the same call still apply.
 
-| Key                                                                                                   | Function that keeps it                         |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `correlation`, `persistence`                                                                          | The loop in `reconfigure()`                    |
-| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`                                                    | `keepStartupTunables()`                        |
-| `batching`, `retention`, after the delivery stack starts to load                                      | `keepStartupTunables()` with `SENDER_SECTIONS` |
-| `storage`, after the delivery stack starts to load                                                    | `keepBuiltStorage()`                           |
-| `identity`                                                                                            | `keepBuiltIdentity()`                          |
-| Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()`                            |
-| The keys of `DELIVERY_RESET` and `securityContext.id`, with `securityContext.isolation`               | `keepRouting()`                                |
+| Key                                                                                                   | Function that keeps it                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `correlation`, `storage`                                                                              | The loop in `reconfigure()`. `storage` can change in the first call after an implicit start, until `buildSender()` sets `storageBuilt`. |
+| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `bus.mode`, `bus.openFinRole`                     | `keepStartupTunables()`                                                                                                                 |
+| `batching`, `retention`, after the delivery stack starts to load                                      | `keepStartupTunables()` with `SENDER_SECTIONS`                                                                                          |
+| `identity`                                                                                            | `keepBuiltIdentity()`                                                                                                                   |
+| Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()`                                                                                                                     |
+| The keys of `ROUTING_KEYS` and `securityContext.id`, with `securityContext.isolation`                 | `keepRouting()`                                                                                                                         |
 
 Do not write to `this.config` directly. Use `applyResolvedConfig()`.
 
@@ -231,20 +230,24 @@ After shutdown, each call goes to the stopped runtime and records nothing. The n
 
 ### Security-context rotation
 
-`rotateSecurityContext()` rejects after shutdown. A call during another rotation waits for it. `rotateContext()` rejects in a forwarder. `planRotation()` rejects for invalid options, for an unchanged id, and for a delivery value that it cannot apply. `planRotation()` first waits for a delivery stack load in progress. Then `closeDelivery()` sets `deliveryClosed`, stops the old sender with `Sender.pause()` and keeps it as `parkedSender`. A load that ends later parks its own sender, because `buildSender()` checks `deliveryClosed` and its generation. Each later record goes to `onDrop` with `security_context` until a rotation succeeds. That rotation retires `parkedSender` with its own `pending` rule, and `flush` becomes `discard`. A rotation in a forwarder rejects before this step, so its delivery stays open.
+`rotateSecurityContext()` in `src/core/runtime.ts` rejects after shutdown. It sets `rotating` at once. Each call waits for the earlier call in the `rotation` promise chain. The first call also waits, so it starts on a later microtask. `runRotation()` waits for startup and rejects in a forwarder. That rejection is a usage error, and the delivery of the forwarder stays open.
 
-1. `rotating` becomes true. `rotateContext()` waits for startup, and `planRotation()` waits for the delivery stack load.
-2. `deliveryOf()` copies only the delivery keys. The function resolves the next config on a base that has no old delivery values (`DELIVERY_RESET`). `unapplied()` compares each delivery value with the resolved value.
+`runRotation()` then loads `src/core/rotation.ts` with a dynamic import. The module is a separate chunk, so the main graph does not carry it. If the import fails, the runtime reports `pipeline.crashed`, calls `closeDelivery()` and rejects.
+
+`rotateContext()` in `src/core/rotation.ts` runs the rotation. It changes the private state of the runtime only through the `RotationHost` from `rotationHost()`. `planRotation()` first waits for a delivery stack load in progress. It rejects for invalid options, for an unchanged id, and for a routing value that it cannot apply. Each rejection calls `closeDelivery()`. `closeDelivery()` sets `deliveryClosed`, stops the old sender with `Sender.pause()` and keeps it as `parkedSender`. A load that ends later parks its own sender, because `buildSender()` checks `deliveryClosed`. Each later record goes to `onDrop` with `security_context` until a rotation succeeds. That rotation retires `parkedSender` with its own `pending` rule, and `flush` becomes `discard`.
+
+1. `rotating` becomes true at the call. `runRotation()` waits for startup, and `planRotation()` waits for the delivery stack load.
+2. `routingOf()` puts the routing keys of the update over `ROUTING_RESET`. It reports each other key and leaves it out. `planRotation()` resolves the next config on a base with no old routing values. `unapplied()` compares each routing value with the resolved value.
 3. Under `closingContext`, it collects the metric points, ends the root span and ends the journey.
 4. It takes the boot buffer, the pending records and the forward buffer.
 5. `Sender.retire()` stops the old exit flush, retry engine, transport and pipeline. It applies the `pending` rule.
 6. With `discard` or `flush`, the runtime reports the old records as `security_context`.
-7. It applies the next config, calls `advanceIdentity()` and clears the remote rules, the context and the breadcrumbs.
+7. It applies the next config. `advanceIdentity()` clears the remote rules and refreshes the captures. Then it clears the context and the breadcrumbs.
 8. It calls `newSession()`, then `syncSender()`, then `Bus.rotateContext()`.
-9. `rotating` becomes false. With `carry`, `Sender.adopt()` stores the old batches under the new id.
+9. `rotating` becomes false, unless a later call waits. With `carry`, `Sender.adopt()` stores the old batches under the new id.
 10. It reports `security.rotated`.
 
-While `rotating` is true, a logger call counts `record.dropped_during_rotation`. A built record waits in `rotationHeld`. At the end of the rotation, `onDrop` reports it with `security_context`. A second call waits in the `rotation` promise chain and runs after the first. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
+While `rotating` is true, a logger call counts `record.dropped_during_rotation`. `emit()` drops each built record at once and reports it to `onDrop` with `security_context`. Only a record under `closingContext` passes. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
 
 The `pending` rules are in [Runtime policies, Security context rotation](runtime-policies.md#security-context-rotation). The default is `discard`. The default `timeoutMs` is 5000.
 

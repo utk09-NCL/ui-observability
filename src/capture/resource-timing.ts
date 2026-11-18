@@ -65,7 +65,7 @@ export class ResourceTimingCapture implements Capture {
       "capture.record_failed",
       "The library could not record a resource timing entry.",
       () => {
-        const { capture, capturePolicy } = this.ctx.config;
+        const { capture, captureLimits } = this.ctx.config;
         const url = new URL(entry.name, location.href);
         const endpoints = [
           this.ctx.config.endpoint,
@@ -90,10 +90,10 @@ export class ResourceTimingCapture implements Capture {
         if (
           !allowInWindow(
             this.window,
-            capturePolicy.resourcesPerWindow,
+            captureLimits.resourcesPerWindow,
             this.ctx.diagnostics,
             "resource entries",
-            capturePolicy.windowMs,
+            captureLimits.windowMs,
           )
         ) {
           return;

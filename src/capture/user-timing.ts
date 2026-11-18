@@ -77,7 +77,7 @@ export class UserTimingCapture implements Capture {
   }
 
   /**
-   * Records the entries whose name `userTimingInclude` selects.
+   * Records the entries whose name `userTiming.include` selects.
    * @param entries Mark and measure entries.
    */
   private record(entries: PerformanceEntryList): void {
@@ -85,9 +85,10 @@ export class UserTimingCapture implements Capture {
       return;
     }
 
-    const { fullUrls, userTimingInclude } = this.ctx.config.capture;
+    const { fullUrls, userTiming } = this.ctx.config.capture;
+    const include = typeof userTiming === "object" ? userTiming.include : undefined;
     for (const entry of entries) {
-      if (userTimingInclude.length > 0 && !matchesAny(entry.name, userTimingInclude)) {
+      if (include !== undefined && include.length > 0 && !matchesAny(entry.name, include)) {
         continue;
       }
 

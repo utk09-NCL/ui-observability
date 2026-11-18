@@ -28,7 +28,7 @@ const transport = () =>
 const base: Partial<ObservabilityConfig> = {
   serviceName: "test",
   endpoint: "https://a.example/logs",
-  storage: "localstorage",
+  storage: { backend: "localstorage" },
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
@@ -107,7 +107,13 @@ describe("application-owned privacy policies", () => {
   it("redacts sampled-out console output and breadcrumbs without sending the candidate", async () => {
     const send = transport();
     const redact = vi.fn((r: LogRecord) => ({ ...r, body: "[redacted]", attributes: {} }));
-    configure({ ...base, transport: send, console: true, sampling: { defaultRate: 0 }, redact });
+    configure({
+      ...base,
+      transport: send,
+      consoleOutput: true,
+      sampling: { defaultRate: 0 },
+      redact,
+    });
     const write = vi.spyOn(console, "info").mockImplementation(() => undefined);
     getLogger("orders").info("SECRET", { token: "SECRET" });
     await flush();
@@ -122,14 +128,14 @@ describe("application-owned privacy policies", () => {
     configure({
       ...base,
       endpoint: null,
-      console: false,
+      consoleOutput: false,
       sampling: { defaultRate: 0 },
       redact,
-      capturePolicy: { breadcrumbs: 0 },
+      captureLimits: { breadcrumbs: 0 },
     });
     getLogger("orders").info("no breadcrumb");
     expect(redact).not.toHaveBeenCalled();
-    configure({ capturePolicy: { breadcrumbs: 50 } });
+    configure({ captureLimits: { breadcrumbs: 50 } });
     getLogger("orders").logMetric("orders.count", 1);
     expect(redact).not.toHaveBeenCalled();
     getLogger("orders").info("breadcrumb");
@@ -147,7 +153,7 @@ describe("application-owned privacy policies", () => {
       configure({
         ...base,
         endpoint: null,
-        console: true,
+        consoleOutput: true,
         minLevel: "FATAL",
         redact: () => {
           if (mode === "throw") throw new Error("failed");
@@ -162,7 +168,7 @@ describe("application-owned privacy policies", () => {
   );
 
   it("allows raw output when no processor or redactor is configured", () => {
-    configure({ ...base, endpoint: null, console: true });
+    configure({ ...base, endpoint: null, consoleOutput: true });
     const write = vi.spyOn(console, "info").mockImplementation(() => undefined);
     getLogger("internal").info("internal detail");
     expect(JSON.stringify(write.mock.calls)).toContain("internal detail");
@@ -181,7 +187,7 @@ describe("security context delivery", () => {
       await flush();
       expect((await getHealth()).stored).toBe(1);
       await rotateSecurityContext(
-        { id: "B", delivery: { transport: b }, context: { tenant: "B" } },
+        { id: "B", routing: { transport: b }, context: { tenant: "B" } },
         { pending },
       );
       expect(rt().context.getAll()).toEqual({ tenant: "B" });
@@ -195,7 +201,7 @@ describe("security context delivery", () => {
       expect(bodies.includes("A record")).toBe(pending === "carry");
       expect(b.mock.calls.every(([r]) => r.routingContextId === "B")).toBe(true);
       await rotateSecurityContext(
-        { id: "A", delivery: { transport: a.mockResolvedValue({ status: 204 }) } },
+        { id: "A", routing: { transport: a.mockResolvedValue({ status: 204 }) } },
         { pending: "retain" },
       );
       a.mockClear();
@@ -224,7 +230,7 @@ describe("security context delivery", () => {
     });
     await rotateSecurityContext({
       id: "B",
-      delivery: { endpoint: "https://b.example/logs", headers: { Authorization: "B" } },
+      routing: { endpoint: "https://b.example/logs", headers: { Authorization: "B" } },
     });
     release({ Authorization: "A" });
     await oldFlush;
@@ -249,7 +255,7 @@ describe("security context delivery", () => {
     });
     const next = transport();
     const rotating = rotateSecurityContext(
-      { id: "B", delivery: { transport: next } },
+      { id: "B", routing: { transport: next } },
       { pending: "flush", timeoutMs: 5 },
     );
     getLogger("orders").info("during rotation");
@@ -272,7 +278,7 @@ describe("security context delivery", () => {
     expect(b).not.toHaveBeenCalled();
     await rotateSecurityContext({
       id: "A",
-      delivery: { transport: a.mockResolvedValue({ status: 204 }) },
+      routing: { transport: a.mockResolvedValue({ status: 204 }) },
     });
     a.mockClear();
     await rt()["sender"]!["retry"]["drain"]();
@@ -319,7 +325,7 @@ describe("security context delivery", () => {
     expect(rt().config.capture.ignoreUrls).toContain(base.endpoint);
     await rotateSecurityContext({
       id: "B",
-      delivery: { endpoint: "https://b.example/logs", transport: transport() },
+      routing: { endpoint: "https://b.example/logs", transport: transport() },
     });
     expect(rt().config.capture.ignoreUrls).toEqual([
       "https://other.example",
@@ -329,11 +335,11 @@ describe("security context delivery", () => {
 
   it("rejects invalid rotations without changing identity, and runs overlapping ones in order", async () => {
     configure({ ...base, transport: transport() });
-    await expect(rotateSecurityContext({ id: "", delivery: {} })).rejects.toThrow();
-    await expect(rotateSecurityContext({ id: "A", delivery: {} })).rejects.toThrow();
+    await expect(rotateSecurityContext({ id: "", routing: {} })).rejects.toThrow();
+    await expect(rotateSecurityContext({ id: "A", routing: {} })).rejects.toThrow();
     expect(rt().config.securityContext.id).toBe("A");
-    const first = rotateSecurityContext({ id: "B", delivery: {} });
-    const second = rotateSecurityContext({ id: "C", delivery: {} });
+    const first = rotateSecurityContext({ id: "B", routing: {} });
+    const second = rotateSecurityContext({ id: "C", routing: {} });
     await first;
     expect(rt().config.securityContext.id).toBe("B");
     await second;
@@ -350,7 +356,7 @@ describe("runtime ownership and cache", () => {
     configure({ serviceName: "remote" });
     expect(rt().config.serviceName).toBe("test");
     expect(getDiagnosticCounters()["config.locked"]).toBe(1);
-    await rotateSecurityContext({ id: "B", delivery: { transport: transport() } });
+    await rotateSecurityContext({ id: "B", routing: { transport: transport() } });
     expect((await getHealth()).configurationLocked).toBe(true);
     setConfigurationLocked(false);
     configure({ serviceName: "host" });
@@ -479,19 +485,18 @@ describe("bus source policies", () => {
     bus.destroy();
   });
 
-  it("allows explicit origin-based trust, relaxed validation and disabled budgets", () => {
+  it("allows explicit origin-based trust and disabled budgets", () => {
     const { config, bus, onRecords, deliver } = setup({
       securityContext: { isolation: false },
       bus: {
         sourcePolicy: "trusted-origin",
-        validation: "envelope",
         maxMessageBytes: null,
         maxRecordsPerMessage: null,
         maxMessagesPerSecond: null,
       },
     });
     deliver(
-      { t: "ui-observability.message.records", from: "child", records: [{} as LogRecord] },
+      { t: "ui-observability.message.records", from: "child", records: [record()] },
       { link: "children", origin: location.origin },
     );
     expect(onRecords).toHaveBeenCalledTimes(1);

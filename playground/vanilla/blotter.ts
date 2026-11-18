@@ -91,16 +91,12 @@ const diagnostics = new Set<string>();
 configure({
   serviceName: "profiler-blotter",
   transport: memory.transport,
-  storage: "none",
+  storage: { backend: "none" },
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
-  profiler: {
-    enabled: true,
-    flushIntervalMs: FLUSH_INTERVAL_MS,
-    framePhases: true,
-    framePacing: true,
-  },
+  profiler: { enabled: true, framePhases: true, framePacing: true },
+  metrics: { intervalMs: FLUSH_INTERVAL_MS },
   onDiagnostic: (event) => {
     diagnostics.add(event.code);
   },

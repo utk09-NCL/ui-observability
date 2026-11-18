@@ -107,18 +107,18 @@ export class ReplayUploader {
    * @param texts The events as JSON text, in order.
    */
   push(texts: readonly string[]): void {
-    const { batchSize, batchBytes, flushIntervalMs } = this.config().replay;
+    const { maxSegmentEvents, maxSegmentBytes, flushIntervalMs } = this.config().replay;
 
     for (const text of texts) {
       // If this event doesn't fit, close the segment first. A huge event ends up in its own.
-      if (this.open.length > 0 && this.openBytes + text.length > batchBytes) {
+      if (this.open.length > 0 && this.openBytes + text.length > maxSegmentBytes) {
         this.flush();
       }
 
       this.open.push(text);
       this.openBytes += text.length;
 
-      if (this.open.length >= batchSize || this.openBytes >= batchBytes) {
+      if (this.open.length >= maxSegmentEvents || this.openBytes >= maxSegmentBytes) {
         this.flush();
       }
     }

@@ -48,7 +48,7 @@ Keep these rules from the example:
 
 - Put `ObservabilityErrorBoundary` around each subtree that can fail to render. React catches a render error in the boundary. The error never reaches `window.onerror`, and `capture.errors` cannot see it.
 - `useJourney` does not end the journey when the component unmounts. A journey belongs to a workflow, not to a component. `endOnUnmount: true` changes this. Read its JSDoc first.
-- Install `web-vitals` and set `webVitalsLoader: () => import("web-vitals")`. Without the loader, the library reports `config.invalid` and the web vitals stay off.
+- Install `web-vitals` and set `capture.webVitals: { loader: () => import("web-vitals") }`. Without the loader, the library reports `config.invalid`. LCP, CLS and INP stay off, and the navigation timing continues.
 
 ## Session replay
 

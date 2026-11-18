@@ -65,7 +65,6 @@ const base = {
   securityContext: { isolation: false },
   bus: {
     sourcePolicy: "trusted-origin" as const,
-    validation: "envelope" as const,
     maxMessagesPerSecond: null,
   },
   endpoint: "https://x/v1/logs",
@@ -176,14 +175,14 @@ describe("runtime lifecycle", () => {
   });
 
   it("refuses a storage change once the adapter is built, rather than doing nothing", async () => {
-    configure({ ...base, storage: "memory" });
+    configure({ ...base, storage: { backend: "memory" } });
     await ready();
 
-    configure({ storage: "indexeddb" });
+    configure({ storage: { backend: "indexeddb" } });
 
     // The runtime selects the adapter once. After a swap, it couldn't reach the batches in the
     // old adapter.
-    expect(runtime().config.storage).toBe("memory");
+    expect(runtime().config.storage.backend).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 
@@ -227,8 +226,9 @@ describe("runtime lifecycle", () => {
   it("passes batching and retention to the pipeline and the storage", async () => {
     configure({
       ...base,
-      storage: "memory",
-      batching: { logBatchSize: 7, metricFlushIntervalMs: 5000 },
+      storage: { backend: "memory" },
+      batching: { logBatchSize: 7 },
+      metrics: { intervalMs: 5000 },
       retention: { maxAgeMs: null, maxAttempts: null, maxBatches: 40 },
     });
     await ready();
@@ -245,6 +245,10 @@ describe("runtime lifecycle", () => {
       maxAgeMs: Infinity,
       maxAttempts: Infinity,
     });
+
+    // The metric batches follow a later metrics.intervalMs, as the meter does.
+    configure({ metrics: { intervalMs: 7000 } });
+    expect(streams.metrics.options.flushIntervalMs).toBe(7000);
   });
 
   it('writes no identity or journey key with identity: "memory"', async () => {
@@ -270,11 +274,33 @@ describe("runtime lifecycle", () => {
     expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 
-  it("takes a storage change made before the adapter is built", () => {
-    configure({ ...base, storage: "memory" });
-    configure({ storage: "localstorage" });
+  it("refuses a storage change after startup, also before the adapter is built", () => {
+    const messages: string[] = [];
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      onDiagnostic: (event) => {
+        messages.push(event.message);
+      },
+    });
+    configure({ storage: { backend: "localstorage", namespace: "blotter" } });
 
-    expect(runtime().config.storage).toBe("localstorage");
+    expect(runtime().config.storage).toEqual({
+      backend: "memory",
+      namespace: "",
+      requestPersistent: false,
+    });
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+    expect(messages).toContain(
+      "storage cannot change after startup. The library keeps the current settings.",
+    );
+  });
+
+  it("takes the storage section from the first configure() after an early log call", () => {
+    info("module loaded");
+    configure({ ...base, storage: { backend: "memory", namespace: "blotter" } });
+
+    expect(runtime().config.storage).toMatchObject({ backend: "memory", namespace: "blotter" });
   });
 
   it("keeps the rest of the config when a later call only turns logging off", () => {
@@ -536,7 +562,7 @@ describe("runtime lifecycle", () => {
         throw new Error("nope");
       },
     };
-    configure({ ...base, storage: "memory", onDrop, serializer: broken });
+    configure({ ...base, storage: { backend: "memory" }, onDrop, serializer: broken });
     await ready();
 
     info("lost");
@@ -579,12 +605,12 @@ describe("runtime lifecycle", () => {
     // Lets a default runtime, if one exists, finish startup and build its storage.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    configure({ ...base, storage: "memory" });
+    configure({ ...base, storage: { backend: "memory" } });
     const emit = vi.spyOn(runtime(), "emit");
     early.info("hello");
 
     // The app's own settings apply. No default runtime refuses the storage option.
-    expect(runtime().config.storage).toBe("memory");
+    expect(runtime().config.storage.backend).toBe("memory");
     expect(getDiagnosticCounters()["config.invalid"]).toBeUndefined();
     expect(emit).toHaveBeenCalledTimes(1);
   });
@@ -1028,7 +1054,8 @@ describe("runtime lifecycle", () => {
     ).receive;
 
     receive(
-      { t: "ui-observability.message.tab", from: "", tabId: before },
+      // The lower context id renames, so "0" makes this context the one that renames.
+      { t: "ui-observability.message.tab", from: "0", tabId: before },
       { link: "broadcast", origin: "same-origin" },
     );
 
@@ -1047,10 +1074,9 @@ describe("runtime lifecycle", () => {
       ...base,
       capture: {
         navigation: true,
-        webVitals: true,
-        webVitalsLoader: () => Promise.resolve(webVitalsModule),
+        webVitals: { loader: () => Promise.resolve(webVitalsModule) },
         longFrames: true,
-        console: ["log"],
+        console: { levels: ["log"] },
       },
     });
     await ready();
@@ -1064,7 +1090,7 @@ describe("runtime lifecycle", () => {
   });
 
   it("does not load the console capture for an empty list", async () => {
-    configure({ ...base, capture: { console: [] } });
+    configure({ ...base, capture: { console: { levels: [] } } });
     await ready();
 
     // Wait for the default error capture. The install is then complete, and the check is real.
@@ -1081,7 +1107,7 @@ describe("runtime lifecycle", () => {
 
   it("records an app console.error once, and does not print the mirror line", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    configure({ ...base, console: "DEBUG", capture: { console: true } });
+    configure({ ...base, consoleOutput: "DEBUG", capture: { console: true } });
     await ready();
     await vi.waitFor(() => {
       expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toContain(
@@ -1604,7 +1630,7 @@ describe("bus loading", () => {
     // A child frame attaches to this runtime without a handshake. Its records must still arrive.
     configure({
       ...base,
-      bus: { mode: "off", sourcePolicy: "trusted-origin", validation: "envelope" },
+      bus: { mode: "off", sourcePolicy: "trusted-origin" },
     });
     await ready();
 
@@ -1930,7 +1956,7 @@ describe("newSession", () => {
 describe("OneLogger", () => {
   it("mirrors a record below minLevel to the console and does not send it", () => {
     // minLevel limits what the library sends. The console level limits what it prints.
-    configure({ ...base, minLevel: "INFO", console: "DEBUG" });
+    configure({ ...base, minLevel: "INFO", consoleOutput: "DEBUG" });
     const emit = vi.spyOn(runtime(), "emit");
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
@@ -1953,7 +1979,7 @@ describe("OneLogger", () => {
   it("prints the redacted attributes when a redact hook is set", () => {
     configure({
       ...base,
-      console: "DEBUG",
+      consoleOutput: "DEBUG",
       redact: (record) => {
         delete record.attributes.card;
         return record;
@@ -1971,7 +1997,7 @@ describe("OneLogger", () => {
 
   it("prints no line when redact drops the record", () => {
     // The message did not pass redact. A host can record console arguments.
-    configure({ ...base, console: "DEBUG", redact: () => null });
+    configure({ ...base, consoleOutput: "DEBUG", redact: () => null });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     getLogger("pay").info("charged 4111", { card: "4111" });
@@ -1982,7 +2008,7 @@ describe("OneLogger", () => {
   it("prints no line when a processor drops the record before redact", () => {
     configure({
       ...base,
-      console: "DEBUG",
+      consoleOutput: "DEBUG",
       processors: [() => null],
       redact: (record) => record,
     });
@@ -1997,7 +2023,7 @@ describe("OneLogger", () => {
     const redact = (): never => {
       throw new Error("hook");
     };
-    configure({ ...base, console: "DEBUG", redact });
+    configure({ ...base, consoleOutput: "DEBUG", redact });
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     getLogger("pay").error("failed 4111", Object.assign(new Error("boom"), { card: "4111" }));
@@ -2008,7 +2034,7 @@ describe("OneLogger", () => {
   it("prints no line when redact changes the record to a broken shape", () => {
     configure({
       ...base,
-      console: "DEBUG",
+      consoleOutput: "DEBUG",
       redact: (record) => {
         (record as unknown as Record<string, unknown>).attributes = null;
         return record;
@@ -2023,7 +2049,7 @@ describe("OneLogger", () => {
 
   it("sanitizes console-only records below minLevel with redact", () => {
     // redact processes a console-only record even when its level is below the delivery minLevel.
-    configure({ ...base, minLevel: "INFO", console: "DEBUG", redact: (record) => record });
+    configure({ ...base, minLevel: "INFO", consoleOutput: "DEBUG", redact: (record) => record });
     const spy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
     getLogger("pay").debug("charged", { card: "4111" });
@@ -2040,7 +2066,7 @@ describe("OneLogger", () => {
   });
 
   it("prints structured sanitized errors below minLevel with redact", () => {
-    configure({ ...base, minLevel: "FATAL", console: "DEBUG", redact: (record) => record });
+    configure({ ...base, minLevel: "FATAL", consoleOutput: "DEBUG", redact: (record) => record });
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const failure = new Error("boom");
 
@@ -2058,7 +2084,7 @@ describe("OneLogger", () => {
   });
 
   it("uses the console styles from configure()", () => {
-    configure({ ...base, console: { level: "INFO", styles: { INFO: "color:red" } } });
+    configure({ ...base, consoleOutput: { level: "INFO", styles: { INFO: "color:red" } } });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     getLogger("app").info("hello");
@@ -2074,7 +2100,7 @@ describe("OneLogger", () => {
   });
 
   it("prints nothing to the console when enabled is false", () => {
-    configure({ ...base, enabled: false, console: "DEBUG" });
+    configure({ ...base, enabled: false, consoleOutput: "DEBUG" });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     getLogger("app").info("hello");
@@ -2083,7 +2109,7 @@ describe("OneLogger", () => {
   });
 
   it("prints the error and the payload of an error call", () => {
-    configure({ ...base, console: "DEBUG" });
+    configure({ ...base, consoleOutput: "DEBUG" });
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const failure = new Error("boom");
 
@@ -2104,7 +2130,7 @@ describe("OneLogger", () => {
   });
 
   it("prints an error below minLevel to the console with its error and payload", () => {
-    configure({ ...base, minLevel: "FATAL", console: "DEBUG" });
+    configure({ ...base, minLevel: "FATAL", consoleOutput: "DEBUG" });
     const emit = vi.spyOn(runtime(), "emit");
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const failure = new Error("boom");
@@ -2465,7 +2491,7 @@ describe("public API", () => {
   });
 
   it("does nothing on a held logger write after shutdown, until configure runs", async () => {
-    configure({ ...base, console: "DEBUG" });
+    configure({ ...base, consoleOutput: "DEBUG" });
     const held = getLogger("trading");
     await shutdown();
     const print = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -3006,7 +3032,7 @@ describe("counter and histogram", () => {
   });
 
   it("does not print a point on the console", async () => {
-    configure({ ...base, console: true });
+    configure({ ...base, consoleOutput: true });
     await ready();
     const write = vi.spyOn(runtime().console, "write");
 

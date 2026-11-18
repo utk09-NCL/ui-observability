@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { METRIC_DEFAULT_BOUNDARIES, METRIC_MAX_SERIES } from "../src/constants";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { Meter } from "../src/core/meter";
-import type { MetricsPolicy } from "../src/models/config";
+import type { MetricsOptions } from "../src/models/config";
 import type { InstrumentDef } from "../src/models/metric";
 
 const counterDef = (name = "orders"): InstrumentDef => ({
@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe("Meter limits", () => {
   /** Builds a meter with the given limits that collects its points. */
-  function limited(policy: Partial<MetricsPolicy>) {
+  function limited(policy: Partial<MetricsOptions>) {
     const points: Record<string, unknown>[] = [];
     const meter = new Meter(
       () => 1000,

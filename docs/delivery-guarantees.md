@@ -43,20 +43,20 @@ An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The libr
 
 `onDrop` receives a summary of each loss. The `reason` field tells the cause.
 
-| `reason`             | Cause                                                                                            | Setting to change                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `buffer_full`        | A hold buffer before startup, or the live buffer, is full.                                       | `buffering`                                                              |
-| `expired`            | A stored batch is older than `retention.maxAgeMs`.                                               | `retention.maxAgeMs`                                                     |
-| `over_capacity`      | Storage has `retention.maxBatches` batches. A new batch evicts an old batch.                     | `retention.maxBatches`                                                   |
-| `quota`              | The browser storage quota is full.                                                               | A lower `retention.maxBatches`                                           |
-| `max_attempts`       | A stored batch reached `retention.maxAttempts`.                                                  | `retention.maxAttempts`                                                  |
-| `rejected`           | The server refused the batch permanently, or one record is too large for the server.             | The ingest server, `limits`                                              |
-| `partially_rejected` | An OTLP server accepted the batch but rejected some records in it.                               | The ingest server                                                        |
-| `unserializable`     | The serializer threw an error on the batch.                                                      | A custom `serializer`                                                    |
-| `exit_queue_full`    | The emergency queue in `localStorage` is full. It drops its oldest batch.                        | None                                                                     |
-| `load_failed`        | The delivery code did not load, or `shutdown()` came first.                                      | None                                                                     |
-| `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage: "none"`.            | `storage`                                                                |
-| `security_context`   | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid delivery settings |
+| `reason`             | Cause                                                                                            | Setting to change                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `buffer_full`        | A hold buffer before startup, or the live buffer, is full.                                       | `buffering`                                                             |
+| `expired`            | A stored batch is older than `retention.maxAgeMs`.                                               | `retention.maxAgeMs`                                                    |
+| `over_capacity`      | Storage has `retention.maxBatches` batches. A new batch evicts an old batch.                     | `retention.maxBatches`                                                  |
+| `quota`              | The browser storage quota is full.                                                               | A lower `retention.maxBatches`                                          |
+| `max_attempts`       | A stored batch reached `retention.maxAttempts`.                                                  | `retention.maxAttempts`                                                 |
+| `rejected`           | The server refused the batch permanently, or one record is too large for the server.             | The ingest server, `limits`                                             |
+| `partially_rejected` | An OTLP server accepted the batch but rejected some records in it.                               | The ingest server                                                       |
+| `unserializable`     | The serializer threw an error on the batch.                                                      | A custom `serializer`                                                   |
+| `exit_queue_full`    | The emergency queue in `localStorage` is full. It drops its oldest batch.                        | None                                                                    |
+| `load_failed`        | The delivery code did not load, or `shutdown()` came first.                                      | None                                                                    |
+| `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage.backend: "none"`.    | `storage.backend`                                                       |
+| `security_context`   | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid routing settings |
 
 A hold buffer keeps the records that arrive before startup ends, or while the sender loads. `buffering.maxHeldRecords` sets its limit for the records that are not actions. The default is 500. The range is 200 to 10000. Actions have a separate limit of 2000. A full hold buffer keeps its first 100 records of each kind. It drops the oldest record after them. `onDrop` reports that record with `buffer_full`. Thus the first error of a failed startup stays in the buffer. The newest records also stay.
 
@@ -64,7 +64,7 @@ Some records never reach delivery by design. `onDrop` does not report them. The 
 
 - A record below `minLevel`, or outside the sample. With `debugBuffer`, the next error of the context sends the recent ones.
 - A record that a processor or `redact` drops.
-- A log record above the error ceiling, `capturePolicy.errorCeiling`. Metric points and spans do not count.
+- A log record above the error ceiling, `sampling.errorCeiling`. Metric points and spans do not count.
 - A capture event above its rate limit.
 - A logger call during a rotation. The library does not build the record. A record that the library built during a rotation goes to `onDrop` with `security_context`.
 - A `startMeasure()` measure that ends after `shutdown()`. With isolation, also one that ends after a new delivery identity.
@@ -79,10 +79,10 @@ A batch that did not send goes to storage. The default store is IndexedDB. Witho
 - With `retention.maxAgeMs: null` and `retention.maxAttempts: null`, a stored batch has no age limit and no attempt limit. `retention.maxBatches` still applies.
 - A full store evicts the oldest batch without an action record first. The library keeps action records longest. An action record is not an authoritative audit record.
 - The store can evict the new batch. This occurs when each older batch has an action record. `onDrop` then reports the new batch with `over_capacity`.
-- With `storage: "memory"`, stored batches stay only until the page closes. With `storage: "none"`, a batch that did not send is lost.
+- With `storage.backend: "memory"`, stored batches stay only until the page closes. With `storage.backend: "none"`, a batch that did not send is lost.
 - After a failed send, the `transport.http_error` diagnostic tells the result for the batch. The library stores the batch, stores it in two parts, or drops it.
 - While the server throttles, the library stores a new batch and does not send it. The `transport.throttled` diagnostic tells if storage kept the batch.
-- Under storage pressure, a browser can delete the store. `persistence.requestPersistent` asks the browser to keep it.
+- Under storage pressure, a browser can delete the store. `storage.requestPersistent` asks the browser to keep it.
 
 ## Page Exit
 
@@ -111,9 +111,9 @@ The exit flush is best effort.
 - `retain` keeps them in storage under the old identity.
 - `carry` moves them to the new identity.
 
-During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order.
+During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. The library does not hold such a record for the next identity. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order. Each call waits for the earlier call.
 
-A rotation that rejects stops the delivery of the old identity. The library keeps the unsent records of the old identity in storage under the old ID. It sends no record with the old endpoint or headers until a rotation succeeds. `onDrop` reports each dropped record with `security_context`. The next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the old identity. With `flush`, it removes them as `discard` does, because a flush would use the old settings. See [runtime policies](runtime-policies.md) for each rule.
+A rotation that rejects stops the delivery of the old identity. A rotation code chunk that does not load also rejects the rotation. The library keeps the unsent records of the old identity in storage under the old ID. `getStats().stored`, `getQueueDepth()` and `getHealth().stored` still count them. It sends no record with the old endpoint or headers until a rotation succeeds. `onDrop` reports each dropped record with `security_context`. The next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the old identity. With `flush`, it removes them as `discard` does, because a flush would use the old settings. See [runtime policies](runtime-policies.md) for each rule.
 
 ## Deferred calls
 
@@ -138,7 +138,7 @@ A delivery rotation cancels pending jobs and terminates the old worker before it
 A profiler summary record is a metric point. It follows the rules of this page from the moment the library builds it.
 
 - A probe keeps its durations in memory until the end of the interval. `flush()`, `shutdown()`, `newSession()` and the exit flush send the open interval.
-- A page that stops without an exit event loses the open interval. The interval is `profiler.flushIntervalMs` long at most.
+- A page that stops without an exit event loses the open interval. The interval is `metrics.intervalMs` long at most.
 - A span that is open when the profiler turns off adds no value. With `securityContext.isolation`, a span that is open at a rotation adds no value.
 - A probe above `profiler.maxProbes` adds no value. The library reports `config.invalid`.
 - The count in a record is the count of measured spans. With `sampleEvery`, multiply it by `profile.sample_every` for an estimate.

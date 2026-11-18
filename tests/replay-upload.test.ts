@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReplayUploader } from "../src/capture/replay-upload";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
-import type { ObservabilityConfig, ReplayPolicy } from "../src/models/config";
+import type { ObservabilityConfig, ReplayOptions } from "../src/models/config";
 import type { ReplaySegment } from "../src/models/replay";
 
 const ENDPOINT = "https://replay.example/v1/replay";
@@ -39,7 +39,7 @@ afterEach(() => {
  * @param over Other settings for the test.
  * @returns The uploader, the segments, the events and the config object.
  */
-function setup(replay: Partial<ReplayPolicy> = {}, over: Partial<ObservabilityConfig> = {}) {
+function setup(replay: Partial<ReplayOptions> = {}, over: Partial<ObservabilityConfig> = {}) {
   vi.useFakeTimers();
   const events: DiagnosticEvent[] = [];
   const segments: ReplaySegment[] = [];
@@ -79,7 +79,7 @@ function setup(replay: Partial<ReplayPolicy> = {}, over: Partial<ObservabilityCo
  */
 function http(
   answers: (number | Error | string)[],
-  replay: Partial<ReplayPolicy> = {},
+  replay: Partial<ReplayOptions> = {},
   over: Partial<ObservabilityConfig> = {},
 ) {
   const calls: Call[] = [];
@@ -108,7 +108,7 @@ const texts = (events: DiagnosticEvent[], code: string): string[] =>
 
 describe("segments", () => {
   it("closes a segment at the event count", async () => {
-    const { uploader, segments } = setup({ batchSize: 2 });
+    const { uploader, segments } = setup({ maxSegmentEvents: 2 });
 
     uploader.push(["1", "2", "3", "4", "5"]);
     await vi.advanceTimersByTimeAsync(0);
@@ -120,7 +120,7 @@ describe("segments", () => {
   });
 
   it("closes a partial segment after the wait", async () => {
-    const { uploader, segments } = setup({ batchSize: 3, flushIntervalMs: 500 });
+    const { uploader, segments } = setup({ maxSegmentEvents: 3, flushIntervalMs: 500 });
 
     uploader.push(["1", "2", "3", "4"]);
     await vi.advanceTimersByTimeAsync(499);
@@ -136,7 +136,7 @@ describe("segments", () => {
   });
 
   it("closes a segment at the size, and gives one large event a segment of its own", async () => {
-    const { uploader, segments } = setup({ batchBytes: 10_000 });
+    const { uploader, segments } = setup({ maxSegmentBytes: 10_000 });
     const small = `"${"a".repeat(3998)}"`;
     const large = `"${"b".repeat(19_998)}"`;
 
@@ -154,7 +154,7 @@ describe("segments", () => {
   });
 
   it("stamps each segment with the ids, the service name and a sequence number", async () => {
-    const { uploader, segments } = setup({ batchSize: 1 });
+    const { uploader, segments } = setup({ maxSegmentEvents: 1 });
 
     uploader.push(['{"type":4}', '{"type":2}']);
     await vi.advanceTimersByTimeAsync(0);
@@ -175,7 +175,7 @@ describe("segments", () => {
   });
 
   it("continues the sequence for a later upload of one recording and starts at 0 for a new one", async () => {
-    const { uploader, segments } = setup({ batchSize: 1 });
+    const { uploader, segments } = setup({ maxSegmentEvents: 1 });
 
     uploader.push(["1"]);
     uploader.begin({ ...IDS, sessionId: "session-2" });
@@ -207,10 +207,10 @@ describe("segments", () => {
   });
 
   it("reads the batch settings at each push", async () => {
-    const { uploader, segments, state, diagnostics } = setup({ batchSize: 10 });
+    const { uploader, segments, state, diagnostics } = setup({ maxSegmentEvents: 10 });
 
     uploader.push(["1"]);
-    state.config = resolveConfig({ replay: { batchSize: 2 } }, diagnostics, state.config);
+    state.config = resolveConfig({ replay: { maxSegmentEvents: 2 } }, diagnostics, state.config);
     uploader.push(["2"]);
     await vi.advanceTimersByTimeAsync(0);
 
@@ -223,7 +223,7 @@ describe("send order", () => {
     const started: number[] = [];
     const finish: (() => void)[] = [];
     const { uploader } = setup({
-      batchSize: 1,
+      maxSegmentEvents: 1,
       onSegment: (segment) => {
         started.push(segment.sequence);
         return new Promise<void>((resolve) => {
@@ -248,7 +248,7 @@ describe("send order", () => {
   it("drops the oldest segment that waits above the queue size and reports the count", async () => {
     const started: number[] = [];
     const { uploader, events } = setup({
-      batchSize: 1,
+      maxSegmentEvents: 1,
       maxQueueBytes: 100_000,
       onSegment: (segment) => {
         started.push(segment.sequence);
@@ -268,7 +268,7 @@ describe("send order", () => {
   });
 
   it("keeps one segment that alone is above the queue size", async () => {
-    const { uploader, segments, events } = setup({ batchSize: 1, maxQueueBytes: 100_000 });
+    const { uploader, segments, events } = setup({ maxSegmentEvents: 1, maxQueueBytes: 100_000 });
 
     uploader.push([`"${"a".repeat(150_000)}"`]);
     await vi.advanceTimersByTimeAsync(0);
@@ -281,7 +281,7 @@ describe("send order", () => {
     const seen: number[] = [];
     const { uploader, events } = setup(
       {
-        batchSize: 1,
+        maxSegmentEvents: 1,
         onSegment: (segment) => {
           seen.push(segment.sequence);
           // The first call never settles. Without a deadline nothing after it would go out.
@@ -306,7 +306,7 @@ describe("send order", () => {
     const error = new Error("store is full");
     const seen: number[] = [];
     const { uploader, events } = setup({
-      batchSize: 1,
+      maxSegmentEvents: 1,
       onSegment: (segment) => {
         seen.push(segment.sequence);
         if (segment.sequence === 0) {
@@ -337,7 +337,7 @@ describe("send order", () => {
     const finish: (() => void)[] = [];
     const started: number[] = [];
     const { uploader } = setup({
-      batchSize: 2,
+      maxSegmentEvents: 2,
       onSegment: (segment) => {
         started.push(segment.sequence);
         return new Promise<void>((resolve) => {
@@ -374,7 +374,7 @@ const headersOf = (call: Call): Record<string, string> =>
 
 describe("endpoint request", () => {
   it("sends nothing once a later configure() turns the endpoint off", async () => {
-    const { uploader, calls, state } = http([202], { batchSize: 1 });
+    const { uploader, calls, state } = http([202], { maxSegmentEvents: 1 });
     state.config.replay.endpoint = null;
 
     uploader.push(['{"type":4}']);
@@ -385,7 +385,7 @@ describe("endpoint request", () => {
   });
 
   it("posts the segment as JSON with the ids and the batch headers", async () => {
-    const { uploader, calls } = http([202], { batchSize: 2 });
+    const { uploader, calls } = http([202], { maxSegmentEvents: 2 });
 
     uploader.push(['{"type":4}', '{"type":2}']);
     await vi.advanceTimersByTimeAsync(0);
@@ -422,7 +422,10 @@ describe("endpoint request", () => {
   it("sends replay.headers and not the headers of the log endpoint", async () => {
     const { uploader, calls } = http(
       [200],
-      { batchSize: 1, headers: { Authorization: "Bearer replay", "content-type": "text/plain" } },
+      {
+        maxSegmentEvents: 1,
+        headers: { Authorization: "Bearer replay", "content-type": "text/plain" },
+      },
       { headers: { Authorization: "Bearer logs", "X-Tenant": "a" } },
     );
 
@@ -439,7 +442,7 @@ describe("endpoint request", () => {
   });
 
   it("uses the credentials setting of the app", async () => {
-    const { uploader, calls } = http([200], { batchSize: 1 }, { credentials: "include" });
+    const { uploader, calls } = http([200], { maxSegmentEvents: 1 }, { credentials: "include" });
 
     uploader.push(["1"]);
     await vi.advanceTimersByTimeAsync(0);
@@ -448,7 +451,7 @@ describe("endpoint request", () => {
   });
 
   it("compresses a large body with gzip", async () => {
-    const { uploader, calls } = http([200], { batchSize: 1 }, { compression: "gzip" });
+    const { uploader, calls } = http([200], { maxSegmentEvents: 1 }, { compression: "gzip" });
     const event = JSON.stringify({ type: 3, text: "a".repeat(2000) });
 
     uploader.push([event]);
@@ -465,7 +468,7 @@ describe("endpoint request", () => {
   });
 
   it("sends a small body and a body with no CompressionStream as text", async () => {
-    const { uploader, calls } = http([200], { batchSize: 1 }, { compression: "gzip" });
+    const { uploader, calls } = http([200], { maxSegmentEvents: 1 }, { compression: "gzip" });
 
     uploader.push(["1"]);
     await vi.advanceTimersByTimeAsync(0);
@@ -478,7 +481,7 @@ describe("endpoint request", () => {
   });
 
   it("sends in a browser with no AbortSignal.timeout", async () => {
-    const { uploader, calls } = http([200], { batchSize: 1 });
+    const { uploader, calls } = http([200], { maxSegmentEvents: 1 });
     vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
       throw new TypeError("AbortSignal.timeout is not a function");
     });
@@ -503,7 +506,7 @@ describe("endpoint request", () => {
       }),
     );
     const { uploader, events } = setup(
-      { endpoint: ENDPOINT, onSegment: null, batchSize: 1, maxAttempts: 1 },
+      { endpoint: ENDPOINT, onSegment: null, maxSegmentEvents: 1, maxAttempts: 1 },
       { compression: "none", delivery: { requestTimeoutMs: 5000 } },
     );
 
@@ -529,7 +532,7 @@ describe("endpoint request", () => {
     async (status) => {
       const { uploader, calls, events } = http(
         [status, status, 200],
-        { batchSize: 1 },
+        { maxSegmentEvents: 1 },
         { delivery: { retryBaseDelayMs: 1000, retryMaxDelayMs: 1500 } },
       );
 
@@ -564,7 +567,7 @@ describe("endpoint request", () => {
     const error = new TypeError("fetch failed for https://user:secret@replay.example");
     const { uploader, calls, events } = http(
       [error, "no error object", 200],
-      { batchSize: 1, maxAttempts: 2 },
+      { maxSegmentEvents: 1, maxAttempts: 2 },
       { delivery: { retryBaseDelayMs: 100 } },
     );
 
@@ -588,7 +591,7 @@ describe("endpoint request", () => {
   it.each([[400], [404], [413]])(
     "drops a segment right away after the status %d",
     async (status) => {
-      const { uploader, calls, events } = http([status, 200], { batchSize: 1 });
+      const { uploader, calls, events } = http([status, 200], { maxSegmentEvents: 1 });
 
       uploader.push(["1", "2"]);
       await vi.advanceTimersByTimeAsync(0);
@@ -607,7 +610,7 @@ describe("endpoint request", () => {
       const { uploader, calls } = http(
         [status, 200],
         {
-          batchSize: 1,
+          maxSegmentEvents: 1,
           headers: () => Promise.resolve({ Authorization: `Bearer ${String(++token)}` }),
         },
         { delivery: { retryBaseDelayMs: 100 } },
@@ -622,7 +625,7 @@ describe("endpoint request", () => {
 
   it("reports a replay.headers function that throws and sends nothing", async () => {
     const { uploader, calls, events } = http([200], {
-      batchSize: 1,
+      maxSegmentEvents: 1,
       maxAttempts: 1,
       headers: () => {
         throw new RangeError("no token");
@@ -648,7 +651,7 @@ describe("endpoint request", () => {
       }),
     );
     const { uploader } = setup(
-      { endpoint: ENDPOINT, onSegment: null, batchSize: 1 },
+      { endpoint: ENDPOINT, onSegment: null, maxSegmentEvents: 1 },
       { compression: "none" },
     );
 
@@ -665,7 +668,7 @@ describe("endpoint request", () => {
   it("sends nothing when a stop comes while the headers function waits", async () => {
     let open: (headers: Record<string, string>) => void = () => undefined;
     const { uploader, calls } = http([200], {
-      batchSize: 1,
+      maxSegmentEvents: 1,
       headers: () =>
         new Promise((resolve) => {
           open = resolve;
@@ -684,7 +687,7 @@ describe("endpoint request", () => {
   it("stops the next attempt of a segment at stop()", async () => {
     const { uploader, calls } = http(
       [503],
-      { batchSize: 1 },
+      { maxSegmentEvents: 1 },
       { delivery: { retryBaseDelayMs: 100 } },
     );
 

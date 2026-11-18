@@ -73,7 +73,7 @@ const WORKLOAD = {
     records: 2_000,
     callsPerTask: 100,
     outageMs: 3_000,
-    delivery: { retryBaseDelayMs: 200, retryMaxDelayMs: 1_000, retryIdleDelayMs: 1_000 },
+    delivery: { retryBaseDelayMs: 200, retryMaxDelayMs: 1_000 },
   },
   // The buffer limit is above the default, so the recorder keeps every event of the run.
   replay: { warmupRounds: 200, rounds: 2_000, changesPerRound: 20, maxBufferBytes: 100_000_000 },

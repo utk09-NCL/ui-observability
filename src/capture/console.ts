@@ -5,6 +5,7 @@
 import { CONSOLE_BREADCRUMB_MAX_CHARS } from "../constants";
 import type { CapturedConsoleMethod } from "../models/config";
 import { type ErrorLike, isErrorLike } from "../utils/error-like";
+import { isObject } from "../utils/guards";
 import { isLibraryConsole, runAsLibraryConsole } from "../utils/library-console";
 import { patch } from "../utils/patch";
 import { truncate } from "../utils/sanitize";
@@ -117,22 +118,24 @@ export class ConsoleCapture implements Capture {
    * @returns Methods to wrap, with no duplicates.
    */
   private readMethods(): readonly CapturedConsoleMethod[] {
-    const value: unknown = this.ctx.config.capture.console;
+    const { console: setting } = this.ctx.config.capture;
 
-    if (value === true) {
+    if (setting === true) {
       return DEFAULT_METHODS;
     }
 
+    const levels: unknown = isObject(setting) ? setting.levels : undefined;
+
     if (
-      Array.isArray(value) &&
-      value.every((method: unknown) => METHODS.includes(method as CapturedConsoleMethod))
+      Array.isArray(levels) &&
+      levels.every((method: unknown) => METHODS.includes(method as CapturedConsoleMethod))
     ) {
-      return [...new Set(value as CapturedConsoleMethod[])];
+      return [...new Set(levels as CapturedConsoleMethod[])];
     }
 
     this.ctx.diagnostics.report(
       "config.invalid",
-      'capture.console must be true, false or a list of "error", "warn", "info" and "log". The console capture is off.',
+      'capture.console must be true or an object with a list of "error", "warn", "info" and "log" in levels. The console capture is off.',
     );
     return [];
   }
@@ -189,10 +192,10 @@ export class ConsoleCapture implements Capture {
     if (
       !allowInWindow(
         this.window,
-        this.ctx.config.capturePolicy.consolePerWindow,
+        this.ctx.config.captureLimits.consolePerWindow,
         diagnostics,
         "console records",
-        this.ctx.config.capturePolicy.windowMs,
+        this.ctx.config.captureLimits.windowMs,
       )
     ) {
       return;
