@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LibraryLogger, OneLogger } from "../src/core/logger";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type { LogRecord } from "../src/models/log-record";
 import {
@@ -8,7 +9,6 @@ import {
   getDiagnosticCounters,
   getLogger,
   logAction,
-  OneLogger,
   shutdown,
 } from "../src/index";
 
@@ -119,10 +119,25 @@ describe("minLevel", () => {
   });
 });
 
-describe("logMetric", () => {
+/**
+ * Returns a capture logger, the only logger that writes one metric record per call.
+ * @returns The logger for the "trading" namespace.
+ */
+function metrics(): LibraryLogger {
+  return new LibraryLogger(() => runtime(), "trading");
+}
+
+describe("the capture logger's logMetric", () => {
+  it("isn't on the public logger, because an app's metric goes through an instrument", () => {
+    configure(base);
+
+    expect("logMetric" in getLogger("trading")).toBe(false);
+    expect("timeSync" in getLogger("trading")).toBe(false);
+  });
+
   it("drops a value that is not finite and reports it", () => {
     const records = capture();
-    const log = getLogger("trading");
+    const log = metrics();
 
     log.logMetric("latency", Number.NaN);
     log.logMetric("latency", Number.POSITIVE_INFINITY);
@@ -134,7 +149,7 @@ describe("logMetric", () => {
   it("keeps the metric fields over caller attributes of the same name", () => {
     const records = capture();
 
-    getLogger("trading").logMetric("latency", 12, "ms", "gauge", {
+    metrics().logMetric("latency", 12, "ms", "gauge", {
       "metric.name": "spoof",
       route: "/orders",
     });
@@ -145,8 +160,8 @@ describe("logMetric", () => {
   it("names the attributes of the call, so the metrics format keeps the context off the point", () => {
     const records = capture();
 
-    getLogger("trading").logMetric("latency", 12, "ms", "gauge", { route: "/orders" });
-    getLogger("trading").logMetric("rows", 3);
+    metrics().logMetric("latency", 12, "ms", "gauge", { route: "/orders" });
+    metrics().logMetric("rows", 3);
 
     expect(records[0].attributes["metric.attribute_keys"]).toEqual(["route"]);
     expect(records[1].attributes["metric.attribute_keys"]).toEqual([]);
@@ -156,7 +171,7 @@ describe("logMetric", () => {
     const records = capture();
 
     expect(() => {
-      getLogger("trading").logMetric("latency", 12, "ms", "gauge", hostile() as never);
+      metrics().logMetric("latency", 12, "ms", "gauge", hostile() as never);
     }).not.toThrow();
 
     expect(records[0].attributes["uiobs.sanitize_failed"]).toBe(true);

@@ -12,6 +12,7 @@ import {
   registerFrame,
   registerWorker,
 } from "../src/index";
+import { LibraryLogger } from "../src/core/logger";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { InteractionCapture } from "../src/capture/interactions";
 import { Bus } from "../src/bus/bus";
@@ -136,7 +137,7 @@ describe("application-owned privacy policies", () => {
     getLogger("orders").info("no breadcrumb");
     expect(redact).not.toHaveBeenCalled();
     configure({ captureLimits: { breadcrumbs: 50 } });
-    getLogger("orders").logMetric("orders.count", 1);
+    new LibraryLogger(() => rt(), "orders").logMetric("orders.count", 1);
     expect(redact).not.toHaveBeenCalled();
     getLogger("orders").info("breadcrumb");
     expect(redact).toHaveBeenCalledTimes(1);
@@ -182,10 +183,10 @@ describe("security context delivery", () => {
       const a = transport().mockResolvedValue({ status: 503 });
       const b = transport();
       configure({ ...base, transport: a });
-      setContext("old-user", "A");
+      setContext({ "old-user": "A" });
       getLogger("orders").info("A record");
       await flush();
-      expect((await getHealth()).stored).toBe(1);
+      expect((await getHealth()).delivery.stored).toBe(1);
       await rotateSecurityContext(
         { id: "B", routing: { transport: b }, context: { tenant: "B" } },
         { pending },

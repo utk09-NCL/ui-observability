@@ -36,7 +36,7 @@ const created: Sender[] = [];
  * @param over Config values layered over the base.
  * @returns The sender and its diagnostic events.
  */
-async function setup(over: Partial<ObservabilityConfig> = {}) {
+async function setup(over: Partial<ObservabilityConfig> = {}, onSent?: (at: number) => void) {
   const events: DiagnosticEvent[] = [];
   const diagnostics = new Diagnostics((event) => {
     events.push(event);
@@ -58,6 +58,7 @@ async function setup(over: Partial<ObservabilityConfig> = {}) {
     onGap: vi.fn(),
     onLoss,
     remote: { sampling: null },
+    onSent,
   });
   created.push(sender);
   return { sender, diagnostics, onLoss, codes: () => events.map((event) => event.code) };
@@ -118,17 +119,60 @@ describe("Sender emergency import", () => {
 });
 
 describe("Sender stats", () => {
-  it("counts a buffered record, then gives the time of the accepted send", async () => {
-    const { sender } = await setup();
+  it("counts a buffered record, then passes the time of the accepted send on", async () => {
+    const onSent = vi.fn<(at: number) => void>();
+    const { sender } = await setup({}, onSent);
     sender.push(record("one"));
 
-    expect(sender.stats()).toEqual({ pending: 1, inFlight: 0, lastSendAt: null });
+    expect(sender.stats()).toEqual({
+      pending: 1,
+      inFlight: 0,
+      lastFailureAt: null,
+      consecutiveFailures: 0,
+      throttledUntil: null,
+    });
 
     const before = Date.now();
     await sender.flush();
 
     expect(sender.stats()).toMatchObject({ pending: 0, inFlight: 0 });
-    expect(sender.stats().lastSendAt).toBeGreaterThanOrEqual(before);
+    expect(onSent.mock.calls[0][0]).toBeGreaterThanOrEqual(before);
+  });
+
+  it("counts failed sends in a row, and only an accepted batch resets the count", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 500 })));
+    const { sender } = await setup();
+    const before = Date.now();
+    sender.push(record("one"));
+    await sender.flush();
+    sender.push(record("two"));
+    await sender.flush();
+
+    expect(sender.stats()).toMatchObject({ consecutiveFailures: 2 });
+    expect(sender.stats().lastFailureAt).toBeGreaterThanOrEqual(before);
+
+    // A traces batch with no tracesEndpoint makes no request, so it proves nothing.
+    sender.push({ ...record("span"), attributes: { "log.type": "span" } });
+    await sender.flush();
+    expect(sender.stats()).toMatchObject({ consecutiveFailures: 2 });
+
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })));
+    sender.push(record("three"));
+    await sender.flush();
+
+    expect(sender.stats()).toMatchObject({ consecutiveFailures: 0 });
+  });
+
+  it("reports when the latest server throttle ends", async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(new Response(null, { status: 429, headers: { "Retry-After": "30" } })),
+    );
+    const { sender } = await setup();
+    const before = Date.now();
+    sender.push(record("one"));
+    await sender.flush();
+
+    expect(sender.stats().throttledUntil).toBeGreaterThanOrEqual(before + 29_000);
   });
 });
 

@@ -93,7 +93,7 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
 function histogramOf(record: LogRecord): DataPoint | null {
   const count = numberOf(record, METRIC_KEYS.count);
 
-  // A logMetric histogram holds one value, so it has one bucket and no boundaries.
+  // A single-value histogram record, for example a long frame, has one bucket and no boundaries.
   if (count === undefined) {
     const value = numberOf(record, "metric.value");
     return value === undefined
@@ -158,7 +158,7 @@ function pointOf(record: LogRecord, field: MetricField): DataPoint | null {
 
   return {
     attributes: toKeyValues(pointAttributes(record)),
-    // A logMetric record has no interval, so its point starts and ends at its own time.
+    // A single-value record has no interval, so its point starts and ends at its own time.
     startTimeUnixNano: typeof start === "string" ? start : record.timeUnixNano,
     timeUnixNano: record.timeUnixNano,
     ...values,
@@ -177,7 +177,8 @@ function metricOf({ name, unit, field, points }: MetricEntry): Record<string, un
 
   const data: Record<string, unknown> = { aggregationTemporality: DELTA, dataPoints: points };
 
-  // A logMetric counter can hold a negative value. A monotonic sum must not decrease.
+  // A counter record from another context can hold a negative value. A monotonic sum must not
+  // decrease.
   if (field === "sum") {
     data.isMonotonic = points.every((point) => (point.asDouble as number) >= 0);
   }

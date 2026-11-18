@@ -481,6 +481,18 @@ export class LogPipeline {
     return [...unconfirmed, ...STREAM_ORDER.flatMap((name) => this.streams[name].records)];
   }
 
+  /**
+   * Stops the pipeline without a send, for a discard at shutdown. A request in flight can still
+   * reach the server, so its records aren't returned.
+   * @returns The records in the queue and in the buffers.
+   */
+  discard(): LogRecord[] {
+    const queued = this.queue.flatMap((pending) => pending.batch.records);
+    const buffered = STREAM_ORDER.flatMap((name) => this.streams[name].take());
+    this.destroy();
+    return [...queued, ...buffered];
+  }
+
   /** Stops the flush timers and refuses further records. */
   destroy(): void {
     this.stopped = true;

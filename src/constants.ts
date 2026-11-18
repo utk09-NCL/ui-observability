@@ -721,9 +721,6 @@ export const CONSOLE_DEFAULT_STYLES: Readonly<Required<ConsoleStyles>> = {
   FATAL: "color:#d32f2f;font-weight:bold",
 };
 
-/** Scaling factor for rounding a duration to three decimal places. */
-export const DURATION_PRECISION = 1000;
-
 // ----------------------------------
 // Runtime
 // ----------------------------------

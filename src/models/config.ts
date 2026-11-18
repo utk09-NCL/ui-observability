@@ -511,7 +511,10 @@ export interface SecurityContextUpdate {
    * settings stay.
    */
   routing: RoutingOptions;
-  /** New ambient attributes. If omitted, the runtime removes the old ones. */
+  /**
+   * New ambient attributes. If omitted, the runtime removes the old ones. A null or undefined
+   * value sets no key, as in setContext().
+   */
   context?: Record<string, unknown>;
 }
 
@@ -530,6 +533,35 @@ export interface SecurityContextRotationOptions {
    * @default 5000
    */
   timeoutMs?: number;
+}
+
+/** Whose stored records `shutdown()` removes. */
+export type StorageScope = "context" | "namespace";
+
+/**
+ * What `shutdown()` does with the records that wait, and which storage it removes. A value that
+ * isn't an object reports `config.invalid` and discards.
+ */
+export interface ShutdownOptions {
+  /**
+   * What to do with the records in memory. "flush" sends them, then runs the exit flush.
+   * "discard" sends nothing and reports each one to `onDrop` with the reason "discarded". A
+   * request in flight can still reach the server. Any other value reports `config.invalid` and
+   * discards.
+   * @default "flush"
+   */
+  pending?: "flush" | "discard";
+  /**
+   * Also removes the stored batches, the emergency queue entries, and the stored session id,
+   * tab id and journey. "context" removes the batches of the active security context and the
+   * ones a carry left, and "namespace" removes every batch in `storage.namespace`. It always
+   * discards, and with `pending: "flush"` it reports `config.invalid`. null removes nothing, as
+   * when unset. Any other value reports `config.invalid`, discards and removes the "context"
+   * scope. Before the first `configure()` call that works, no store is known, and it removes
+   * nothing. After an earlier `shutdown()`, it still removes the stopped runtime's stored data.
+   * Unset by default, which removes nothing.
+   */
+  clearStorage?: StorageScope | null;
 }
 
 /**

@@ -290,13 +290,13 @@ export class JourneyEngine {
 
   /**
    * Serializes the active journey into a compact token for URL or intent transfer.
-   * @returns Base64url token, or undefined when no journey is active or the token exceeds
-   * the size limit.
+   * @returns Base64url token, or null when no journey is active or the token exceeds the size
+   * limit.
    */
-  getToken(): string | undefined {
+  getToken(): string | null {
     const journey = this.journey;
     if (journey === null) {
-      return undefined;
+      return null;
     }
     const token = encodeToken(journey);
     if (token.length > JOURNEY_TOKEN_MAX_CHARS) {
@@ -305,7 +305,7 @@ export class JourneyEngine {
         "The journey token is larger than the size limit. The library does not issue it.",
         { length: token.length },
       );
-      return undefined;
+      return null;
     }
     return token;
   }

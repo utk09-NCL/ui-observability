@@ -156,6 +156,15 @@ export abstract class StatusTransport implements BatchTransport {
   }
 
   /**
+   * Returns when the latest server throttle ends, over all endpoints.
+   * @returns Epoch time in milliseconds, or null when no endpoint is throttled now.
+   */
+  throttleEnd(): number | null {
+    const end = Math.max(...Object.values(this.throttledUntil));
+    return end > Date.now() ? end : null;
+  }
+
+  /**
    * Returns the time when the server last accepted a batch.
    * @returns Epoch time in milliseconds, or null before the first accepted batch.
    */

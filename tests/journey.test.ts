@@ -268,7 +268,7 @@ describe("applyRemote", () => {
 
 describe("getToken", () => {
   it("issues nothing when there is no journey to hand over", () => {
-    expect(makeEngine().engine.getToken()).toBeUndefined();
+    expect(makeEngine().engine.getToken()).toBeNull();
   });
 
   it("round-trips through adopt, which is the only contract the token has", () => {
@@ -315,7 +315,7 @@ describe("getToken", () => {
       ownerContextId: "ctx-2",
     });
 
-    expect(engine.getToken()).toBeUndefined();
+    expect(engine.getToken()).toBeNull();
     expect(diagnostics.snapshot()["journey.token_too_large"]).toBe(1);
   });
 

@@ -58,12 +58,13 @@ An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The libr
 | `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage.backend: "none"`.    | `storage.backend`                                                       |
 | `security_context`   | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid routing settings |
 | `disabled`           | `enabled` is false, so the sender sends nothing. See the rules after this table.                 | `enabled`                                                               |
+| `discarded`          | `shutdown()` with `pending: "discard"` or `clearStorage` dropped the records in memory.          | The `pending` option of `shutdown()`                                    |
 
 `onDrop` reports `disabled` in three cases.
 
 - A child context forwards a record to a sender or a forwarder with `enabled: false`.
 - The first `configure()` call sets `enabled: false`. The records that log calls held before that call are lost. The library runs `processors` and `redact` on them before the report.
-- A `pagehide` or a `shutdown()` occurs during a pause. The pause has no exit flush, so the records in memory are lost. These are the records that wait for the delivery stack, and the records in its buffers, its queue and its requests. `onDrop` reports each record one time. A later `pagehide`, rotation or `shutdown()` does not report it again. A page that the browser restores from the back/forward cache still has these records. They then go out after `enabled: true`.
+- A `pagehide` or a `shutdown()` occurs during a pause. A `shutdown()` with `pending: "discard"` or `clearStorage` reports `discarded` instead. The pause has no exit flush, so the records in memory are lost. These are the records that wait for the delivery stack, and the records in its buffers, its queue and its requests. `onDrop` reports each record one time. A later `pagehide`, rotation or `shutdown()` does not report it again. A page that the browser restores from the back/forward cache still has these records. They then go out after `enabled: true`.
 
 A pause keeps the other records. The records in memory and the stored batches go out after `enabled: true`.
 
@@ -75,6 +76,8 @@ A pause keeps the other records. The records in memory and the stored batches go
   - A rotation with `pending: "discard"` or `"flush"` removes the stored batches of the old context. This is also true before consent, when the first `configure()` call has `enabled: false`.
 - A rotation with `pending: "flush"` during a pause sends nothing. It acts as `discard`.
 - A rotation with `pending: "carry"` during a pause keeps the records in memory and the stored batches. The delivery stack of the new context takes them after `enabled: true`. A later rotation in the same pause applies its own rule to them. `discard` removes them. `retain` stores them under the context that the carry made.
+
+`getHealth().delivery.dropped` counts each loss of this table for each reason, from the start of the runtime. It counts also without an `onDrop` hook. A rotation keeps the counts.
 
 A hold buffer keeps the records that arrive before startup ends, or while the sender loads. `buffering.maxHeldRecords` sets its limit for the records that are not actions. The default is 500. The range is 200 to 10000. Actions have a separate limit of 2000. A full hold buffer keeps its first 100 records of each kind. It drops the oldest record after them. `onDrop` reports that record with `buffer_full`. Thus the first error of a failed startup stays in the buffer. The newest records also stay.
 
@@ -119,6 +122,42 @@ The exit flush is best effort.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
 - `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage. During a pause, `shutdown()` sends nothing.
+- `shutdown()` before the end of startup sends nothing. `onDrop` reports the records that wait for the bus role or the delivery stack with `load_failed`.
+
+## Shutdown With Discard
+
+`shutdown({ pending: "discard" })` stops delivery without a send. Use it at logout or when the user withdraws consent.
+
+- It sends nothing and runs no exit flush. The emergency queue gets no new entry.
+- It stops the captures, the replay recorder, the retry engine and the pipeline. The replay recorder drops its buffer and its upload queue.
+- `onDrop` reports each record in memory with `discarded`. These are the records in the hold buffers, the forward buffer, the live buffers and the queue.
+- A request in flight can still reach the server. The library aborts it, but it cannot recall it. `onDrop` does not report its records.
+- The result of that request writes nothing to storage and starts no retry.
+- The library builds no record for the open interval of the counters, gauges, histograms and probes. It does not end the root span.
+- A record that a `pagehide` during a pause reported with `disabled` is not reported again.
+- The stored batches stay in storage. The next runtime with the same security context sends them. Add `clearStorage` to remove them.
+
+`clearStorage: "context"` or `"namespace"` also removes data from storage. It always discards.
+
+- `"context"` removes the stored batches and the emergency queue entries of the active security context. It also removes the batches that a carry during a pause left under an older context. With `securityContext.isolation: false`, it removes each batch in `storage.namespace`.
+- `"namespace"` removes each stored batch and each emergency queue entry in `storage.namespace`.
+- Both scopes also remove the stored session id, the tab id and the journey.
+- The removal runs after each writer of the store stops. A late save cannot add a batch after it.
+- With `pending: "flush"`, `clearStorage` reports `config.invalid` and discards.
+- Before the first `configure()` call that works, no store is known, so `clearStorage` removes nothing.
+- After a first `configure()` call with `enabled: false`, `clearStorage` opens the configured store to remove the data.
+- A later `shutdown()` with `clearStorage` removes the stored data of the stopped runtime. It waits until the first `shutdown()` ends. A late save of the first flush or of its exit flush thus cannot land after the removal.
+- `clearStorage: null` removes nothing.
+
+Late async work after a discard writes no record and nothing to storage. This applies to a request result, a delivery stack load, the rotation code, a capture import and a replay upload. A rotation that already stops the old sender ends first, with its own rule. A rotation that did not reach that step stops and rejects.
+
+A shutdown can stop a rotation after the rotation took the records of the old context. The rotation then rejects. `onDrop` reports the records that nothing keeps with `security_context`.
+
+- With `discard` and `flush`, these are the records in memory and the stored batches that the retire removed.
+- With `retain`, these are the records that waited in the runtime. The retire stored the records of the old sender.
+- With `carry`, these are the records in memory. The stored batches stay in storage under the old context.
+
+A rotation that the shutdown meets in its storage step rejects too. It does not apply the new context, so `clearStorage` removes the batches of the right context.
 
 ## Rotation
 
@@ -131,7 +170,7 @@ The exit flush is best effort.
 
 During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. The library does not hold such a record for the next identity. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order. Each call waits for the earlier call.
 
-A rotation that rejects stops the delivery of the old identity. A rotation code chunk that does not load also rejects the rotation. The library keeps the unsent records of the old identity in storage under the old ID. `getStats().stored`, `getQueueDepth()` and `getHealth().stored` still count them. It sends no record with the old endpoint or headers until a rotation succeeds. `onDrop` reports each dropped record with `security_context`. The next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the old identity. With `flush`, it removes them as `discard` does, because a flush would use the old settings. See [runtime policies](runtime-policies.md) for each rule.
+A rotation that rejects stops the delivery of the old identity. A rotation code chunk that does not load also rejects the rotation. The library keeps the unsent records of the old identity in storage under the old ID. `getHealth().delivery.stored` still counts them. It sends no record with the old endpoint or headers until a rotation succeeds. `onDrop` reports each dropped record with `security_context`. The next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the old identity. With `flush`, it removes them as `discard` does, because a flush would use the old settings. See [runtime policies](runtime-policies.md) for each rule.
 
 ## Deferred calls
 

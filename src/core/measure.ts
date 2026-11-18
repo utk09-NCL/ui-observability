@@ -1,11 +1,13 @@
 // src/core/measure.ts
 //
 // Times one operation with named phases. Every phase and the total go into duration histograms.
-// With a span, the operation is that span, with one child span per phase.
+// With a span, the operation is that span, with one child span per phase. measure() times a
+// single function call with one.
 
 import { METRIC_DEFAULT_BOUNDARIES } from "../constants";
 import type { InstrumentDef, Measure, MetricAttributes } from "../models/metric";
 import { type ClientSpan, newSpanId } from "../utils/tracing";
+import type { Diagnostics } from "./diagnostics";
 import type { SpanData } from "./spans";
 
 /** Total duration of each measure, in milliseconds. */
@@ -116,4 +118,53 @@ export function createMeasure(
       }
     },
   };
+}
+
+/**
+ * Calls a function and ends the measure when the call returns. If the result has a `then`
+ * function, the measure ends when it settles. A throw or a rejection ends it with the outcome
+ * "error" and goes to the caller.
+ * @param handle The measure of the call.
+ * @param fn The app's function.
+ * @param diagnostics Reports a result whose `then` can't be read.
+ * @returns Whatever fn returned, or the result of its then() call.
+ */
+export function measureCall<T>(handle: Measure, fn: () => T, diagnostics: Diagnostics): T {
+  // finally sees a throw from fn or from the result's then(), so the error goes to the caller
+  // unchanged and the measure still ends.
+  let outcome: string | undefined = "error";
+  try {
+    const result = fn();
+    // A hostile result can throw from its then getter. The measure then ends now.
+    const then = diagnostics.guard(
+      "record.sanitize_failed",
+      "The library could not read what the function of the measure returned. The measure ends now.",
+      (): unknown => (result as { then?: unknown } | null | undefined)?.then,
+    );
+
+    if (typeof then !== "function") {
+      outcome = "ok";
+      return result;
+    }
+
+    // Hand back the chained result, so a rejection has exactly one owner: the caller.
+    const chained = (then as PromiseLike<unknown>["then"]).call(
+      result,
+      (value) => {
+        handle.end();
+        return value;
+      },
+      (error: unknown) => {
+        handle.end("error");
+        throw error;
+      },
+    ) as T;
+    // The settle ends the measure from here.
+    outcome = undefined;
+    return chained;
+  } finally {
+    if (outcome !== undefined) {
+      handle.end(outcome);
+    }
+  }
 }

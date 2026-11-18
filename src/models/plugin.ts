@@ -3,13 +3,13 @@
 // Public types for a capture plugin. A plugin gets a small context, so none of the library's
 // internal types become public.
 
-import type { OneLogger } from "../core/logger";
+import type { OneLogger as Logger } from "../core/logger";
 import type { Counter, Histogram, HistogramOptions, InstrumentOptions } from "./metric";
 
 /** Tools the library hands to a capture plugin. */
 export interface PluginContext {
   /** Logger for the `uiobs.capture.<plugin name>` namespace. */
-  logger: OneLogger;
+  logger: Logger;
   /**
    * Returns a counter. Same as `counter()`.
    * @param name Metric name.

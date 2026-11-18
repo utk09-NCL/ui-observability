@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LibraryLogger } from "../src/core/logger";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import {
   configure,
@@ -9,8 +10,8 @@ import {
   rotateSecurityContext,
   setContext,
   shutdown,
+  newTrace,
   startJourney,
-  startTrace,
 } from "../src/index";
 import type { LogRecord } from "../src/models/log-record";
 import type { ObservabilityConfig } from "../src/models/config";
@@ -75,15 +76,15 @@ describe("Deferred logger payloads", () => {
 
   it("sees payload changes before the build and keeps call metadata", async () => {
     const { log, memory, runtime } = await setup();
-    setContext("account", "first");
+    setContext({ account: "first" });
     startJourney("first journey", { id: "first" });
     const trace = runtime.tracing.resolve();
     const payload = { value: 1 };
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     log.info("pending", payload);
-    setContext("account", "second");
+    setContext({ account: "second" });
     startJourney("second journey", { id: "second" });
-    startTrace();
+    newTrace();
     payload.value = 2;
     clock.mockReturnValue(5000);
     await flush();
@@ -97,11 +98,11 @@ describe("Deferred logger payloads", () => {
   });
 
   it("builds error data, breadcrumbs, actions and metric attributes later", async () => {
-    const { log, memory } = await setup();
+    const { log, memory, runtime } = await setup();
     const attributes = { id: 1 };
     log.logAction("submit", attributes);
     log.logEvent("ready", attributes);
-    log.logMetric("count", 2, "1", "gauge", attributes);
+    new LibraryLogger(() => runtime, "app").logMetric("count", 2, "1", "gauge", attributes);
     log.error("failed", new Error("failure"), attributes);
     log.fatal("fatal", attributes);
     attributes.id = 2;

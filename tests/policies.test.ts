@@ -590,7 +590,7 @@ describe("delivery cancellation and owner adoption", () => {
     const runtime = rt();
     const bus = (await runtime["constructBus"]())!;
     const adopt = bus["handlers"].onSecurityContext!;
-    runtime.context.set("user", "old");
+    runtime.context.merge({ user: "old" });
     addBreadcrumb("old");
     counter("old").add(1);
     // The first owner id keeps the app's context, because those records had no other identity.
@@ -1689,7 +1689,7 @@ describe("rotation delivery limits and early configuration", () => {
       getLogger("backlog").info(`stored ${String(i)}`);
     }
     await flush();
-    expect((await getHealth()).stored).toBeGreaterThan(0);
+    expect((await getHealth()).delivery.stored).toBeGreaterThan(0);
     configure({ buffering: { maxPendingRecords: 2 } });
     send.clear();
     send.respondWith(204);

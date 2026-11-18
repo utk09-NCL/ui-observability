@@ -1,6 +1,6 @@
 // src/models/metric.ts
 //
-// Types for the counter and histogram instruments.
+// Types for the counter, gauge and histogram instruments.
 
 /** Attribute set of a metric point. Keep it small, because every set is a series in the backend. */
 export type MetricAttributes = Record<string, string | number | boolean>;
@@ -32,6 +32,16 @@ export interface Counter {
    * @param attributes The point's attribute set.
    */
   add(value: number, attributes?: MetricAttributes): void;
+}
+
+/** Gauge that keeps the last value for each attribute set. The library sends it every interval. */
+export interface Gauge {
+  /**
+   * Sets the value of an attribute set. The last value in an interval goes out.
+   * @param value Finite number.
+   * @param attributes The point's attribute set.
+   */
+  set(value: number, attributes?: MetricAttributes): void;
 }
 
 /** Histogram that counts its values into buckets in memory. Sends one point every interval. */
@@ -127,7 +137,7 @@ export interface Profiler {
 }
 
 /** Instrument kind. */
-export type InstrumentKind = "counter" | "histogram";
+export type InstrumentKind = "counter" | "gauge" | "histogram";
 
 /** Instrument definition. A handle passes it to the meter on every call. */
 export interface InstrumentDef {
@@ -137,7 +147,7 @@ export interface InstrumentDef {
   kind: InstrumentKind;
   /** Unit of the values. */
   unit: string;
-  /** A histogram's bucket boundaries. A counter has none. */
+  /** A histogram's bucket boundaries. A counter and a gauge have none. */
   boundaries: readonly number[];
   /** True when the app gave the boundaries. Only those count against maxHistogramBoundaries. */
   fromApp?: boolean;

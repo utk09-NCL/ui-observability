@@ -18,9 +18,9 @@ import { filter } from "rxjs";
 import {
   configure,
   getLogger,
-  startTrace,
+  type Logger,
+  newTrace,
   type ObservabilityConfig,
-  type OneLogger,
 } from "@utk09/ui-observability";
 
 /** Carries the config from `provideObservability` to the initializer that reads it. */
@@ -38,7 +38,7 @@ export class ObservabilityService {
    * @param namespace Namespace the records carry, such as "oms.ticket".
    * @returns Logger on that namespace.
    */
-  forNamespace(namespace: string): OneLogger {
+  forNamespace(namespace: string): Logger {
     return getLogger(namespace);
   }
 
@@ -46,7 +46,7 @@ export class ObservabilityService {
    * Logger for code with no namespace of its own.
    * @returns Logger on namespace "angular".
    */
-  get log(): OneLogger {
+  get log(): Logger {
     return this.root;
   }
 }
@@ -95,7 +95,7 @@ export function provideObservability(
       inject(Router)
         .events.pipe(filter((e): e is NavigationStart => e instanceof NavigationStart))
         .subscribe(() => {
-          startTrace();
+          newTrace();
         });
     }),
   ];

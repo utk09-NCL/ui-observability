@@ -15,7 +15,6 @@ import {
   flush,
   getHealth,
   getLogger,
-  getStats,
   rotateSecurityContext,
   shutdown,
 } from "../src/index";
@@ -278,15 +277,33 @@ describe("the stored count after a failed rotation", () => {
     });
     getLogger("pay").info("user A");
     await flush();
-    const before = (await getStats()).stored;
+    const before = (await getHealth()).delivery.stored;
 
     await expect(
       rotateSecurityContext({ id: "B", routing: { credentials: "bogus" as never } }),
     ).rejects.toThrow();
 
     expect(before).toBe(1);
-    expect((await getStats()).stored).toBe(1);
-    expect((await getHealth()).stored).toBe(1);
+    expect((await getHealth()).delivery.stored).toBe(1);
+  });
+});
+
+describe("the rotation context", () => {
+  it("rejects a context that isn't an object, and takes null as no context", async () => {
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
+    await flush();
+
+    await expect(
+      rotateSecurityContext({ id: "B", routing: {}, context: "tenant" as never }),
+    ).rejects.toThrow("Invalid security-context rotation options.");
+    await expect(
+      rotateSecurityContext({ id: "C", routing: {}, context: null as never }),
+    ).resolves.toBeUndefined();
   });
 });
 

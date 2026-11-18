@@ -2,13 +2,55 @@
 //
 // Runtime state and delivery counts that getHealth() returns to the app.
 
-import type { DeliveryStats } from "./stats";
 import type { BusOptions, LoggerCacheOptions, SecurityContextOptions } from "./config";
+import type { LossReason } from "./drop";
 import type { LogRecord } from "./log-record";
 import type { StoragePersistence } from "./storage";
 
+/**
+ * Delivery state of this context. It holds numbers and times only, never a response text, a
+ * header or a URL. A forwarder reports only its own buffers.
+ */
+export interface DeliveryHealth {
+  /** Records in one of the library's buffers, not yet in any request. */
+  pending: number;
+  /** Records in requests that have not completed. */
+  inFlight: number;
+  /** Batches in storage waiting for a retry. A forwarder stores nothing and reports 0. */
+  stored: number;
+  /**
+   * Epoch time in milliseconds when the server last accepted a batch, or null. A security
+   * context rotation keeps it.
+   */
+  lastSendAt: number | null;
+  /**
+   * Epoch time in milliseconds of the last failed send, or null. A security context rotation
+   * resets it.
+   */
+  lastFailureAt: number | null;
+  /**
+   * Failed sends since the server last accepted a batch. A batch that makes no request leaves it
+   * as it is. A security context rotation resets it to 0. The exit flush can't learn its result,
+   * so it doesn't count.
+   */
+  consecutiveFailures: number;
+  /**
+   * Epoch time in milliseconds when the latest server throttle ends, over all endpoints. Null
+   * when no endpoint is throttled. A security context rotation resets it.
+   */
+  throttledUntil: number | null;
+  /**
+   * Lost records since the runtime started, for each reason. A reason with no loss has no key.
+   * The counts include the losses that `onDrop` reports, also without an `onDrop` hook. A
+   * security context rotation keeps them.
+   */
+  dropped: Partial<Record<LossReason, number>>;
+}
+
 /** State of this SDK copy. A configured console-only runtime can report the status "ready". */
-export interface ObservabilityHealth extends DeliveryStats {
+export interface ObservabilityHealth {
+  /** Delivery counts, times and losses of this context. */
+  delivery: DeliveryHealth;
   /** Version of this SDK copy. */
   sdkVersion: string;
   /** Version of a different SDK copy that owns the page runtime, or null. */

@@ -90,6 +90,7 @@ describe("Worker transport", () => {
     expect(sent[0].job.headers).not.toHaveProperty("then");
     expect(transport.lastSendAt()).not.toBeNull();
     expect(transport.throttledForMs(batch)).toBe(0);
+    expect(transport.throttleEnd()).toBeNull();
   });
 
   it("passes accepted sampling rules and Date headers to the main callbacks", async () => {
@@ -152,7 +153,24 @@ describe("Worker transport", () => {
     await expect(transport.send(workerJob().batch)).rejects.toMatchObject({ kind, status });
     if (kind === "throttled") {
       expect(transport.throttledForMs(workerJob().batch)).toBeGreaterThan(0);
+      expect(transport.throttleEnd()).toBeGreaterThan(Date.now());
     }
+  });
+
+  it("reports the throttle end of the hidden-page path too", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(null, { status: 429, headers: { "Retry-After": "2" } })),
+      ),
+    );
+    const { transport, factory } = setup();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+
+    await expect(transport.send(workerJob().batch)).rejects.toMatchObject({ kind: "throttled" });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(transport.throttleEnd()).toBeGreaterThan(Date.now());
   });
 
   it("drops a worker serialization failure with its original records and batch id", async () => {

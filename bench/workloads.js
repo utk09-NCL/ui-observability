@@ -6,7 +6,7 @@
 
 /* global crossOriginIsolated, performance, window */
 
-import { configure, flush, getStats, info } from "../src/index";
+import { configure, flush, getHealth, info } from "../src/index";
 import {
   MESSAGE,
   MS_PER_SECOND,
@@ -182,7 +182,7 @@ async function outageLog({ endpoint, records, callsPerTask, delivery }) {
  * @returns pending, inFlight and stored counts, the dropped count and the diagnostic codes.
  */
 async function deliveryState() {
-  return { ...(await getStats()), ...losses };
+  return { ...(await getHealth()).delivery, ...losses };
 }
 
 window.bench = { latency, throughput, heapWarmUp, heapRun, outageLog, deliveryState };

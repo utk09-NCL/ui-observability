@@ -1,7 +1,7 @@
 // src/core/meter.ts
 //
-// Sums counter and histogram values in memory. At every interval it emits one point per
-// instrument and attribute set, so a thousand adds produce one record, not a thousand.
+// Sums counter and histogram values and keeps the last gauge value in memory. At every interval
+// it emits one point per instrument and attribute set, so a thousand adds produce one record.
 
 import {
   ATTR_APP_NAMESPACE,
@@ -19,6 +19,7 @@ import {
 import type { MetricsOptions } from "../models/config";
 import type {
   Counter,
+  Gauge,
   Histogram,
   HistogramOptions,
   InstrumentDef,
@@ -40,7 +41,9 @@ interface Series {
   min: number;
   /** Largest value. */
   max: number;
-  /** Count per histogram bucket. A counter has none. */
+  /** Last value. A gauge sends it. */
+  last: number;
+  /** Count per histogram bucket. A counter and a gauge have none. */
   buckets: number[];
 }
 
@@ -144,8 +147,8 @@ function fieldsOf(def: InstrumentDef, series: Series, start: string): Record<str
     [METRIC_KEYS.attributeKeys]: Object.keys(series.attributes),
   };
 
-  if (def.kind === "counter") {
-    point["metric.value"] = series.sum;
+  if (def.kind !== "histogram") {
+    point["metric.value"] = def.kind === "gauge" ? series.last : series.sum;
     return point;
   }
 
@@ -190,6 +193,28 @@ function readOptions(
 }
 
 /**
+ * Builds the definition of an instrument with one value per point.
+ * @param name Metric name.
+ * @param kind "counter" or "gauge".
+ * @param options Unit for the values.
+ * @param fault Reports options that couldn't be read.
+ * @returns The definition.
+ */
+function scalarDef(
+  name: string,
+  kind: "counter" | "gauge",
+  options: InstrumentOptions,
+  fault: OptionsFault,
+): InstrumentDef {
+  return {
+    name,
+    kind,
+    unit: readOptions(options, fault).unit ?? DEFAULT_METRIC_UNIT,
+    boundaries: [],
+  };
+}
+
+/**
  * Creates a counter handle. Never throws into the app.
  * @param name Metric name.
  * @param options Unit for the values.
@@ -203,15 +228,33 @@ export function makeCounter(
   record: RecordMetric,
   fault: OptionsFault,
 ): Counter {
-  const def: InstrumentDef = {
-    name,
-    kind: "counter",
-    unit: readOptions(options, fault).unit ?? DEFAULT_METRIC_UNIT,
-    boundaries: [],
-  };
+  const def = scalarDef(name, "counter", options, fault);
 
   return {
     add: (value, attributes) => {
+      record(def, value, attributes);
+    },
+  };
+}
+
+/**
+ * Creates a gauge handle. Never throws into the app.
+ * @param name Metric name.
+ * @param options Unit for the values.
+ * @param record Sets the instrument's value.
+ * @param fault Reports options that couldn't be read.
+ * @returns The gauge.
+ */
+export function makeGauge(
+  name: string,
+  options: InstrumentOptions,
+  record: RecordMetric,
+  fault: OptionsFault,
+): Gauge {
+  const def = scalarDef(name, "gauge", options, fault);
+
+  return {
+    set: (value, attributes) => {
       record(def, value, attributes);
     },
   };
@@ -247,7 +290,7 @@ export function makeHistogram(
   };
 }
 
-/** Sums the values of counter and histogram instruments over one interval. */
+/** Sums the counter and histogram values and keeps the gauge values of one interval. */
 export class Meter {
   /** Instruments with a value in the current interval. */
   private readonly instruments = new Map<string, Instrument>();
@@ -343,7 +386,7 @@ export class Meter {
 
       this.diagnostics.report(
         "record.dropped_malformed",
-        `The metric ${def.name} is a counter and a histogram. The library dropped the value.`,
+        `The metric ${def.name} is a ${found.def.kind} and a ${def.kind}. The library dropped the value.`,
         { "metric.name": def.name },
       );
       return null;
@@ -398,7 +441,7 @@ export class Meter {
       // A histogram has one more bucket than it has boundaries. The last has no upper bound.
       const size = instrument.def.kind === "histogram" ? instrument.def.boundaries.length + 1 : 0;
       const buckets = new Array<number>(size).fill(0);
-      series = { attributes: set, count: 0, sum: 0, min: value, max: value, buckets };
+      series = { attributes: set, count: 0, sum: 0, min: value, max: value, last: value, buckets };
       instrument.series.set(key, series);
     }
 
@@ -406,6 +449,7 @@ export class Meter {
     series.sum += value;
     series.min = Math.min(series.min, value);
     series.max = Math.max(series.max, value);
+    series.last = value;
 
     if (series.buckets.length > 0) {
       const index = instrument.def.boundaries.findIndex((bound) => value <= bound);

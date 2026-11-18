@@ -103,7 +103,7 @@ describe("otlpMetricsSerializer", () => {
   });
 
   it("marks a sum with a negative value as not monotonic", () => {
-    // Nothing checks the sign of a logMetric counter.
+    // Nothing checks the sign of a counter record from another context.
     const [metric] = metrics([counterPoint(-1)]);
 
     expect(metric.sum.isMonotonic).toBe(false);
@@ -143,7 +143,7 @@ describe("otlpMetricsSerializer", () => {
     expect(single.histogram.dataPoints[0]).toMatchObject({ count: "1", min: -3 });
   });
 
-  it("writes a logMetric histogram as one value in one bucket, from the time of the record", () => {
+  it("writes a single-value histogram as one value in one bucket, from the time of the record", () => {
     const single = record({
       "metric.name": "load.duration",
       "metric.type": "histogram",

@@ -154,6 +154,12 @@ class WorkerTransport extends StatusTransport {
     return Math.max(super.throttledForMs(batch), this.http.throttledForMs(batch));
   }
 
+  /** Returns the latest throttle end from either path. */
+  override throttleEnd(): number | null {
+    const end = Math.max(super.throttleEnd() ?? -Infinity, this.http.throttleEnd() ?? -Infinity);
+    return Number.isFinite(end) ? end : null;
+  }
+
   /** Returns the last accepted send from either path. */
   override lastSendAt(): number | null {
     const last = Math.max(super.lastSendAt() ?? -Infinity, this.http.lastSendAt() ?? -Infinity);

@@ -12,18 +12,18 @@ The package has one entry point. `exports` in `package.json` names `.` and `./pa
 
 The public API is each export of `src/index.ts`. A module that the entry point does not export is internal.
 
-| Area                | Exports                                                                                                                      |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Setup and lifecycle | `configure`, `setConfigurationLocked`, `rotateSecurityContext`, `newSession`, `shutdown`, `clearPersistedLogs`               |
-| Logging             | `getLogger`, `OneLogger`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `logAction`, `logEvent`, `addBreadcrumb`       |
-| Metrics and timing  | `logMetric`, `counter`, `histogram`, `startMeasure`, `timeSync`, `timeAsync`, `profiler`                                     |
-| Context and journey | `setContext`, `setContextMap`, `removeContext`, `startJourney`, `endJourney`, `currentJourney`, `getJourneyToken`            |
-| Journey and trace   | `adoptJourney`, `startTrace`, `getTraceHeaders`                                                                              |
-| Bus                 | `registerFrame`, `registerWorker`                                                                                            |
-| Delivery and health | `flush`, `getQueueDepth`, `getStats`, `getHealth`, `collectDebugBundle`, `getDiagnosticCounters`                             |
-| Transport           | `serveTransportWorker`, `createMemoryTransport`                                                                              |
-| Session replay      | `startReplay`, `stopReplay`                                                                                                  |
-| Types               | Each type that `src/index.ts` exports, for example `ObservabilityConfig`, `LogRecord`, `DiagnosticCode` and `StorageAdapter` |
+| Area                | Exports                                                                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup and lifecycle | `configure`, `setConfigurationLocked`, `rotateSecurityContext`, `newSession`, `shutdown`                                               |
+| Logging             | `getLogger`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `logAction`, `logEvent`, `addBreadcrumb`                              |
+| Metrics and timing  | `counter`, `gauge`, `histogram`, `startMeasure`, `measure`, `profiler`                                                                 |
+| Context and journey | `setContext`, `removeContext`, `startJourney`, `endJourney`, `currentJourney`, `getJourneyToken`                                       |
+| Journey and trace   | `adoptJourney`, `newTrace`, `getTraceHeaders`                                                                                          |
+| Bus                 | `registerFrame`, `registerWorker`                                                                                                      |
+| Delivery and health | `flush`, `getHealth`, `collectDebugBundle`, `getDiagnosticCounters`                                                                    |
+| Transport           | `serveTransportWorker`, `createMemoryTransport`                                                                                        |
+| Session replay      | `startReplay`, `stopReplay`                                                                                                            |
+| Types               | Each type that `src/index.ts` exports, for example `ObservabilityConfig`, `Logger`, `LogRecord`, `DiagnosticCode` and `StorageAdapter` |
 
 The configuration contract is the type `ObservabilityConfig`. The README section [Configuration Options](../README.md#configuration-options) gives each key and its default.
 

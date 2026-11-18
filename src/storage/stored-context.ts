@@ -1,17 +1,25 @@
 // src/storage/stored-context.ts
 //
-// Reaches the configured store when no delivery stack runs. clearPersistedLogs() and a rotation
-// with no old sender need it, because otherwise only a sender opens the store.
+// Reaches the configured store when no delivery stack runs. shutdown() with clearStorage and a
+// rotation with no old sender need it, because otherwise only a sender opens the store.
 
+import { JOURNEY_STORAGE_KEY, SESSION_ID_KEY, TAB_ID_KEY } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 import { type StorageAdapter, storageLimits } from "../models/storage";
-import { newId } from "../utils/identity";
+import { BROWSER_STORES, newId } from "../utils/identity";
 import { ContextStorage } from "./context-storage";
 import { clearEmergencyContext } from "./emergency-queue";
 import { createStorage, storageName } from "./factory";
+
+/** The stored ids that a shutdown with clearStorage removes: the session, the tab and the journey. */
+const STORED_IDS = [
+  ["local", SESSION_ID_KEY],
+  ["session", TAB_ID_KEY],
+  ["session", JOURNEY_STORAGE_KEY],
+] as const;
 
 /** What opening the store needs. The active context is the one in `config.securityContext`. */
 export interface StoreAccess {
@@ -58,17 +66,33 @@ async function withStore(
 
 /**
  * Removes the active context's stored batches and its emergency entries, or the whole
- * namespace's. A discard rotation with no sender uses it, as Sender.retire() would.
+ * namespace's. A discard rotation with no sender uses it, as Sender.retire() would, and so does
+ * shutdown() with clearStorage.
  * @param access The config, the reporter and the kept memory store.
  * @param scope Whose stored records to remove: the context's or the namespace's.
  * @param ids More batches to remove by id, for example the ones a carry left under an older id.
+ * @param forgetIds True to also remove the stored session id, tab id and journey.
  * @returns Promise that resolves once the batches are removed.
  */
 export function clearStored(
   access: StoreAccess,
   scope: "context" | "namespace",
-  ids: readonly string[] = [],
+  ids: readonly string[],
+  forgetIds = false,
 ): Promise<void> {
+  // The ids go first, so a store that won't open still leaves no session for the next user.
+  if (forgetIds) {
+    for (const [store, key] of STORED_IDS) {
+      access.diagnostics.guard(
+        "storage.unavailable",
+        `The library could not remove ${key} from ${store}Storage.`,
+        () => {
+          BROWSER_STORES[store]().removeItem(key);
+        },
+      );
+    }
+  }
+
   return withStore(access, async (store) => {
     for (const id of ids) {
       await store.remove(id);

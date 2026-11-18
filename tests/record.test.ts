@@ -117,8 +117,8 @@ describe("contextProvider", () => {
     const { builder, deps } = makeBuilder({
       contextProvider: () => ({ route: "/blotter", a: "provider", b: "provider", c: "provider" }),
     });
-    deps.context.set("a", "context");
-    deps.context.set("user", "u1");
+    deps.context.merge({ a: "context" });
+    deps.context.merge({ user: "u1" });
 
     const record = built(builder, { scoped: { b: "scope" }, payload: { c: "payload" } });
 
@@ -260,7 +260,7 @@ describe("the level gate", () => {
 describe("attributes", () => {
   it("layers the runtime context under the scoped context under the payload", () => {
     const { builder, context } = makeBuilder();
-    context.setMany({ desk: "eq-flow", region: "emea" });
+    context.merge({ desk: "eq-flow", region: "emea" });
 
     const record = built(builder, {
       scoped: { region: "apac", widget: "blotter" },

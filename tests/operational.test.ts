@@ -8,7 +8,6 @@ import {
   counter,
   histogram,
   rotateSecurityContext,
-  clearPersistedLogs,
   shutdown,
 } from "../src/index";
 import { ObservabilityRuntime } from "../src/core/runtime";
@@ -82,7 +81,7 @@ it.each(["drop-oldest", "drop-newest", "persist"] as const)(
     getLogger("ops").info("one");
     getLogger("ops").info("two");
     getLogger("ops").info("three");
-    expect((await getHealth()).pending).toBeLessThanOrEqual(2);
+    expect((await getHealth()).delivery.pending).toBeLessThanOrEqual(2);
     await flush();
     const messages = memory.records().map((r) => r.body);
     expect(messages).toContain(overflow === "drop-oldest" ? "three" : "one");
@@ -208,18 +207,22 @@ it("isolates storage namespaces and supports explicit deletion", async () => {
   await shutdown();
   configure({ ...config, storage: { backend: "localstorage", namespace: "B" } });
   await flush();
-  expect((await getHealth()).stored).toBe(0);
+  expect((await getHealth()).delivery.stored).toBe(0);
   getLogger("ops").info("B");
   await flush();
-  await clearPersistedLogs();
-  expect((await getHealth()).stored).toBe(0);
+  expect((await getHealth()).delivery.stored).toBe(1);
+  await shutdown({ pending: "discard", clearStorage: "context" });
+  configure({ ...config, storage: { backend: "localstorage", namespace: "B" } });
+  await flush();
+  expect((await getHealth()).delivery.stored).toBe(0);
   await shutdown();
   configure({ ...config, storage: { backend: "localstorage", namespace: "A" } });
   await flush();
-  expect((await getHealth()).stored).toBe(1);
-  await clearPersistedLogs("namespace");
-  expect((await getHealth()).stored).toBe(0);
-  await expect(clearPersistedLogs("invalid" as never)).rejects.toThrow();
+  expect((await getHealth()).delivery.stored).toBe(1);
+  await shutdown({ pending: "discard", clearStorage: "namespace" });
+  configure({ ...config, storage: { backend: "localstorage", namespace: "A" } });
+  await flush();
+  expect((await getHealth()).delivery.stored).toBe(0);
 });
 
 it.each([true, false])(
@@ -268,33 +271,44 @@ it("uses indexed storage partition queries and keeps another context parked", as
   });
   getLogger("ops").info("offline A");
   await flush();
-  expect((await getHealth()).stored).toBe(1);
+  expect((await getHealth()).delivery.stored).toBe(1);
   await rotateSecurityContext(
     { id: "B", routing: { transport: m.transport } },
     { pending: "retain" },
   );
-  expect((await getHealth()).stored).toBe(0);
-  await clearPersistedLogs("namespace");
-  await rotateSecurityContext({ id: "A", routing: { transport: m.transport } });
-  expect((await getHealth()).stored).toBe(0);
+  expect((await getHealth()).delivery.stored).toBe(0);
+  await shutdown({ pending: "discard", clearStorage: "namespace" });
+  configure({
+    ...base,
+    storage: { backend: "indexeddb", namespace: "indexed-ops" },
+    transport: m.transport,
+    securityContext: { id: "A" },
+  });
+  await flush();
+  expect((await getHealth()).delivery.stored).toBe(0);
 });
 
-it("clears storage without enabling delivery, including a retained memory partition", async () => {
-  configure({ ...base, storage: { backend: "localstorage", namespace: "offline-purge" } });
-  await clearPersistedLogs();
-  await clearPersistedLogs("namespace");
-  await shutdown();
+it("clears storage without a sender, including a retained partition of another context", async () => {
+  const storage = { backend: "localstorage", namespace: "offline-purge" } as const;
+  const batchKeys = (): string[] =>
+    Array.from({ length: localStorage.length }, (_unused, i) => String(localStorage.key(i))).filter(
+      (key) => key.includes(":batch:") || key.startsWith("ui-observability.batch."),
+    );
+  configure({ ...base, storage });
+  await shutdown({ pending: "discard", clearStorage: "context" });
   configure(base);
-  await clearPersistedLogs();
-  await shutdown();
+  await shutdown({ pending: "discard", clearStorage: "namespace" });
   const m = createMemoryTransport();
   m.respondWith(503);
-  configure({ ...base, transport: m.transport, securityContext: { id: "A" } });
+  configure({ ...base, storage, transport: m.transport, securityContext: { id: "A" } });
   getLogger("ops").info("park");
   await flush();
   await rotateSecurityContext({ id: "B", routing: {} }, { pending: "retain" });
-  await clearPersistedLogs("namespace");
-  await clearPersistedLogs();
+  expect(batchKeys()).toHaveLength(1);
+
+  await shutdown({ pending: "discard", clearStorage: "namespace" });
+
+  expect(batchKeys()).toEqual([]);
 });
 
 it("keeps startup policies stable and reinstalls capture for URL callback changes", async () => {

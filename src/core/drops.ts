@@ -34,6 +34,9 @@ export class DropReporter {
   /** True while the hook runs. A loss the hook itself causes isn't reported again. */
   private reporting = false;
 
+  /** Lost records since the start, per reason. getHealth() reports them. */
+  private readonly lost: Partial<Record<LossReason, number>> = {};
+
   /**
    * @param config Active configuration. `onDrop` is read from it on every call.
    * @param diagnostics Diagnostics reporter.
@@ -44,7 +47,8 @@ export class DropReporter {
   ) {}
 
   /**
-   * Adds lost records to the summary for their reason. Does nothing without an onDrop hook.
+   * Counts lost records, and adds them to the summary for their reason. The summary needs an
+   * onDrop hook.
    * @param reason Cause of the loss.
    * @param records Lost records.
    * @param batchIds Ids of the lost batches.
@@ -57,6 +61,11 @@ export class DropReporter {
     batchIds: readonly string[] = [],
     count = records.length,
   ): void {
+    // Count first, so getHealth() shows a loss also without an onDrop hook.
+    if (count > 0) {
+      this.lost[reason] = (this.lost[reason] ?? 0) + count;
+    }
+
     // A hook that logs can fill a buffer again, and reporting that loss would start a loop.
     if (!this.config.onDrop || this.reporting) {
       return;
@@ -97,6 +106,14 @@ export class DropReporter {
         this.flush();
       });
     }
+  }
+
+  /**
+   * Returns the lost record counts since the start.
+   * @returns A copy of the count for each reason. A reason with no loss has no key.
+   */
+  counts(): Partial<Record<LossReason, number>> {
+    return { ...this.lost };
   }
 
   /** Hands every waiting summary to the hook. A hook that throws doesn't stop the others. */
