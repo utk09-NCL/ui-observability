@@ -198,11 +198,10 @@ export class ErrorCapture implements Capture {
     this.seen.set(key, { at: now, count: 1 });
 
     // A page can throw with a new message on every render, for example from a template literal
-    // in a loop. Without this cap, the map grows until the document closes.
-    if (
-      this.ctx.config.capturePolicy.maxErrorSignatures > 0 &&
-      this.seen.size > this.ctx.config.capturePolicy.maxErrorSignatures
-    ) {
+    // in a loop. Without this cap, the map grows until the document closes. With a cap of 0 the
+    // new key goes at once, so no error counts as a duplicate.
+    const { maxErrorSignatures } = this.ctx.config.capturePolicy;
+    if (maxErrorSignatures !== null && this.seen.size > maxErrorSignatures) {
       const [oldest] = this.seen.keys();
       this.seen.delete(oldest);
     }

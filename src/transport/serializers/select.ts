@@ -44,7 +44,7 @@ export function batchKind(batch: LogBatch, config: ResolvedConfig): BatchKind {
     batch.records.length > 0 &&
     batch.records.every((record) => attributeOf(record, ATTR_LOG_TYPE) === type);
 
-  if (config.metricsEndpoint !== "" && only("metric")) {
+  if (config.metricsEndpoint !== null && only("metric")) {
     return "metrics";
   }
 
@@ -56,7 +56,7 @@ export function batchKind(batch: LogBatch, config: ResolvedConfig): BatchKind {
  * @param kind Kind of the batch.
  * @param config Active configuration.
  * @returns metricsEndpoint for a metrics batch, tracesEndpoint for a traces batch, else
- * endpoint. "" means the batch has no destination.
+ * endpoint. null or "" means the batch has no destination.
  */
 export function endpointFor(kind: BatchKind, config: ResolvedConfig): string | null {
   if (kind === "metrics") {

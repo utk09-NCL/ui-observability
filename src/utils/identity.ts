@@ -167,14 +167,14 @@ function safeWrite(
  * @param stores Identity stores.
  * @param diagnostics Diagnostics reporter.
  * @param now Epoch time in milliseconds.
- * @param idleMs Idle time after which the session expires, in milliseconds. 0 means never.
+ * @param idleMs Idle time after which the session expires, in milliseconds. null means never.
  * @returns The stored id, or undefined when it is absent or expired.
  */
 function liveSession(
   stores: IdentityStores,
   diagnostics: Diagnostics,
   now: number,
-  idleMs: number,
+  idleMs: number | null,
 ): string | undefined {
   const raw = safeRead(stores, "local", SESSION_ID_KEY, diagnostics);
   if (!raw) {
@@ -183,7 +183,7 @@ function liveSession(
 
   try {
     const parsed = JSON.parse(raw) as { id?: string; lastSeenAt?: number };
-    return parsed.id && (idleMs === 0 || now - (parsed.lastSeenAt ?? 0) < idleMs)
+    return parsed.id && (idleMs === null || now - (parsed.lastSeenAt ?? 0) < idleMs)
       ? parsed.id
       : undefined;
   } catch {
@@ -204,7 +204,7 @@ function liveSession(
 export function resolveIdentity(
   diagnostics: Diagnostics,
   stores: IdentityStores = BROWSER_STORES,
-  idleMs = SESSION_IDLE_MS,
+  idleMs: number | null = SESSION_IDLE_MS,
 ): Identity {
   const contextId = newId(diagnostics);
   const now = Date.now();
@@ -254,7 +254,7 @@ export class SessionTouch {
     private diagnostics: Diagnostics,
     private readonly stores: IdentityStores = BROWSER_STORES,
     private readonly touchMs = SESSION_TOUCH_MS,
-    private readonly idleMs = SESSION_IDLE_MS,
+    private readonly idleMs: number | null = SESSION_IDLE_MS,
   ) {}
 
   /**

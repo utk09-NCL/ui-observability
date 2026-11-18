@@ -98,7 +98,7 @@ it("bounds bytes, reports losses, and permits deliberately unbounded buffering",
   await flush();
   expect(m.records()).toEqual([]);
   expect(onDrop).toHaveBeenCalledWith(expect.objectContaining({ reason: "buffer_full" }));
-  configure({ buffering: { maxPendingRecords: 0, maxPendingBytes: 0 } });
+  configure({ buffering: { maxPendingRecords: null, maxPendingBytes: null } });
   getLogger("ops").info("allowed");
   await flush();
   expect(m.records()[0].body).toBe("allowed");
@@ -301,12 +301,12 @@ it("clears storage without enabling delivery, including a retained memory partit
 it("keeps startup policies stable and reinstalls capture for URL callback changes", async () => {
   configure({
     ...base,
-    correlation: { sessionIdleMs: 0, traceMaxAgeMs: 0, sessionTouchMs: 0 },
+    correlation: { sessionIdleMs: null, traceMaxAgeMs: null, sessionTouchMs: 0 },
     capture: { urlTransform: (url) => url },
   });
   await flush();
   configure({ correlation: { sessionIdleMs: 10 }, persistence: { namespace: "different" } });
-  expect(rt().config.correlation.sessionIdleMs).toBe(0);
+  expect(rt().config.correlation.sessionIdleMs).toBeNull();
   expect(rt().config.persistence.namespace).toBe("");
   configure({ capture: { urlTransform: () => null } });
   getLogger("ops").info("no URL");
@@ -407,10 +407,12 @@ it("reports an unserializable record without throwing into the pipeline caller",
 
 it("allows explicitly unbounded histogram boundary counts", async () => {
   const m = createMemoryTransport();
-  configure({ ...base, transport: m.transport, metrics: { maxHistogramBoundaries: 0 } });
-  histogram("many-buckets", { boundaries: Array.from({ length: 60 }, (_, i) => i) }).record(12);
+  configure({ ...base, transport: m.transport, metrics: { maxHistogramBoundaries: null } });
+  const boundaries = Array.from({ length: 60 }, (_, i) => i);
+  histogram("many-buckets", { boundaries }).record(12);
   await flush();
   expect(m.records()[0].attributes["metric.name"]).toBe("many-buckets");
+  expect(m.records()[0].attributes["metric.bounds"]).toEqual(boundaries);
 });
 
 it("allows pipeline overflow handling without an optional loss callback", async () => {

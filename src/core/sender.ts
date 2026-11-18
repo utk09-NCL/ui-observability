@@ -282,6 +282,40 @@ export class Sender {
   }
 
   /**
+   * Stops every send after a rotation fails, and stores the records from memory under the old
+   * id. The store stays open, so the next rotation that succeeds can apply its rule to them.
+   * @param contextId Identity of the closed delivery context.
+   * @returns Promise that resolves once the records are stored.
+   */
+  async pause(contextId: string): Promise<void> {
+    this.retired = true;
+    this.exitFlush.uninstall();
+    this.retry.stop();
+    this.transport.stop();
+    const drained = this.pipeline.drainForExit();
+    this.pipeline.destroy();
+    await this.emergencyImport;
+    await this.keep(drained, contextId);
+  }
+
+  /**
+   * Stores whole batches under a context id. One batch per record would fill
+   * retention.maxBatches.
+   * @param batches Batches from the pipeline.
+   * @param contextId Identity of their delivery context.
+   * @returns Promise that resolves once each batch is stored.
+   */
+  private async keep(batches: readonly LogBatch[], contextId: string): Promise<void> {
+    for (const batch of batches) {
+      await this.storage.save({
+        ...batch,
+        routingContextId: contextId,
+        persistenceNamespace: this.storage.namespace,
+      });
+    }
+  }
+
+  /**
    * Stops this sender before a new delivery identity takes effect. Does not run exit delivery.
    * @param policy Rule for the old records.
    * @param timeoutMs Maximum wait for a flush, in milliseconds.
@@ -318,14 +352,7 @@ export class Sender {
     await this.emergencyImport;
     const stored = await this.storage.take(Number.MAX_SAFE_INTEGER);
     if (policy === "retain") {
-      // Store the drained batches whole. One batch per record would fill retention.maxBatches.
-      for (const batch of drained) {
-        await this.storage.save({
-          ...batch,
-          routingContextId: contextId,
-          persistenceNamespace: this.storage.namespace,
-        });
-      }
+      await this.keep(drained, contextId);
     }
     // "carry" keeps the stored batches until adopt() stores each one again under the new id.
     // If the tab closes during the carry, the rest are parked, not lost.

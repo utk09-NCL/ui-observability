@@ -9,6 +9,7 @@ import { runAsLibraryConsole } from "../utils/library-console";
 export type DiagnosticCode =
   | "config.locked"
   | "security.rotated"
+  | "security.rotation_failed"
   | "security.context_mismatch"
   | "record.dropped_during_rotation"
   | "bus.rejected_message"

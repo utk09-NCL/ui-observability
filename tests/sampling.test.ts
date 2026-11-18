@@ -299,6 +299,16 @@ describe("shouldSample with remote rules", () => {
 describe("ErrorCeiling", () => {
   const err = (): LogRecord => record({}, { severityText: "ERROR" });
 
+  it("refuses every error with a ceiling of 0, and refuses none with null", () => {
+    const zero = new ErrorCeiling();
+    const none = new ErrorCeiling();
+
+    expect(zero.allow(err(), 0)).toBe(false);
+    for (let i = 0; i < ERROR_CEILING_MAX_PER_WINDOW * 2; i++) {
+      expect(none.allow(err(), null)).toBe(true);
+    }
+  });
+
   it("allows records up to the ceiling and refuses the one past it", () => {
     const ceiling = new ErrorCeiling();
 

@@ -191,8 +191,8 @@ describe("RetryEngine delivery", () => {
     engine.stop();
   });
 
-  it("keeps sending a batch past maxAttempts in until-delivered mode", async () => {
-    const { engine, storage, send } = makeEngine({ retention: { mode: "until-delivered" } });
+  it("keeps sending a batch past any attempt count when maxAttempts is null", async () => {
+    const { engine, storage, send } = makeEngine({ retention: { maxAttempts: null } });
     await storage.save(batch("old", { attempts: 50 }));
 
     engine.start();

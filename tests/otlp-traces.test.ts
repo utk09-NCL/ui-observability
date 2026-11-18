@@ -167,9 +167,9 @@ describe("batchKind and endpointFor for spans", () => {
     expect(batchKind(batchOf([span({}), log]), config({ tracesEndpoint }))).toBe("logs");
   });
 
-  it("give tracesEndpoint for a traces batch, and an empty string without it", () => {
+  it("give tracesEndpoint for a traces batch, and null without it", () => {
     expect(endpointFor("traces", config({ tracesEndpoint }))).toBe(tracesEndpoint);
-    expect(endpointFor("traces", config())).toBe("");
+    expect(endpointFor("traces", config())).toBeNull();
     expect(endpointFor("logs", config())).toBe("https://x/v1/logs");
   });
 

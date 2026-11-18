@@ -278,6 +278,12 @@ export class ReplayUploader {
       }
     }
 
+    // The capture starts only with an endpoint or onSegment, but a later configure() can remove
+    // both while a segment waits.
+    if (endpoint === null) {
+      return "drop";
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();

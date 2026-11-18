@@ -79,7 +79,7 @@ describe("Deferred queue", () => {
     const diagnostics = new Diagnostics(vi.fn(), 0);
     const write = vi.fn();
     for (let i = 0; i < 1001; i++) {
-      deferWrite(owner, write, diagnostics, 0);
+      deferWrite(owner, write, diagnostics, null);
     }
     expect(write).toHaveBeenCalledTimes(1000);
     drainDeferred(owner);

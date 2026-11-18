@@ -373,6 +373,17 @@ const headersOf = (call: Call): Record<string, string> =>
   );
 
 describe("endpoint request", () => {
+  it("sends nothing once a later configure() turns the endpoint off", async () => {
+    const { uploader, calls, state } = http([202], { batchSize: 1 });
+    state.config.replay.endpoint = null;
+
+    uploader.push(['{"type":4}']);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // fetch(null) would post the segment to the page's own URL.
+    expect(calls).toEqual([]);
+  });
+
   it("posts the segment as JSON with the ids and the batch headers", async () => {
     const { uploader, calls } = http([202], { batchSize: 2 });
 

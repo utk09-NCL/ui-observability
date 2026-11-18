@@ -9,7 +9,7 @@
 import type { REMOTE_CAPTURE_FLAGS } from "../constants";
 import type { DiagnosticCode, DiagnosticHandler } from "../core/diagnostics";
 import type { DropSummary } from "./drop";
-import type { LogLevel, LogRecord } from "./log-record";
+import type { LogLevel, LogRecord, LogType } from "./log-record";
 import type { CapturePlugin } from "./plugin";
 import type { ReplayLoader, ReplayMode, ReplayPluginLoader, ReplaySegment } from "./replay";
 import type { LogSerializer } from "./serializer";
@@ -143,7 +143,9 @@ export interface SamplingOptions {
    */
   defaultRate: number;
   /**
-   * Per-namespace rate overrides, keyed by `app.namespace`. The most specific prefix wins.
+   * Per-namespace rate overrides, keyed by `app.namespace`. The most specific prefix wins. A
+   * new map replaces the current one. A rate outside 0 to 1 is left out with a report, so a
+   * shorter prefix or `defaultRate` applies.
    * @default {}
    */
   rates: Record<string, number>;
@@ -151,7 +153,7 @@ export interface SamplingOptions {
    * Log types always kept, regardless of the sampling rate.
    * @default ["action"]
    */
-  alwaysSampleTypes: string[];
+  alwaysSampleTypes: LogType[];
   /**
    * Lowest level that the sampling rate never drops. `capturePolicy.errorCeiling` limits
    * the log records at this level and higher.
@@ -187,25 +189,26 @@ export interface BusOptions {
    */
   validation: "strict" | "envelope";
   /**
-   * Maximum encoded bytes in one message. Set 0 for no size limit.
+   * Maximum encoded bytes in one message, 1 or more. Set null for no size limit.
    * @default 262144
    */
-  maxMessageBytes: number;
+  maxMessageBytes: number | null;
   /**
-   * Maximum records in one message. Set 0 for no record limit.
+   * Maximum records in one message, 1 or more. Set null for no record limit.
    * @default 100
    */
-  maxRecordsPerMessage: number;
+  maxRecordsPerMessage: number | null;
   /**
-   * Maximum messages from one source in one second. Set 0 for no rate limit.
+   * Maximum messages from one source in one second, 1 or more. Set null for no rate limit.
    * @default 100
    */
-  maxMessagesPerSecond: number;
+  maxMessagesPerSecond: number | null;
   /**
-   * Maximum named sources to track, for example OpenFin identities. Set 0 for no limit.
+   * Maximum named sources to track, for example OpenFin identities, 1 or more. Set null for no
+   * limit.
    * @default 256
    */
-  maxTrackedSources: number;
+  maxTrackedSources: number | null;
   /**
    * This context's role.
    * @default "auto"
@@ -278,20 +281,11 @@ export interface BatchingOptions {
 }
 
 /**
- * How long the library keeps an undelivered batch.
- * - "limited": the batch stays until it reaches `maxAgeMs` or `maxAttempts`.
- * - "until-delivered": no age limit and no attempt limit. `maxBatches` still applies, and a
- *   permanent error still drops the batch.
+ * Retention of undelivered batches. Can't be changed after startup. To keep a batch until it is
+ * delivered, set `maxAgeMs` and `maxAttempts` to null. `maxBatches` still applies, and a
+ * permanent error still drops the batch.
  */
-export type RetentionMode = "limited" | "until-delivered";
-
-/** Retention of undelivered batches. Can't be changed after startup. */
 export interface RetentionOptions {
-  /**
-   * Retention rule.
-   * @default "limited"
-   */
-  mode: RetentionMode;
   /**
    * Maximum stored batches. A new batch evicts the oldest batch that holds no action first.
    * 1 to 5000.
@@ -299,15 +293,16 @@ export interface RetentionOptions {
    */
   maxBatches: number;
   /**
-   * Maximum age of a stored batch, in milliseconds. 1 minute to 7 days.
+   * Maximum age of a stored batch, in milliseconds. 1 minute to 7 days. Set null for no age
+   * limit.
    * @default 86400000
    */
-  maxAgeMs: number;
+  maxAgeMs: number | null;
   /**
-   * Maximum send attempts for a stored batch. 1 to 20.
+   * Maximum send attempts for a stored batch. 1 to 20. Set null for no attempt limit.
    * @default 5
    */
-  maxAttempts: number;
+  maxAttempts: number | null;
 }
 
 /** Size limits for each record. Can't be changed after startup. */
@@ -383,7 +378,8 @@ export interface InteractionOptions {
    */
   selector?: boolean;
   /**
-   * CSS selector for regions to exclude. Set null to include all regions.
+   * CSS selector for regions to exclude. Set null to include all regions. Session replay always
+   * blocks `[data-observability-ignore]`, whatever this value is.
    * @default "[data-observability-ignore]"
    */
   ignoreSelector?: string | null;
@@ -463,11 +459,16 @@ export type DeliveryOptions = Pick<
   | "transportWorker"
 >;
 
-/** New security context. Any delivery field that is left out resets to its default. */
+/** New security context. Any delivery field that is left out or undefined resets to its default. */
 export interface SecurityContextUpdate {
   /** New delivery context id. If omitted, the runtime creates one. */
   id?: string;
-  /** New delivery settings. Any field that is left out resets to its default. */
+  /**
+   * New delivery settings. Any field that is left out or undefined resets to its default, unlike
+   * configure(), because a rotation must not carry an old token into the new context. A key that
+   * isn't a delivery setting reports `config.invalid` and the rotation ignores it, so the other
+   * settings stay.
+   */
   delivery: DeliveryOptions;
   /** New ambient attributes. If omitted, the runtime removes the old ones. */
   context?: Record<string, unknown>;
@@ -497,10 +498,11 @@ export interface CaptureOptions {
   /**
    * Rewrites a URL before the capture records it. Applies to page, HTTP, resource and
    * WebSocket URLs.
+   * Set null to remove it.
    * @param url Original URL, before the default URL changes.
    * @returns URL to record. Null, an invalid result or an exception produces an empty URL.
    */
-  urlTransform?: (url: string) => string | null;
+  urlTransform?: ((url: string) => string | null) | null;
   /**
    * Log uncaught errors from `window.onerror`.
    * @default true
@@ -579,7 +581,7 @@ export interface CaptureOptions {
   /**
    * Targets that receive a `traceparent` header. A string is an origin and matches only
    * requests to that origin. A RegExp tests the full URL. Start every RegExp with `^`, because
-   * a pattern that matches all URLs breaks CORS on third-party endpoints.
+   * a pattern that matches all URLs breaks CORS on third-party endpoints. Needs `fetch` or `xhr`.
    * @default []
    */
   propagateTraceHeaderTo: (string | RegExp)[];
@@ -611,6 +613,7 @@ export interface CaptureOptions {
   userTimingInclude: (string | RegExp)[];
   /**
    * Capture switches that remote sampling rules can change for their TTL. Privacy controls stay local.
+   * Needs `sampling.remote`.
    * @default []
    */
   remoteToggles: RemoteCaptureFlag[];
@@ -641,10 +644,11 @@ export interface CaptureOptions {
    */
   plugins: CapturePlugin[];
   /**
-   * Supplies the `web-vitals` module without a hard dependency on the package.
+   * Supplies the `web-vitals` module without a hard dependency on the package. Set null to
+   * remove it.
    * @returns A promise that resolves to the `web-vitals` module.
    */
-  webVitalsLoader?: () => Promise<WebVitalsModule>;
+  webVitalsLoader?: (() => Promise<WebVitalsModule>) | null;
 }
 
 /**
@@ -665,8 +669,8 @@ export type ConsoleStyles = Partial<Record<ConsoleStyleKey, string>>;
 /** Object form of the console option. */
 export interface ConsoleOptions {
   /**
-   * Lowest level the console prints. If you leave it unset, the current level stays. If there
-   * is no current level, the console prints from DEBUG up.
+   * Lowest level the console prints. If you leave it unset, the current level stays, and a
+   * console that is off stays off.
    */
   level?: LogLevel;
   /** CSS for the namespace and for each level. Any key you leave unset keeps its style. */
@@ -798,15 +802,16 @@ export interface DeliveryPolicy {
 /** Record and byte limits for the live delivery buffers, and the cap of a hold buffer. */
 export interface BufferingPolicy {
   /**
-   * Maximum records in the buffers and requests. Set 0 for no record limit.
+   * Maximum records in the buffers and requests, 1 or more. Set null for no record limit.
    * @default 10000
    */
-  maxPendingRecords: number;
+  maxPendingRecords: number | null;
   /**
-   * Maximum encoded JSON bytes in the buffers and requests. Set 0 for no byte limit.
+   * Maximum encoded JSON bytes in the buffers and requests, 1 or more. Set null for no byte
+   * limit.
    * @default 16777216
    */
-  maxPendingBytes: number;
+  maxPendingBytes: number | null;
   /**
    * Maximum records other than actions in one hold buffer. A hold buffer keeps the records
    * that arrive before startup ends, or while the sender loads. A full one keeps its first
@@ -826,40 +831,44 @@ export interface BufferingPolicy {
 /** Metric capacity in one collection interval. */
 export interface MetricsPolicy {
   /**
-   * Maximum histogram boundaries. Set 0 for no limit.
+   * Maximum histogram boundaries. With 0, only a histogram without boundaries is valid. Set
+   * null for no limit.
    * @default 50
    */
-  maxHistogramBoundaries: number;
+  maxHistogramBoundaries: number | null;
   /**
-   * Maximum attribute sets per instrument. Extra sets go into the overflow set. Set 0 for no
-   * limit.
+   * Maximum attribute sets per instrument. Extra sets go into the overflow set, so 0 puts every
+   * value there. Set null for no limit.
    * @default 100
    */
-  maxSeries: number;
+  maxSeries: number | null;
   /**
-   * Maximum instrument names. Extra names are dropped. Set 0 for no limit.
+   * Maximum instrument names. Extra names are dropped, so 0 drops every metric value. Set null
+   * for no limit.
    * @default 1000
    */
-  maxInstruments: number;
+  maxInstruments: number | null;
 }
 
 /** Session and trace timing. The runtime sets these values at startup. */
 export interface CorrelationPolicy {
   /**
-   * How long a stored session can stay idle, in milliseconds. Set 0 for no idle expiration.
+   * How long a stored session can stay idle, in milliseconds, 1 or more. Set null for no idle
+   * expiration.
    * @default 1800000
    */
-  sessionIdleMs: number;
+  sessionIdleMs: number | null;
   /**
    * Minimum wait between session activity writes, in milliseconds. Set 0 to write every time.
    * @default 60000
    */
   sessionTouchMs: number;
   /**
-   * How long an ambient trace can stay idle, in milliseconds. Set 0 for no idle expiration.
+   * Maximum age of an ambient trace, in milliseconds, 1 or more. The age counts from the trace's
+   * start, and the next record after it gets a new trace. Set null for no age limit.
    * @default 300000
    */
-  traceMaxAgeMs: number;
+  traceMaxAgeMs: number | null;
 }
 
 /** Rules for diagnostic reports and the console fallback. */
@@ -937,47 +946,56 @@ export interface CapturePolicy {
    */
   errorDedupeMs: number;
   /**
-   * Maximum error signatures to keep for duplicate checks. Set 0 for no limit.
+   * Maximum error signatures to keep for duplicate checks. With 0, no error is a duplicate.
+   * Set null for no limit.
    * @default 200
    */
-  maxErrorSignatures: number;
+  maxErrorSignatures: number | null;
   /**
-   * Maximum captured errors in one window. Set 0 for no limit.
+   * Maximum captured errors in one window. Set 0 to capture none, or null for no limit.
    * @default 20
    */
-  errorsPerWindow: number;
+  errorsPerWindow: number | null;
   /**
-   * Maximum captured console records in one window. Set 0 for no limit.
+   * Maximum captured console records in one window. Set 0 to capture none, or null for no
+   * limit.
    * @default 20
    */
-  consolePerWindow: number;
+  consolePerWindow: number | null;
   /**
-   * Maximum long frames in one window. Set 0 for no limit.
+   * Maximum long frames in one window. Set 0 to capture none, or null for no limit.
    * @default 20
    */
-  longFramesPerWindow: number;
+  longFramesPerWindow: number | null;
   /**
-   * Maximum WebSocket events in one window. Set 0 for no limit.
+   * Maximum WebSocket events in one window. Set 0 to capture none, or null for no limit.
    * @default 20
    */
-  webSocketPerWindow: number;
-  /** Maximum reports in one window. Set 0 for no limit. @default 20 */
-  reportsPerWindow: number;
-  /** Maximum resource entries in one window. Set 0 for no limit. @default 100 */
-  resourcesPerWindow: number;
-  /** Maximum lifecycle events in one window. Set 0 for no limit. @default 20 */
-  lifecyclePerWindow: number;
+  webSocketPerWindow: number | null;
+  /** Maximum reports in one window. Set 0 to capture none, or null for no limit. @default 20 */
+  reportsPerWindow: number | null;
   /**
-   * Rate limit window, in milliseconds. Set 0 to reset the window for every event.
+   * Maximum resource entries in one window. Set 0 to capture none, or null for no limit.
+   * @default 100
+   */
+  resourcesPerWindow: number | null;
+  /**
+   * Maximum lifecycle events in one window. Set 0 to capture none, or null for no limit.
+   * @default 20
+   */
+  lifecyclePerWindow: number | null;
+  /**
+   * Rate limit window, in milliseconds, 1 or more. To turn the rate limits off, set the limits
+   * of each window to null.
    * @default 10000
    */
   windowMs: number;
   /**
    * Maximum log records at or above `sampling.alwaysSampleFrom` in one window. Metric points
-   * and spans do not count. Set 0 for no limit.
+   * and spans do not count. Set 0 to drop every one, or null for no limit.
    * @default 500
    */
-  errorCeiling: number;
+  errorCeiling: number | null;
 }
 
 /** Records that minLevel or sampling drops, kept for the next error. */
@@ -995,10 +1013,11 @@ export interface DebugBufferPolicy {
    */
   maxRecords: number;
   /**
-   * Maximum age of a kept record when the library reads it, in milliseconds. Set 0 for no limit.
+   * Maximum age of a kept record when the library reads it, in milliseconds, 1 or more. Set
+   * null for no age limit.
    * @default 60000
    */
-  maxAgeMs: number;
+  maxAgeMs: number | null;
 }
 
 /** Duration probes. Each probe is reported as a histogram summary record. */
@@ -1049,10 +1068,11 @@ export interface ReplayPolicy {
    */
   mode: ReplayMode;
   /**
-   * URL that each segment is POSTed to. This is separate from the log endpoint.
-   * @default ""
+   * URL that each segment is POSTed to. This is separate from the log endpoint. Set null to
+   * turn it off. An empty or blank string also turns it off, and reports `config.invalid`.
+   * @default null
    */
-  endpoint: string;
+  endpoint: string | null;
   /**
    * When true, nothing is recorded until `startReplay()` is called.
    * @default false
@@ -1077,10 +1097,11 @@ export interface ReplayPolicy {
    */
   afterErrorMs: number;
   /**
-   * Maximum uploads per `capturePolicy.windowMs` window. 0 means no limit.
+   * Maximum uploads per `capturePolicy.windowMs` window. Set 0 to upload nothing, or null for
+   * no limit.
    * @default 3
    */
-  uploadsPerWindow: number;
+  uploadsPerWindow: number | null;
   /**
    * Maximum events per segment. 1 to 10000.
    * @default 200
@@ -1132,7 +1153,8 @@ export interface ReplayPolicy {
    */
   maskSelectors: string[];
   /**
-   * CSS selectors for elements the recorder should skip entirely.
+   * CSS selectors for elements the recorder should skip entirely. The recorder also always
+   * skips `[data-observability-ignore]`, the regions click capture ignores.
    * @default []
    */
   blockSelectors: string[];
@@ -1204,7 +1226,8 @@ export interface ObservabilityConfig {
   /**
    * Ingest endpoint URL. Set `null` for console-only mode, where the library sends nothing
    * and writes records to the console only if you set `console`. If the key is missing or
-   * `""`, the library reports `config.invalid`.
+   * `""`, the library reports `config.invalid`. A relative URL resolves against the page, and a
+   * URL with a user name or a password is refused.
    */
   endpoint?: string | null;
 
@@ -1212,20 +1235,22 @@ export interface ObservabilityConfig {
    * OTLP metrics endpoint URL, for example `"https://ingest.example/v1/metrics"`. When set,
    * the library sends every batch of metric records there as an OTLP
    * `ExportMetricsServiceRequest`. Without it, metric records are log records on `endpoint`.
-   * Needs `serializer: "otlp"`. Set `""` to turn it off.
-   * @default ""
+   * Needs `serializer: "otlp"`. Set null to turn it off. A blank string also turns it off, and
+   * reports `config.invalid`.
+   * @default null
    */
-  metricsEndpoint?: string;
+  metricsEndpoint?: string | null;
 
   /**
    * OTLP traces endpoint URL, for example `"https://ingest.example/v1/traces"`. When set, the
    * library records one root span for every trace it creates and one CLIENT span for every
    * request that gets `traceparent`, and sends them there as an OTLP
    * `ExportTraceServiceRequest`. Without it, the library sends no spans. Needs
-   * `serializer: "otlp"`. Set `""` to turn it off.
-   * @default ""
+   * `serializer: "otlp"`. Set null to turn it off. A blank string also turns it off, and reports
+   * `config.invalid`.
+   * @default null
    */
-  tracesEndpoint?: string;
+  tracesEndpoint?: string | null;
 
   /**
    * Reported as `service.name`.
@@ -1283,12 +1308,19 @@ export interface ObservabilityConfig {
    * @default "omit"
    */
   credentials?: RequestCredentials;
-  /** Extra request headers, or a function returning them. `undefined` removes the headers. */
+  /**
+   * Extra request headers, or a function returning them. undefined keeps the current headers.
+   * With isolation off, null removes them. With isolation on, the default, use
+   * rotateSecurityContext() at logout, because configure() refuses a delivery change. The
+   * library has no default headers.
+   */
   headers?:
-    Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+    | Record<string, string>
+    | (() => Record<string, string> | Promise<Record<string, string>>)
+    | null;
 
   /**
-   * Backing store for undelivered records.
+   * Backing store for undelivered records. Can't be changed after startup.
    * @default "auto"
    */
   storage?: StorageStrategy;
@@ -1343,68 +1375,77 @@ export interface ObservabilityConfig {
   /**
    * Sends batches through one of the app's own channels instead of HTTP. With `transport`,
    * `endpoint` is optional. The library does not compress the body for a custom transport.
+   * Set null to remove it.
    * @see {@link Transport}
    */
-  transport?: Transport;
+  transport?: Transport | null;
   /**
    * Sends the last batch while the page closes, for a custom transport. Without it, the
-   * library puts that batch in the emergency queue and the next page load sends it.
+   * library puts that batch in the emergency queue and the next page load sends it. Needs
+   * `transport`. Set null to remove it.
    * @see {@link ExitTransport}
    */
-  transportOnExit?: ExitTransport;
+  transportOnExit?: ExitTransport | null;
   /**
    * Creates a dedicated worker for encoding, compression and HTTP sends. The worker calls serveTransportWorker().
-   * Headers functions, retries, storage and exit sends stay on the main thread. A custom transport takes precedence.
+   * Headers functions, retries, storage and exit sends stay on the main thread. With `transport`
+   * set, the library doesn't start the worker. Set null to remove it.
    */
-  transportWorker?: () => Worker;
+  transportWorker?: (() => Worker) | null;
 
   /**
    * Loads the `@opentelemetry/api` module. Example: `() => import("@opentelemetry/api")`.
-   * OTel stays off unless you set it.
+   * OTel stays off unless you set it. Set null to remove it.
    * @see {@link OtelLoader}
    */
-  otelLoader?: OtelLoader;
+  otelLoader?: OtelLoader | null;
 
   /**
    * Returns attributes for every record the library builds. Its values override `setContext()`
    * values, and the logger scope and the call payload override its values. It is called for
    * every built record, including records used only for the console or breadcrumbs. Keep it
    * fast and synchronous. If it throws or returns a non-object, it adds nothing to the record.
+   * Set null to remove it.
    * @returns The attributes, or undefined for none.
    */
-  contextProvider?: () => Record<string, unknown> | undefined;
+  contextProvider?: (() => Record<string, unknown> | undefined) | null;
 
   /**
    * Change or drop a record. Processors run in list order, before `redact`, and follow the
    * same contract as `redact`. If one throws or returns something that isn't a record, the
-   * library drops the record.
+   * library drops the record. A list with an entry that isn't a function keeps the current list,
+   * and with no current list the library drops every record until a later call sets a list of
+   * functions or [].
    */
   processors?: ((record: LogRecord) => LogRecord | null)[];
 
   /**
    * Changes or drops a record before the SDK prints or sends it. If the hook throws or returns
-   * something that isn't a record, the library drops the record.
+   * something that isn't a record, the library drops the record. An omitted key or undefined
+   * keeps the current hook. Set null to remove it. A value that isn't a function keeps the
+   * current hook, and with no current hook the library drops every record until a later call
+   * sets a function or null.
    * @param record Record to process. It may be destined only for the console or breadcrumbs.
    * @returns The record to send, or `null` to drop it.
    */
-  redact?: (record: LogRecord) => LogRecord | null;
+  redact?: ((record: LogRecord) => LogRecord | null) | null;
 
   /**
-   * Reports this library's own faults.
+   * Reports this library's own faults. Set null to remove it.
    * @see {@link DiagnosticHandler}
    */
-  onDiagnostic?: DiagnosticHandler;
+  onDiagnostic?: DiagnosticHandler | null;
 
   /**
    * Receives a summary when the library loses records it has already built. Sampling,
    * `minLevel`, `processors` and `redact` do not cause a loss. Losses with the same reason in
    * the same task are merged. Do not log through the library in the hook, because a record
    * from the hook can evict a stored batch. A batch that storage evicts during its send can
-   * still reach the server.
+   * still reach the server. Set null to remove it.
    * @param summary The loss's reason, record count, batch ids, journey ids and action names.
    * @see {@link DropSummary}
    */
-  onDrop?: (summary: DropSummary) => void;
+  onDrop?: ((summary: DropSummary) => void) | null;
 }
 
 /** Fully resolved configuration that the runtime holds. */
@@ -1439,10 +1480,10 @@ export interface ResolvedConfig {
   securityContext: SecurityContextOptions;
   /** Ingest endpoint URL, or null in console-only mode. */
   endpoint: string | null;
-  /** OTLP metrics endpoint URL. An empty string sends metric records as log records. */
-  metricsEndpoint: string;
-  /** OTLP traces endpoint URL, or "" when the library sends no span. */
-  tracesEndpoint: string;
+  /** OTLP metrics endpoint URL, or null to send metric records as log records. */
+  metricsEndpoint: string | null;
+  /** OTLP traces endpoint URL, or null when the library sends no span. */
+  tracesEndpoint: string | null;
   /** Reported as `service.name`. */
   serviceName: string;
   /** Reported as `service.version`. */
@@ -1507,28 +1548,28 @@ export interface ResolvedConfig {
   /** Payload format name, or a custom implementation. */
   serializer: SerializerChoice;
   /** Extra request headers, or a function returning them. */
-  headers?: ObservabilityConfig["headers"];
+  headers?: NonNullable<ObservabilityConfig["headers"]>;
   /** Sends batches through one of the app's own channels instead of HTTP. */
   transport?: Transport;
   /** Sends the last batch while the page closes, for a custom transport. */
   transportOnExit?: ExitTransport;
   /** Creates the dedicated HTTP transport worker. */
-  transportWorker?: ObservabilityConfig["transportWorker"];
+  transportWorker?: NonNullable<ObservabilityConfig["transportWorker"]>;
   /** Supplies the `@opentelemetry/api` module in place of importing it. */
   otelLoader?: OtelLoader;
   /** Returns attributes for every record the library builds. */
-  contextProvider?: ObservabilityConfig["contextProvider"];
+  contextProvider?: NonNullable<ObservabilityConfig["contextProvider"]>;
   /**
    * Changes or drops a record before the SDK prints or sends it.
    * @param record Record to process. It may be destined only for the console or breadcrumbs.
    * @returns The record to send, or `null` to drop it.
    */
-  redact?: ObservabilityConfig["redact"];
+  redact?: NonNullable<ObservabilityConfig["redact"]>;
   /**
    * Reports this library's own faults.
    * @see {@link DiagnosticHandler}
    */
   onDiagnostic?: DiagnosticHandler;
   /** Receives a summary when the library loses records it has already built. */
-  onDrop?: ObservabilityConfig["onDrop"];
+  onDrop?: NonNullable<ObservabilityConfig["onDrop"]>;
 }

@@ -16,6 +16,7 @@ import {
   METRIC_DEFAULT_BOUNDARIES,
   METRIC_KEYS,
 } from "../constants";
+import type { MetricsPolicy } from "../models/config";
 import type {
   Counter,
   Histogram,
@@ -94,30 +95,30 @@ function cleanAttributes(attributes: MetricAttributes = {}): MetricAttributes {
 /**
  * Copies a list of boundaries by index, so a custom iterator on the app's array has no effect.
  * @param bounds Value of the boundaries option.
- * @param limit Maximum number of boundaries. 0 means no limit.
+ * @param limit Maximum number of boundaries. null means no limit.
  * @returns A plain array with at most one value more than the limit, or null if the value
  * isn't an array.
  */
-function copyBounds(bounds: unknown, limit: number): unknown[] | null {
+function copyBounds(bounds: unknown, limit: number | null): unknown[] | null {
   if (!Array.isArray(bounds)) {
     return null;
   }
 
   // One more than the limit, so isAscending rejects a list that is too long.
-  const count = limit === 0 ? bounds.length : Math.min(bounds.length, limit + 1);
+  const count = limit === null ? bounds.length : Math.min(bounds.length, limit + 1);
   return Array.from({ length: count }, (_unused, i): unknown => bounds[i]);
 }
 
 /**
  * Checks a list of histogram boundaries.
  * @param bounds Value of the boundaries option.
- * @param limit Maximum number of boundaries. 0 means no limit.
+ * @param limit Maximum number of boundaries. null means no limit.
  * @returns True for finite numbers in ascending order, no more of them than the limit.
  */
-function isAscending(bounds: unknown, limit: number): bounds is number[] {
+function isAscending(bounds: unknown, limit: number | null): bounds is number[] {
   return (
     Array.isArray(bounds) &&
-    (limit === 0 || bounds.length <= limit) &&
+    (limit === null || bounds.length <= limit) &&
     bounds.every(
       (bound: unknown, i) =>
         typeof bound === "number" &&
@@ -236,6 +237,7 @@ export function makeHistogram(
     kind: "histogram",
     unit: unit ?? DEFAULT_METRIC_UNIT,
     boundaries: boundaries ?? METRIC_DEFAULT_BOUNDARIES,
+    fromApp: boundaries !== undefined,
   };
 
   return {
@@ -270,7 +272,11 @@ export class Meter {
       fields: Record<string, unknown>,
     ) => void,
     private readonly diagnostics: Diagnostics,
-    private readonly policy = { maxSeries: 100, maxInstruments: 1000, maxHistogramBoundaries: 50 },
+    private readonly policy: MetricsPolicy = {
+      maxSeries: 100,
+      maxInstruments: 1000,
+      maxHistogramBoundaries: 50,
+    },
   ) {}
 
   /**
@@ -343,13 +349,17 @@ export class Meter {
       return null;
     }
 
-    if (this.policy.maxInstruments && this.instruments.size >= this.policy.maxInstruments) {
+    const { maxInstruments } = this.policy;
+    if (maxInstruments !== null && this.instruments.size >= maxInstruments) {
       this.diagnostics.count("record.dropped_by_ceiling");
       return null;
     }
-    // Copy before the check, so a later change to the app's array can't change the buckets.
-    const copy = copyBounds(def.boundaries, this.policy.maxHistogramBoundaries);
-    const valid = isAscending(copy, this.policy.maxHistogramBoundaries);
+    // Copy before the check, so a later change to the app's array can't change the buckets. The
+    // limit is for the app's lists. The library's own lists always fit, or a low limit would
+    // report every histogram without custom boundaries.
+    const limit = def.fromApp === true ? this.policy.maxHistogramBoundaries : null;
+    const copy = copyBounds(def.boundaries, limit);
+    const valid = isAscending(copy, limit);
     if (def.kind === "histogram" && !valid) {
       this.diagnostics.report(
         "config.invalid",
@@ -377,7 +387,8 @@ export class Meter {
     let set = attributes;
 
     // Cap the series, or a storm of attribute sets grows memory and the payload without limit.
-    if (!series && this.policy.maxSeries > 0 && instrument.series.size >= this.policy.maxSeries) {
+    const { maxSeries } = this.policy;
+    if (!series && maxSeries !== null && instrument.series.size >= maxSeries) {
       key = OVERFLOW_KEY;
       series = instrument.series.get(key);
       set = { [ATTR_METRIC_OVERFLOW]: true };

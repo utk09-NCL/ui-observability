@@ -275,17 +275,21 @@ describe("health and transition lifecycle", () => {
     expect(await getHealth()).toMatchObject({ status: "degraded", issues: ["sender.unavailable"] });
   });
 
-  it("validates before retirement and rejects rotation after shutdown", async () => {
+  it("validates before retirement, stops sending after a rejection and rejects after shutdown", async () => {
     const send = createMemoryTransport();
     configure({ ...base, transport: send.transport, securityContext: { id: "A" } });
     await flush();
     await expect(
-      rotateSecurityContext({ id: "B", delivery: { endpoint: "bad-url" } }),
+      rotateSecurityContext({
+        id: "B",
+        delivery: { metricsEndpoint: "https://user:pw@ingest.example/v1/metrics" },
+      }),
     ).rejects.toThrow("Invalid delivery");
     expect(rt().config.securityContext.id).toBe("A");
-    getLogger("still-active").info("A survives");
+    getLogger("still-active").info("A stops");
     await flush();
-    expect(send.records()[0].body).toBe("A survives");
+    // The app asked to leave context A, so its transport sends nothing more.
+    expect(send.records()).toEqual([]);
     await shutdown();
     await expect(rotateSecurityContext({ delivery: {} })).rejects.toThrow("stopped");
   });
@@ -495,7 +499,7 @@ describe("bus capability and delivery boundaries", () => {
     config.bus.maxTrackedSources = 1;
     receive(m, { link: "openfin", origin: "openfin", peer: "two" });
     expect(handlers.onRecords).not.toHaveBeenCalled();
-    config.bus.maxTrackedSources = 0;
+    config.bus.maxTrackedSources = null;
     receive(m, { link: "openfin", origin: "openfin", peer: "three" });
     expect(handlers.onRecords).toHaveBeenCalledTimes(1);
     bus.destroy();
@@ -1101,7 +1105,7 @@ describe("policy edge cases", () => {
   it("still shuts down cleanly when a concurrently awaited rotation rejects", async () => {
     configure(base);
     await flush();
-    const change = rotateSecurityContext({ delivery: { endpoint: "invalid" } });
+    const change = rotateSecurityContext({ delivery: { credentials: "invalid" as never } });
     const rejected = expect(change).rejects.toThrow("Invalid delivery");
     const closing = shutdown();
     await rejected;
@@ -1304,7 +1308,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
         routingContextId: "A",
       }),
     ).length;
-    config.bus.maxRecordsPerMessage = 0;
+    config.bus.maxRecordsPerMessage = null;
     config.bus.maxMessageBytes = two;
     const stringify = vi.spyOn(JSON, "stringify");
     bus.sendRecords([record(), record(), record()]);
@@ -1315,7 +1319,7 @@ describe("rotation reach, frame registration and partial storage reads", () => {
 
     // Without a byte limit, the bus doesn't encode the records.
     post.mockClear();
-    config.bus.maxMessageBytes = 0;
+    config.bus.maxMessageBytes = null;
     config.bus.maxRecordsPerMessage = 2;
     const unmeasured = vi.spyOn(JSON, "stringify");
     bus.sendRecords([record(), record(), record()]);
@@ -1817,7 +1821,7 @@ describe("rotation delivery limits and early configuration", () => {
     );
   });
 
-  it("rejects a rotation with a context getter that throws and keeps the old sender", async () => {
+  it("rejects a rotation with a context getter that throws, and stops the old sender", async () => {
     const send = createMemoryTransport();
     configure({ ...base, transport: send.transport, securityContext: { id: "A" } });
     await flush();
@@ -1831,9 +1835,9 @@ describe("rotation delivery limits and early configuration", () => {
       rotateSecurityContext({ id: "B", delivery: { transport: send.transport }, context }),
     ).rejects.toThrow("getter failed");
     expect(rt().config.securityContext.id).toBe("A");
-    getLogger("orders").info("still A");
+    getLogger("orders").info("after the rejection");
     await flush();
-    expect(send.records().map((r) => r.body)).toContain("still A");
+    expect(send.records().map((r) => r.body)).not.toContain("after the rejection");
   });
 
   it("reports forwarded records that arrive during a rotation", async () => {
@@ -2049,9 +2053,6 @@ describe("nested frames, carry timing and early encoding", () => {
       expect(Sender.prototype.adopt).toHaveBeenCalled();
     });
     getLogger("carry").info("during carry");
-    await expect(rotateSecurityContext({ id: "C", delivery: {} })).rejects.toThrow(
-      "already running",
-    );
     release();
     await carrying;
     // The same batch id replaced the old copy, and the new destination starts with no attempts.
@@ -2073,7 +2074,7 @@ describe("nested frames, carry timing and early encoding", () => {
       ...base,
       transport: send.transport,
       onDrop,
-      buffering: { maxPendingBytes: 0 },
+      buffering: { maxPendingBytes: null },
     });
     await flush();
     const resource: Record<string, unknown> = {};

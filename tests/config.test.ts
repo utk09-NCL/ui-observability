@@ -1,6 +1,6 @@
 // tests/config.test.ts
 import { describe, expect, it } from "vitest";
-import { applyResolvedConfig, resolveConfig } from "../src/core/config";
+import { applyResolvedConfig, REFUSE_RECORDS, resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { CONSOLE_DEFAULT_STYLES } from "../src/constants";
 import type { ConsoleStyles, ObservabilityConfig, SamplingOptions } from "../src/models/config";
@@ -75,8 +75,8 @@ describe("resolveConfig", () => {
       diagnostics,
     );
 
-    // An object with no level turns the console on, as true does.
-    expect(resolved.console.level).toBe("DEBUG");
+    // An object with no level keeps the current level, so the console stays off.
+    expect(resolved.console.level).toBeNull();
     expect(resolved.console.styles.INFO).toBe("color:#0a7");
     expect(resolved.console.styles.WARN).toBe(CONSOLE_DEFAULT_STYLES.WARN);
     expect(events).toEqual([]);
@@ -151,8 +151,8 @@ describe("resolveConfig", () => {
     expect(resolved.transport).toBeUndefined();
     expect(resolved.transportOnExit).toBeUndefined();
     expect(messages(events)).toEqual([
-      expect.stringContaining("transport must be a function"),
-      expect.stringContaining("transportOnExit must be a function"),
+      expect.stringContaining("transport must be a function or null"),
+      expect.stringContaining("transportOnExit must be a function or null"),
     ]);
   });
 
@@ -165,7 +165,9 @@ describe("resolveConfig", () => {
     const next = resolveConfig({ onDrop: notAHook }, diagnostics, first);
 
     expect(next.onDrop).toBe(onDrop);
-    expect(messages(events)).toEqual(["onDrop must be a function. The library ignores the value."]);
+    expect(messages(events)).toEqual([
+      "onDrop must be a function or null. The value is a string. The library keeps the current value.",
+    ]);
   });
 
   it("keeps the current transport and exit hook when a new value is not a function", () => {
@@ -173,11 +175,11 @@ describe("resolveConfig", () => {
     const transport = () => Promise.resolve({ status: 200 });
     const transportOnExit = () => true;
     const live = resolveConfig({ ...valid(), transport, transportOnExit }, diagnostics);
-    const nothing = null as unknown as ObservabilityConfig["transport"];
+    const notAFunction = 5 as unknown as ObservabilityConfig["transport"];
     const notAHook = false as unknown as ObservabilityConfig["transportOnExit"];
 
     const resolved = resolveConfig(
-      { transport: nothing, transportOnExit: notAHook },
+      { transport: notAFunction, transportOnExit: notAHook },
       diagnostics,
       live,
     );
@@ -270,15 +272,17 @@ describe("resolveConfig", () => {
     expect(second.endpoint).toBe(ENDPOINT);
   });
 
-  it("reports an endpoint that is not an absolute URL, and passes the parse error as the cause", () => {
+  it("reports an endpoint that is not a URL, and passes the parse error as the cause", () => {
     const { events, diagnostics } = collect();
+    const live = resolveConfig(valid(), diagnostics);
 
-    const resolved = resolveConfig({ endpoint: "/v1/logs", serviceName: "checkout" }, diagnostics);
+    const resolved = resolveConfig({ endpoint: "http://[v1" }, diagnostics, live);
 
-    expect(messages(events)[0]).toContain("not a valid absolute URL");
+    expect(messages(events)).toEqual([
+      "endpoint is not a valid URL. The library keeps the current value.",
+    ]);
     expect(events[0].cause).toBeInstanceOf(Error);
-    // It is still returned, because configuration never throws into the caller.
-    expect(resolved.endpoint).toBe("/v1/logs");
+    expect(resolved.endpoint).toBe(ENDPOINT);
   });
 
   it("substitutes unknown-service for a missing serviceName and says so", () => {
@@ -349,7 +353,7 @@ describe("resolveConfig", () => {
 
       expect(resolved.sampling.defaultRate).toBe(1);
       expect(messages(events)[0]).toContain(
-        "sampling.defaultRate must be 0..1. The value is high.",
+        'sampling.defaultRate must be 0..1. The value is "high". The library keeps 1.',
       );
     });
 
@@ -385,41 +389,44 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
 
-    it("clamps an out-of-range namespace rate to 1 and names the namespace", () => {
+    it("ignores an out-of-range namespace rate and names the namespace", () => {
       const { events, diagnostics } = collect();
 
       const resolved = resolveConfig(
-        { ...valid(), sampling: { rates: { "app.blotter": 5 } } },
+        { ...valid(), sampling: { rates: { "app.blotter": 5, app: 0.5 } } },
         diagnostics,
       );
 
-      expect(resolved.sampling.rates["app.blotter"]).toBe(1);
-      expect(messages(events)[0]).toContain(
-        'sampling.rates["app.blotter"] must be 0..1. The value is 5.',
-      );
+      // Without the bad entry, the namespace falls back to the shorter prefix.
+      expect(resolved.sampling.rates).toEqual({ app: 0.5 });
+      expect(messages(events)).toEqual([
+        'sampling.rates["app.blotter"] must be 0..1. The value is 5. The library ignores this entry.',
+      ]);
     });
 
-    it("clamps a namespace rate that is not a number", () => {
+    it("ignores a namespace rate that is not a number, and an undefined one without a report", () => {
       const { events, diagnostics } = collect();
       const input: Partial<ObservabilityConfig> = { ...valid() };
       input.sampling = {
-        rates: { "app.ticket": null },
+        rates: { "app.ticket": "0.5", "app.blotter": undefined },
       } as unknown as Partial<SamplingOptions>;
 
       const resolved = resolveConfig(input, diagnostics);
 
-      expect(resolved.sampling.rates["app.ticket"]).toBe(1);
-      expect(messages(events)[0]).toContain("The value is null.");
+      expect(resolved.sampling.rates).toEqual({});
+      expect(messages(events)).toEqual([
+        'sampling.rates["app.ticket"] must be 0..1. The value is "0.5". The library ignores this entry.',
+      ]);
     });
 
-    it("does not mutate the caller's rates object while clamping", () => {
+    it("does not change the caller's rates object", () => {
       const { diagnostics } = collect();
       const rates = { "app.blotter": 5 };
 
       const resolved = resolveConfig({ ...valid(), sampling: { rates } }, diagnostics);
 
-      expect(rates["app.blotter"]).toBe(5);
-      expect(resolved.sampling.rates["app.blotter"]).toBe(1);
+      expect(rates).toEqual({ "app.blotter": 5 });
+      expect(resolved.sampling.rates).not.toBe(rates);
     });
   });
 
@@ -490,26 +497,31 @@ describe("resolveConfig", () => {
 
       expect(second.contextProvider).toBe(provider);
       expect(messages(events)).toEqual([
-        "contextProvider must be a function. The library ignores the value.",
+        "contextProvider must be a function or null. The value is a string. The library keeps the current value.",
       ]);
     });
   });
 
   describe("processors", () => {
-    it("is empty by default, keeps each function and reports each other entry", () => {
+    it("is empty by default, keeps a list of functions and refuses a list with another entry", () => {
       const { events, diagnostics } = collect();
       const processor = (record: LogRecord) => record;
 
       expect(resolveConfig(valid(), diagnostics).processors).toEqual([]);
+      expect(
+        resolveConfig({ ...valid(), processors: [processor] }, diagnostics).processors,
+      ).toEqual([processor]);
 
       const resolved = resolveConfig(
         { ...valid(), processors: [processor, "mask"] as never },
         diagnostics,
       );
 
-      expect(resolved.processors).toEqual([processor]);
+      // Running the other processors without the bad one could let a record through unmasked,
+      // and with no current list to keep, each record drops.
+      expect(resolved.processors).toEqual([REFUSE_RECORDS]);
       expect(messages(events)).toEqual([
-        expect.stringContaining("processors must be a list of functions"),
+        "processors must be a list of functions. The value is a list. The library drops each record until processors is a list of functions or [].",
       ]);
     });
   });
@@ -540,7 +552,7 @@ describe("resolveConfig", () => {
     it("is off by default, keeps an absolute URL and joins ignoreUrls", () => {
       const { events, diagnostics } = collect();
 
-      expect(resolveConfig(valid(), diagnostics).tracesEndpoint).toBe("");
+      expect(resolveConfig(valid(), diagnostics).tracesEndpoint).toBeNull();
 
       const resolved = resolveConfig({ ...valid(), tracesEndpoint: TRACES }, diagnostics);
 
@@ -548,7 +560,8 @@ describe("resolveConfig", () => {
       expect(resolved.capture.ignoreUrls).toEqual([ENDPOINT, TRACES]);
       expect(events).toEqual([]);
 
-      const second = resolveConfig({ tracesEndpoint: "" }, diagnostics, resolved);
+      const second = resolveConfig({ tracesEndpoint: null }, diagnostics, resolved);
+      expect(second.tracesEndpoint).toBeNull();
       expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
     });
 
@@ -560,7 +573,7 @@ describe("resolveConfig", () => {
         diagnostics,
       );
 
-      expect(resolved.tracesEndpoint).toBe("");
+      expect(resolved.tracesEndpoint).toBeNull();
       expect(messages(events)).toEqual([
         'tracesEndpoint needs serializer "otlp". The library sends no span.',
       ]);
@@ -581,7 +594,7 @@ describe("resolveConfig", () => {
     const METRICS = "https://ingest.example/v1/metrics";
 
     it("is off by default", () => {
-      expect(resolveConfig(valid(), collect().diagnostics).metricsEndpoint).toBe("");
+      expect(resolveConfig(valid(), collect().diagnostics).metricsEndpoint).toBeNull();
     });
 
     it("keeps an absolute URL and reports nothing", () => {
@@ -597,10 +610,10 @@ describe("resolveConfig", () => {
       const { events, diagnostics } = collect();
       const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
 
-      const second = resolveConfig({ metricsEndpoint: "/v1/metrics" }, diagnostics, first);
+      const second = resolveConfig({ metricsEndpoint: "http://[v1" }, diagnostics, first);
 
       expect(second.metricsEndpoint).toBe(METRICS);
-      expect(messages(events)[0]).toContain("metricsEndpoint is not a valid absolute URL");
+      expect(messages(events)[0]).toContain("metricsEndpoint is not a valid URL");
       expect(events[0].cause).toBeInstanceOf(Error);
     });
 
@@ -612,15 +625,18 @@ describe("resolveConfig", () => {
         diagnostics,
       );
 
-      expect(resolved.metricsEndpoint).toBe("");
-      expect(messages(events)[0]).toContain("metricsEndpoint must be a URL string");
+      expect(resolved.metricsEndpoint).toBeNull();
+      expect(messages(events)[0]).toContain("metricsEndpoint must be a URL string or null");
     });
 
-    it("turns off with an empty string", () => {
-      const { diagnostics } = collect();
+    it("turns off with null", () => {
+      const { events, diagnostics } = collect();
       const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
 
-      expect(resolveConfig({ metricsEndpoint: "" }, diagnostics, first).metricsEndpoint).toBe("");
+      expect(resolveConfig({ metricsEndpoint: null }, diagnostics, first).metricsEndpoint).toBe(
+        null,
+      );
+      expect(events).toEqual([]);
     });
 
     it("turns off with a serializer that has no metrics format, and says so", () => {
@@ -629,7 +645,7 @@ describe("resolveConfig", () => {
 
       const second = resolveConfig({ serializer: "ecs" }, diagnostics, first);
 
-      expect(second.metricsEndpoint).toBe("");
+      expect(second.metricsEndpoint).toBeNull();
       expect(messages(events)[0]).toContain('metricsEndpoint needs serializer "otlp"');
     });
 
@@ -638,7 +654,7 @@ describe("resolveConfig", () => {
       const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
       expect(first.capture.ignoreUrls).toEqual([ENDPOINT, METRICS]);
 
-      const second = resolveConfig({ metricsEndpoint: "" }, diagnostics, first);
+      const second = resolveConfig({ metricsEndpoint: null }, diagnostics, first);
 
       // A library request must not produce a record, because that record produces a new request.
       expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
@@ -799,13 +815,18 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
 
-    it("ignores a section that is absent or not an object", () => {
+    it("ignores an absent section, and reports a section that is not an object", () => {
       const { events, diagnostics } = collect();
-      const input = { ...valid(), bus: undefined, capture: null } as unknown;
+      const input = { ...valid(), bus: undefined, capture: null, sampling: "all" } as unknown;
 
-      resolveConfig(input as Partial<ObservabilityConfig>, diagnostics);
+      const resolved = resolveConfig(input as Partial<ObservabilityConfig>, diagnostics);
 
-      expect(events).toEqual([]);
+      expect(resolved.capture.errors).toBe(true);
+      expect(resolved.sampling.defaultRate).toBe(1);
+      expect(messages(events)).toEqual([
+        'sampling must be an object. The value is "all". The library keeps the current values.',
+        "capture must be an object. The value is null. The library keeps the current values.",
+      ]);
     });
   });
 
@@ -934,15 +955,15 @@ describe("resolveConfig", () => {
       expect(config.headers).toBeUndefined();
       expect(texts).toEqual([
         'enabled must be true or false. The value is "yes". The library keeps true.',
-        'compression must be "gzip" or "none". The value is "brotli". The library keeps "gzip".',
-        'credentials must be "omit", "same-origin" or "include". The value is "all". The library keeps "omit".',
+        'compression must be "gzip" or "none". The library keeps "gzip".',
+        'credentials must be "omit", "same-origin" or "include". The library keeps "omit".',
         "headers must be an object of strings or a function. The library keeps the current headers.",
-        'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The value is "session". The library keeps "auto".',
-        'identity must be "storage" or "memory". The value is "cookie". The library keeps "storage".',
+        'storage must be "auto", "indexeddb", "localstorage", "memory" or "none". The library keeps "auto".',
+        'identity must be "storage" or "memory". The library keeps "storage".',
       ]);
     });
 
-    it("clears the headers on an explicit undefined, and keeps them on a missing key", () => {
+    it("clears the headers on null, and keeps them on undefined or a missing key", () => {
       // On logout, the old Authorization header must not go out on the next send.
       const { diagnostics } = collect();
       const first = resolveConfig(
@@ -951,13 +972,19 @@ describe("resolveConfig", () => {
       );
 
       expect(resolveConfig({}, diagnostics, first).headers).toEqual({ authorization: "Bearer t" });
-      expect(resolveConfig({ headers: undefined }, diagnostics, first).headers).toBeUndefined();
+      expect(resolveConfig({ headers: undefined }, diagnostics, first).headers).toEqual({
+        authorization: "Bearer t",
+      });
+      expect(resolveConfig({ headers: null }, diagnostics, first).headers).toBeUndefined();
     });
 
     it("reads each propagateTraceHeaderTo string as its origin, and keeps each RegExp", () => {
       const pattern = /\/api\//;
       const { config, texts } = resolveLoose({
-        capture: { propagateTraceHeaderTo: ["https://api.example/v1/", pattern, "/api/", 5] },
+        capture: {
+          fetch: true,
+          propagateTraceHeaderTo: ["https://api.example/v1/", pattern, "/api/", 5],
+        },
       });
 
       expect(config.capture.propagateTraceHeaderTo).toEqual(["https://api.example", pattern]);
@@ -1016,7 +1043,7 @@ describe("resolveConfig", () => {
 
       expect(config.journey.scope).toBe("auto");
       expect(texts).toEqual([
-        'journey.scope must be "auto", "context", "tab" or "origin". The value is "window". The library keeps "auto".',
+        'journey.scope must be "auto", "context", "tab" or "origin". The library keeps "auto".',
         'The library ignores the unknown config key "journey.maxAge". Check the spelling.',
       ]);
     });
@@ -1068,7 +1095,7 @@ describe("resolveConfig", () => {
       expect(config.sampling.alwaysSampleTypes).toEqual(["action"]);
       expect(config.sampling.remote).toBe(false);
       expect(texts).toEqual([
-        "The library ignores the sampling.alwaysSampleTypes entry an object. sampling.alwaysSampleTypes must be a list of strings.",
+        'The library ignores the sampling.alwaysSampleTypes entry an object. sampling.alwaysSampleTypes must be a list of log types: "action", "event", "metric", "log", "system" or "span".',
         'sampling.remote must be true or false. The value is "true". The library keeps false.',
       ]);
     });
@@ -1085,7 +1112,7 @@ describe("resolveConfig", () => {
       const REPLAY_DEFAULTS = {
         enabled: false,
         mode: "onError",
-        endpoint: "",
+        endpoint: null,
         requireConsent: false,
         bufferMs: 60_000,
         maxBufferBytes: 10_000_000,
@@ -1156,7 +1183,12 @@ describe("resolveConfig", () => {
         ["bufferMs", 4999, "an integer from 5000 to 600000", "60000"],
         ["maxBufferBytes", 99_999, "an integer from 100000 to 200000000", "10000000"],
         ["afterErrorMs", -1, "an integer from 0 to 600000", "5000"],
-        ["uploadsPerWindow", 1.5, "an integer from 0 to 9007199254740991", "3"],
+        [
+          "uploadsPerWindow",
+          1.5,
+          "an integer from 0 to 9007199254740991, or null for no limit",
+          "3",
+        ],
         ["batchSize", 0, "an integer from 1 to 10000", "200"],
         ["batchBytes", 9999, "an integer from 10000 to 10000000", "512000"],
         ["flushIntervalMs", 60_001, "an integer from 100 to 60000", "2000"],
@@ -1167,7 +1199,7 @@ describe("resolveConfig", () => {
         ["maskText", "no", "true or false", "true"],
         ["maskInputs", 0, "true or false", "true"],
         ["recordCanvas", "on", "true or false", "false"],
-        ["endpoint", 8787, "a string", ""],
+        ["endpoint", 8787, "a URL string or null", "the current value"],
         ["maskSelectors", ".account", "a list of strings", "the current value"],
         ["maskSelectors", [".account", 5], "a list of strings", "the current value"],
         ["blockSelectors", {}, "a list of strings", "the current value"],
@@ -1423,10 +1455,10 @@ describe("resolveConfig", () => {
       });
     });
 
-    it("keeps a query of an invalid endpoint out of the message", () => {
+    it("keeps the text of an invalid endpoint out of the message", () => {
       const { texts } = resolveLoose({ endpoint: "/v1/logs?key=abc" });
 
-      expect(texts).toEqual(["endpoint is not a valid absolute URL: /v1/logs."]);
+      expect(texts).toEqual([`endpoint is relative. The library sends to ${location.origin}.`]);
     });
 
     it("keeps a valid alwaysSampleFrom and reports an unknown level", () => {
@@ -1447,7 +1479,7 @@ describe("resolveConfig", () => {
 
       expect(texts).toEqual([
         "enabled must be true or false. The value is a function. The library keeps true.",
-        'compression must be "gzip" or "none". The value is null. The library keeps "gzip".',
+        'compression must be "gzip" or "none". The library keeps "gzip".',
       ]);
     });
   });
@@ -1475,7 +1507,6 @@ describe("tunable sections", () => {
       metricBatchSize: 500,
     });
     expect(config.retention).toEqual({
-      mode: "limited",
       maxBatches: 500,
       maxAgeMs: 86_400_000,
       maxAttempts: 5,
@@ -1497,7 +1528,7 @@ describe("tunable sections", () => {
   it("accepts each bound of a range and merges a partial section", () => {
     const { config, texts } = resolveTunables({
       batching: { logBatchSize: 1, metricBatchSize: 1000 },
-      retention: { mode: "until-delivered", maxAttempts: 20 },
+      retention: { maxAgeMs: null, maxAttempts: 20 },
       limits: { maxRecordBytes: 60_000, maxDepth: 1 },
       journey: { maxAgeMs: 60_000 },
     });
@@ -1509,9 +1540,8 @@ describe("tunable sections", () => {
       metricBatchSize: 1000,
     });
     expect(config.retention).toEqual({
-      mode: "until-delivered",
       maxBatches: 500,
-      maxAgeMs: 86_400_000,
+      maxAgeMs: null,
       maxAttempts: 20,
     });
     expect(config.limits.maxRecordBytes).toBe(60_000);
@@ -1523,7 +1553,7 @@ describe("tunable sections", () => {
   it("reports a value outside its range and keeps the current value", () => {
     const { config, texts } = resolveTunables({
       batching: { logBatchSize: 0, logFlushIntervalMs: 1.5 },
-      retention: { maxAttempts: 21, mode: "forever" },
+      retention: { maxAttempts: 21, maxAgeMs: 0 },
       limits: { maxRecordBytes: 60_001 },
       journey: { maxAgeMs: "60000" },
     });
@@ -1531,7 +1561,6 @@ describe("tunable sections", () => {
     expect(config.batching.logBatchSize).toBe(100);
     expect(config.batching.logFlushIntervalMs).toBe(2000);
     expect(config.retention).toEqual({
-      mode: "limited",
       maxBatches: 500,
       maxAgeMs: 86_400_000,
       maxAttempts: 5,
@@ -1541,8 +1570,8 @@ describe("tunable sections", () => {
     expect(texts).toEqual([
       "batching.logFlushIntervalMs must be an integer from 100 to 60000. The value is 1.5. The library keeps 2000.",
       "batching.logBatchSize must be an integer from 1 to 1000. The value is 0. The library keeps 100.",
-      'retention.mode must be "limited" or "until-delivered". The value is "forever". The library keeps "limited".',
-      "retention.maxAttempts must be an integer from 1 to 20. The value is 21. The library keeps 5.",
+      "retention.maxAgeMs must be an integer from 60000 to 604800000, or null for no limit. The value is 0. The library keeps 86400000.",
+      "retention.maxAttempts must be an integer from 1 to 20, or null for no limit. The value is 21. The library keeps 5.",
       "limits.maxRecordBytes must be an integer from 1024 to 60000. The value is 60001. The library keeps 32768.",
       'journey.maxAgeMs must be an integer from 60000 to 86400000. The value is "60000". The library keeps 1800000.',
     ]);
@@ -1559,6 +1588,15 @@ describe("tunable sections", () => {
       'The library ignores the unknown config key "batching.logBatchSzie". Check the spelling.',
       'The library ignores the unknown config key "retention.maxAge". Check the spelling.',
       'The library ignores the unknown config key "limits.maxBody". Check the spelling.',
+    ]);
+  });
+
+  it("reports the removed retention.mode key as unknown and keeps the retention limits", () => {
+    const { config, texts } = resolveTunables({ retention: { mode: "until-delivered" } });
+
+    expect(config.retention).toEqual({ maxBatches: 500, maxAgeMs: 86_400_000, maxAttempts: 5 });
+    expect(texts).toEqual([
+      'The library ignores the unknown config key "retention.mode". Check the spelling.',
     ]);
   });
 });

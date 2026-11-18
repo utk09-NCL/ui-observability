@@ -178,7 +178,7 @@ describe("start of the recorder", () => {
       maskAllInputs: false,
       maskInputOptions: { input: true, textarea: true, select: true },
       maskTextSelector: "*",
-      blockSelector: undefined,
+      blockSelector: "[data-observability-ignore]",
       recordCanvas: false,
       plugins: [],
       sampling: { mousemove: false },
@@ -236,9 +236,17 @@ describe("start of the recorder", () => {
       // Password inputs stay masked even with maskInputs off.
       maskInputOptions: { password: true },
       maskTextSelector: ".account,#name",
-      blockSelector: "#blotter,.chart",
+      blockSelector: "[data-observability-ignore],#blotter,.chart",
       recordCanvas: true,
     });
+  });
+
+  it("always blocks the elements that click capture ignores, with or without blockSelectors", async () => {
+    const plain = setup();
+    expect((await plain.run()).blockSelector).toBe("[data-observability-ignore]");
+
+    const listed = setup({ blockSelectors: ["#blotter"] });
+    expect((await listed.run()).blockSelector).toBe("[data-observability-ignore],#blotter");
   });
 
   it("masks an input value with a text of a fixed length, and keeps an empty value", async () => {

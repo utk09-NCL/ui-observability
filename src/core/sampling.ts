@@ -190,7 +190,7 @@ export function shouldSampleInput(
     return true;
   }
 
-  if (config.sampling.alwaysSampleTypes.includes(input.type)) {
+  if (config.sampling.alwaysSampleTypes.includes(input.type as LogType)) {
     return true;
   }
 
@@ -250,14 +250,14 @@ export class ErrorCeiling {
   /**
    * Checks a record against the limit. Only records at or above `from` are counted.
    * @param record Record about to enter a stream.
-   * @param limit Maximum records in one window. Pass 0 for no limit.
+   * @param limit Maximum records in one window. 0 allows none, and null means no limit.
    * @param windowMs Rate limit window, in milliseconds.
    * @param from Lowest level that bypasses sampling.
    * @returns False when the window has no allowance left. The caller must drop the record.
    */
   allow(
     record: LogRecord,
-    limit = ERROR_CEILING_MAX_PER_WINDOW,
+    limit: number | null = ERROR_CEILING_MAX_PER_WINDOW,
     windowMs = ERROR_STORM_WINDOW_MS,
     from: LogLevel = "ERROR",
   ): boolean {
@@ -266,6 +266,6 @@ export class ErrorCeiling {
     }
 
     // Use a fixed window, not a sliding one, so a quiet period adds no allowance.
-    return limit === 0 || countInWindow(this.window, limit, windowMs);
+    return limit === null || countInWindow(this.window, limit, windowMs);
   }
 }
