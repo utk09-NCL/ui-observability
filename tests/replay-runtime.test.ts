@@ -90,6 +90,29 @@ describe("session replay in the runtime", () => {
     expect(installed()).toEqual([]);
   });
 
+  it("stops the recorder and drops its buffer during a pause, and records again after it", async () => {
+    const { segments, emits, stop, record } = await start();
+    emits[0]({ type: 4 });
+
+    configure({ enabled: false });
+    await settle();
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(installed()).toEqual([]);
+
+    configure({ enabled: true });
+    await settle();
+    expect(record).toHaveBeenCalledTimes(2);
+    emits[1]({ type: 2 });
+    getLogger("app").error("failed", new Error("x"));
+    await settle();
+
+    // The event from before the pause went with the old buffer.
+    expect(segments.map((segment) => JSON.parse(segment.payload) as unknown)).toEqual([
+      [{ type: 2 }],
+    ]);
+  });
+
   it("starts the recorder with replay.enabled", async () => {
     const { record } = await start();
 

@@ -196,10 +196,21 @@ export class TraceEngine {
    */
   constructor(
     private readonly diagnostics: Diagnostics,
-    private readonly maxAgeMs = TRACE_MAX_AGE_MS,
-    private readonly load?: OtelLoader,
+    private maxAgeMs = TRACE_MAX_AGE_MS,
+    private load?: OtelLoader,
     private readonly spans?: SpanHooks,
   ) {}
+
+  /**
+   * Sets the trace age and the OpenTelemetry loader from the app's startup call. A log call
+   * before configure() builds the engine before those settings exist.
+   * @param maxAgeMs Maximum lifetime of an un-rotated ambient trace in milliseconds.
+   * @param load Loader for the OpenTelemetry API. If it isn't set, OTel is off.
+   */
+  setup(maxAgeMs: number, load: OtelLoader | undefined): void {
+    this.maxAgeMs = maxAgeMs;
+    this.load = load;
+  }
 
   /**
    * Loads the OpenTelemetry API. Until the load completes, records use the ambient trace.

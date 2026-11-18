@@ -154,6 +154,11 @@ class RecordStream {
     return this.pending.length;
   }
 
+  /** Buffered records in time order. */
+  get records(): readonly LogRecord[] {
+    return this.pending;
+  }
+
   /** Stops the flush timer. The buffered records stay in place. */
   stop(): void {
     this.clearTimer();
@@ -208,6 +213,13 @@ export class LogPipeline {
 
   /** True after destroy() stops the pipeline. */
   private stopped = false;
+  /** True while `enabled` is false. The records stay in the buffers and in the queue. */
+  private paused = false;
+  /**
+   * Ends the wait of each flushPending() call in progress. hold(true) calls them, so a flush
+   * that waits on a queued batch doesn't wait out the pause.
+   */
+  private readonly waiters = new Set<() => void>();
   /** Encoded byte count of every record in the buffers or in requests. */
   private readonly held = new Map<LogRecord, number>();
   /** Total encoded bytes of the held records. */
@@ -380,6 +392,11 @@ export class LogPipeline {
    * @returns Promise that resolves once every batch is sent or stored, or on destroy.
    */
   async flushPending(): Promise<void> {
+    // A held pipeline sends nothing, and its queued batches can't finish, so don't wait.
+    if (this.paused) {
+      return;
+    }
+
     // One batch per stream, because a mixed batch would send a metric to the logs endpoint.
     // The claim leaves in-flight batches alone. A second copy under a new ID would be a
     // duplicate the server can't remove.
@@ -390,7 +407,18 @@ export class LogPipeline {
     }
 
     // Queued batches count too. Otherwise the exit flush would send them again under a new id.
-    await Promise.all([...this.open].map((pending) => pending.done));
+    // A hold stops the queue, so the wait ends there and doesn't last the whole pause. Each
+    // waiter goes once its flush settles, otherwise each call would keep memory until a hold.
+    let stop!: () => void;
+    const held = new Promise<void>((resolve) => {
+      stop = resolve;
+    });
+    this.waiters.add(stop);
+    try {
+      await Promise.race([Promise.all([...this.open].map((pending) => pending.done)), held]);
+    } finally {
+      this.waiters.delete(stop);
+    }
   }
 
   /**
@@ -412,6 +440,45 @@ export class LogPipeline {
     const buffered = STREAM_ORDER.reduce((total, name) => total + this.streams[name].size, 0);
 
     return { pending: buffered + queued, inFlight: records(this.open) - queued };
+  }
+
+  /**
+   * Stops or starts the dispatch while `enabled` is false. The records stay where they are, and
+   * a start sends them right away.
+   * @param on True to stop.
+   */
+  hold(on: boolean): void {
+    this.paused = on;
+
+    // A flush timer that fires during the hold claims nothing, so the timers can stay.
+    if (on) {
+      for (const stop of this.waiters) {
+        stop();
+      }
+      return;
+    }
+
+    for (const name of STREAM_ORDER) {
+      this.claim(this.streams[name]);
+    }
+    this.schedulePump();
+  }
+
+  /**
+   * Checks whether hold(true) is in force.
+   * @returns True while the pipeline sends nothing.
+   */
+  isHeld(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Lists the records that only memory holds.
+   * @returns The records in requests and in the queue, then the buffered records.
+   */
+  records(): LogRecord[] {
+    const unconfirmed = [...this.unconfirmed.values()].flatMap((batch) => batch.records);
+    return [...unconfirmed, ...STREAM_ORDER.flatMap((name) => this.streams[name].records)];
   }
 
   /** Stops the flush timers and refuses further records. */
@@ -507,6 +574,11 @@ export class LogPipeline {
    * @param stream Stream buffer to drain.
    */
   private claim(stream: RecordStream): void {
+    // A held stream keeps its records until hold(false) claims them.
+    if (this.paused) {
+      return;
+    }
+
     this.enqueue(this.toBatch(stream.take()));
   }
 
@@ -529,7 +601,11 @@ export class LogPipeline {
     this.unconfirmed.set(batch.id, batch);
     this.open.add(pending);
     this.queue.push(pending);
+    this.schedulePump();
+  }
 
+  /** Runs the pump on a microtask. Dispatching inline would start a fetch inside an app call. */
+  private schedulePump(): void {
     if (this.pumpScheduled) {
       return;
     }
@@ -543,7 +619,7 @@ export class LogPipeline {
 
   /** Starts queued dispatches up to the concurrency limit. */
   private pump(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.paused) return;
     while (this.inFlight < (this.policy?.delivery.maxConcurrentRequests ?? 2)) {
       const pending = this.queue.shift();
       if (!pending) {

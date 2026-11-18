@@ -41,7 +41,7 @@ document closes: ExitFlush.flush()                             src/transport/exi
 
 | Step            | Module                                                                          | What the step does                                                                                                              |
 | --------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Entry           | `src/index.ts`                                                                  | `requireRuntime()` gives the current runtime or the stopped runtime. With neither, it starts a default runtime.                 |
+| Entry           | `src/index.ts`                                                                  | `requireRuntime()` gives the current runtime or the stopped runtime. With neither, it makes an unconfigured runtime.            |
 | Logger          | `src/core/logger.ts`                                                            | `OneLogger` refuses a call after `shutdown()`. During a rotation it counts `record.dropped_during_rotation`.                    |
 | Deferred queue  | `src/core/deferred.ts`                                                          | With `payloadMode: "defer"`, `deferWrite()` holds the call and builds the record later.                                         |
 | Builder         | `src/core/record.ts`                                                            | `RecordBuilder.build()` samples, sanitizes, adds the fixed fields, runs the hooks and applies `limits.maxRecordBytes`.          |
@@ -166,33 +166,44 @@ A stored batch belongs to the storage adapter. The pipeline, the retry engine an
 
 The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runtime.ts`.
 
-| Flag             | Meaning                                                                                |
-| ---------------- | -------------------------------------------------------------------------------------- |
-| `tunablesLocked` | False in a runtime that an early logger call started. The first `configure()` sets it. |
-| `roleResolved`   | Startup has decided the bus role. The delivery stack loads after this.                 |
-| `ready`          | Startup is complete. `emit()` stops using the boot buffer.                             |
-| `rotating`       | A security-context rotation is in progress.                                            |
-| `closingContext` | The rotation collects the last records of the old context. `emit()` accepts them.      |
-| `destroyed`      | `shutdown()` stopped the runtime.                                                      |
-| `degraded`       | The runtime is console-only. It is on Node, or another version owns the page runtime.  |
+| Flag             | Meaning                                                                                      |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `tunablesLocked` | False until the first `configure()` call that works. That call sets it.                      |
+| `startFailed`    | The first `configure()` call failed. The runtime refuses each record and stays unconfigured. |
+| `running`        | `start()` ran. It runs at the first configured state with `enabled: true`.                   |
+| `roleResolved`   | Startup has decided the bus role. The delivery stack loads after this.                       |
+| `ready`          | Startup is complete. `emit()` stops using the boot buffer.                                   |
+| `rotating`       | A security-context rotation is in progress.                                                  |
+| `closingContext` | The rotation collects the last records of the old context. `emit()` accepts them.            |
+| `destroyed`      | `shutdown()` stopped the runtime.                                                            |
+| `degraded`       | The runtime is console-only. It is on Node, or another version owns the page runtime.        |
 
-| Transition         | Entry point                                                                           | What changes                                                                                                                       |
-| ------------------ | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Implicit start     | `requireRuntime()` in `src/index.ts` calls `ObservabilityRuntime.configure({}, true)` | A new runtime with the defaults. `tunablesLocked` is false. The runtime goes on the global key. `init()` starts.                   |
-| Explicit start     | `configure()` with no live runtime                                                    | A new runtime with the config of the application. `tunablesLocked` is true. The stopped-runtime key is deleted.                    |
-| Startup            | `init()`, then `boot()`                                                               | Journey bootstrap, bus start unless `bus.mode` is `off`, `roleResolved`, `syncSender()`. Then `ready` and `releaseBootBuffer()`.   |
-| Console-only start | `startDegraded()`                                                                     | Another version owns the page runtime. A local runtime starts and stays off the global key. It reports `runtime.version_mismatch`. |
-| Reconfigure        | `configure()` with a live runtime calls `reconfigure()`                               | The config changes in place through `applyResolvedConfig()`. It reports `config.reconfigured`.                                     |
-| Shutdown           | `shutdown()` calls `destroy()` on the current runtime                                 | `destroyed` is true. The runtime moves from the global key to the stopped-runtime key.                                             |
-| Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new routing settings, a new delivery stack and a new session.                                          |
-| New session        | `newSession()`                                                                        | A new `session.id`. The delivery stack and its buffers do not change.                                                              |
+| Transition         | Entry point                                                                           | What changes                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Implicit start     | `requireRuntime()` in `src/index.ts` calls `ObservabilityRuntime.configure({}, true)` | A new unconfigured runtime with the defaults. The runtime goes on the global key. Nothing starts.                                                                                                    |
+| Explicit start     | `configure()` with no live runtime                                                    | A new runtime with the config of the application. `launch()` runs. The stopped-runtime key is deleted.                                                                                               |
+| Launch             | `launch()`, from the explicit start or from `reconfigure()`                           | `tunablesLocked` becomes true. With `enabled: true`, `start()` runs. Otherwise the held records go to `onDrop` with `disabled`.                                                                      |
+| Start              | `start()`, then `init()` and `boot()`                                                 | Storage ids, `rehookHeld()`, the start gate, then journey bootstrap, the bus, `syncSender()`, `ready` and `releaseBootBuffer()`.                                                                     |
+| Failed start       | The catch in `ObservabilityRuntime.configure()` calls `refuse()`                      | `startFailed` is true. `redact` is `REFUSE_RECORDS`. The held records are dropped. The runtime stays unconfigured.                                                                                   |
+| Pause              | `reconfigure()` with `enabled: false` on a running runtime                            | `collectPoints()` runs first. `installCaptures()` removes every capture. `Sender.hold(true)` stops the pipeline, the retry engine and the exit flush. `deliver()` puts a record in `pendingRecords`. |
+| Console-only start | `startDegraded()`                                                                     | Another version owns the page runtime. A local runtime starts and stays off the global key. It reports `runtime.version_mismatch`.                                                                   |
+| Reconfigure        | `configure()` with a live runtime calls `reconfigure()`                               | The config changes in place through `applyResolvedConfig()`. It reports `config.reconfigured`.                                                                                                       |
+| Shutdown           | `shutdown()` calls `destroy()` on the current runtime                                 | `destroyed` is true. The runtime moves from the global key to the stopped-runtime key.                                                                                                               |
+| Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new routing settings, a new delivery stack and a new session.                                                                                                            |
+| New session        | `newSession()`                                                                        | A new `session.id`. The delivery stack and its buffers do not change.                                                                                                                                |
 
-### Implicit start
+### Unconfigured runtime
 
-- A logger call, `getHealth()`, `flush()` and most other functions call `requireRuntime()`. Each one can start the default runtime.
-- `shutdown()` does not start a runtime. It reads `ObservabilityRuntime.current()` only.
+- A logger call, `getHealth()`, `flush()` and most other functions call `requireRuntime()`. Each one can make the unconfigured runtime.
+- `shutdown()` does not make a runtime. It reads `ObservabilityRuntime.current()` only.
+- The unconfigured runtime keeps its ids in `memoryStores()`. `start()` changes `backing` to `BROWSER_STORES` for `identity: "storage"`, and reads the ids again.
+- `emit()` holds each record in the boot buffer, because `ready` is false.
+- `installCaptures()` and `syncSender()` do nothing before `running`. `buildBus()` waits for `startGate`, so `registerFrame()` and `registerWorker()` attach at the start.
+- The first `configure()` call that works sets each startup-fixed key. `keepStartupTunables()`, `keepBuiltIdentity()` and the loop for `correlation` and `storage` accept the new values while `tunablesLocked` is false.
+- `start()` calls `RecordBuilder.rehook()` on each held record. That function applies the configured level, sampling, body limit and `page.url` rule. It puts on the configured resource, runs `processors` and `redact`, then applies `limits.maxRecordBytes` through `fit()`, as `build()` does.
+- `start()` removes the breadcrumbs of log calls. It keeps a session that `newSession()` chose before the start.
+- `rotateSecurityContext()` rejects while `tunablesLocked` is false.
 - `boot()` never rejects. A startup fault reports `pipeline.crashed`, and `ready` still becomes true.
-- The first `configure()` after an implicit start sets `limits`, `journey.maxAgeMs` and `profiler.maxProbes`. It also sets the `storage` section when the delivery stack has not started to load. `correlation` stays fixed in this case too.
 
 ### `configure()` on a live runtime
 
@@ -203,14 +214,14 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 
 A fixed key keeps its value and reports `config.invalid`. The other keys of the same call still apply.
 
-| Key                                                                                                   | Function that keeps it                                                                                                                  |
-| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `correlation`, `storage`                                                                              | The loop in `reconfigure()`. `storage` can change in the first call after an implicit start, until `buildSender()` sets `storageBuilt`. |
-| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `bus.mode`, `bus.openFinRole`                     | `keepStartupTunables()`                                                                                                                 |
-| `batching`, `retention`, after the delivery stack starts to load                                      | `keepStartupTunables()` with `SENDER_SECTIONS`                                                                                          |
-| `identity`                                                                                            | `keepBuiltIdentity()`                                                                                                                   |
-| Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()`                                                                                                                     |
-| The keys of `ROUTING_KEYS` and `securityContext.id`, with `securityContext.isolation`                 | `keepRouting()`                                                                                                                         |
+| Key                                                                                                   | Function that keeps it                                       |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `correlation`, `storage`                                                                              | The loop in `reconfigure()`, after `tunablesLocked` is true. |
+| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `bus.mode`, `bus.openFinRole`                     | `keepStartupTunables()`                                      |
+| `batching`, `retention`, after the delivery stack starts to load                                      | `keepStartupTunables()` with `SENDER_SECTIONS`               |
+| `identity`                                                                                            | `keepBuiltIdentity()`                                        |
+| Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()`                                          |
+| The keys of `ROUTING_KEYS` and `securityContext.id`, with `securityContext.isolation`                 | `keepRouting()`                                              |
 
 Do not write to `this.config` directly. Use `applyResolvedConfig()`.
 
@@ -219,8 +230,8 @@ Do not write to `this.config` directly. Use `applyResolvedConfig()`.
 `destroy()` does these steps in order.
 
 1. It drains the deferred queue, collects the metric points and ends the root span.
-2. It sets `destroyed`, removes its `pagehide` listener and uninstalls the captures.
-3. It starts `Sender.destroy()`. That function runs a normal flush, then the exit flush with the reason `shutdown`.
+2. It sets `destroyed`, removes its `pagehide` listener and uninstalls the captures. During a pause, it reports the records in the memory of the sender with `disabled`.
+3. It starts `Sender.destroy()`. That function runs a normal flush, then the exit flush with the reason `shutdown`. A held sender runs neither.
 4. It stops the journey engine, gives the forward buffer to the bus and stops the bus.
 5. It reports the pending records as `load_failed`.
 6. It waits for the sender, for a load in progress and for a rotation in progress.
@@ -246,6 +257,8 @@ After shutdown, each call goes to the stopped runtime and records nothing. The n
 8. It calls `newSession()`, then `syncSender()`, then `Bus.rotateContext()`.
 9. `rotating` becomes false, unless a later call waits. With `carry`, `Sender.adopt()` stores the old batches under the new id.
 10. It reports `security.rotated`.
+
+During a pause, `Sender.retire()` skips the flush, so a rotation with `pending: "flush"` acts as `discard`. With `carry`, the rotation routes the live records to `pendingRecords`, and `adopt` keeps the stored batches in `carried`. `buildSender()` adopts them at `enabled: true`. A later rotation takes `carried` back through `takeOld()` and applies its own `pending` rule. With no old sender, `rotateContext()` reaches storage through `src/storage/stored-context.ts`. For `discard` and `flush`, `clearStored()` removes the stored batches of the old context and the carried batches by id. For `retain`, `keepStored()` stores the held records and the carried batches under the old context. `clearPersisted()` uses the same module.
 
 While `rotating` is true, a logger call counts `record.dropped_during_rotation`. `emit()` drops each built record at once and reports it to `onDrop` with `security_context`. Only a record under `closingContext` passes. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
 

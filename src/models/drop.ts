@@ -22,6 +22,12 @@ import type { LogRecord } from "./log-record";
  *   are lost.
  * - "not_stored": storage did not keep a batch after a failed send, because of a write error or
  *   `storage: "none"`.
+ * - "disabled": `enabled` is false, so nothing sends these records. They are a record that a
+ *   child context forwards to a paused sender or a paused forwarder, and a record that a log
+ *   call held before the first `configure()` call when that call sets `enabled: false` and its
+ *   levels and sampling keep the record. At a pagehide or a `shutdown()` during a pause, they
+ *   are also the records that wait for the sender, and the ones in its buffers, its queue and
+ *   its requests. Each record is reported once, whatever comes later.
  */
 export type LossReason =
   | "security_context"
@@ -35,7 +41,8 @@ export type LossReason =
   | "unserializable"
   | "exit_queue_full"
   | "load_failed"
-  | "not_stored";
+  | "not_stored"
+  | "disabled";
 
 /**
  * One report of lost records. Losses with the same reason in the same task are merged into one

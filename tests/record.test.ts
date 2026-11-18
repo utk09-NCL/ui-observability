@@ -766,3 +766,14 @@ describe("the record itself", () => {
     expect(record.observedTimeUnixNano).toBeUndefined();
   });
 });
+
+describe("rehook", () => {
+  it("drops a held record below the configured level when there's no debug buffer to keep it", () => {
+    const { builder, diagnostics } = makeBuilder({ debugBuffer: { enabled: true } });
+    const held = built(builder);
+    builder["deps"].config.minLevel = "WARN";
+
+    expect(builder.rehook(held)).toBeNull();
+    expect(diagnostics.snapshot()["record.dropped_by_level"]).toBe(1);
+  });
+});

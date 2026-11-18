@@ -105,7 +105,8 @@ const loggers = new Map<string, OneLogger>();
 
 /**
  * Returns the active runtime. After shutdown() that is the stopped runtime, which does
- * nothing. Before the first configure(), it starts a runtime with default settings.
+ * nothing. Before the first configure(), it makes an unconfigured runtime, which holds records
+ * in memory and starts nothing until a configure() call works.
  * @returns Runtime instance.
  */
 function requireRuntime(): ObservabilityRuntime {
@@ -114,7 +115,7 @@ function requireRuntime(): ObservabilityRuntime {
     return runtime;
   }
 
-  // Start a default runtime, so a log call before configure() doesn't throw.
+  // Make the unconfigured runtime, so a log call before configure() doesn't throw.
   return ObservabilityRuntime.configure({}, true);
 }
 
@@ -131,7 +132,10 @@ export function clearPersistedLogs(scope: "context" | "namespace" = "context"): 
 }
 
 /**
- * Initializes or reconfigures the observability runtime.
+ * Initializes or reconfigures the observability runtime. The first call that works starts the
+ * runtime. Before it, the library patches, stores and sends nothing, and the records logged
+ * before it go out with its hooks and identity. With `enabled: false`, the start waits for the
+ * first `enabled: true`.
  * With `payloadMode: "defer"`, logger records are built in idle time. With the debug buffer on,
  * they are still built at the call.
  * @param config Consumer configuration options.
@@ -143,7 +147,8 @@ export function configure(config: Partial<ObservabilityConfig>): void {
 
 /**
  * Locks or unlocks the configuration. The lock isn't access control against other code on
- * this origin.
+ * this origin. Call it after configure(), because a lock before the first configure() refuses
+ * that call too, and the runtime then never starts.
  * @param locked True to refuse changes through configure().
  */
 export function setConfigurationLocked(locked: boolean): void {
@@ -155,7 +160,8 @@ export function setConfigurationLocked(locked: boolean): void {
  * rotation runs after it.
  * @param update New identity, routing settings and context attributes.
  * @param options What to do with old records, and the flush deadline.
- * @returns Promise that resolves once the change is complete.
+ * @returns Promise that resolves once the change is complete. It rejects before the first
+ * configure() call that works, and while a failed first call still refuses records.
  */
 export function rotateSecurityContext(
   update: SecurityContextUpdate,

@@ -1269,7 +1269,18 @@ export interface ObservabilityConfig {
   environment?: string;
 
   /**
-   * Master switch. When false, every log call does nothing.
+   * Master switch. False pauses the library, also in the first `configure()` call. Log calls
+   * then do nothing. The pause first sends the open interval of the counters, histograms and
+   * probes, and they then record nothing. The library removes its captures, the replay recorder
+   * and its network patches, so it adds no trace header. The sender sends nothing, and the pause
+   * stores no new record. Storage still changes in four cases: a request in flight at the pause
+   * fails and stores its batch, a sender load that ends during the pause moves the emergency
+   * queue into storage, a `retain` rotation stores the waiting records, and a `discard` or
+   * `flush` rotation removes the old context's stored batches.
+   * Records collected before the pause stay in memory or in storage, and they go out after
+   * `enabled: true`. The bus of a running runtime stays connected. A record from a child
+   * context is lost with the `onDrop` reason "disabled", also in a paused forwarder. A first
+   * `configure()` call with `enabled: false` writes nothing to storage and starts no bus.
    * @default true
    */
   enabled?: boolean;

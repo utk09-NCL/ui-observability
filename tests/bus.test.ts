@@ -2131,6 +2131,49 @@ describe("Bus receive: welcome, records and journey", () => {
     bus.destroy();
   });
 
+  it("hands a child's records to the runtime instead of the upstream while paused", async () => {
+    const { bus, handlers: h } = make();
+    Object.assign(h, { paused: () => true });
+    await bus.start();
+
+    const upstream = fakeLink("parent");
+    const internals = bus as unknown as { role: string; upstream: Link | null };
+    internals.role = "forwarder";
+    internals.upstream = upstream;
+
+    deliver(
+      bus,
+      { t: "ui-observability.message.records", from: "grandchild", records: oneRecord() },
+      { link: "children", origin: "https://app.example" },
+    );
+
+    expect(upstream.post).not.toHaveBeenCalled();
+    expect(h.onRecords).toHaveBeenCalledWith(oneRecord());
+    bus.destroy();
+  });
+
+  it("ignores records from its upstream link while paused, as an active forwarder does", async () => {
+    const { bus, handlers: h } = make();
+    Object.assign(h, { paused: () => true });
+    await bus.start();
+
+    const upstream = fakeLink("parent");
+    const internals = bus as unknown as { role: string; upstream: Link | null };
+    internals.role = "forwarder";
+    internals.upstream = upstream;
+
+    // A sibling view's records reach this view on the shared upstream link.
+    deliver(
+      bus,
+      { t: "ui-observability.message.records", from: "sibling", records: oneRecord() },
+      { link: "parent", origin: "https://app.example" },
+    );
+
+    expect(h.onRecords).not.toHaveBeenCalled();
+    expect(upstream.post).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+
   it("drops records rather than forwarding when a forwarder has no upstream", () => {
     const { bus, handlers: h } = make();
     (bus as unknown as { role: string }).role = "forwarder";

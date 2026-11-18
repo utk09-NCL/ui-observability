@@ -43,6 +43,7 @@ import { isLogRecord, type LogRecord } from "../models/log-record";
 import type { DeliveryStats } from "../models/stats";
 import type { DebugBundle, ObservabilityHealth } from "../models/health";
 import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
+import type { StoreAccess } from "../storage/stored-context";
 import { ConsoleSink } from "../utils/console";
 import { hasOwn, isObject } from "../utils/guards";
 import {
@@ -167,6 +168,13 @@ const SENDER_SECTIONS = ["batching", "retention"] as const;
 
 /** Config sections a later configure() can't change. */
 type StartupSection = (typeof SENDER_SECTIONS)[number] | "limits";
+
+/** Crumbs that log calls add. Before the start, they hold a body that no hook has seen. */
+const LOGGED_CRUMBS: readonly string[] = ["log", "event", "action"];
+
+/** Text of the warning and the report after a failed first configure() call. */
+const FAILED_START =
+  "configure() could not read its options. The library drops each record and installs no capture until a configure() call sets redact to a function or null.";
 
 /** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
@@ -350,14 +358,20 @@ export class ObservabilityRuntime {
   /** Identity context containing session, tab, and context identifiers. */
   readonly identity: Identity;
 
-  /** Stores for identity and journey keys, set at startup. */
-  private readonly stores: IdentityStores;
+  /** Where the ids and the journey live. Memory until the start, so nothing touches storage. */
+  private backing: IdentityStores = memoryStores();
 
-  /** The identity strategy the stores were built with. */
-  private readonly identityBuiltAs: IdentityStrategy;
+  /** Stores for identity and journey keys. They read the backing on every call. */
+  private readonly stores: IdentityStores = {
+    local: () => this.backing.local(),
+    session: () => this.backing.session(),
+  };
 
-  /** Throttled writer of the session's last-seen timestamp. */
-  private readonly sessionTouch: SessionTouch;
+  /** The identity strategy that the start uses. The app's startup call fixes it. */
+  private identityBuiltAs: IdentityStrategy;
+
+  /** Throttled writer of the session's last-seen timestamp. The start builds it again. */
+  private sessionTouch: SessionTouch;
 
   /** Store for ambient application context attributes. */
   readonly context = new ContextStore();
@@ -430,9 +444,6 @@ export class ObservabilityRuntime {
   /** Promise for the bus load and start. Undefined until first needed. */
   private busLoad?: Promise<Bus | null>;
 
-  /** True once a delivery stack load has built the storage adapter from the storage section. */
-  private storageBuilt = false;
-
   /**
    * Delivery stack. Set in the sender role with an endpoint or a custom transport, once the
    * chunk has loaded.
@@ -442,10 +453,19 @@ export class ObservabilityRuntime {
   /** The delivery stack load. Undefined when nothing loads, so records have no destination. */
   private senderLoad?: Promise<void>;
 
-  /** Records that arrive while the delivery stack loads. */
+  /** Records that arrive while the delivery stack loads, or while a pause holds them. */
   private readonly pendingRecords = new HoldBuffer((record) => {
     this.dropHeld(record);
   });
+
+  /** Records that dropPaused() reported, so a second pagehide doesn't count them again. */
+  private readonly pausedLoss = new WeakSet<LogRecord>();
+
+  /** Stored batches that a carry during a pause left for the next sender to adopt. */
+  private carried: LogBatch[] = [];
+
+  /** True once resetSession() ran. start() then keeps that session over the stored one. */
+  private sessionPicked = false;
 
   /**
    * True after a rotation fails. The app asked to leave the context, so the runtime sends no
@@ -460,10 +480,24 @@ export class ObservabilityRuntime {
   private parkedSender: Sender | undefined;
 
   /**
-   * True after the first configure() call failed. The runtime then installs no capture and
-   * refuses each record, because it can't know what the app needs to redact.
+   * True after the first configure() call failed. The runtime stays unconfigured and refuses
+   * each record, because it can't know what the app needs to redact.
    */
   private startFailed = false;
+
+  /**
+   * True once the runtime has started: the first configure() call that works, with enabled true.
+   * Before that, nothing is patched, stored or sent.
+   */
+  private running = false;
+
+  /** Opens the start gate below. Its promise sets it, and start() calls it. */
+  private openGate!: () => void;
+
+  /** Resolves at the start. A frame or worker that registers before it joins the bus then. */
+  private readonly startGate = new Promise<void>((resolve) => {
+    this.openGate = resolve;
+  });
 
   /** Active auto-capture instrumentation modules. */
   private readonly captures: Capture[] = [];
@@ -512,8 +546,11 @@ export class ObservabilityRuntime {
   /** Lifetime rules for the journey engine. The app's first configure() sets the age. */
   private readonly journeyOptions: JourneyOptions;
 
-  /** False in a runtime started by an early log call. The first configure() then sets limits. */
-  private tunablesLocked = true;
+  /**
+   * False until the app's startup call, the first configure() call that works. That call sets
+   * every startup-fixed setting, also after an early log call.
+   */
+  private tunablesLocked = false;
 
   /**
    * True for a console-only runtime, which sends nothing, joins no bus and installs no capture.
@@ -530,6 +567,7 @@ export class ObservabilityRuntime {
    */
   private readonly onPageHide = (): void => {
     drainDeferred(this);
+    this.dropPaused();
     if (this.role() !== "forwarder") {
       return;
     }
@@ -541,10 +579,8 @@ export class ObservabilityRuntime {
   /**
    * @param input Initial consumer configuration options.
    * @param mismatch True for a console-only runtime next to another version.
-   * @param refusing True after the first configure() call failed.
    */
-  private constructor(input: Partial<ObservabilityConfig>, mismatch: boolean, refusing: boolean) {
-    this.startFailed = refusing;
+  private constructor(input: Partial<ObservabilityConfig>, mismatch: boolean) {
     // resolveConfig() checks the hook below. Until then, a value that isn't a function gets no
     // events, otherwise each report would call it and count a false handler.threw.
     this.diagnostics = new Diagnostics(
@@ -562,8 +598,6 @@ export class ObservabilityRuntime {
       this.config.diagnostics.consoleFallback,
     );
     this.identityBuiltAs = this.config.identity;
-    this.stores =
-      this.identityBuiltAs === "memory" || this.onServer() ? memoryStores() : BROWSER_STORES;
     this.identity = resolveIdentity(
       this.diagnostics,
       this.stores,
@@ -592,8 +626,6 @@ export class ObservabilityRuntime {
         },
       },
     );
-    // Don't await. Without OTel, records use the ambient trace and nothing is lost.
-    void this.tracing.loadOtel();
     // The startup values stick. A later configure() can't change the limits or the journey age.
     this.limits = { ...this.config.limits };
     this.console = new ConsoleSink(this.config.consoleOutput, this.diagnostics, this.limits);
@@ -719,7 +751,8 @@ export class ObservabilityRuntime {
    */
   recordMetric(def: InstrumentDef, value: number, attributes?: MetricAttributes): void {
     // Guard against a value after shutdown, whose interval timer would outlive the runtime.
-    if (!this.destroyed && !this.rotating) {
+    // A pause records nothing, as a log call does nothing.
+    if (!this.destroyed && !this.rotating && this.config.enabled) {
       this.meter.record(def, value, attributes);
     }
   }
@@ -815,7 +848,8 @@ export class ObservabilityRuntime {
    * points that are waiting, because the switch would otherwise drop them.
    */
   private syncProfiler(): void {
-    const { enabled } = this.config.profiler;
+    // A pause detaches the probes, so they read no clock until enabled is true again.
+    const enabled = this.config.profiler.enabled && this.config.enabled;
     if (enabled === this.profilerOn) {
       return;
     }
@@ -978,7 +1012,7 @@ export class ObservabilityRuntime {
   /**
    * Initializes a new runtime instance or updates the existing singleton.
    * @param input Consumer configuration options.
-   * @param implicit True for the default runtime that an early log call starts.
+   * @param implicit True for the unconfigured runtime that an early log call makes.
    * @returns Active runtime instance.
    */
   static configure(input: Partial<ObservabilityConfig>, implicit = false): ObservabilityRuntime {
@@ -987,7 +1021,7 @@ export class ObservabilityRuntime {
     } catch (error) {
       const live = ObservabilityRuntime.current();
       // A getter in a later call threw before anything changed, so the current settings stay.
-      if (live) {
+      if (live?.tunablesLocked) {
         live.diagnostics.report(
           "config.invalid",
           "configure() could not read its options. The library keeps the current settings.",
@@ -997,28 +1031,44 @@ export class ObservabilityRuntime {
         return live;
       }
 
-      // The first call failed, so the library can't tell what the app must redact, and it has
-      // no onDiagnostic to tell. It refuses each record until a configure() call works.
-      runAsLibraryConsole(() => {
-        // eslint-disable-next-line no-console -- The only sink before an onDiagnostic exists.
-        console.warn(
-          `${LIBRARY_LOG_PREFIX} configure() could not read its options. The library drops each record and installs no capture until a configure() call sets redact to a function or null.`,
-        );
-      });
-      return ObservabilityRuntime.startOrUpdate({ redact: REFUSE_RECORDS }, true, true);
+      // An early log call's runtime takes the refusal too, otherwise its held records and a
+      // later call without redact would go out unredacted.
+      const runtime = live ?? ObservabilityRuntime.startOrUpdate({}, true);
+      runtime.refuse(error);
+      return runtime;
     }
+  }
+
+  /**
+   * Fails closed after the app's first configure() call couldn't be read. The library can't
+   * tell what the app must redact, so it refuses each record, the held ones too, until a call
+   * sets redact itself. The runtime stays unconfigured, so it writes no id to storage.
+   * @param error What reading the options threw.
+   */
+  private refuse(error: unknown): void {
+    this.startFailed = true;
+    // A quiet reporter, so the stand-in doesn't report the missing endpoint a second time.
+    const next = resolveConfig({ redact: REFUSE_RECORDS }, new Diagnostics(), this.config);
+    applyResolvedConfig(this.config, next);
+    // The app's onDiagnostic may not exist yet, so the console gets the warning too.
+    runAsLibraryConsole(() => {
+      // eslint-disable-next-line no-console -- The only sink before an onDiagnostic exists.
+      console.warn(`${LIBRARY_LOG_PREFIX} ${FAILED_START}`);
+    });
+    this.diagnostics.report("config.invalid", FAILED_START, undefined, error);
+    // The stand-in drops each held record, as it drops every new one.
+    this.rehookHeld();
   }
 
   /**
    * Starts a runtime, or updates the one that runs. A getter in the input can throw here.
    * @param input Consumer configuration options.
-   * @param implicit True for the default runtime that an early log call starts.
+   * @param implicit True for the unconfigured runtime that an early log call makes.
    * @returns Active runtime instance.
    */
   private static startOrUpdate(
     input: Partial<ObservabilityConfig>,
     implicit: boolean,
-    refusing = false,
   ): ObservabilityRuntime {
     const local = ObservabilityRuntime.local;
     if (local && !local.destroyed) {
@@ -1032,7 +1082,7 @@ export class ObservabilityRuntime {
     if (pinned) {
       // A runtime older than 0.9.0 has no sdkVersion, which also counts as another version.
       if (!ownVersion(pinned)) {
-        return ObservabilityRuntime.startDegraded(input, pinned.sdkVersion, refusing);
+        return ObservabilityRuntime.startDegraded(input, pinned.sdkVersion, implicit);
       }
 
       if (!pinned.destroyed) {
@@ -1041,12 +1091,13 @@ export class ObservabilityRuntime {
       }
     }
 
-    const runtime = new ObservabilityRuntime(input, false, refusing);
-    // The app's first configure() sets the limits of a default runtime.
-    runtime.tunablesLocked = !implicit;
+    const runtime = new ObservabilityRuntime(input, false);
     (globalThis as Record<symbol, unknown>)[RUNTIME_KEY] = runtime;
     Reflect.deleteProperty(globalThis, STOPPED_KEY);
-    void runtime.init();
+    // An early log call's runtime waits for the app's configure().
+    if (!implicit) {
+      runtime.launch();
+    }
     return runtime;
   }
 
@@ -1055,14 +1106,15 @@ export class ObservabilityRuntime {
    * no bus and installs no capture. The other version keeps the page runtime.
    * @param input Consumer configuration options.
    * @param found The pinned runtime's sdkVersion. A runtime older than 0.9.0 has none.
+   * @param implicit True for the unconfigured runtime that an early log call makes.
    * @returns The local runtime.
    */
   private static startDegraded(
     input: Partial<ObservabilityConfig>,
     found: unknown,
-    refusing: boolean,
+    implicit: boolean,
   ): ObservabilityRuntime {
-    const runtime = new ObservabilityRuntime(input, true, refusing);
+    const runtime = new ObservabilityRuntime(input, true);
     ObservabilityRuntime.local = runtime;
 
     const foundText = typeof found === "string" ? found : "before 0.9.0";
@@ -1073,7 +1125,9 @@ export class ObservabilityRuntime {
       { found: foundText, own: TELEMETRY_SDK_VERSION },
     );
 
-    void runtime.init();
+    if (!implicit) {
+      runtime.launch();
+    }
     return runtime;
   }
 
@@ -1100,17 +1154,14 @@ export class ObservabilityRuntime {
     }
     drainDeferred(this);
     const accepted = this.keepDestination(this.keepRouting(this.allowed(input)));
-    // The first configure() after an implicit start is the app's startup, so its id is explicit.
+    // The app's startup call names its own id, so the id is explicit.
     if (!this.tunablesLocked && accepted.securityContext?.id) {
       this.explicitSecurityContext = true;
     }
     const next = resolveConfig(accepted, this.diagnostics, this.config);
-    for (const key of ["correlation", "storage"] as const) {
-      // The sender reads the storage section when it loads. Until then, the first configure() of
-      // a runtime that an early log call started can set it.
-      if (key === "storage" && !this.tunablesLocked && !this.storageBuilt) {
-        continue;
-      }
+    // Nothing reads these sections before the start, so the app's startup call can set them.
+    const fixed = this.tunablesLocked ? (["correlation", "storage"] as const) : [];
+    for (const key of fixed) {
       // Compare resolved values, so an undefined or invalid key isn't a change. Restore the
       // section in the next config, never in the app's own object.
       if (!sameConfig(next[key], this.config[key])) {
@@ -1122,7 +1173,11 @@ export class ObservabilityRuntime {
       }
     }
     this.keepStartupTunables(next);
-    const { redact, processors } = this.config;
+    const { redact, processors, enabled } = this.config;
+    // A pause sends the open interval first. Built now, those points go out after the pause.
+    if (enabled && !next.enabled) {
+      this.collectPoints();
+    }
     applyResolvedConfig(this.config, next);
     // After a failed first call the library can't know which redact the app meant, so only a
     // call that sets redact itself, to a function or null, ends the refusal.
@@ -1145,6 +1200,11 @@ export class ObservabilityRuntime {
     this.keepBuiltIdentity();
     // The handler and the resource are up to date now, and points and diagnostics use both.
     this.syncProfiler();
+    this.launch();
+    // A pause keeps the sender's records, so they go out once enabled is true again.
+    if (this.running && enabled !== this.config.enabled) {
+      this.sender?.hold(!this.config.enabled);
+    }
 
     // Reinstall only on a change, because a reinstall unpatches and repatches every host
     // function. A stale capture load stops at its generation check, so a reinstall is safe
@@ -1240,10 +1300,9 @@ export class ObservabilityRuntime {
       this.keepSections(next, SENDER_SECTIONS);
     }
 
-    // An early log call starts a runtime with defaults. The app's first configure() sets that
-    // runtime's limits and journey age.
+    // An early log call starts a runtime with defaults. The app's startup call sets that
+    // runtime's limits, journey age and bus role settings.
     if (!this.tunablesLocked) {
-      this.tunablesLocked = true;
       Object.assign(this.limits, next.limits);
       this.journeyOptions.maxAgeMs = next.journey.maxAgeMs;
       return;
@@ -1353,6 +1412,12 @@ export class ObservabilityRuntime {
    * later change can't move them to another store.
    */
   private keepBuiltIdentity(): void {
+    // The stores switch at the start, so the app's startup call can still pick the strategy.
+    if (!this.tunablesLocked) {
+      this.identityBuiltAs = this.config.identity;
+      return;
+    }
+
     const built = this.identityBuiltAs;
 
     if (this.config.identity === built) {
@@ -1365,6 +1430,76 @@ export class ObservabilityRuntime {
       { requested: this.config.identity },
     );
     this.config.identity = built;
+  }
+
+  /**
+   * Fixes the startup settings at the first configure() call that works, then starts the
+   * runtime once enabled is true. A failed first call leaves the runtime unconfigured.
+   */
+  private launch(): void {
+    if (this.startFailed) {
+      return;
+    }
+
+    if (!this.tunablesLocked) {
+      this.tunablesLocked = true;
+      // These records never met the app's hooks, so they reach onDrop only after redact.
+      if (!this.config.enabled) {
+        this.drops.add("disabled", this.rehookHeld());
+      }
+    }
+
+    if (!this.running && this.config.enabled) {
+      this.start();
+    }
+  }
+
+  /**
+   * Starts the runtime: reads the configured ids, gives the held records the app's hooks and
+   * resource, then installs the captures and starts the bus and the sender. Runs once.
+   */
+  private start(): void {
+    this.running = true;
+    // The ids lived in memory until now, so a page that never calls configure() stores nothing.
+    if (this.identityBuiltAs === "storage" && !this.onServer()) {
+      this.backing = BROWSER_STORES;
+    }
+
+    const { sessionIdleMs, traceMaxAgeMs } = this.config.correlation;
+    const { sessionId, tabId } = resolveIdentity(this.diagnostics, this.stores, sessionIdleMs);
+    this.sessionTouch = new SessionTouch(this.diagnostics, this.stores, sessionIdleMs);
+    // A newSession() before the start chose a new session, so the stored one mustn't replace it.
+    if (this.sessionPicked) {
+      this.sessionTouch.restart(this.identity.sessionId);
+    } else {
+      this.identity.sessionId = sessionId;
+    }
+    this.identity.tabId = tabId;
+    this.builder.invalidateResource();
+    // A log call's crumb holds its raw body, because no hook existed yet. The app's own crumbs stay.
+    this.breadcrumbs.retain((crumb) => !LOGGED_CRUMBS.includes(crumb.category));
+    this.tracing.setup(traceMaxAgeMs ?? Infinity, this.config.otelLoader);
+    // Don't await. Without OTel, records use the ambient trace and nothing is lost.
+    void this.tracing.loadOtel();
+
+    for (const record of this.rehookHeld()) {
+      this.bootBuffer.push(record, this.config.buffering.maxHeldRecords);
+    }
+
+    this.openGate();
+    void this.init();
+  }
+
+  /**
+   * Takes the records that log calls held before the app's startup call, and runs the app's
+   * hooks on them now.
+   * @returns The records the hooks kept, with the configured resource.
+   */
+  private rehookHeld(): LogRecord[] {
+    return this.bootBuffer
+      .take()
+      .map((record) => this.builder.rehook(record))
+      .filter((record) => record !== null);
   }
 
   /** Initializes asynchronous subsystems and flushes the boot buffer. */
@@ -1459,6 +1594,8 @@ export class ObservabilityRuntime {
   /** Imports and constructs the bus. Never rejects. */
   private async buildBus(): Promise<Bus | null> {
     try {
+      // A frame or a worker can register before configure(), and the bus waits for the start.
+      await this.startGate;
       const { Bus } = await import("../bus/bus");
 
       // A shutdown can happen during the load, and a bus on a destroyed runtime leaks its links.
@@ -1526,6 +1663,7 @@ export class ObservabilityRuntime {
           onRecords: (records) => {
             this.ingestForwarded(records);
           },
+          paused: () => !this.config.enabled,
           onJourney: (journey) => {
             this.journey.applyRemote(journey);
           },
@@ -1566,7 +1704,9 @@ export class ObservabilityRuntime {
    * @returns Promise that resolves when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
-    if (this.deliveryClosed || !this.hasDestination() || this.role() !== "sender") {
+    // Nothing sends before the start or during a pause. A pause that ends calls this again.
+    const sends = this.running && this.config.enabled && !this.deliveryClosed;
+    if (!sends || !this.hasDestination() || this.role() !== "sender") {
       return Promise.resolve();
     }
 
@@ -1595,8 +1735,6 @@ export class ObservabilityRuntime {
    * Never rejects.
    */
   private async buildSender(): Promise<void> {
-    this.storageBuilt = true;
-
     try {
       const { Sender } = await import("./sender");
       const sender = this.destroyed
@@ -1635,6 +1773,10 @@ export class ObservabilityRuntime {
       }
 
       this.sender = sender;
+      // A pause that started during the load holds the new sender too.
+      if (!this.config.enabled) {
+        sender.hold(true);
+      }
     } catch (error) {
       // Clear the load so a later configure() can try again.
       this.senderLoad = undefined;
@@ -1650,6 +1792,26 @@ export class ObservabilityRuntime {
     for (const record of this.pendingRecords.take()) {
       this.sender?.push(record);
     }
+
+    // A carry during a pause left its stored batches for this sender.
+    const carried = this.carried;
+    this.carried = [];
+    if (this.sender && carried.length > 0) {
+      await this.adoptStored(this.sender, carried);
+    }
+  }
+
+  /**
+   * Stores an earlier context's batches under this context.
+   * @param sender The sender that adopts them.
+   * @param stored The earlier context's stored batches.
+   */
+  private async adoptStored(sender: Sender, stored: readonly LogBatch[]): Promise<void> {
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not store the carried batches under the new context.",
+      () => sender.adopt(stored, this.config.securityContext.id),
+    );
   }
 
   /** Refreshes temporary switches and restores local settings when their TTL ends. */
@@ -1682,7 +1844,7 @@ export class ObservabilityRuntime {
   private captureState(settings: CaptureOptions): string {
     const { enabled, framePhases, framePacing } = this.config.profiler;
 
-    return `${captureKey(settings)}${String(enabled && framePhases)}${String(enabled && framePacing)}${this.replayState(settings)}`;
+    return `${String(this.config.enabled)}${captureKey(settings)}${String(enabled && framePhases)}${String(enabled && framePacing)}${this.replayState(settings)}`;
   }
 
   /**
@@ -1744,14 +1906,21 @@ export class ObservabilityRuntime {
   /** Loads, builds and installs the enabled capture modules. Never rejects. */
   private async installCaptures(): Promise<void> {
     // A console-only runtime next to another version patches nothing. The other version does.
-    // After a failed first call, nothing is patched until a call works.
-    if (this.degraded || this.startFailed) {
+    // Nothing is patched before the start.
+    if (this.degraded || !this.running) {
       return;
     }
 
     const generation = ++this.captureGeneration;
     const settings = this.effectiveCapture();
     this.installedCaptureKey = this.captureState(settings);
+
+    // A pause removes every patch and the recorder, so the page runs as if the library weren't
+    // there. The replay buffer goes with the recorder, and enabled true starts a new recording.
+    if (!this.config.enabled) {
+      this.uninstallCaptures();
+      return;
+    }
     const replayKey = this.replayState(settings);
 
     // The recorder reads the live config whenever it starts, and newSession() or startReplay()
@@ -2056,6 +2225,8 @@ export class ObservabilityRuntime {
     }
 
     this.uninstallCaptures();
+    // A paused sender sends nothing at shutdown either.
+    this.dropPaused();
 
     // Sender.destroy awaits a normal flush, then runs the exit flush. The records already
     // hold their journey, so the journey and the bus can stop first.
@@ -2064,8 +2235,9 @@ export class ObservabilityRuntime {
     // A record in the forward buffer waits for its microtask, so the bus takes it before it stops.
     this.sendForwarded();
     this.bus?.destroy();
-    // The delivery stack didn't load before shutdown(), so the held records are lost.
-    this.drops.add("load_failed", this.pendingRecords.take());
+    // The delivery stack didn't load before shutdown(), so the held records are lost. A pause
+    // already reported its own.
+    this.drops.add("load_failed", this.unreported(this.pendingRecords.take()));
     await closing;
     // A load in progress destroys its own stack, and shutdown() resolves only after that.
     await this.senderLoad;
@@ -2154,7 +2326,9 @@ export class ObservabilityRuntime {
     }
 
     // Console-only mode has no destination. Count the drop, otherwise no counter shows the loss.
-    if (!this.senderLoad) {
+    // A pause loads no sender, so it holds the record until enabled: true loads one.
+    const paused = !this.config.enabled && this.hasDestination();
+    if (!this.senderLoad && !paused) {
       this.diagnostics.count("record.dropped_no_destination");
       // After a failed load, the config has a destination but no delivery stack.
       if (this.hasDestination()) {
@@ -2164,6 +2338,35 @@ export class ObservabilityRuntime {
     }
 
     this.pendingRecords.push(record, this.config.buffering.maxHeldRecords);
+  }
+
+  /**
+   * Reports the sender's records in memory as lost during a pause. A pause has no exit flush,
+   * so a pagehide or a shutdown leaves nothing to send them.
+   */
+  private dropPaused(): void {
+    if (this.config.enabled) {
+      return;
+    }
+
+    // The records stay, and a page back from the back/forward cache sends them, so count once.
+    const fresh = this.unreported([
+      ...this.pendingRecords.records,
+      ...(this.sender?.records() ?? []),
+    ]);
+    for (const record of fresh) {
+      this.pausedLoss.add(record);
+    }
+    this.drops.add("disabled", fresh);
+  }
+
+  /**
+   * Leaves out the records that a pause already reported, so onDrop counts each loss once.
+   * @param records Lost records.
+   * @returns The records with no report yet.
+   */
+  private unreported(records: readonly LogRecord[]): LogRecord[] {
+    return records.filter((record) => !this.pausedLoss.has(record));
   }
 
   /**
@@ -2240,6 +2443,12 @@ export class ObservabilityRuntime {
     // redact masks.
     if (this.rotating) {
       this.drops.add("security_context", accepted);
+      return;
+    }
+
+    // The bus stays connected during a pause, but the sender sends nothing.
+    if (!this.config.enabled) {
+      this.drops.add("disabled", accepted);
       return;
     }
 
@@ -2336,6 +2545,7 @@ export class ObservabilityRuntime {
    * @param sessionId Id of the session to start.
    */
   private resetSession(sessionId: string): void {
+    this.sessionPicked = true;
     // Close the old session's work first, so its points and root span keep the old id.
     this.collectPoints();
     this.tracing.rotate("explicit");
@@ -2363,6 +2573,14 @@ export class ObservabilityRuntime {
     options: SecurityContextRotationOptions = {},
   ): Promise<void> {
     if (this.destroyed) return Promise.reject(new Error("The runtime has stopped."));
+    // Before a configure() call works, there's no context to leave and no routing to replace.
+    if (!this.tunablesLocked) {
+      return Promise.reject(
+        new Error(
+          "The runtime is not configured. Call configure() before rotateSecurityContext().",
+        ),
+      );
+    }
 
     // A record from this call on belongs to neither context, so it's dropped from here.
     drainDeferred(this);
@@ -2461,15 +2679,18 @@ export class ObservabilityRuntime {
           ...this.forwardBuffer,
         ];
         const sender = this.sender ?? this.parkedSender;
+        const carried = this.carried;
         this.forwardBuffer = [];
+        this.carried = [];
         this.sender = undefined;
         this.senderLoad = undefined;
         this.parkedSender = undefined;
-        return { held, sender, closed: this.deliveryClosed };
+        return { held, sender, closed: this.deliveryClosed, carried };
       },
       drop: (records) => {
-        this.drops.add("security_context", records);
+        this.drops.add("security_context", this.unreported(records));
       },
+      storeAccess: () => this.storeAccess(),
       advanceIdentity: () => {
         this.advanceIdentity();
       },
@@ -2486,7 +2707,12 @@ export class ObservabilityRuntime {
         this.route(record);
       },
       adopt: async (stored) => {
-        // With no new sender, the stored batches stay parked under the old id, so none is lost.
+        // A pause loads no sender, so the next sender adopts them. With no destination, they
+        // stay parked under the old id, so none is lost.
+        if (!this.config.enabled) {
+          this.carried = [...stored];
+          return;
+        }
         await this.sender?.adopt(stored, this.config.securityContext.id);
       },
     };
@@ -2514,7 +2740,7 @@ export class ObservabilityRuntime {
     }
 
     // These records arrived during the rotation, so they belong to the context the app left.
-    this.drops.add("security_context", this.pendingRecords.take());
+    this.drops.add("security_context", this.unreported(this.pendingRecords.take()));
   }
 
   /**
@@ -2582,7 +2808,14 @@ export class ObservabilityRuntime {
     }
     if (this.deliveryClosed) {
       issues.push("security.rotation_failed");
-    } else if (this.ready && this.hasDestination() && this.role() === "sender" && !this.sender) {
+    } else if (
+      // A pause loads no sender, and that isn't a fault.
+      this.ready &&
+      this.config.enabled &&
+      this.hasDestination() &&
+      this.role() === "sender" &&
+      !this.sender
+    ) {
       issues.push("sender.unavailable");
     }
     const { sourcePolicy, maxMessageBytes, maxRecordsPerMessage, maxMessagesPerSecond } =
@@ -2599,13 +2832,17 @@ export class ObservabilityRuntime {
       owningSdkVersion: this.mismatchVersion,
       status: this.destroyed
         ? "stopped"
-        : this.rotating
-          ? "rotating"
-          : issues.length
-            ? "degraded"
-            : !this.ready
-              ? "starting"
-              : "ready",
+        : !this.tunablesLocked
+          ? "unconfigured"
+          : !this.config.enabled
+            ? "disabled"
+            : this.rotating
+              ? "rotating"
+              : issues.length
+                ? "degraded"
+                : !this.ready
+                  ? "starting"
+                  : "ready",
       mode:
         this.role() === "forwarder"
           ? "forwarder"
@@ -2613,7 +2850,11 @@ export class ObservabilityRuntime {
             ? "sender"
             : "console-only",
       senderReady:
-        this.sender !== undefined && !this.destroyed && !this.rotating && !this.deliveryClosed,
+        this.sender !== undefined &&
+        this.config.enabled &&
+        !this.destroyed &&
+        !this.rotating &&
+        !this.deliveryClosed,
       configurationLocked: this.config.lockConfiguration,
       issues,
       securityContext: { ...this.config.securityContext },
@@ -2648,41 +2889,16 @@ export class ObservabilityRuntime {
       await this.sender.clearPersisted(scope, this.config.securityContext.id);
       return;
     }
-    const [
-      { createStorage, storageName },
-      { ContextStorage },
-      { storageLimits },
-      { clearEmergencyContext },
-    ] = await Promise.all([
-      import("../storage/factory"),
-      import("../storage/context-storage"),
-      import("../models/storage"),
-      import("../storage/emergency-queue"),
-    ]);
-    const { backend, namespace } = this.config.storage;
-    const backing =
-      this.memoryStorage ??
-      (await createStorage(
-        backend,
-        storageName(namespace),
-        storageLimits(this.config.retention),
-        this.diagnostics,
-        undefined,
-        namespace,
-      ));
-    const store = new ContextStorage(backing, this.config.securityContext, namespace);
-    try {
-      if (scope === "namespace") await store.clearNamespace();
-      else await store.clear();
-      clearEmergencyContext(
-        this.config.securityContext.id,
-        this.diagnostics,
-        namespace,
-        scope === "namespace",
-      );
-    } finally {
-      if (backing !== this.memoryStorage) await store.close();
-    }
+    const { clearStored } = await import("../storage/stored-context");
+    await clearStored(this.storeAccess(), scope);
+  }
+
+  /**
+   * Returns what opening the store needs when no sender runs.
+   * @returns The config, the reporter and the kept memory store.
+   */
+  private storeAccess(): StoreAccess {
+    return { config: this.config, diagnostics: this.diagnostics, memory: this.memoryStorage };
   }
 
   /**
