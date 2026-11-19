@@ -3,8 +3,8 @@ import {
   configure,
   createMemoryTransport,
   flush,
+  getHealth,
   getLogger,
-  getStats,
   rotateSecurityContext,
   shutdown,
 } from "../src/index";
@@ -62,7 +62,7 @@ describe("Worker transport in the runtime", () => {
     const body = vi.mocked(fetch).mock.calls[0][1]?.body;
     expect(body).toBeTypeOf("string");
     expect(body).not.toContain("private");
-    expect((await getStats()).lastSendAt).not.toBeNull();
+    expect((await getHealth()).delivery.lastSendAt).not.toBeNull();
     await shutdown();
     expect(workers[0].terminate).toHaveBeenCalledOnce();
   });
@@ -81,10 +81,10 @@ describe("Worker transport in the runtime", () => {
     });
     log.info("retry me");
     await flush();
-    expect((await getStats()).stored).toBe(1);
+    expect((await getHealth()).delivery.stored).toBe(1);
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect((await getStats()).stored).toBe(0);
+    expect((await getHealth()).delivery.stored).toBe(0);
     const calls = vi.mocked(fetch).mock.calls;
     expect((calls[0][1]?.headers as Headers).get("X-UiObs-Batch-Id")).toBe(
       (calls[1][1]?.headers as Headers).get("X-UiObs-Batch-Id"),

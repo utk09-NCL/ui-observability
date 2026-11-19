@@ -53,7 +53,7 @@ A record reaches the terminal about two seconds after the click. Each click also
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **info**                                                         | `INFO [playground] [log] hello from the playground`                                                                                                                  |
 | **logAction**                                                    | `[action] ORDER_SUBMIT`. Sampling never drops an action.                                                                                                             |
-| **logMetric**                                                    | `[metric] grid.render`                                                                                                                                               |
+| **gauge**                                                        | `[metric] grid.render`. The click sets the gauge and flushes, so the point does not wait for the metric interval.                                                    |
 | **startMeasure**                                                 | `[metric] ui.measure.duration` and two `ui.measure.phase.duration` records. A `[traces]` batch has the span `checkout` with the child spans `validate` and `submit`. |
 | **logger.error**                                                 | `ERROR [playground] [log] something went wrong`                                                                                                                      |
 | **Defer payload builds**, then **log a payload, then change it** | `[log] Payload mode sample`. [Deferred payloads](../../README.md#deferred-payloads) explains the difference between the two modes.                                   |
@@ -108,7 +108,7 @@ The recorder masks each text on the page except the paragraph with `data-observa
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **250 logs in a burst**                              | Three `[batch]` lines with 100, 100 and 50 records. Chrome hides the `DEBUG` lines in the console until you select **Verbose**.       |
 | **toggle forced 503 on the server**                  | `[control] forcedStatus=503`. Then `[forced 503] batch=<id> attempt=<n>` for each send. **Diagnostics** shows `transport.http_error`. |
-| **what is waiting**                                  | **Diagnostics** shows the number of batches in storage. During a forced 503, the number goes up.                                      |
+| **what is waiting**                                  | **Diagnostics** shows the number of batches in storage and the failed sends in a row. During a forced 503, both numbers go up.        |
 | **toggle forced 503 on the server** again            | `[control] forcedStatus=200`. The stored batches arrive with their first batch ids.                                                   |
 | **toggle server sampling rules (10% of playground)** | The server sends rules that keep 10 percent of the `playground` records for one minute.                                               |
 

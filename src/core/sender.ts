@@ -9,8 +9,8 @@ import { STORAGE_NAME_INDEXEDDB, STORAGE_NAME_LOCAL } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
+import type { DeliveryHealth } from "../models/health";
 import type { LogRecord } from "../models/log-record";
-import type { DeliveryStats } from "../models/stats";
 import {
   type GapReporter,
   type StorageAdapter,
@@ -26,7 +26,7 @@ import { ExitFlush } from "../transport/exit-flush";
 import { CustomTransport } from "../transport/custom-transport";
 import { HttpTransport } from "../transport/http-transport";
 import { RetryEngine } from "../transport/retry-engine";
-import type { StatusTransport } from "../transport/status-transport";
+import type { BatchTransport, StatusTransport } from "../transport/status-transport";
 import type { Diagnostics } from "./diagnostics";
 import { LogPipeline } from "./pipeline";
 import { applyRemote, parseRemoteRules } from "./remote-rules";
@@ -51,6 +51,80 @@ export interface SenderDeps {
   remote: RemoteSlot;
   /** Sends the open metric interval's points before the exit flush drains the buffers. */
   beforeExit?: () => void;
+  /**
+   * Receives the time of the last accepted batch after a send. The runtime keeps it across a
+   * rotation, which builds a new sender.
+   */
+  onSent?: (at: number) => void;
+}
+
+/** What the sender adds to getHealth().delivery. The runtime adds the rest. */
+export type SenderStats = Pick<
+  DeliveryHealth,
+  "pending" | "inFlight" | "lastFailureAt" | "consecutiveFailures" | "throttledUntil"
+>;
+
+/**
+ * Counts the failed sends of the pipeline and the retry engine for getHealth(). The exit flush
+ * can't learn its result, so it doesn't count.
+ */
+class SendOutcomes implements BatchTransport {
+  /** Failed sends since the server last accepted a batch. */
+  private failures = 0;
+
+  /** Epoch time in milliseconds of the last failed send, or null. */
+  private failedAt: number | null = null;
+
+  /**
+   * @param transport The transport that sends the batches.
+   * @param onSent Receives the time of the last accepted batch after a send.
+   */
+  constructor(
+    private readonly transport: StatusTransport,
+    private readonly onSent: (at: number) => void = () => undefined,
+  ) {}
+
+  /**
+   * Sends one batch and counts the result.
+   * @param batch Batch to send.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @throws TransportError when the batch isn't accepted.
+   */
+  async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
+    const before = this.transport.lastSendAt();
+    try {
+      await this.transport.send(batch, onKeepalive);
+    } catch (error) {
+      this.failures++;
+      this.failedAt = Date.now();
+      throw error;
+    }
+
+    // A batch with no request, for example a traces batch with no tracesEndpoint, ends without
+    // an error but proves nothing, so only an accept during this send resets the count.
+    const at = this.transport.lastSendAt();
+    if (at !== null && at !== before) {
+      this.failures = 0;
+      this.onSent(at);
+    }
+  }
+
+  /**
+   * Returns the remaining throttle delay for a batch's endpoint.
+   * @param batch Batch to send.
+   * @returns Milliseconds until the throttle ends, or 0.
+   */
+  throttledForMs(batch: LogBatch): number {
+    return this.transport.throttledForMs(batch);
+  }
+
+  /**
+   * Reads the failure counts.
+   * @returns The failures in a row and the time of the last one.
+   */
+  stats(): Pick<SenderStats, "lastFailureAt" | "consecutiveFailures"> {
+    return { lastFailureAt: this.failedAt, consecutiveFailures: this.failures };
+  }
 }
 
 /** Delivery stack for one sender runtime. */
@@ -67,6 +141,7 @@ export class Sender {
    * @param exitFlush Handler that sends pending records on unload.
    * @param diagnostics Diagnostics reporter.
    * @param transport The transport that the pipeline and the retry engine use.
+   * @param outcomes Counts the failed sends of the pipeline and the retry engine.
    */
   private constructor(
     private readonly storage: ContextStorage,
@@ -75,6 +150,7 @@ export class Sender {
     private readonly exitFlush: ExitFlush,
     private readonly diagnostics: Diagnostics,
     private readonly transport: StatusTransport,
+    private readonly outcomes: SendOutcomes,
   ) {}
 
   /**
@@ -149,10 +225,11 @@ export class Sender {
       worker?.transport ??
       http ??
       new CustomTransport(config, diagnostics, onSampling, onLoss, onClock);
-    const retry = new RetryEngine(storage, transport, diagnostics, config, undefined, onLoss);
+    const outcomes = new SendOutcomes(transport, deps.onSent);
+    const retry = new RetryEngine(storage, outcomes, diagnostics, config, undefined, onLoss);
     const { batching } = config;
     const pipeline = new LogPipeline(
-      transport,
+      outcomes,
       storage,
       retry,
       diagnostics,
@@ -200,7 +277,15 @@ export class Sender {
       }
     }
 
-    const sender = new Sender(storage, retry, pipeline, exitFlush, diagnostics, transport);
+    const sender = new Sender(
+      storage,
+      retry,
+      pipeline,
+      exitFlush,
+      diagnostics,
+      transport,
+      outcomes,
+    );
     sender.emergencyImport = sender.importEmergency();
     return sender;
   }
@@ -248,23 +333,6 @@ export class Sender {
   }
 
   /**
-   * Removes stored normal and emergency batches without sending them.
-   * @param scope Part of storage to clear.
-   * @param contextId Active delivery context id.
-   * @returns Promise that resolves when removal completes.
-   */
-  async clearPersisted(scope: "context" | "namespace", contextId: string): Promise<void> {
-    if (scope === "namespace") await this.storage.clearNamespace();
-    else await this.storage.clear();
-    clearEmergencyContext(
-      contextId,
-      this.diagnostics,
-      this.storage.namespace,
-      scope === "namespace",
-    );
-  }
-
-  /**
    * Counts the batches held in storage.
    * @returns Promise that resolves to the batch count, or 0 if storage fails.
    */
@@ -280,10 +348,14 @@ export class Sender {
 
   /**
    * Reads the delivery state of the pipeline and the transport.
-   * @returns Waiting records, records in requests and the last accepted send.
+   * @returns Waiting records, records in requests, the failures and the throttle end.
    */
-  stats(): Omit<DeliveryStats, "stored"> {
-    return { ...this.pipeline.counts(), lastSendAt: this.transport.lastSendAt() };
+  stats(): SenderStats {
+    return {
+      ...this.pipeline.counts(),
+      ...this.outcomes.stats(),
+      throttledUntil: this.transport.throttleEnd(),
+    };
   }
 
   /**
@@ -307,6 +379,26 @@ export class Sender {
     this.pipeline.destroy();
 
     await this.storage.close();
+  }
+
+  /**
+   * Stops every send without a flush or an exit flush, for a discard at shutdown. A request in
+   * flight can still reach the server, but its result writes nothing and schedules no retry,
+   * because the store accepts no write after this.
+   * @returns Promise that resolves to the records in the buffers and the queue, once the
+   * emergency import is done and the store is closed.
+   */
+  async discard(): Promise<LogRecord[]> {
+    this.retired = true;
+    this.exitFlush.uninstall();
+    this.retry.stop();
+    this.transport.stop();
+    const records = this.pipeline.discard();
+    // The import moves the previous page's batches into the store, so let it end before the
+    // store stops writes. Otherwise a batch it claimed would be lost.
+    await this.emergencyImport;
+    await this.storage.retire(false);
+    return records;
   }
 
   /**

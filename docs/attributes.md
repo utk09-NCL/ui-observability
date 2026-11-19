@@ -75,23 +75,23 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 
 ## Metric Records
 
-`logMetric()`, `counter()`, `histogram()` and the captures write metric records. With `metricsEndpoint`, the OTLP metrics serializer reads these fields. They do not become OTLP attributes.
+`counter()`, `gauge()`, `histogram()`, `startMeasure()`, `measure()`, the profiler and the captures write metric records. With `metricsEndpoint`, the OTLP metrics serializer reads these fields. They do not become OTLP attributes.
 
-| Attribute                     | Type     | Value                                                             |
-| ----------------------------- | -------- | ----------------------------------------------------------------- |
-| `metric.name`                 | string   | Metric name.                                                      |
-| `metric.unit`                 | string   | Unit.                                                             |
-| `metric.type`                 | string   | `gauge`, `counter` or `histogram`.                                |
-| `metric.value`                | number   | Value of a `logMetric()` call, or the sum of a counter point.     |
-| `metric.start_time_unix_nano` | string   | Start of the interval of a point.                                 |
-| `metric.attribute_keys`       | string[] | Keys of the attribute set of a point.                             |
-| `metric.count`                | number   | Value count of a histogram point.                                 |
-| `metric.sum`                  | number   | Sum of a histogram point.                                         |
-| `metric.min`                  | number   | Smallest value of a histogram point.                              |
-| `metric.max`                  | number   | Largest value of a histogram point.                               |
-| `metric.bounds`               | number[] | Bucket boundaries of a histogram point.                           |
-| `metric.bucket_counts`        | number[] | Bucket counts of a histogram point.                               |
-| `otel.metric.overflow`        | boolean  | `true` on the point of the attribute sets above the series limit. |
+| Attribute                     | Type     | Value                                                                                                  |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `metric.name`                 | string   | Metric name.                                                                                           |
+| `metric.unit`                 | string   | Unit.                                                                                                  |
+| `metric.type`                 | string   | `gauge`, `counter` or `histogram`.                                                                     |
+| `metric.value`                | number   | Sum of a counter point, last value of a gauge point, or the value of a capture's single metric record. |
+| `metric.start_time_unix_nano` | string   | Start of the interval of a point.                                                                      |
+| `metric.attribute_keys`       | string[] | Keys of the attribute set of a point.                                                                  |
+| `metric.count`                | number   | Value count of a histogram point.                                                                      |
+| `metric.sum`                  | number   | Sum of a histogram point.                                                                              |
+| `metric.min`                  | number   | Smallest value of a histogram point.                                                                   |
+| `metric.max`                  | number   | Largest value of a histogram point.                                                                    |
+| `metric.bounds`               | number[] | Bucket boundaries of a histogram point.                                                                |
+| `metric.bucket_counts`        | number[] | Bucket counts of a histogram point.                                                                    |
+| `otel.metric.overflow`        | boolean  | `true` on the point of the attribute sets above the series limit.                                      |
 
 ## Measure Attributes
 

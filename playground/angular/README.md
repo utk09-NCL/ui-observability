@@ -43,7 +43,7 @@ The devtools console shows the namespace of each record. It is `oms.ticket`, `om
 
 1. It calls `configure()` in an environment initializer, before the first component renders.
 2. It replaces the Angular `ErrorHandler` with `ObservabilityErrorHandler`.
-3. It calls `startTrace()` at each `NavigationStart` of the router.
+3. It calls `newTrace()` at each `NavigationStart` of the router.
 
 Keep these rules from the example:
 

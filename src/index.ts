@@ -6,10 +6,12 @@
 import type { WorkerLike } from "./bus/links";
 import type { Journey } from "./core/journey";
 import { INSTRUMENT_OPTIONS_FAULT } from "./constants";
-import { OneLogger, type OneLoggerOptions } from "./core/logger";
-import { makeCounter, makeHistogram } from "./core/meter";
+import { OneLogger, type OneLogger as Logger, type OneLoggerOptions } from "./core/logger";
+import { measureCall } from "./core/measure";
+import { makeCounter, makeGauge, makeHistogram } from "./core/meter";
 import { profilerCore } from "./core/profiler";
 import { ObservabilityRuntime } from "./core/runtime";
+import { isObject } from "./utils/guards";
 import type { ObservabilityConfig } from "./models/config";
 export type {
   ReplayLoader,
@@ -17,14 +19,17 @@ export type {
   ReplayPluginTools,
   ReplaySegment,
 } from "./models/replay";
-import type { SecurityContextUpdate, SecurityContextRotationOptions } from "./models/config";
+import type {
+  SecurityContextUpdate,
+  SecurityContextRotationOptions,
+  ShutdownOptions,
+} from "./models/config";
 import type { DebugBundle, ObservabilityHealth } from "./models/health";
 import type { FrameOptions, SourceOptions } from "./models/bus";
 export type { FrameOptions, SourceOptions, BusPermission } from "./models/bus";
-import type { MetricType } from "./models/log-record";
-import type { DeliveryStats } from "./models/stats";
 import type {
   Counter,
+  Gauge,
   Histogram,
   HistogramOptions,
   InstrumentOptions,
@@ -33,10 +38,9 @@ import type {
   Profiler,
 } from "./models/metric";
 
-export { OneLogger };
 export { serveTransportWorker } from "./transport/worker-entry";
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
-export type { Journey, ObservabilityConfig, OneLoggerOptions };
+export type { Journey, Logger, ObservabilityConfig, OneLoggerOptions };
 export type {
   BatchingOptions,
   BufferingOptions,
@@ -67,7 +71,9 @@ export type {
   SecurityContextOptions,
   SecurityContextRotationOptions,
   SecurityContextUpdate,
+  ShutdownOptions,
   StorageOptions,
+  StorageScope,
   UserTimingOptions,
   WebVitalsOptions,
   ExitTransport,
@@ -75,13 +81,14 @@ export type {
   TransportRequest,
   TransportResponse,
 } from "./models/config";
-export type { DebugBundle, ObservabilityHealth } from "./models/health";
+export type { DebugBundle, DeliveryHealth, ObservabilityHealth } from "./models/health";
 export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { DropSummary, LossReason } from "./models/drop";
 export type { LogLevel, LogRecord, LogType, MetricType } from "./models/log-record";
 export type {
   Counter,
+  Gauge,
   Histogram,
   HistogramOptions,
   InstrumentOptions,
@@ -93,7 +100,6 @@ export type {
 } from "./models/metric";
 export type { CapturePlugin, PluginContext } from "./models/plugin";
 export type { LogSerializer, SerializedBatch } from "./models/serializer";
-export type { DeliveryStats } from "./models/stats";
 export type { StorageAdapter } from "./models/storage";
 
 /**
@@ -101,7 +107,7 @@ export type { StorageAdapter } from "./models/storage";
  * A logger looks up the runtime on every write, so the cache stays valid across
  * configure() and shutdown().
  */
-const loggers = new Map<string, OneLogger>();
+const loggers = new Map<string, Logger>();
 
 /**
  * Returns the active runtime. After shutdown() that is the stopped runtime, which does
@@ -117,18 +123,6 @@ function requireRuntime(): ObservabilityRuntime {
 
   // Make the unconfigured runtime, so a log call before configure() doesn't throw.
   return ObservabilityRuntime.configure({}, true);
-}
-
-/**
- * Removes stored logs. Records and requests that are still pending can write to storage again
- * afterwards.
- * @param scope Whose stored records to remove: the context's or the namespace's.
- * @returns Promise that resolves once the logs are removed.
- */
-export function clearPersistedLogs(scope: "context" | "namespace" = "context"): Promise<void> {
-  if (!["context", "namespace"].includes(scope))
-    return Promise.reject(new Error("Invalid persistence scope."));
-  return requireRuntime().clearPersisted(scope);
 }
 
 /**
@@ -171,7 +165,9 @@ export function rotateSecurityContext(
 }
 
 /**
- * Reads this SDK copy's runtime state, delivery counts and policies.
+ * Reads this SDK copy's runtime state, policies and delivery state. The `delivery` block holds
+ * the record and batch counts, the send and failure times, the throttle end and the losses. It
+ * doesn't wait for startup or for the delivery stack to load.
  * @returns Promise that resolves to the current state.
  */
 export async function getHealth(): Promise<ObservabilityHealth> {
@@ -223,7 +219,7 @@ function trimLoggerCache(): number | null {
  * @returns Logger for the namespace. You get a new logger if you pass options or the cache
  * is disabled.
  */
-export function getLogger(namespace: string, options?: OneLoggerOptions): OneLogger {
+export function getLogger(namespace: string, options?: OneLoggerOptions): Logger {
   const max = trimLoggerCache();
   if (options || max === 0) return new OneLogger(requireRuntime, namespace, options);
 
@@ -241,9 +237,9 @@ export function getLogger(namespace: string, options?: OneLoggerOptions): OneLog
 
 /**
  * Returns the default root logger.
- * @returns The OneLogger for the "app" namespace.
+ * @returns The logger for the "app" namespace.
  */
-function root(): OneLogger {
+function root(): Logger {
   return getLogger("app");
 }
 
@@ -322,24 +318,6 @@ export function logEvent(name: string, payload?: Record<string, unknown>): void 
 }
 
 /**
- * Logs a numeric metric measurement.
- * @param name Metric identifier.
- * @param value Measured value.
- * @param unit Unit of measurement.
- * @param type Metric type.
- * @param attributes Optional metric attributes.
- */
-export function logMetric(
-  name: string,
-  value: number,
-  unit?: string,
-  type?: MetricType,
-  attributes?: Record<string, unknown>,
-): void {
-  root().logMetric(name, value, unit, type, attributes);
-}
-
-/**
  * Reports instrument options the library couldn't read. Without a runtime there is nowhere to
  * report to, so it does nothing.
  * @param error What reading the options threw.
@@ -362,6 +340,25 @@ function optionsFault(error: unknown): void {
  */
 export function counter(name: string, options: InstrumentOptions = {}): Counter {
   return makeCounter(
+    name,
+    options,
+    (def, value, attributes) => {
+      requireRuntime().recordMetric(def, value, attributes);
+    },
+    optionsFault,
+  );
+}
+
+/**
+ * Returns a gauge. It keeps the last value for each attribute set in memory, and every interval
+ * the library sends that value as one point. With `metricsEndpoint`, the point is an OTLP gauge.
+ * A handle stays valid across configure() and shutdown().
+ * @param name Metric name.
+ * @param options Unit of the values.
+ * @returns The gauge.
+ */
+export function gauge(name: string, options: InstrumentOptions = {}): Gauge {
+  return makeGauge(
     name,
     options,
     (def, value, attributes) => {
@@ -399,6 +396,20 @@ export function histogram(name: string, options: HistogramOptions = {}): Histogr
  */
 export function startMeasure(name: string, attributes?: MetricAttributes): Measure {
   return requireRuntime().startMeasure(name, attributes);
+}
+
+/**
+ * Times a function call with a measure, as `startMeasure()` does. If the result has a `then`
+ * function, the measure ends when it settles. A throw or a rejection ends it with the outcome
+ * "error", and the error goes to the caller unchanged.
+ * @param name Operation name. Every name creates one series.
+ * @param fn The function to call.
+ * @param attributes Attribute set for every histogram point. Keep it small.
+ * @returns Whatever `fn` returned, or the result of its `then` call.
+ */
+export function measure<T>(name: string, fn: () => T, attributes?: MetricAttributes): T {
+  const runtime = requireRuntime();
+  return measureCall(runtime.startMeasure(name, attributes), fn, runtime.diagnostics);
 }
 
 /**
@@ -442,32 +453,6 @@ export const profiler: Profiler = {
 };
 
 /**
- * Times a synchronous function and logs a duration metric.
- * @param label Metric name prefix.
- * @param fn Synchronous function to time.
- * @param attributes Optional context attributes.
- * @returns Whatever the timed function returns.
- */
-export function timeSync<T>(label: string, fn: () => T, attributes?: Record<string, unknown>): T {
-  return root().timeSync(label, fn, attributes);
-}
-
-/**
- * Times an asynchronous function and logs a duration metric.
- * @param label Metric name prefix.
- * @param fn Asynchronous function to time.
- * @param attributes Optional context attributes.
- * @returns Promise that resolves to the timed function's result.
- */
-export function timeAsync<T>(
-  label: string,
-  fn: () => Promise<T>,
-  attributes?: Record<string, unknown>,
-): Promise<T> {
-  return root().timeAsync(label, fn, attributes);
-}
-
-/**
  * Adds a breadcrumb to the trail. The next error record carries the trail.
  * @param message Description of the event.
  * @param data Optional metadata. It is copied right away.
@@ -477,20 +462,30 @@ export function addBreadcrumb(message: string, data?: Record<string, unknown>): 
 }
 
 /**
- * Sets a key-value pair on the ambient context. Every later record includes it.
- * @param key Attribute key.
- * @param value Attribute value.
+ * Merges attributes into the ambient context. Every later record includes them. A null value
+ * removes its key, and an undefined value keeps the current value. A value that isn't an object
+ * reports `config.invalid` and changes nothing.
+ * @param values Attributes to merge.
  */
-export function setContext(key: string, value: unknown): void {
-  requireRuntime().context.set(key, value);
-}
+export function setContext(values: Record<string, unknown>): void {
+  const runtime = requireRuntime();
+  // A string would give one attribute for each character.
+  if (!isObject(values)) {
+    runtime.diagnostics.report(
+      "config.invalid",
+      "setContext() takes an object. The library keeps the current context.",
+    );
+    return;
+  }
 
-/**
- * Merges several key-value pairs into the ambient context.
- * @param values Key-value map of attributes to add.
- */
-export function setContextMap(values: Record<string, unknown>): void {
-  requireRuntime().context.setMany(values);
+  // A getter or a Proxy trap on the app's object can throw, and the call must not.
+  runtime.diagnostics.guard(
+    "record.sanitize_failed",
+    "The library could not read the values of setContext().",
+    () => {
+      runtime.context.merge(values);
+    },
+  );
 }
 
 /**
@@ -527,9 +522,9 @@ export function currentJourney(): Journey | null {
 
 /**
  * Serializes the active journey's metadata into a URL token that another context can adopt.
- * @returns The token, or undefined if no journey is active.
+ * @returns The token, or null if no journey is active or the token is above the size limit.
  */
-export function getJourneyToken(): string | undefined {
+export function getJourneyToken(): string | null {
   return requireRuntime().journey.getToken();
 }
 
@@ -565,8 +560,8 @@ export function registerFrame(
   return requireRuntime().registerFrame(frame, options);
 }
 
-/** Rotates the trace context to begin a new distributed trace. */
-export function startTrace(): void {
+/** Starts a new distributed trace. Later records and requests carry the new trace id. */
+export function newTrace(): void {
   requireRuntime().tracing.rotate("explicit");
 }
 
@@ -587,24 +582,6 @@ export function flush(): Promise<void> {
 }
 
 /**
- * Counts the batches waiting in storage for delivery.
- * @returns Promise that resolves to the number of stored batches. A forwarder doesn't store
- * batches, so it reports 0.
- */
-export function getQueueDepth(): Promise<number> {
-  return requireRuntime().queueDepth();
-}
-
-/**
- * Reads this context's delivery state.
- * @returns Promise that resolves to the records waiting, the records in requests, the batches
- * in storage and the time of the last accepted send. A forwarder reports only its own buffers.
- */
-export function getStats(): Promise<DeliveryStats> {
-  return requireRuntime().stats();
-}
-
-/**
  * Starts a new correlation in this tab. Ends the active journey and starts a new trace. Other
  * tabs pick up the new id at their next startup. For a logout or a tenant change, use
  * rotateSecurityContext().
@@ -622,10 +599,16 @@ export function getDiagnosticCounters(): Record<string, number> {
 }
 
 /**
- * Flushes pending records and stops every runtime subsystem. A request still open after the
- * final flush is cancelled, and its stored batch stays in storage.
+ * Stops every runtime subsystem. By default it flushes the records first, then runs the exit
+ * flush, and a request still open after that is cancelled with its stored batch kept. With
+ * `pending: "discard"` it sends nothing and reports each record in memory to `onDrop` with the
+ * reason "discarded". `clearStorage` also removes the stored batches and the stored ids, for a
+ * logout on a shared device. A call before any log call or `configure()` does nothing. A call
+ * after `shutdown()` stops nothing more, but its `clearStorage` still removes the stored data,
+ * once the first call ends. The next `configure()` starts a new runtime.
+ * @param options What to do with the records that wait, and which storage to remove.
  * @returns Promise that resolves once shutdown is complete.
  */
-export async function shutdown(): Promise<void> {
-  await ObservabilityRuntime.current()?.destroy();
+export async function shutdown(options?: ShutdownOptions): Promise<void> {
+  await (ObservabilityRuntime.current() ?? ObservabilityRuntime.stopped())?.destroy(options);
 }

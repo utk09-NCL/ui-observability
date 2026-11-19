@@ -4,8 +4,8 @@ import { ContextStore } from "../src/core/context";
 describe("ContextStore", () => {
   it("sets, reads and removes", () => {
     const store = new ContextStore();
-    store.set("desk", "eq-flow");
-    store.setMany({ user: "u1", region: "emea" });
+    store.merge({ desk: "eq-flow" });
+    store.merge({ user: "u1", region: "emea" });
 
     expect(store.getAll()).toEqual({ desk: "eq-flow", user: "u1", region: "emea" });
 
@@ -20,7 +20,7 @@ describe("ContextStore", () => {
     const a = new ContextStore();
     const b = new ContextStore();
 
-    a.set("desk", "eq-flow");
+    a.merge({ desk: "eq-flow" });
 
     expect(b.getAll()).toEqual({});
   });
@@ -28,27 +28,36 @@ describe("ContextStore", () => {
   it("replaces a value on a second set rather than keeping both", () => {
     const store = new ContextStore();
 
-    store.set("region", "emea");
-    store.set("region", "apac");
+    store.merge({ region: "emea" });
+    store.merge({ region: "apac" });
 
     expect(store.getAll()).toEqual({ region: "apac" });
   });
 
-  it("merges on setMany rather than replacing what is already there", () => {
+  it("merges rather than replacing what is already there", () => {
     // A caller that sets a region must not drop a user id that another part of the application
     // set just before.
     const store = new ContextStore();
-    store.set("user", "u1");
+    store.merge({ user: "u1" });
 
-    store.setMany({ region: "emea" });
-    store.setMany({});
+    store.merge({ region: "emea" });
+    store.merge({});
 
     expect(store.getAll()).toEqual({ user: "u1", region: "emea" });
   });
 
+  it("removes a key for null and keeps the current value for undefined", () => {
+    const store = new ContextStore();
+    store.merge({ user: "u1", region: "emea", desk: "eq-flow" });
+
+    store.merge({ user: null, region: undefined, desk: "fx" });
+
+    expect(store.getAll()).toEqual({ region: "emea", desk: "fx" });
+  });
+
   it("treats removing an absent key as a no-op", () => {
     const store = new ContextStore();
-    store.set("user", "u1");
+    store.merge({ user: "u1" });
 
     store.remove("never-set");
 
@@ -61,7 +70,7 @@ describe("ContextStore", () => {
     const store = new ContextStore();
     const value = { nested: { deep: true } };
 
-    store.set("session", value);
+    store.merge({ session: value });
 
     expect(store.getAll().session).toBe(value);
   });
@@ -71,7 +80,7 @@ describe("ContextStore", () => {
     // handed out the live map, that merge, a sanitizer or a consumer that keeps the result could
     // each change the context by accident.
     const store = new ContextStore();
-    store.set("user", "u1");
+    store.merge({ user: "u1" });
 
     const first = store.getAll();
     first.user = "tampered";
@@ -86,8 +95,9 @@ describe("ContextStore", () => {
     const store = new ContextStore();
     const payload = { polluted: true };
 
-    store.set("__proto__", payload);
-    store.set("constructor", "not a function");
+    // Object.fromEntries defines the key, so the app's map really holds an own __proto__ key.
+    store.merge(Object.fromEntries([["__proto__", payload]]));
+    store.merge({ constructor: "not a function" });
 
     const snapshot = store.getAll();
     expect(Object.getOwnPropertyDescriptor(snapshot, "__proto__")?.value).toBe(payload);
@@ -100,15 +110,12 @@ describe("ContextStore", () => {
     expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
   });
 
-  it("cannot tell a stored undefined from an absent key, and does not pretend to", () => {
-    // Both values serialize to the same absence on a record, so the difference costs nothing. A
-    // simple store beats a has() method that no code calls.
+  it("stores no key for an undefined value, as configure() keeps a value for undefined", () => {
     const store = new ContextStore();
 
-    store.set("user", undefined);
+    store.merge({ user: undefined });
 
     expect(store.getAll().user).toBeUndefined();
-    expect(store.getAll()["never-set"]).toBeUndefined();
-    expect(Object.keys(store.getAll())).toEqual(["user"]);
+    expect(Object.keys(store.getAll())).toEqual([]);
   });
 });

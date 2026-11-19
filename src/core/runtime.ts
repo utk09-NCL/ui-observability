@@ -35,12 +35,13 @@ import type {
   ResolvedConfig,
   SecurityContextUpdate,
   SecurityContextRotationOptions,
+  ShutdownOptions,
+  StorageScope,
 } from "../models/config";
 import type { LossReporter } from "../models/drop";
 import type { InstrumentDef, Measure, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
-import type { DeliveryStats } from "../models/stats";
 import type { DebugBundle, ObservabilityHealth } from "../models/health";
 import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
 import type { StoreAccess } from "../storage/stored-context";
@@ -77,7 +78,7 @@ import {
 import { DropReporter } from "./drops";
 import { HoldBuffer } from "./hold-buffer";
 import { JourneyEngine, JOURNEY_OPTIONS, type JourneyOptions } from "./journey";
-import { OneLogger } from "./logger";
+import { LibraryLogger, OneLogger } from "./logger";
 import { createMeasure } from "./measure";
 import { makeCounter, makeHistogram, Meter, type RecordMetric } from "./meter";
 import { profilerCore, type ProfilerSink } from "./profiler";
@@ -175,6 +176,10 @@ const LOGGED_CRUMBS: readonly string[] = ["log", "event", "action"];
 /** Text of the warning and the report after a failed first configure() call. */
 const FAILED_START =
   "configure() could not read its options. The library drops each record and installs no capture until a configure() call sets redact to a function or null.";
+
+/** Text of the report for shutdown() options the library can't use. */
+const SHUTDOWN_INVALID =
+  'shutdown() got invalid options. The library discards the records in memory. An invalid clearStorage removes the "context" scope.';
 
 /** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
@@ -537,6 +542,12 @@ export class ObservabilityRuntime {
   /** True if shutdown stopped the runtime. */
   private destroyed = false;
 
+  /** The first shutdown. A later shutdown() waits for it before it removes the stored data. */
+  private stopping?: Promise<void>;
+
+  /** When the server last accepted a batch, in epoch milliseconds. A rotation keeps it. */
+  private lastSendAt: number | null = null;
+
   /** When the last storage gap warning was reported, in epoch milliseconds. */
   private lastGapAt = 0;
 
@@ -831,6 +842,11 @@ export class ObservabilityRuntime {
     attributes: MetricAttributes,
     fields: Record<string, unknown>,
   ): void {
+    // A discard at shutdown drops the open interval, so don't build its points.
+    if (this.destroyed) {
+      return;
+    }
+
     const { record } = this.builder.build({
       level: "INFO",
       type: "metric",
@@ -1704,8 +1720,9 @@ export class ObservabilityRuntime {
    * @returns Promise that resolves when the load completes, or immediately when nothing loads.
    */
   private syncSender(): Promise<void> {
-    // Nothing sends before the start or during a pause. A pause that ends calls this again.
-    const sends = this.running && this.config.enabled && !this.deliveryClosed;
+    // Nothing sends before the start or during a pause. A pause that ends calls this again. A
+    // shutdown during startup loads nothing, so the held records reach onDrop and don't wait.
+    const sends = this.running && this.config.enabled && !this.deliveryClosed && !this.destroyed;
     if (!sends || !this.hasDestination() || this.role() !== "sender") {
       return Promise.resolve();
     }
@@ -1757,11 +1774,15 @@ export class ObservabilityRuntime {
               this.collectPoints();
               this.tracing.end();
             },
+            onSent: (at) => {
+              this.lastSendAt = at;
+            },
           });
 
-      // Guard against a shutdown during the load. The stack must not outlive the runtime.
+      // Guard against a shutdown during the load. The stack must not outlive the runtime. Its
+      // pipeline is empty, because the shutdown took the held records, so it sends nothing.
       if (!sender || this.destroyed) {
-        await sender?.destroy();
+        await sender?.discard();
         return;
       }
 
@@ -2007,7 +2028,7 @@ export class ObservabilityRuntime {
       diagnostics: this.diagnostics,
       breadcrumbs: this.breadcrumbs,
       tracing: this.tracing,
-      logger: new OneLogger(() => this, CAPTURE_NAMESPACE),
+      logger: new LibraryLogger(() => this, CAPTURE_NAMESPACE),
       once: this.captureOnce,
       recordMetric: (def, value, attributes) => {
         this.recordMetric(def, value, attributes);
@@ -2020,11 +2041,8 @@ export class ObservabilityRuntime {
         this.errorHook = hook;
       },
       setContext: (key, value) => {
-        if (value === undefined) {
-          this.context.remove(key);
-        } else {
-          this.context.set(key, value);
-        }
+        // undefined removes the key, so the replay id goes when the recorder stops.
+        this.context.merge({ [key]: value ?? null });
       },
       replayConsent: () => this.replayConsent,
     };
@@ -2200,23 +2218,47 @@ export class ObservabilityRuntime {
     };
   }
 
-  /** Flushes pending telemetry, unregisters listeners, and unpins the runtime instance. */
-  async destroy(): Promise<void> {
-    if (this.destroyed) {
-      return;
+  /**
+   * Stops every subsystem and unpins the runtime. By default it flushes the records first. A
+   * discard sends nothing, and a clearStorage scope also removes the stored batches and ids. A
+   * later call stops nothing more, but its clearStorage scope still applies.
+   * @param options What to do with the records that wait, and which storage to remove.
+   */
+  async destroy(options?: ShutdownOptions): Promise<void> {
+    const { discard, scope } = this.shutdownRule(options);
+    // The removal waits for the first call, otherwise a late save of its flush or of its exit
+    // flush could land after it.
+    this.stopping ??= this.stop(discard);
+    await this.stopping;
+    if (scope !== undefined) {
+      await this.clearStorage(scope);
     }
+  }
 
-    // The open interval's points and the root span go out with the final flush.
-    drainDeferred(this);
-    this.collectPoints();
-    // After shutdown() probes stop reading the clock until the next configure().
+  /**
+   * Stops every subsystem once, then unpins the runtime.
+   * @param discard True to send nothing and report the records in memory as discarded.
+   */
+  private async stop(discard: boolean): Promise<void> {
+    // A flush sends the open interval's points and the root span. A discard builds neither.
+    if (!discard) {
+      drainDeferred(this);
+      this.collectPoints();
+      this.tracing.end();
+    }
+    // After shutdown() probes stop reading the clock until the next configure(), and their
+    // data goes with the detach.
     if (this.profilerOn) {
       this.profilerOn = false;
       profilerCore().detach();
     }
-    this.tracing.end();
     this.destroyed = true;
+    // A journey call on the stopped runtime then writes to memory only, as each call records
+    // nothing until the next configure().
+    this.backing = memoryStores();
     cancelDeferred(this);
+    // emitPoint() builds nothing now, so this only stops the meter's timer after a discard.
+    this.collectPoints();
     clearTimeout(this.remoteCaptureTimer);
     this.remoteCaptureTimer = undefined;
 
@@ -2224,22 +2266,13 @@ export class ObservabilityRuntime {
       removeEventListener("pagehide", this.onPageHide);
     }
 
+    // The replay capture drops its buffer and its upload queue here.
     this.uninstallCaptures();
-    // A paused sender sends nothing at shutdown either.
-    this.dropPaused();
-
-    // Sender.destroy awaits a normal flush, then runs the exit flush. The records already
-    // hold their journey, so the journey and the bus can stop first.
-    const closing = this.sender?.destroy();
+    const closing = discard ? this.discardHeld() : this.flushHeld();
     this.journey.destroy();
-    // A record in the forward buffer waits for its microtask, so the bus takes it before it stops.
-    this.sendForwarded();
     this.bus?.destroy();
-    // The delivery stack didn't load before shutdown(), so the held records are lost. A pause
-    // already reported its own.
-    this.drops.add("load_failed", this.unreported(this.pendingRecords.take()));
     await closing;
-    // A load in progress destroys its own stack, and shutdown() resolves only after that.
+    // A load in progress stops its own stack, and shutdown() resolves only after that.
     await this.senderLoad;
     await this.rotation?.catch(() => undefined);
     // A parked sender keeps its records stored, and only its store needs to close.
@@ -2248,7 +2281,11 @@ export class ObservabilityRuntime {
     await this.diagnostics.guardAsync(
       "pipeline.crashed",
       "The delivery stack of the old context did not stop at shutdown. The library leaves its stored batches in storage.",
-      async () => parked?.retire("retain", 0, this.config.securityContext.id),
+      async () => {
+        await (discard
+          ? parked?.discard()
+          : parked?.retire("retain", 0, this.config.securityContext.id));
+      },
     );
     await this.memoryStorage?.close();
 
@@ -2259,6 +2296,114 @@ export class ObservabilityRuntime {
       // A new default runtime would drop the app's settings.
       (globalThis as Record<symbol, unknown>)[STOPPED_KEY] = this;
     }
+  }
+
+  /**
+   * Reads the shutdown() options. A value it can't use reports config.invalid and discards,
+   * because an app that asks to discard or to remove storage doesn't want a send.
+   * @param options The app's options.
+   * @returns True to discard, and the storage scope to remove.
+   */
+  private shutdownRule(options: unknown): { discard: boolean; scope?: StorageScope } {
+    // A JavaScript caller can pass a string, or an object with a getter that throws.
+    const object = typeof options === "object" || options === undefined;
+    const read = object
+      ? this.diagnostics.guard(
+          "config.invalid",
+          SHUTDOWN_INVALID,
+          (): { pending?: unknown; clearStorage?: unknown } => ({
+            ...(options as ShutdownOptions | undefined),
+          }),
+        )
+      : undefined;
+    if (read === undefined) {
+      // The guard reported a getter that threw. A value of another type is reported here.
+      if (!object) {
+        this.diagnostics.report("config.invalid", SHUTDOWN_INVALID);
+      }
+      return { discard: true };
+    }
+
+    const { pending, clearStorage } = read;
+    // null turns the removal off, as null turns off other options.
+    const unset = clearStorage === undefined || clearStorage === null;
+    const knownScope = unset || clearStorage === "context" || clearStorage === "namespace";
+    let scope: StorageScope | undefined;
+    if (!unset) {
+      // A value it can't use still removes the narrower scope, because the app asked for one.
+      scope = clearStorage === "namespace" ? "namespace" : "context";
+    }
+
+    const flushes = pending === undefined || pending === "flush";
+    // clearStorage always discards, so it can't honour an explicit "flush".
+    if (!knownScope || !(flushes || pending === "discard") || (pending === "flush" && scope)) {
+      this.diagnostics.report("config.invalid", SHUTDOWN_INVALID);
+    }
+
+    return { discard: !flushes || scope !== undefined, scope };
+  }
+
+  /** Flushes the sender's records and runs the exit flush. Reports what can't go out. */
+  private async flushHeld(): Promise<void> {
+    // A paused sender sends nothing at shutdown either.
+    this.dropPaused();
+    // Sender.destroy awaits a normal flush, then runs the exit flush. The records already hold
+    // their journey, so the journey and the bus can stop first.
+    const closing = this.sender?.destroy();
+    // A record in the forward buffer waits for its microtask, so the bus takes it before it stops.
+    this.sendForwarded();
+    // The delivery stack didn't load before shutdown(), so the held records are lost. A pause
+    // already reported its own.
+    this.drops.add("load_failed", this.unreported(this.pendingRecords.take()));
+    await closing;
+  }
+
+  /**
+   * Drops the records in memory without a send and reports each one as "discarded". A record
+   * in a request that is in flight isn't reported, because the request can still arrive.
+   */
+  private async discardHeld(): Promise<void> {
+    const held = [...this.bootBuffer.take(), ...this.pendingRecords.take(), ...this.forwardBuffer];
+    this.forwardBuffer = [];
+    // The stopped runtime stays reachable until the next configure(), so the next user on a
+    // shared device must not find the previous user's trail or attributes in it.
+    this.breadcrumbs.clear();
+    this.debugBuffer.clear();
+    this.context.clear();
+    // The stores are memory now, so this writes no browser store and tells no peer.
+    this.journey.applyRemote(null);
+    const buffered = (await this.sender?.discard()) ?? [];
+    this.drops.add("discarded", this.unreported([...held, ...buffered]));
+  }
+
+  /**
+   * Removes the stored batches, the emergency queue entries and the stored ids. Before the
+   * first configure() call that works, no store is known, so it removes nothing.
+   * @param scope Whose stored batches to remove.
+   */
+  private async clearStorage(scope: StorageScope): Promise<void> {
+    if (!this.tunablesLocked) {
+      return;
+    }
+
+    await this.diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not remove the stored batches at shutdown.",
+      async () => {
+        const { clearStored } = await import("../storage/stored-context");
+        // A carry during a pause left its batches under an older context id. A first-call pause
+        // hasn't switched to the browser stores yet, but an earlier page can have written the
+        // ids there.
+        const ids = this.carried.map((batch) => batch.id);
+        this.carried = [];
+        await clearStored(
+          this.storeAccess(),
+          scope,
+          ids,
+          this.identityBuiltAs === "storage" && !this.onServer(),
+        );
+      },
+    );
   }
 
   /**
@@ -2798,7 +2943,7 @@ export class ObservabilityRuntime {
    * @returns State, delivery counts and policies. The facade adds the logger cache counts.
    */
   async health(): Promise<Omit<ObservabilityHealth, "loggerCache">> {
-    const delivery = this.sender?.stats() ?? { pending: 0, inFlight: 0, lastSendAt: null };
+    const sent = this.sender?.stats();
     const issues: ObservabilityHealth["issues"] = [];
     if (this.mismatchVersion) issues.push("runtime.version_mismatch");
     if (this.contextMismatch) issues.push("security.context_mismatch");
@@ -2821,13 +2966,21 @@ export class ObservabilityRuntime {
     const { sourcePolicy, maxMessageBytes, maxRecordsPerMessage, maxMessagesPerSecond } =
       this.config.bus;
     return {
-      ...delivery,
-      pending:
-        delivery.pending +
-        this.bootBuffer.length +
-        this.pendingRecords.length +
-        this.forwardBuffer.length,
-      stored: await this.storedBatches(),
+      delivery: {
+        pending:
+          (sent?.pending ?? 0) +
+          this.bootBuffer.length +
+          this.pendingRecords.length +
+          this.forwardBuffer.length,
+        inFlight: sent?.inFlight ?? 0,
+        stored: await this.storedBatches(),
+        lastSendAt: this.lastSendAt,
+        // A rotation builds a new sender, so these start again with it.
+        lastFailureAt: sent?.lastFailureAt ?? null,
+        consecutiveFailures: sent?.consecutiveFailures ?? 0,
+        throttledUntil: sent?.throttledUntil ?? null,
+        dropped: this.drops.counts(),
+      },
       sdkVersion: this.sdkVersion,
       owningSdkVersion: this.mismatchVersion,
       status: this.destroyed
@@ -2864,51 +3017,11 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Reads this context's delivery state.
-   * @returns Promise that resolves to the counts and the time of the last accepted send.
-   */
-  async stats(): Promise<DeliveryStats> {
-    // queueDepth() waits for a loading delivery stack. By then the held records are in the
-    // pipeline.
-    const stored = await this.queueDepth();
-    const delivery = this.sender?.stats() ?? { pending: 0, inFlight: 0, lastSendAt: null };
-    const held = this.bootBuffer.length + this.pendingRecords.length + this.forwardBuffer.length;
-
-    return { ...delivery, pending: delivery.pending + held, stored };
-  }
-
-  /**
-   * Removes the stored records for one context, or for all contexts in the application
-   * namespace.
-   * @param scope Which part of storage to clear.
-   * @returns Promise that resolves when removal completes.
-   */
-  async clearPersisted(scope: "context" | "namespace"): Promise<void> {
-    await this.senderLoad;
-    if (this.sender) {
-      await this.sender.clearPersisted(scope, this.config.securityContext.id);
-      return;
-    }
-    const { clearStored } = await import("../storage/stored-context");
-    await clearStored(this.storeAccess(), scope);
-  }
-
-  /**
    * Returns what opening the store needs when no sender runs.
    * @returns The config, the reporter and the kept memory store.
    */
   private storeAccess(): StoreAccess {
     return { config: this.config, diagnostics: this.diagnostics, memory: this.memoryStorage };
-  }
-
-  /**
-   * Counts the batches held in storage after a failed or deferred delivery.
-   * @returns Promise that resolves to the number of stored batches. A forwarder stores
-   * nothing and reports 0.
-   */
-  async queueDepth(): Promise<number> {
-    await this.senderLoad;
-    return this.storedBatches();
   }
 
   /**

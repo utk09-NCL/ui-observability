@@ -119,18 +119,18 @@ The residual risks of this path are in [Threat Model](threat-model.md), section 
 
 ### In-memory buffers
 
-| Buffer              | Owner                                                            | Limit                                                        | Who drops a record                                                                                                             |
-| ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Deferred queue      | `src/core/deferred.ts`, one queue for each runtime               | `buffering.maxPendingRecords`, at most `DEFER_QUEUE_LIMIT`   | `deferWrite()` counts `record.dropped_by_ceiling` when the queue stays full. `cancelDeferred()` clears it at shutdown.         |
-| Debug buffer        | `DebugBuffer` in `src/core/debug-buffer.ts`, held by the runtime | `debugBuffer.maxRecords`, `debugBuffer.maxAgeMs`             | The buffer trims itself. `resetSession()` and a hook change clear it.                                                          |
-| Boot buffer         | `bootBuffer` in `src/core/runtime.ts`, a `HoldBuffer`            | `buffering.maxHeldRecords` and `BUS_MAX_BOOT_BUFFER_ACTIONS` | `HoldBuffer.push()` keeps the head of each kind and drops the oldest record after it. `dropHeld()` reports `buffer_full`.      |
-| Pending records     | `pendingRecords` in `src/core/runtime.ts`, a `HoldBuffer`        | Same as the boot buffer                                      | `dropHeld()` reports `buffer_full`. A failed load or a shutdown before the load reports `load_failed`.                         |
-| Forward buffer      | `forwardBuffer` in `src/core/runtime.ts`                         | None. It lives for one microtask.                            | `sendForwarded()` gives it to the bus.                                                                                         |
-| Stream buffers      | `RecordStream` in `src/core/pipeline.ts`                         | `buffering.maxPendingRecords`, `buffering.maxPendingBytes`   | `LogPipeline.admit()` and `evict()` report `buffer_full`.                                                                      |
-| Batch queue         | `queue` and `open` in `LogPipeline`                              | Same budget as the stream buffers                            | `evict()` removes the oldest queued batch first. `destroy()` clears the queue.                                                 |
-| Unconfirmed batches | `unconfirmed` in `LogPipeline`                                   | Same budget                                                  | It holds a batch until the send ends or a keepalive request starts. `drainForExit()` copies its records into the exit batches. |
-| Replay buffer       | `ReplayBuffer` in `src/capture/replay-buffer.ts`                 | `replay.maxBufferBytes`                                      | The buffer drops its oldest part. `resetSession()` clears it through `replay.reset()`.                                         |
-| Drop summaries      | `DropReporter` in `src/core/drops.ts`                            | `DROP_SUMMARY_MAX_ITEMS` for each list                       | It sends each summary to `onDrop` on a microtask.                                                                              |
+| Buffer              | Owner                                                            | Limit                                                        | Who drops a record                                                                                                                    |
+| ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Deferred queue      | `src/core/deferred.ts`, one queue for each runtime               | `buffering.maxPendingRecords`, at most `DEFER_QUEUE_LIMIT`   | `deferWrite()` counts `record.dropped_by_ceiling` when the queue stays full. `cancelDeferred()` clears it at shutdown.                |
+| Debug buffer        | `DebugBuffer` in `src/core/debug-buffer.ts`, held by the runtime | `debugBuffer.maxRecords`, `debugBuffer.maxAgeMs`             | The buffer trims itself. `resetSession()` and a hook change clear it.                                                                 |
+| Boot buffer         | `bootBuffer` in `src/core/runtime.ts`, a `HoldBuffer`            | `buffering.maxHeldRecords` and `BUS_MAX_BOOT_BUFFER_ACTIONS` | `HoldBuffer.push()` keeps the head of each kind and drops the oldest record after it. `dropHeld()` reports `buffer_full`.             |
+| Pending records     | `pendingRecords` in `src/core/runtime.ts`, a `HoldBuffer`        | Same as the boot buffer                                      | `dropHeld()` reports `buffer_full`. A failed load or a shutdown before the load reports `load_failed`. A discard reports `discarded`. |
+| Forward buffer      | `forwardBuffer` in `src/core/runtime.ts`                         | None. It lives for one microtask.                            | `sendForwarded()` gives it to the bus.                                                                                                |
+| Stream buffers      | `RecordStream` in `src/core/pipeline.ts`                         | `buffering.maxPendingRecords`, `buffering.maxPendingBytes`   | `LogPipeline.admit()` and `evict()` report `buffer_full`.                                                                             |
+| Batch queue         | `queue` and `open` in `LogPipeline`                              | Same budget as the stream buffers                            | `evict()` removes the oldest queued batch first. `destroy()` clears the queue.                                                        |
+| Unconfirmed batches | `unconfirmed` in `LogPipeline`                                   | Same budget                                                  | It holds a batch until the send ends or a keepalive request starts. `drainForExit()` copies its records into the exit batches.        |
+| Replay buffer       | `ReplayBuffer` in `src/capture/replay-buffer.ts`                 | `replay.maxBufferBytes`                                      | The buffer drops its oldest part. `resetSession()` clears it through `replay.reset()`.                                                |
+| Drop summaries      | `DropReporter` in `src/core/drops.ts`                            | `DROP_SUMMARY_MAX_ITEMS` for each list                       | It sends each summary to `onDrop` on a microtask.                                                                                     |
 
 Rules for the pipeline budget.
 
@@ -151,7 +151,7 @@ A stored batch belongs to the storage adapter. The pipeline, the retry engine an
 | `RetryEngine.deliver()`    | `attempts` reaches `retention.maxAttempts`                                                              | `max_attempts` and `storage.dead_lettered`                           |
 | `RetryEngine.toStorable()` | A permanent refusal, or a 413 for a batch of one record                                                 | `rejected`                                                           |
 | `Sender.retire()`          | A rotation with `pending` set to `discard` or `flush`                                                   | `security_context`, from `rotateContext()` in `src/core/rotation.ts` |
-| `Sender.clearPersisted()`  | The application calls `clearPersistedLogs()`                                                            | See "Open items"                                                     |
+| `clearStored()`            | The application calls `shutdown()` with `clearStorage`                                                  | See "Open items"                                                     |
 
 - `src/storage/eviction.ts` selects the batches to evict. A batch with no action record goes first.
 - `reportGap()` in `src/core/runtime.ts` receives each `onGap` call. It reports to `onDrop` and writes one throttled warning record.
@@ -160,7 +160,7 @@ A stored batch belongs to the storage adapter. The pipeline, the retry engine an
 
 ### Emergency queue
 
-`src/storage/emergency-queue.ts` owns a synchronous `localStorage` queue. `ExitFlush.park()` is the only writer. The queue keeps `EMERGENCY_MAX_ENTRIES` entries and drops the oldest with `exit_queue_full`. `drainEmergencyQueue()` moves the entries to storage at the next `Sender.create()`. `clearEmergencyContext()` removes them at a rotation that discards, and at `clearPersistedLogs()`.
+`src/storage/emergency-queue.ts` owns a synchronous `localStorage` queue. `ExitFlush.park()` is the only writer. The queue keeps `EMERGENCY_MAX_ENTRIES` entries and drops the oldest with `exit_queue_full`. `drainEmergencyQueue()` moves the entries to storage at the next `Sender.create()`. `clearEmergencyContext()` removes them at a rotation that discards, and at `shutdown()` with `clearStorage`.
 
 ## State transitions of the runtime
 
@@ -188,7 +188,7 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 | Pause              | `reconfigure()` with `enabled: false` on a running runtime                            | `collectPoints()` runs first. `installCaptures()` removes every capture. `Sender.hold(true)` stops the pipeline, the retry engine and the exit flush. `deliver()` puts a record in `pendingRecords`. |
 | Console-only start | `startDegraded()`                                                                     | Another version owns the page runtime. A local runtime starts and stays off the global key. It reports `runtime.version_mismatch`.                                                                   |
 | Reconfigure        | `configure()` with a live runtime calls `reconfigure()`                               | The config changes in place through `applyResolvedConfig()`. It reports `config.reconfigured`.                                                                                                       |
-| Shutdown           | `shutdown()` calls `destroy()` on the current runtime                                 | `destroyed` is true. The runtime moves from the global key to the stopped-runtime key.                                                                                                               |
+| Shutdown           | `shutdown(options?)` calls `destroy()` on the current runtime                         | `destroyed` is true. `flushHeld()` or `discardHeld()` runs. `clearStorage()` runs after each store writer stops. The runtime moves to the stopped-runtime key.                                       |
 | Rotation           | `rotateSecurityContext()`                                                             | A new `securityContext.id`, new routing settings, a new delivery stack and a new session.                                                                                                            |
 | New session        | `newSession()`                                                                        | A new `session.id`. The delivery stack and its buffers do not change.                                                                                                                                |
 
@@ -227,15 +227,18 @@ Do not write to `this.config` directly. Use `applyResolvedConfig()`.
 
 ### Shutdown
 
-`destroy()` does these steps in order.
+`destroy()` does these steps in order. `shutdownRule()` reads the options first. `pending: "discard"` or a `clearStorage` scope selects the discard path.
 
-1. It drains the deferred queue, collects the metric points and ends the root span.
-2. It sets `destroyed`, removes its `pagehide` listener and uninstalls the captures. During a pause, it reports the records in the memory of the sender with `disabled`.
-3. It starts `Sender.destroy()`. That function runs a normal flush, then the exit flush with the reason `shutdown`. A held sender runs neither.
-4. It stops the journey engine, gives the forward buffer to the bus and stops the bus.
-5. It reports the pending records as `load_failed`.
-6. It waits for the sender, for a load in progress and for a rotation in progress.
+1. With the flush path, it drains the deferred queue, collects the metric points and ends the root span. The discard path builds none of them.
+2. It sets `destroyed`, removes its `pagehide` listener and uninstalls the captures.
+3. With the flush path, `flushHeld()` runs. During a pause, it reports the records in the memory of the sender with `disabled`. It starts `Sender.destroy()`, which runs a normal flush, then the exit flush with the reason `shutdown`. A held sender runs neither. It gives the forward buffer to the bus and reports the pending records as `load_failed`.
+4. With the discard path, `discardHeld()` runs. It takes the hold buffers and the forward buffer, and clears the breadcrumbs, the context, the debug buffer and the active journey. `Sender.discard()` stops the sender with no send, and returns the records of its buffers and its queue. They go to `onDrop` with `discarded`.
+5. It stops the journey engine and the bus.
+6. It waits for the sender, for a load in progress, for a rotation in progress and for a parked sender.
 7. It moves the runtime to the stopped-runtime key.
+8. With a `clearStorage` scope, `clearStorage()` calls `clearStored()`. It removes the stored ids, the batches, the emergency entries and the carried batches.
+
+`destroy()` keeps the promise of the first call in `stopping`. A later call does not stop again. It waits for that promise, then applies its own `clearStorage` scope. After step 2, the identity stores are memory stores, so a journey call on the stopped runtime writes no browser store.
 
 After shutdown, each call goes to the stopped runtime and records nothing. The next `configure()` builds a new runtime.
 
@@ -258,7 +261,7 @@ After shutdown, each call goes to the stopped runtime and records nothing. The n
 9. `rotating` becomes false, unless a later call waits. With `carry`, `Sender.adopt()` stores the old batches under the new id.
 10. It reports `security.rotated`.
 
-During a pause, `Sender.retire()` skips the flush, so a rotation with `pending: "flush"` acts as `discard`. With `carry`, the rotation routes the live records to `pendingRecords`, and `adopt` keeps the stored batches in `carried`. `buildSender()` adopts them at `enabled: true`. A later rotation takes `carried` back through `takeOld()` and applies its own `pending` rule. With no old sender, `rotateContext()` reaches storage through `src/storage/stored-context.ts`. For `discard` and `flush`, `clearStored()` removes the stored batches of the old context and the carried batches by id. For `retain`, `keepStored()` stores the held records and the carried batches under the old context. `clearPersisted()` uses the same module.
+During a pause, `Sender.retire()` skips the flush, so a rotation with `pending: "flush"` acts as `discard`. With `carry`, the rotation routes the live records to `pendingRecords`, and `adopt` keeps the stored batches in `carried`. `buildSender()` adopts them at `enabled: true`. A later rotation takes `carried` back through `takeOld()` and applies its own `pending` rule. With no old sender, `rotateContext()` reaches storage through `src/storage/stored-context.ts`. For `discard` and `flush`, `clearStored()` removes the stored batches of the old context and the carried batches by id. For `retain`, `keepStored()` stores the held records and the carried batches under the old context. `shutdown()` with `clearStorage` uses the same module, through `clearStorage()` in `src/core/runtime.ts`.
 
 While `rotating` is true, a logger call counts `record.dropped_during_rotation`. `emit()` drops each built record at once and reports it to `onDrop` with `security_context`. Only a record under `closingContext` passes. A forwarded record reports `security_context`. A `configure()` call reports `config.locked`.
 
@@ -360,7 +363,7 @@ These facts are not verified against the code. Verify each one before you rely o
 
 - The buffers inside `src/bus/bus.ts` and `src/bus/links.ts`. This page covers the forward buffer of the runtime only. It does not tell what the bus holds, or drops, between a forwarder and its sender.
 - The aggregation state of `src/core/meter.ts` and `src/core/profiler.ts`. This page tells only that `collectPoints()` turns that state into records.
-- The loss report of `clearPersistedLogs()`. The two `clearPersisted()` functions call no loss reporter. The `remove()` path of each adapter is not checked.
+- The loss report of `shutdown()` with `clearStorage`. `clearStored()` calls no loss reporter for the stored batches that it removes. The `remove()` path of each adapter is not checked.
 - The full path of a replay segment, from the replay buffer to `replay.endpoint`. See [Threat Model](threat-model.md) and [Runtime policies](runtime-policies.md) for the replay rules.
 - The exact content of each test file. The test table uses the file names and the `describe` titles of `tests/`. It was not checked test by test.
 - `.claude/` and `AGENTS.md` are in `.gitignore`. This page names their paths as text, because a link does not resolve in a clone of the repository.

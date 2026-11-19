@@ -233,8 +233,8 @@ const LINK_FIELDS: FieldGroup = {
 /**
  * Picks the field groups the library wrote on a forwarded record. The builder sets log.type and
  * app.namespace after it merges the app's attributes, so an attribute can't fake them, but an app
- * logger named uiobs.metrics can. A logMetric() point writes its fields as payload, so it gets
- * none, as on the local path.
+ * logger named uiobs.metrics can. A capture's single metric record writes its fields as payload,
+ * so it gets none, as on the local path.
  * @param attributes A forwarded record's attributes, before the sender's hooks.
  * @returns The groups to check.
  */

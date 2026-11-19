@@ -5,9 +5,9 @@
 // breaks when the library's internals change.
 
 import * as React from "react";
-import { endJourney, getLogger, type OneLogger, startJourney } from "@utk09/ui-observability";
+import { endJourney, getLogger, type Logger, startJourney } from "@utk09/ui-observability";
 
-const LoggerContext = React.createContext<OneLogger | null>(null);
+const LoggerContext = React.createContext<Logger | null>(null);
 
 /**
  * Provides one namespaced logger to the tree below it.
@@ -32,7 +32,7 @@ export function LoggerProvider({
  * @param namespace Overrides the provider's namespace.
  * @returns Logger for this component.
  */
-export function useLogger(namespace?: string): OneLogger {
+export function useLogger(namespace?: string): Logger {
   const fromContext = React.useContext(LoggerContext);
 
   return React.useMemo(

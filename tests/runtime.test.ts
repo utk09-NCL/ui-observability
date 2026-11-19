@@ -13,6 +13,7 @@ import {
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
 import { JourneyEngine } from "../src/core/journey";
+import { LibraryLogger } from "../src/core/logger";
 import { Meter } from "../src/core/meter";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
@@ -36,26 +37,21 @@ import {
   error,
   flush,
   getDiagnosticCounters,
+  getHealth,
   getJourneyToken,
   getLogger,
-  getQueueDepth,
-  getStats,
   getTraceHeaders,
   histogram,
   info,
   logAction,
   logEvent,
-  logMetric,
   newSession,
+  newTrace,
   registerWorker,
   removeContext,
   setContext,
-  setContextMap,
   shutdown,
   startJourney,
-  startTrace,
-  timeAsync,
-  timeSync,
   trace,
   warn,
 } from "../src/index";
@@ -870,7 +866,8 @@ describe("runtime lifecycle", () => {
       const records = await forward(
         // A context key on a counter point, which the library never writes for a counter.
         forwardedOf("metric", "uiobs.metrics", { ...counterFields, "metric.sum": 4111 }),
-        // logMetric() writes its fields as the caller's payload, as on the local path.
+        // A capture's single metric record writes its fields as the caller's payload, as on the
+        // local path.
         forwardedOf("metric", "checkout", { ...counterFields }),
         // An app logger can't make its event a library point by its namespace alone.
         forwardedOf("event", "uiobs.metrics", { ...counterFields }),
@@ -1533,7 +1530,7 @@ describe("delivery stack loading", () => {
     expect(install).not.toHaveBeenCalled();
   });
 
-  it("resolves shutdown after it destroys a delivery stack that was still loading", async () => {
+  it("resolves shutdown after it stops a delivery stack that was still loading", async () => {
     let release = (): void => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -1543,7 +1540,7 @@ describe("delivery stack loading", () => {
       await gate;
       return realCreate(deps);
     });
-    const destroy = vi.spyOn(Sender.prototype, "destroy");
+    const discard = vi.spyOn(Sender.prototype, "discard");
     configure(base);
     await vi.waitFor(() => {
       expect(create).toHaveBeenCalledTimes(1);
@@ -1554,7 +1551,8 @@ describe("delivery stack loading", () => {
     await done;
 
     // A retry loop that outlives shutdown() can send after the app thinks the library stopped.
-    expect(destroy).toHaveBeenCalledTimes(1);
+    // The shutdown took the held records, so the late stack has nothing to send.
+    expect(discard).toHaveBeenCalledTimes(1);
   });
 
   it("builds no delivery stack when shutdown runs before the load", async () => {
@@ -1587,17 +1585,6 @@ describe("delivery stack loading", () => {
     await flush();
 
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
-  });
-
-  it("waits for a loading delivery stack in getQueueDepth()", async () => {
-    configure({ ...base, endpoint: null });
-    await ready();
-
-    configure({ endpoint: base.endpoint });
-    const count = vi.spyOn(Sender.prototype, "queueDepth");
-    await getQueueDepth();
-
-    expect(count).toHaveBeenCalledTimes(1);
   });
 
   it("releases the boot records before the capture modules load", async () => {
@@ -1828,7 +1815,7 @@ describe("runtime flush as a sender", () => {
   });
 });
 
-describe("queue depth", () => {
+describe("getHealth().delivery", () => {
   it("counts the batches waiting in storage", async () => {
     configure(base);
     await ready();
@@ -1838,14 +1825,7 @@ describe("queue depth", () => {
     }
     vi.spyOn(storage, "count").mockResolvedValue(3);
 
-    await expect(getQueueDepth()).resolves.toBe(3);
-  });
-
-  it("reports 0 for a forwarder, which persists nothing", async () => {
-    configure({ ...base, bus: { mode: "forwarder" } });
-    await ready();
-
-    await expect(getQueueDepth()).resolves.toBe(0);
+    expect((await getHealth()).delivery.stored).toBe(3);
   });
 
   it("reports a broken store as 0 rather than rejecting the caller", async () => {
@@ -1857,12 +1837,10 @@ describe("queue depth", () => {
     }
     vi.spyOn(storage, "count").mockRejectedValue(new Error("store is closed"));
 
-    await expect(getQueueDepth()).resolves.toBe(0);
+    expect((await getHealth()).delivery.stored).toBe(0);
     expect(getDiagnosticCounters()["storage.degraded"]).toBe(1);
   });
-});
 
-describe("delivery stats", () => {
   it("counts a record that waits, the stored batches and the last accepted send", async () => {
     configure(base);
     await ready();
@@ -1872,28 +1850,32 @@ describe("delivery stats", () => {
       throw new Error("sender was not built");
     }
     vi.spyOn(storage, "count").mockResolvedValue(2);
-    const start = await getStats();
+    const start = (await getHealth()).delivery;
 
     info("waits");
-    const waiting = await getStats();
+    const waiting = (await getHealth()).delivery;
 
     expect(waiting).toMatchObject({ pending: start.pending + 1, inFlight: 0, stored: 2 });
 
     const before = Date.now();
     await flush();
 
-    expect((await getStats()).lastSendAt).toBeGreaterThanOrEqual(before);
+    expect((await getHealth()).delivery.lastSendAt).toBeGreaterThanOrEqual(before);
   });
 
   it("reports empty counts for a forwarder, which sends nothing itself", async () => {
     configure({ ...base, bus: { mode: "forwarder" } });
     await ready();
 
-    await expect(getStats()).resolves.toEqual({
+    expect((await getHealth()).delivery).toEqual({
       pending: 0,
       inFlight: 0,
       stored: 0,
       lastSendAt: null,
+      lastFailureAt: null,
+      consecutiveFailures: 0,
+      throttledUntil: null,
+      dropped: {},
     });
   });
 });
@@ -2209,7 +2191,7 @@ describe("OneLogger", () => {
     log.logAction("ORDER_SUBMIT");
     log.logEvent("GRID_READY");
     log.info("plain");
-    log.logMetric("grid.render", 12, "ms");
+    new LibraryLogger(() => runtime(), "trading").logMetric("grid.render", 12, "ms");
 
     expect(
       runtime()
@@ -2230,11 +2212,11 @@ describe("OneLogger", () => {
     expect(emit.mock.calls[1][0]?.attributes["log.type"]).toBe("event");
   });
 
-  it("defaults a metric's unit and type", () => {
+  it("defaults the unit and type of a capture's metric record", () => {
     configure(base);
     const emit = vi.spyOn(runtime(), "emit");
 
-    getLogger("trading").logMetric("grid.rows", 42);
+    new LibraryLogger(() => runtime(), "trading").logMetric("grid.rows", 42);
 
     expect(emit.mock.calls[0][0]?.attributes).toMatchObject({
       "metric.unit": "count",
@@ -2378,19 +2360,6 @@ describe("OneLogger", () => {
 
     expect(emit).not.toHaveBeenCalled();
   });
-
-  it("times a synchronous and an asynchronous call", async () => {
-    configure(base);
-    const emit = vi.spyOn(runtime(), "emit");
-    const log = getLogger("trading");
-
-    expect(log.timeSync("CALC", () => 42)).toBe(42);
-    await expect(log.timeAsync("FETCH", () => Promise.resolve("ok"))).resolves.toBe("ok");
-
-    const names = emit.mock.calls.map((call) => call[0]?.attributes["metric.name"]);
-    expect(names).toContain("CALC.duration");
-    expect(names).toContain("FETCH.duration");
-  });
 });
 
 describe("public API", () => {
@@ -2405,25 +2374,17 @@ describe("public API", () => {
     error("e", new Error("boom"));
     logAction("ACTION");
     logEvent("EVENT");
-    logMetric("metric", 1);
 
-    expect(emit).toHaveBeenCalledTimes(8);
+    expect(emit).toHaveBeenCalledTimes(7);
     expect(emit.mock.calls[0][0]?.attributes["app.namespace"]).toBe("app");
   });
 
-  it("times through the free functions", async () => {
-    configure(base);
-
-    expect(timeSync("CALC", () => 7)).toBe(7);
-    await expect(timeAsync("FETCH", () => Promise.resolve(9))).resolves.toBe(9);
-  });
-
-  it("adds and removes context pairs", () => {
+  it("merges context values, removes a key for null and keeps one for undefined", () => {
     configure(base);
     const emit = vi.spyOn(runtime(), "emit");
 
-    setContext("tenant", "acme");
-    setContextMap({ region: "emea", tier: "gold" });
+    setContext({ tenant: "acme", desk: "fx" });
+    setContext({ region: "emea", tier: "gold", desk: null, tenant: undefined });
     removeContext("tier");
     info("with context");
 
@@ -2432,6 +2393,34 @@ describe("public API", () => {
       region: "emea",
     });
     expect(emit.mock.calls[0][0]?.attributes.tier).toBeUndefined();
+    expect(emit.mock.calls[0][0]?.attributes.desk).toBeUndefined();
+  });
+
+  it("reports a value that isn't an object and keeps the context", () => {
+    configure(base);
+    setContext({ tenant: "acme" });
+
+    setContext("user" as never);
+
+    expect(runtime().context.getAll()).toEqual({ tenant: "acme" });
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
+  });
+
+  it("reports context values it can't read and doesn't throw", () => {
+    configure(base);
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("trap");
+        },
+      },
+    );
+
+    expect(() => {
+      setContext(hostile);
+    }).not.toThrow();
+    expect(getDiagnosticCounters()["record.sanitize_failed"]).toBe(1);
   });
 
   it("starts, reads, tokenizes, adopts and ends a journey", () => {
@@ -2441,12 +2430,13 @@ describe("public API", () => {
     expect(currentJourney()?.id).toBe(started.id);
 
     const token = getJourneyToken();
-    if (token === undefined) {
+    if (token === null) {
       throw new Error("an active journey always has a token");
     }
 
     endJourney();
     expect(currentJourney()).toBeNull();
+    expect(getJourneyToken()).toBeNull();
 
     expect(adoptJourney(token)).toBe(true);
     expect(currentJourney()?.id).toBe(started.id);
@@ -2456,7 +2446,7 @@ describe("public API", () => {
     configure(base);
     const before = getTraceHeaders().traceparent;
 
-    startTrace();
+    newTrace();
 
     expect(getTraceHeaders().traceparent).not.toBe(before);
   });
@@ -2512,7 +2502,7 @@ describe("public API", () => {
     configure(base);
     await shutdown();
 
-    setContext("k", "v");
+    setContext({ k: "v" });
     const journey = startJourney("checkout");
     await flush();
 
@@ -2813,7 +2803,7 @@ describe("spans", () => {
     const root = runtime().tracing.resolve();
 
     await fetch("https://api.internal/orders");
-    startTrace();
+    newTrace();
 
     const [client, rootSpan] = spansOf(emit);
     expect(client).toMatchObject({
@@ -2838,9 +2828,9 @@ describe("spans", () => {
     await ready();
     const emit = vi.spyOn(runtime(), "emit");
 
-    startTrace();
+    newTrace();
     configure({ tracesEndpoint: TRACES, sampling: { defaultRate: 0 } });
-    startTrace();
+    newTrace();
 
     expect(spansOf(emit)).toEqual([]);
   });

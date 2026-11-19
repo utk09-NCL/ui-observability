@@ -32,7 +32,6 @@ import {
   getDiagnosticCounters,
   getHealth,
   getLogger,
-  getQueueDepth,
   getTraceHeaders,
   info,
   logAction,
@@ -207,7 +206,7 @@ describe("before the first configure()", () => {
     const listen = vi.spyOn(window, "addEventListener");
 
     info("module loaded");
-    setContext("tenant", "acme");
+    setContext({ tenant: "acme" });
     addBreadcrumb("opened the blotter");
     startJourney("checkout");
     await vi.dynamicImportSettled();
@@ -230,7 +229,7 @@ describe("before the first configure()", () => {
     expect(getTraceHeaders().traceparent).toMatch(/^00-[0-9a-f]{32}-/);
     expect(await getHealth()).toMatchObject({
       status: "unconfigured",
-      pending: 1,
+      delivery: { pending: 1 },
       mode: "console-only",
       senderReady: false,
     });
@@ -370,7 +369,7 @@ describe("the report of a failed first configure()", () => {
     configure(null as never);
 
     expect(getDiagnosticCounters()["record.dropped_by_redact"]).toBe(2);
-    expect((await getHealth()).pending).toBe(0);
+    expect((await getHealth()).delivery.pending).toBe(0);
   });
 
   it("merges a later call's settings, and starts with them at the call that sets redact", async () => {
@@ -409,7 +408,7 @@ describe("enabled: false", () => {
     expect(drops).toEqual([
       { reason: "disabled", records: 1, batchIds: [], journeyIds: [], actions: ["pay card #"] },
     ]);
-    expect(await getHealth()).toMatchObject({ status: "disabled", pending: 0 });
+    expect(await getHealth()).toMatchObject({ status: "disabled", delivery: { pending: 0 } });
     expect(runtime()["running"]).toBe(false);
   });
 
@@ -457,7 +456,11 @@ describe("enabled: false", () => {
     // The patch is gone, so the page's fetch gets no trace header.
     expect(globalThis.fetch).toBe(native);
     expect(memory.records()).toEqual([]);
-    expect(await getHealth()).toMatchObject({ status: "disabled", senderReady: false, pending: 1 });
+    expect(await getHealth()).toMatchObject({
+      status: "disabled",
+      senderReady: false,
+      delivery: { pending: 1 },
+    });
 
     configure({ enabled: true });
     await settle();
@@ -948,7 +951,7 @@ describe("round 2: storage during a pause", () => {
     configure({ enabled: true });
     await settle();
 
-    expect(await getQueueDepth()).toBe(0);
+    expect((await getHealth()).delivery.stored).toBe(0);
   });
 
   it("stores the carried records under the previous context at a later retain in the pause", async () => {

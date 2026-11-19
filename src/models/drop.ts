@@ -28,6 +28,9 @@ import type { LogRecord } from "./log-record";
  *   levels and sampling keep the record. At a pagehide or a `shutdown()` during a pause, they
  *   are also the records that wait for the sender, and the ones in its buffers, its queue and
  *   its requests. Each record is reported once, whatever comes later.
+ * - "discarded": `shutdown()` with `pending: "discard"` or `clearStorage` dropped the records in
+ *   memory without a send. A record in a request that is in flight isn't counted, because the
+ *   request can still reach the server.
  */
 export type LossReason =
   | "security_context"
@@ -42,7 +45,8 @@ export type LossReason =
   | "exit_queue_full"
   | "load_failed"
   | "not_stored"
-  | "disabled";
+  | "disabled"
+  | "discarded";
 
 /**
  * One report of lost records. Losses with the same reason in the same task are merged into one

@@ -1,6 +1,7 @@
 // src/core/logger.ts
 //
-// Namespaced logger facade with scoped log methods and metric timers.
+// Namespaced logger facade with scoped log methods. The capture modules' logger can also write
+// one metric record per call.
 
 import {
   ATTR_BREADCRUMBS,
@@ -21,7 +22,6 @@ import {
 } from "../models/log-record";
 import { ERROR_OWN_KEYS, isDataField, isErrorLike } from "../utils/error-like";
 import { isObject } from "../utils/guards";
-import { timeAsync, timeSync } from "../utils/timer";
 import type { Diagnostics } from "./diagnostics";
 import type { DropReason, RecordSnapshot } from "./record";
 import { deferWrite } from "./deferred";
@@ -210,7 +210,7 @@ export class OneLogger {
    * @param options Scoped context options.
    */
   constructor(
-    private readonly bind: () => ObservabilityRuntime,
+    protected readonly bind: () => ObservabilityRuntime,
     readonly namespace: string,
     private readonly options: OneLoggerOptions = {},
   ) {
@@ -309,70 +309,6 @@ export class OneLogger {
   };
 
   /**
-   * Logs a numerical metric measurement.
-   * @param name Metric identifier.
-   * @param value Numerical measurement.
-   * @param unit Unit of measurement.
-   * @param type Metric type classification.
-   * @param attributes Optional metric attributes.
-   */
-  logMetric = (
-    name: string,
-    value: number,
-    unit = DEFAULT_METRIC_UNIT,
-    type: MetricType = "gauge",
-    attributes?: Record<string, unknown>,
-  ): void => {
-    // NaN and Infinity become null in JSON, which a backend then reads as a false zero.
-    if (!Number.isFinite(value)) {
-      this.bind().diagnostics.report(
-        "record.dropped_malformed",
-        "The metric value is not a finite number. The library dropped the metric.",
-        { "metric.name": name },
-      );
-      return;
-    }
-
-    const runtime = this.bind();
-    this.submit(runtime, "INFO", "metric", (snapshot) => {
-      // Copy the caller's attributes first so the metric fields win.
-      const copied = copyPayload(attributes, runtime.diagnostics);
-      const payload = {
-        ...copied,
-        "metric.name": name,
-        "metric.value": value,
-        "metric.unit": unit,
-        "metric.type": type,
-        [METRIC_KEYS.attributeKeys]: Object.keys(copied),
-      };
-      this.writeNow(runtime, "INFO", "metric", name, payload, true, snapshot);
-    });
-  };
-
-  /**
-   * Times a synchronous function execution and records a duration metric.
-   * @param label Metric name prefix.
-   * @param fn Synchronous function to time.
-   * @param attributes Optional contextual attributes.
-   * @returns Result returned by the timed function.
-   */
-  timeSync = <T>(label: string, fn: () => T, attributes?: Record<string, unknown>): T =>
-    timeSync(this, label, fn, attributes);
-
-  /**
-   * Times an asynchronous function execution and records a duration metric.
-   * @param label Metric name prefix.
-   * @param fn Asynchronous function to time.
-   * @param attributes Optional contextual attributes.
-   * @returns Promise that resolves to the result of the timed function.
-   */
-  timeAsync = <T>(
-    label: string,
-    fn: () => Promise<T>,
-    attributes?: Record<string, unknown>,
-  ): Promise<T> => timeAsync(this, label, fn, attributes);
-
-  /**
    * Builds and emits a standard log record, and prints it to the console.
    * @param level Severity level.
    * @param type Record classification.
@@ -392,7 +328,7 @@ export class OneLogger {
   }
 
   /** Runs a call right away, or queues it without reading its payload. */
-  private submit(
+  protected submit(
     runtime: ObservabilityRuntime,
     level: LogLevel,
     type: LogType,
@@ -443,7 +379,7 @@ export class OneLogger {
   }
 
   /** Builds a standard record once the call's payload is ready to read. */
-  private writeNow(
+  protected writeNow(
     runtime: ObservabilityRuntime,
     level: LogLevel,
     type: LogType,
@@ -659,4 +595,51 @@ export class OneLogger {
   private mirrors(runtime: ObservabilityRuntime, level: LogLevel): boolean {
     return runtime.config.enabled && runtime.console.accepts(level);
   }
+}
+
+/**
+ * Logger for the capture modules. It also writes one metric record per call, which the public
+ * Logger can't, because an app's metric goes through an instrument and its interval.
+ */
+export class LibraryLogger extends OneLogger {
+  /**
+   * Logs one metric measurement as its own record.
+   * @param name Metric identifier.
+   * @param value Numerical measurement.
+   * @param unit Unit of measurement.
+   * @param type Metric type classification.
+   * @param attributes Optional metric attributes.
+   */
+  logMetric = (
+    name: string,
+    value: number,
+    unit = DEFAULT_METRIC_UNIT,
+    type: MetricType = "gauge",
+    attributes?: Record<string, unknown>,
+  ): void => {
+    // NaN and Infinity become null in JSON, which a backend then reads as a false zero.
+    if (!Number.isFinite(value)) {
+      this.bind().diagnostics.report(
+        "record.dropped_malformed",
+        "The metric value is not a finite number. The library dropped the metric.",
+        { "metric.name": name },
+      );
+      return;
+    }
+
+    const runtime = this.bind();
+    this.submit(runtime, "INFO", "metric", (snapshot) => {
+      // Copy the caller's attributes first so the metric fields win.
+      const copied = copyPayload(attributes, runtime.diagnostics);
+      const payload = {
+        ...copied,
+        "metric.name": name,
+        "metric.value": value,
+        "metric.unit": unit,
+        "metric.type": type,
+        [METRIC_KEYS.attributeKeys]: Object.keys(copied),
+      };
+      this.writeNow(runtime, "INFO", "metric", name, payload, true, snapshot);
+    });
+  };
 }

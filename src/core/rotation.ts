@@ -183,6 +183,8 @@ function validOptions(update: SecurityContextUpdate, pending: string, timeoutMs:
   return (
     isObject(update) &&
     isObject(update.routing) &&
+    // A string would give one attribute for each character.
+    isObject(update.context ?? {}) &&
     PENDING_RULES.includes(pending) &&
     // A browser timer fires at once for a delay above 2^31 - 1 ms, so the wait has a ceiling.
     Number.isFinite(timeoutMs) &&
@@ -240,6 +242,34 @@ async function planRotation(
 }
 
 /**
+ * Lists the records that a rotation loses when shutdown() stops it right after the retire.
+ * @param rule The rotation's rule for the old records.
+ * @param held The records that waited in the runtime.
+ * @param live The held records and the old sender's records from memory.
+ * @param stored The batches that the retire took from storage.
+ * @returns The records that nothing keeps now.
+ */
+function stoppedLoss(
+  rule: PendingRule,
+  held: LogRecord[],
+  live: LogRecord[],
+  stored: readonly LogBatch[],
+): LogRecord[] {
+  // retain stored the sender's records, but the held ones wait for keepStored().
+  if (rule === "retain") {
+    return held;
+  }
+
+  // carry leaves the stored batches in storage, and routes the live records only later.
+  if (rule === "carry") {
+    return live;
+  }
+
+  // discard and flush removed the stored batches with the retire.
+  return [...live, ...stored.flatMap((batch) => batch.records)];
+}
+
+/**
  * Checks the new settings, stops the old delivery and starts the new context. A rejection
  * closes the old context's delivery, because the app asked to leave it.
  * @param host The runtime's rotation operations.
@@ -265,6 +295,12 @@ export async function rotateContext(
     throw error;
   }
 
+  // shutdown() ran while the plan waited for the sender load. A discard already stopped that
+  // sender, so a retire now would drain and remove the old context's stored batches.
+  if (runtime.isDestroyed()) {
+    throw new Error("The runtime has stopped.");
+  }
+
   const { next, context, pending, timeoutMs, previous } = plan;
 
   // The plan's base has no endpoints, so remove the old endpoints from the ignore list here.
@@ -285,15 +321,18 @@ export async function rotateContext(
   // never go out with the old settings, so "flush" removes them as "discard" does.
   const rule = closed && pending === "flush" ? "discard" : pending;
   const retired = (await old?.retire(rule, timeoutMs, previous)) ?? { buffered: [], stored: [] };
-
-  // shutdown() ran during the retire, so the rotation didn't happen and mustn't resolve.
-  if (runtime.isDestroyed()) {
-    throw new Error("The runtime has stopped.");
-  }
-
   const live = [...held, ...retired.buffered];
   // A carry during a pause left stored batches that no sender adopted. This rule covers them too.
   const stored = [...carried, ...retired.stored];
+
+  // shutdown() ran during the retire, so the rotation didn't happen and mustn't resolve. What the
+  // retire took out of memory or storage has no owner now. The carried batches go back, so the
+  // shutdown's clearStorage can still find them.
+  if (runtime.isDestroyed()) {
+    host.drop(stoppedLoss(rule, held, live, retired.stored));
+    await host.adopt(carried);
+    throw new Error("The runtime has stopped.");
+  }
 
   if (rule !== "retain" && rule !== "carry") {
     host.drop([...live, ...stored.flatMap((batch) => batch.records)]);
@@ -320,6 +359,13 @@ export async function rotateContext(
     );
   }
 
+  // shutdown() ran during the storage step. Applying the new context now would make its
+  // clearStorage remove the wrong context's batches. Nothing is lost here: discard and flush
+  // reported their records above, and retain stored its records under the old context.
+  if (runtime.isDestroyed()) {
+    throw new Error("The runtime has stopped.");
+  }
+
   // Keep a lock change the app made during the rotation.
   next.lockConfiguration = config.lockConfiguration;
   // Replace all routing settings together. Don't keep old credentials or signal endpoints.
@@ -328,7 +374,7 @@ export async function rotateContext(
   runtime.context.clear();
 
   if (context) {
-    runtime.context.setMany(context);
+    runtime.context.merge(context);
   }
 
   runtime.breadcrumbs.clear();

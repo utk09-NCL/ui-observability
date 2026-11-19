@@ -113,6 +113,41 @@ describe("Meter", () => {
     });
   });
 
+  it("sends the last value of a gauge for each attribute set, also a negative one", () => {
+    const { meter, points } = setup();
+    const gaugeDef: InstrumentDef = {
+      name: "queue.depth",
+      kind: "gauge",
+      unit: "1",
+      boundaries: [],
+    };
+
+    meter.record(gaugeDef, 4, { desk: "fx" });
+    meter.record(gaugeDef, 9, { desk: "fx" });
+    meter.record(gaugeDef, -2, { desk: "rates" });
+    meter.collect();
+
+    expect(points.map(({ point }) => [point.desk, point["metric.value"]])).toEqual([
+      ["fx", 9],
+      ["rates", -2],
+    ]);
+    expect(points[0].point).toMatchObject({ "metric.type": "gauge", "metric.unit": "1" });
+    expect(points[0].point).not.toHaveProperty("metric.count");
+  });
+
+  it("names both kinds when a name is a gauge and a counter in one interval", () => {
+    const { meter, points, events } = setup();
+
+    meter.record({ ...counterDef(), kind: "gauge" }, 1);
+    meter.record(counterDef(), 1);
+    meter.collect();
+
+    expect(points).toHaveLength(1);
+    expect(events[0].message).toBe(
+      "The metric orders is a gauge and a counter. The library dropped the value.",
+    );
+  });
+
   it("shares one series between two calls with the same set in another key order", () => {
     const { meter, points } = setup();
 

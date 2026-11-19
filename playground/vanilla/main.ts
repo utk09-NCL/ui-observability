@@ -7,15 +7,16 @@ import {
   configure,
   endJourney,
   flush,
+  gauge,
   getDiagnosticCounters,
+  getHealth,
   getJourneyToken,
   getLogger,
-  getQueueDepth,
+  newTrace,
   profiler,
   registerFrame,
   startJourney,
   startMeasure,
-  startTrace,
 } from "../../src/index";
 
 /** Base URL for the local mock ingest server. */
@@ -244,8 +245,13 @@ on("start-measure", () => {
   }, MEASURE_PHASE_MS);
 });
 
+/** Gauge for the sample render time. The library sends its last value every interval. */
+const renderTime = gauge("grid.render", { unit: "ms" });
+
 on("metric", () => {
-  log.logMetric("grid.render", 42.5, "ms", "histogram");
+  renderTime.set(42.5, { grid: "blotter" });
+  // flush() sends the open interval now, so the point doesn't wait for metrics.intervalMs.
+  void flush();
 });
 
 on("error", () => {
@@ -352,7 +358,7 @@ on("burst", () => {
   for (let i = 0; i < BURST_SIZE; i++) {
     // Rotates the trace id per record: sampling keys on it, so without this all
     // 250 share one key and a rate keeps or drops the whole burst.
-    startTrace();
+    newTrace();
 
     log.debug(`burst ${String(i)}`, { i });
   }
@@ -388,9 +394,13 @@ on("remote-sampling", () => {
 });
 
 on("queue", () => {
-  getQueueDepth()
-    .then((waiting) => {
-      note("playground.queue", `${String(waiting)} batch(es) waiting in storage`);
+  getHealth()
+    .then(({ delivery }) => {
+      note(
+        "playground.queue",
+        `${String(delivery.stored)} batch(es) waiting in storage, ` +
+          `${String(delivery.consecutiveFailures)} failed send(s) in a row`,
+      );
     })
     .catch((error: unknown) => {
       note("playground.queue_failed", toMessage(error));

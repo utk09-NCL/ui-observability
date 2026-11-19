@@ -4,7 +4,9 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import {
   configure,
   flush,
+  gauge,
   getDiagnosticCounters,
+  measure,
   rotateSecurityContext,
   shutdown,
   startMeasure,
@@ -292,5 +294,160 @@ describe("startMeasure in the runtime", () => {
     runtime.config.securityContext.id = "changed";
     measure.end();
     expect(metric).toHaveBeenCalledOnce();
+  });
+});
+
+describe("measure() and gauge() in the runtime", () => {
+  async function setup() {
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      bus: { mode: "off" },
+      storage: { backend: "memory" },
+      identity: "memory",
+      capture: { errors: false, rejections: false },
+    });
+    await flush();
+    const runtime = ObservabilityRuntime.current()!;
+    return { metric: vi.spyOn(runtime, "recordMetric") };
+  }
+
+  /** Returns the outcome of each total point. */
+  const outcomes = (metric: Awaited<ReturnType<typeof setup>>["metric"]): unknown[] =>
+    metric.mock.calls
+      .filter(([def]) => def.name === "ui.measure.duration")
+      .map(([, , attributes]) => attributes?.["measure.outcome"]);
+
+  it("returns the result of a synchronous call and ends the measure with ok", async () => {
+    const { metric } = await setup();
+
+    expect(measure("calc", () => 42, { tier: "gold" })).toBe(42);
+
+    expect(outcomes(metric)).toEqual(["ok"]);
+    expect(metric.mock.calls[0][2]).toMatchObject({ tier: "gold", "measure.name": "calc" });
+  });
+
+  it("ends the measure with error and throws the app's error again", async () => {
+    const { metric } = await setup();
+    const failure = new Error("calc failed");
+
+    expect(() =>
+      measure("calc", () => {
+        throw failure;
+      }),
+    ).toThrow(failure);
+    expect(outcomes(metric)).toEqual(["error"]);
+  });
+
+  it("ends the measure when a promise settles, and hands back its value or its rejection", async () => {
+    const { metric } = await setup();
+    let release!: (value: string) => void;
+    const pending = measure(
+      "load",
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    expect(outcomes(metric)).toEqual([]);
+    release("rows");
+    await expect(pending).resolves.toBe("rows");
+
+    const failure = new Error("load failed");
+    await expect(measure("load", () => Promise.reject(failure))).rejects.toBe(failure);
+    expect(outcomes(metric)).toEqual(["ok", "error"]);
+  });
+
+  it("ends the measure with error when the result's then() throws, and throws that error", async () => {
+    const { metric } = await setup();
+    const failure = new Error("then failed");
+    const thenable = {
+      then: (): never => {
+        throw failure;
+      },
+    };
+
+    expect(() => measure("calc", () => thenable)).toThrow(failure);
+    expect(outcomes(metric)).toEqual(["error"]);
+  });
+
+  it("ends the measure at once for a result whose then getter throws", async () => {
+    const { metric } = await setup();
+    const hostile = {
+      get then(): never {
+        throw new Error("getter");
+      },
+    };
+
+    expect(measure("calc", () => hostile)).toBe(hostile);
+    expect(outcomes(metric)).toEqual(["ok"]);
+    expect(getDiagnosticCounters()["record.sanitize_failed"]).toBe(1);
+  });
+
+  it("records nothing after shutdown(), but still runs the function and gives a handle", async () => {
+    await setup();
+    const runtime = ObservabilityRuntime.current()!;
+    const record = vi.spyOn(runtime["meter"], "record");
+    await shutdown();
+
+    expect(measure("calc", () => 5)).toBe(5);
+    gauge("queue.depth").set(3);
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("sends the last value of a gauge as an OTLP gauge point to metricsEndpoint", async () => {
+    const sent = vi.fn((_url: string, _init: RequestInit) =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    );
+    vi.stubGlobal("fetch", sent);
+    configure({
+      endpoint: "https://x.example/v1/logs",
+      metricsEndpoint: "https://x.example/v1/metrics",
+      serviceName: "svc",
+      bus: { mode: "off" },
+      storage: { backend: "memory" },
+      identity: "memory",
+      compression: "none",
+      capture: { errors: false, rejections: false },
+    });
+    await flush();
+    const depth = gauge("queue.depth", { unit: "1" });
+
+    depth.set(4, { desk: "fx" });
+    depth.set(9, { desk: "fx" });
+    await flush();
+
+    const call = sent.mock.calls.find(([url]) => url === "https://x.example/v1/metrics");
+    const body = JSON.parse(call?.[1].body as string) as {
+      resourceMetrics: { scopeMetrics: { metrics: Record<string, unknown>[] }[] }[];
+    };
+    const [metric] = body.resourceMetrics[0].scopeMetrics[0].metrics;
+    expect(metric).toMatchObject({
+      name: "queue.depth",
+      unit: "1",
+      gauge: { dataPoints: [expect.objectContaining({ asDouble: 9 })] },
+    });
+  });
+
+  it("sets a gauge's value and reports options it can't read", async () => {
+    const { metric } = await setup();
+    const options = {
+      get unit(): string {
+        throw new Error("getter");
+      },
+    };
+
+    gauge("queue.depth", { unit: "1" }).set(7, { desk: "fx" });
+    gauge("queue.size", options).set(1);
+    gauge("queue.rows").set(2);
+
+    expect(metric.mock.calls.map(([def, value]) => [def.kind, def.unit, value])).toEqual([
+      ["gauge", "1", 7],
+      ["gauge", "count", 1],
+      ["gauge", "count", 2],
+    ]);
+    expect(getDiagnosticCounters()["config.invalid"]).toBe(1);
   });
 });

@@ -9,21 +9,17 @@ export class ContextStore {
   private readonly map = new Map<string, unknown>();
 
   /**
-   * Sets one ambient context attribute.
-   * @param key Attribute key.
-   * @param value Raw attribute value.
-   */
-  set(key: string, value: unknown): void {
-    this.map.set(key, value);
-  }
-
-  /**
-   * Merges several key-value pairs into the ambient context.
+   * Merges attributes into the ambient context. null removes a key, and undefined keeps the
+   * current value, as in configure().
    * @param values Attributes to merge.
    */
-  setMany(values: Record<string, unknown>): void {
+  merge(values: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(values)) {
-      this.map.set(key, value);
+      if (value === null) {
+        this.map.delete(key);
+      } else if (value !== undefined) {
+        this.map.set(key, value);
+      }
     }
   }
 
