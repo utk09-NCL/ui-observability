@@ -839,7 +839,9 @@ describe("a security-context rotation", () => {
       securityContext: { id: "A" },
       diagnostics: { throttleMs: 0 },
       onDiagnostic: (event) => {
-        if (event.code === "config.invalid") reports.push(event.message);
+        if (event.code === "config.invalid") {
+          reports.push(event.message);
+        }
       },
     });
     await flush();
@@ -947,7 +949,9 @@ describe("metrics.maxHistogramBoundaries", () => {
       metrics: { maxHistogramBoundaries: 0 },
       diagnostics: { throttleMs: 0 },
       onDiagnostic: (event) => {
-        if (event.code === "config.invalid") reports.push(event.message);
+        if (event.code === "config.invalid") {
+          reports.push(event.message);
+        }
       },
     });
     reports.length = 0;

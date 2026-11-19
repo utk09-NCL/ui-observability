@@ -4,7 +4,7 @@ This page lists each attribute that the library writes. Your own attributes come
 
 The OTLP serializer writes the resource attributes on the resource and the record attributes on the record. The ECS serializer moves some of them to ECS fields. See the `serializer` row in [Configuration Options](configuration.md).
 
-In OTLP logs and spans, the instrumentation scope name is the logger namespace, for example `blotter.grid`. The scope has no version. A record without a namespace uses the scope `@utk09/ui-observability`. Metrics use the scope `@utk09/ui-observability` with the SDK version. The record keeps its `app.namespace` attribute.
+In OTLP logs and spans, the instrumentation scope name is the logger namespace, for example `blotter.grid`. Each span record has the namespace `uiobs.traces`. The scope has no version. A record without a namespace uses the scope `@utk09/ui-observability`. Metrics use the scope `@utk09/ui-observability` with the SDK version. The record keeps its `app.namespace` attribute.
 
 ## Resource Attributes
 
@@ -56,18 +56,18 @@ These attributes show a problem in the record:
 
 `error()`, `fatal()` and the error captures add these attributes.
 
-| Attribute                | Type   | Value                                                                                  |
-| ------------------------ | ------ | -------------------------------------------------------------------------------------- |
-| `error.type`             | string | Error name, for example `TypeError`. `resource` and `unhandledrejection` from capture. |
-| `error.message`          | string | Error message.                                                                         |
-| `error.stack_trace`      | string | Stack trace.                                                                           |
-| `error.data`             | object | Own string, number and boolean fields of the error, or a reason that is not an Error.  |
-| `error.source`           | string | Script URL of an uncaught error.                                                       |
-| `error.line`             | number | Line of an uncaught error.                                                             |
-| `error.column`           | number | Column of an uncaught error.                                                           |
-| `error.captured_by`      | string | Source of a captured error, for example `window.onerror` or `console.error`.           |
-| `error.suppressed_count` | number | Number of repeats of the same error that the capture dropped before this record.       |
-| `breadcrumbs`            | array  | Last events before the error. Each item has `t`, `category`, `message` and `data`.     |
+| Attribute                | Type                | Value                                                                                                                                                           |
+| ------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `error.type`             | string              | Error name, for example `TypeError`. Capture sets `resource` for a resource error. It sets `unhandledrejection` for a rejection whose reason is not an `Error`. |
+| `error.message`          | string              | Error message.                                                                                                                                                  |
+| `error.stack_trace`      | string              | Stack trace.                                                                                                                                                    |
+| `error.data`             | object or primitive | Own string, number and boolean fields of the error or of an object reason. A reason that is not an object or a string stays as it is.                           |
+| `error.source`           | string              | Script URL of an uncaught error.                                                                                                                                |
+| `error.line`             | number              | Line of an uncaught error.                                                                                                                                      |
+| `error.column`           | number              | Column of an uncaught error.                                                                                                                                    |
+| `error.captured_by`      | string              | Source of a captured error, for example `window.onerror` or `console.error`.                                                                                    |
+| `error.suppressed_count` | number              | Number of repeats of the same error that the capture dropped before this record.                                                                                |
+| `breadcrumbs`            | array               | Last events before the error. Each item has `t`, `category`, `message` and `data`.                                                                              |
 
 The breadcrumb categories are `log`, `action`, `event`, `click`, `navigation`, `http`, `console`, `frame`, `profile` and `custom`.
 
@@ -75,7 +75,7 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 
 ## Metric Records
 
-`counter()`, `gauge()`, `histogram()`, `startMeasure()`, `measure()`, the profiler and the captures write metric records. With `metricsEndpoint`, the OTLP metrics serializer reads these fields. They do not become OTLP attributes.
+`counter()`, `gauge()`, `histogram()`, `startMeasure()`, `measure()`, the profiler and the captures write metric records. With `metricsEndpoint`, the OTLP metrics serializer reads these fields. Only `otel.metric.overflow` becomes an OTLP attribute.
 
 | Attribute                     | Type     | Value                                                                                                  |
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
@@ -91,7 +91,7 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 | `metric.max`                  | number   | Largest value of a histogram point.                                                                    |
 | `metric.bounds`               | number[] | Bucket boundaries of a histogram point.                                                                |
 | `metric.bucket_counts`        | number[] | Bucket counts of a histogram point.                                                                    |
-| `otel.metric.overflow`        | boolean  | `true` on the point of the attribute sets above the series limit.                                      |
+| `otel.metric.overflow`        | boolean  | `true` on the point of the attribute sets above the series limit. It is an OTLP point attribute.       |
 
 ## Measure Attributes
 
@@ -110,7 +110,7 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 
 ## Profile Attributes
 
-`profiler.probe()` writes one histogram in milliseconds. Each record is the summary of one probe for one interval. The record has the histogram fields of [Metric Records](#metric-records). With `metricsEndpoint`, only `profile.probe` and `profile.sample_every` are attributes of the OTLP point.
+`profiler.probe()` writes one histogram in milliseconds. Each record is the summary of one probe for one interval. The record has the histogram fields of [Metric Records](#metric-records). With `metricsEndpoint`, only `profile.probe`, `profile.sample_every` and `profile.frame_phase` are attributes of the OTLP point.
 
 | Histogram                   | Attributes                                                                                                                                                |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -125,7 +125,7 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 | `profile.p90`          | number | 90th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                                    |
 | `profile.p99`          | number | 99th percentile of the interval, in milliseconds. It has the same rule as `profile.p50`.                                                                                                    |
 | `profile.self_p99`     | number | 99th percentile of the self time, in milliseconds. The self time of a span is its duration without the measured spans inside it. It is absent when no span of the interval has a self time. |
-| `profile.frame_phase`  | string | Phase of a long animation frame. It is `script`, `render`, `style_layout` or `forced_layout`. `forced_layout` is a part of `script`.                                                        |
+| `profile.frame_phase`  | string | Phase of a long animation frame. It is `script`, `render`, `style_layout` or `forced_layout`. `forced_layout` is a part of `script`. It is an OTLP point attribute.                         |
 | `profile.overhead_ns`  | number | Cost of one `begin()` and `end()` pair, in whole nanoseconds. It is the cost of a pair in one short loop. It is absent before the one measurement, and when the clock is too coarse.        |
 
 ## Span Records
@@ -154,23 +154,23 @@ With `diagnostics.records`, the library writes a record for each reported diagno
 
 ## Capture Attributes
 
-| Capture          | Record                                                             | Attributes                                                                                                                                   |
-| ---------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch`, `xhr`   | `GET <url>` (DEBUG), `returned <status>` (WARN), `failed` (ERROR)  | `http.request.method`, `url.full`, `http.response.status_code` (number), `http.duration_ms` (number)                                         |
-| `httpMetrics`    | Histogram `http.client.request.duration`, in seconds               | `http.request.method`, `server.address`, `http.response.status_code` (number), `error.type`                                                  |
-| Client span      | Span named by the HTTP method                                      | `http.request.method`, `url.full`, `server.address`, `http.response.status_code` (number), `error.type`                                      |
-| `resourceErrors` | `resource failed to load` (WARN)                                   | `error.type` (`resource`), `resource.tag`, `resource.url`                                                                                    |
-| `navigation`     | Event `NAVIGATION`                                                 | `page.url.previous`                                                                                                                          |
-| `interactions`   | Events `ui.rage_click` and `ui.dead_click`                         | `click.action`, `click.count` (number, rage click only)                                                                                      |
-| `uncleanExit`    | `ui.unclean_exit` (WARN)                                           | `exit.session_id`, `exit.last_seen_ms` (number), `exit.visibility`, `exit.discarded` (boolean)                                               |
-| `serverTiming`   | Additional fields on fetch and XHR records                         | `server.timing`, a list of `name`, `duration` and `description`. A valid traceparent adds an OTLP span link.                                 |
-| `reports`        | WARN `ui.report`                                                   | `report.type`, `report.url`, optional `report.id`, `report.source`, `report.line`, `report.column`, `report.directive`, `report.blocked_url` |
-| `resourceTiming` | Histogram `ui.resource.duration`, in ms. Event `ui.resource.slow`  | `resource.initiator_type`, `server.address`. Slow events also have `resource.duration_ms` and `url.full`.                                    |
-| `lifecycle`      | Event `ui.lifecycle`                                               | `lifecycle.state`, `lifecycle.previous_state`, `lifecycle.duration_ms`                                                                       |
-| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                         | `user_timing.name`. It follows `fullUrls`.                                                                                                   |
-| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges            | `metric.rating`, `metric.id`, `navigation.type` `navigation.type` is `prerender` for a page that the browser prerendered.                    |
-| `longFrames`     | Histogram `ui.long_frame.duration`, in ms                          | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`                                                    |
-| `console`        | The console message (ERROR or WARN)                                | `console.method`, `console.args` (array)                                                                                                     |
-| `webSocket`      | Events `websocket.open`, `websocket.close`, WARN `websocket.error` | `url.full`, `server.address`, `websocket.close.code` (number), `websocket.close.clean` (boolean)                                             |
-| `webSocket`      | Counter `ui.websocket.messages`                                    | `network.io.direction` (`transmit` or `receive`), `server.address`                                                                           |
-| Storage gap      | `stored records were dropped before delivery` (WARN)               | `gap.batches` (number), `gap.records` (number), `gap.reason`                                                                                 |
+| Capture          | Record                                                                                               | Attributes                                                                                                                                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`, `xhr`   | `<method> <url>` (DEBUG), `<method> <url> returned <status>` (WARN), `<method> <url> failed` (ERROR) | `http.request.method`, `url.full`, `http.response.status_code` (number), `http.duration_ms` (number)                                                                                                             |
+| `httpMetrics`    | Histogram `http.client.request.duration`, in seconds                                                 | `http.request.method`, `server.address`, `http.response.status_code` (number), `error.type`                                                                                                                      |
+| Client span      | Span named by the HTTP method                                                                        | `http.request.method`, `url.full`, `server.address`, `http.response.status_code` (number), `error.type`                                                                                                          |
+| `resourceErrors` | `resource failed to load` (WARN)                                                                     | `error.type` (`resource`), `resource.tag`, `resource.url`                                                                                                                                                        |
+| `navigation`     | Event `NAVIGATION`                                                                                   | `page.url.previous`                                                                                                                                                                                              |
+| `interactions`   | Events `ui.rage_click` and `ui.dead_click`                                                           | `click.action`, `click.count` (number, rage click only)                                                                                                                                                          |
+| `uncleanExit`    | `ui.unclean_exit` (WARN)                                                                             | `exit.session_id`, `exit.last_seen_ms` (number), `exit.visibility`, `exit.discarded` (boolean)                                                                                                                   |
+| `serverTiming`   | Additional fields on fetch and XHR records                                                           | `server.timing`, a list of `name`, `duration` and `description`. A valid traceparent adds an OTLP span link.                                                                                                     |
+| `reports`        | WARN `ui.report`                                                                                     | `report.type`, `report.url`, optional `report.id`, `report.source`, `report.line`, `report.column`, `report.directive`, `report.blocked_url`                                                                     |
+| `resourceTiming` | Histogram `ui.resource.duration`, in ms. Event `ui.resource.slow`                                    | `resource.initiator_type`, `server.address`. Slow events also have `resource.duration_ms` and `url.full`.                                                                                                        |
+| `lifecycle`      | Event `ui.lifecycle`                                                                                 | `lifecycle.state`, `lifecycle.previous_state`, `lifecycle.duration_ms`                                                                                                                                           |
+| `userTiming`     | Histogram `ui.user_timing.duration`, in ms                                                           | `user_timing.name`. It follows `fullUrls`.                                                                                                                                                                       |
+| `webVitals`      | Gauges `web_vitals.<name>` and navigation timing gauges                                              | `metric.rating`, `metric.id`, `navigation.type`. `navigation.type` is `prerender` for a page that the browser prerendered. With `metricsEndpoint`, the OTLP point does not have `metric.rating` and `metric.id`. |
+| `longFrames`     | Histogram `ui.long_frame.duration`, in ms                                                            | `frame.type`, `frame.blocking_ms` (number), `frame.script.invoker`, `frame.script.source`                                                                                                                        |
+| `console`        | The console message (ERROR or WARN)                                                                  | `console.method`, `console.args` (array)                                                                                                                                                                         |
+| `webSocket`      | Events `websocket.open`, `websocket.close`, WARN `websocket.error`                                   | `url.full`, `server.address`, `websocket.close.code` (number), `websocket.close.clean` (boolean)                                                                                                                 |
+| `webSocket`      | Counter `ui.websocket.messages`                                                                      | `network.io.direction` (`transmit` or `receive`), `server.address`                                                                                                                                               |
+| Storage gap      | `stored records were dropped before delivery` (WARN)                                                 | `gap.batches` (number), `gap.records` (number), `gap.reason`                                                                                                                                                     |

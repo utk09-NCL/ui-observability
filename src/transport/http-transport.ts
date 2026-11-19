@@ -236,8 +236,9 @@ export class HttpTransport extends StatusTransport {
     try {
       return await withDeadline(this.untilCancelled(work), Math.max(0, deadline - Date.now()));
     } catch {
-      if (this.cancellation.signal.aborted)
+      if (this.cancellation.signal.aborted) {
         throw new TransportError("permanent", "The delivery context retired.");
+      }
       throw this.timeout(endpoint);
     }
   }
@@ -302,7 +303,9 @@ export class HttpTransport extends StatusTransport {
       controller.abort();
     };
     this.cancellation.signal.addEventListener("abort", cancel, { once: true });
-    if (this.cancellation.signal.aborted) controller.abort();
+    if (this.cancellation.signal.aborted) {
+      controller.abort();
+    }
     // The fetch gets whatever time is left after the headers and the encoding.
     const timer = setTimeout(
       () => {

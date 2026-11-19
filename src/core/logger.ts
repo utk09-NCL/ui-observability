@@ -559,7 +559,9 @@ export class OneLogger {
       return;
     }
 
-    if (!runtime.config.enabled || !runtime.console.accepts(level)) return;
+    if (!runtime.config.enabled || !runtime.console.accepts(level)) {
+      return;
+    }
     // Use the record builder without the delivery level and sampling checks. Don't process
     // a record again if a hook refused it, and don't send this one or add it as a breadcrumb.
     const clean = runtime.builder.build(
@@ -583,7 +585,9 @@ export class OneLogger {
       },
       true,
     ).record;
-    if (clean) runtime.console.write(this.namespace, level, clean.body, clean.attributes);
+    if (clean) {
+      runtime.console.write(this.namespace, level, clean.body, clean.attributes);
+    }
   }
 
   /**

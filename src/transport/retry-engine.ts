@@ -334,7 +334,9 @@ export class RetryEngine {
       this.attempt = 0;
       return "next";
     } catch (error) {
-      if (this.stopped) return "stop";
+      if (this.stopped) {
+        return "stop";
+      }
       const failure = error instanceof TransportError ? error : undefined;
 
       if (failure?.kind === "permanent" || failure?.kind === "too_large") {

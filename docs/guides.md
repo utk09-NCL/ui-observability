@@ -60,7 +60,7 @@ The README recipe [Custom transport](../README.md#custom-transport) gives the co
 
 - The library keeps batching, retry, storage, splitting and the exit flush.
 - The status code that you return has the meaning of the ingest contract. `2xx` accepts the batch. `413` splits it. `429` and `503` throttle. `408` and `5xx` retry. Each other code drops the batch.
-- A rejected promise counts as a network error. The library sends the batch again later. A call that does not settle in 15 seconds counts as a timeout.
+- A rejected promise counts as a network error. The library sends the batch again later. A call that does not settle in `delivery.requestTimeoutMs` counts as a timeout. The default is 15 seconds.
 - The library does not compress `request.body`. Compress it in your transport if necessary.
 - `request.records` holds the built records after `redact`. Do not change them, because the retry engine can send them again.
 - `request.kind` is `"metrics"` for a batch of metric records when `metricsEndpoint` is set. `request.body` is then an OTLP `ExportMetricsServiceRequest`. Send it to your metrics endpoint.

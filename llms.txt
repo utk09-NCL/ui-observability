@@ -10,7 +10,7 @@ This file is for a large language model that writes code with this package. The 
 - Records user actions, domain events, metrics (counter, gauge, histogram), timed operations (measures) and profiler probes.
 - Captures browser signals when you turn them on. Uncaught errors and unhandled rejections are on by default. Fetch, XHR, clicks, navigation, web vitals, long frames, console calls and WebSockets are off by default.
 - Puts five correlation ids on each record: `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
-- Sends OTLP/JSON by default, or ECS NDJSON. It gzips a body above 1 KiB. Metrics and spans can go to their own OTLP endpoints.
+- Sends OTLP/JSON by default, or ECS NDJSON. It gzips a body of 1 KiB or more. Metrics and spans can go to their own OTLP endpoints.
 - Stores a failed batch in IndexedDB or `localStorage` and sends it again with backoff.
 - Connects iframes, workers and OpenFin views to one sender in each tab, through a bus.
 - Records the DOM for a session replay after an error, with the `@rrweb/record` package of the app. The replay is off by default.
@@ -71,7 +71,7 @@ configure({
 - `otelLoader` is also fixed by the first call that works. A later change has no effect and reports nothing.
 - With `securityContext.isolation: true` (the default), `configure()` refuses a change of `endpoint`, `metricsEndpoint`, `tracesEndpoint`, `headers`, `credentials`, `transport`, `transportOnExit`, `transportWorker` and `securityContext.id`. Use `rotateSecurityContext()` for these changes.
 - `enabled: false` is a pause, not a stop. Log calls do nothing. The captures, the replay and the sender stop. The records in memory and in storage stay, and they go out after `enabled: true`. `getHealth().status` is `"disabled"`.
-- `shutdown()` stops the runtime. After it, each call does nothing until the next `configure()`, which builds a new runtime.
+- `shutdown()` stops the runtime. After it, each call does nothing until the next `configure()`, which builds a new runtime. `rotateSecurityContext()` rejects until then.
 - Call `configure()` in one context of each document. In a page with microfrontends, the shell calls it. Each microfrontend calls only `getLogger()` with its own namespace.
 
 ## Public functions
@@ -140,34 +140,34 @@ Session replay:
 
 Top-level keys of `ObservabilityConfig`, with their defaults:
 
-| Key               | Default     | Use                                                                                       |
-| ----------------- | ----------- | ----------------------------------------------------------------------------------------- |
-| `endpoint`        | not set     | URL for the log batches. Required in the first call. `null` selects console-only mode.     |
-| `serviceName`     | `""`        | `service.name` on each record.                                                            |
-| `serviceVersion`  | `""`        | `service.version` on each record.                                                         |
-| `environment`     | `""`        | `deployment.environment` on each record.                                                  |
-| `enabled`         | `true`      | `false` pauses the library.                                                               |
-| `minLevel`        | `"INFO"`    | Lowest level that the library sends: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.  |
-| `minLevels`       | `{}`        | Lowest level for each namespace prefix, for example `{ "trading.ticks": "DEBUG" }`.       |
-| `consoleOutput`   | `false`     | `true` prints from `DEBUG` up. A level name prints from that level. Or `{ level, styles }`. |
-| `metricsEndpoint` | `null`      | OTLP metrics URL. Without it, a metric point is a log record on `endpoint`.               |
-| `tracesEndpoint`  | `null`      | OTLP traces URL. Without it, the library sends no span.                                   |
-| `serializer`      | `"otlp"`    | `"otlp"`, `"ecs"` or a custom `LogSerializer`.                                            |
-| `compression`     | `"gzip"`    | `"gzip"` or `"none"`.                                                                     |
-| `credentials`     | `"omit"`    | Fetch credentials mode. `"include"` for cookie authentication.                            |
-| `headers`         | not set     | An object, or a function that returns one or a promise of one.                            |
-| `identity`        | `"storage"` | Where the ids live. `"memory"` writes no key to `localStorage` or `sessionStorage`.        |
-| `payloadMode`     | `"copy"`    | `"defer"` keeps the payload reference until idle time.                                    |
-| `redact`          | not set     | `(record: LogRecord) => LogRecord \| null`. The last privacy gate.                         |
-| `processors`      | `[]`        | Functions with the contract of `redact`. They run before `redact`.                        |
-| `contextProvider` | not set     | Returns attributes for each record. Keep it fast and synchronous.                         |
-| `onDrop`          | not set     | `(summary: DropSummary) => void`. Gets each loss of built records.                        |
-| `onDiagnostic`    | not set     | `(event: DiagnosticEvent) => void`. Gets each fault of the library.                       |
-| `transport`       | not set     | Sends a batch through a channel of the app. `endpoint` is then optional.                  |
-| `transportOnExit` | not set     | Sends the last batch while the page closes. Needs `transport`. Must not wait.             |
-| `transportWorker` | not set     | `() => Worker`. Sends from a dedicated worker that calls `serveTransportWorker()`.        |
-| `otelLoader`      | not set     | `() => import("@opentelemetry/api")`.                                                     |
-| `lockConfiguration` | `false` | Refuses changes through `configure()`.                                                    |
+| Key                 | Default     | Use                                                                                         |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `endpoint`          | not set     | URL for the log batches. Required in the first call. `null` selects console-only mode.      |
+| `serviceName`       | `""`        | `service.name` on each record.                                                              |
+| `serviceVersion`    | `""`        | `service.version` on each record.                                                           |
+| `environment`       | `""`        | `deployment.environment` on each record.                                                    |
+| `enabled`           | `true`      | `false` pauses the library.                                                                 |
+| `minLevel`          | `"INFO"`    | Lowest level that the library sends: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.    |
+| `minLevels`         | `{}`        | Lowest level for each namespace prefix, for example `{ "trading.ticks": "DEBUG" }`.         |
+| `consoleOutput`     | `false`     | `true` prints from `DEBUG` up. A level name prints from that level. Or `{ level, styles }`. |
+| `metricsEndpoint`   | `null`      | OTLP metrics URL. Without it, a metric point is a log record on `endpoint`.                 |
+| `tracesEndpoint`    | `null`      | OTLP traces URL. Without it, the library sends no span.                                     |
+| `serializer`        | `"otlp"`    | `"otlp"`, `"ecs"` or a custom `LogSerializer`.                                              |
+| `compression`       | `"gzip"`    | `"gzip"` or `"none"`.                                                                       |
+| `credentials`       | `"omit"`    | Fetch credentials mode. `"include"` for cookie authentication.                              |
+| `headers`           | not set     | An object, or a function that returns one or a promise of one.                              |
+| `identity`          | `"storage"` | Where the ids live. `"memory"` writes no key to `localStorage` or `sessionStorage`.         |
+| `payloadMode`       | `"copy"`    | `"defer"` keeps the payload reference until idle time.                                      |
+| `redact`            | not set     | `(record: LogRecord) => LogRecord \| null`. The last privacy gate.                          |
+| `processors`        | `[]`        | Functions with the contract of `redact`. They run before `redact`.                          |
+| `contextProvider`   | not set     | Returns attributes for each record. Keep it fast and synchronous.                           |
+| `onDrop`            | not set     | `(summary: DropSummary) => void`. Gets each loss of built records.                          |
+| `onDiagnostic`      | not set     | `(event: DiagnosticEvent) => void`. Gets each fault of the library.                         |
+| `transport`         | not set     | Sends a batch through a channel of the app. `endpoint` is then optional.                    |
+| `transportOnExit`   | not set     | Sends the last batch while the page closes. Needs `transport`. Must not wait.               |
+| `transportWorker`   | not set     | `() => Worker`. Sends from a dedicated worker that calls `serveTransportWorker()`.          |
+| `otelLoader`        | not set     | `() => import("@opentelemetry/api")`.                                                       |
+| `lockConfiguration` | `false`     | Refuses changes through `configure()`.                                                      |
 
 Sections and their keys. Each key is optional in `configure()`. A section takes an object only. For example, `storage: "memory"` reports `config.invalid`.
 
@@ -190,7 +190,7 @@ Sections and their keys. Each key is optional in `configure()`. A section takes 
 - `diagnostics`: `throttleMs: 1000`, `consoleFallback: false`, `records: false`.
 - `debugBuffer`: `enabled: false`, `maxRecords: 200`, `maxAgeMs: 60000`.
 - `profiler`: `enabled: false`, `maxProbes: 64`, `framePhases: false`, `framePacing: false`.
-- `replay`: `enabled: false`, `mode: "onError"`, `endpoint: null`, `loader: null`, `requireConsent: false`, `bufferMs: 60000`, `afterErrorMs: 5000`, `maskText: true`, `maskInputs: true`, `maskSelectors: []`, `blockSelectors: []`, `headers: null`, `onSegment: null`, `plugins: []`. The replay needs `loader`, and `endpoint` or `onSegment`.
+- `replay`: `enabled: false`, `mode: "onError"`, `endpoint: null`, `loader: null`, `requireConsent: false`, `bufferMs: 60000`, `maxBufferBytes: 10000000`, `afterErrorMs: 5000`, `uploadsPerWindow: 3`, `uploadWindowMs: 10000`, `maxSegmentEvents: 200`, `maxSegmentBytes: 512000`, `flushIntervalMs: 2000`, `maxQueueBytes: 20000000`, `maxAttempts: 3`, `maskText: true`, `maskInputs: true`, `recordCanvas: false`, `maskSelectors: []`, `blockSelectors: []`, `headers: null`, `onSegment: null`, `plugins: []`, `recordOptions: {}`. The replay needs `loader`, and `endpoint` or `onSegment`.
 - `loggerCache`: `maxEntries: 256`.
 
 ## Recipes
@@ -357,7 +357,7 @@ const rows = await measure("rows.fetch", () => fetchRows()).catch((err: unknown)
 ## Ingest contract
 
 - The server accepts `POST` with `Content-Type: application/json` (OTLP), `application/x-ndjson` (ECS, with `serializer: "ecs"`) or `text/plain;charset=UTF-8`. The exit batch to another origin uses `text/plain;charset=UTF-8`.
-- Each batch has the headers `X-UiObs-Batch-Id` and `X-UiObs-Attempt`. A body above 1 KiB has `Content-Encoding: gzip`. The CORS preflight must allow `content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt`, and the name of each header in `headers`.
+- Each batch has the headers `X-UiObs-Batch-Id` and `X-UiObs-Attempt`. A body of 1 KiB or more has `Content-Encoding: gzip`. The CORS preflight must allow `content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt`, and the name of each header in `headers`.
 - The exit batch has its batch id in the query `uiobs_batch_id` and the reason in `uiobs_exit`.
 - The server deduplicates on the batch id for at least 24 hours. The library can send a batch more than one time.
 - `200`, `202` and `204` accept the batch. `413` splits it, and a JSON body `{"maxBytes": n}` gives the limit. `429` and `503` throttle, with `Retry-After`. `408` and `5xx` retry. With a `headers` function, `401` and `403` get one more send with new headers. Each other `4xx` drops the batch.

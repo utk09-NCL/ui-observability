@@ -32,7 +32,7 @@ Call `configure()` in the parent before child frames load. A child frame or a wo
 
 A first `configure()` call that cannot read its options leaves the runtime unconfigured. The library drops each held record and each new record. It writes no id to storage. It writes a console warning and reports `config.invalid`. A later call without `redact` adds its settings. The library continues to drop each record. The first later call that sets `redact` to a function or `null` is the startup.
 
-After `shutdown()`, logging does nothing until the next `configure()`. `getHealth()` still reads the stopped runtime. `shutdown()` followed by `configure()` builds a new runtime from the new config only. This is the method to change a setting that is fixed after startup.
+After `shutdown()`, logging does nothing until the next `configure()`. `getHealth()` still reads the stopped runtime. `shutdown()` followed by `configure()` builds a new runtime from the new config only. This is the method to change a setting that is fixed after startup. Without `securityContext.id` in that call, the new runtime makes a new ID. With isolation on, it does not send the stored batches of the old runtime. They stay parked until `retention.maxAgeMs` or `retention.maxBatches` removes them.
 
 ### Settings that are fixed after startup
 
@@ -234,6 +234,8 @@ function onTokenRefresh(next: string): void {
 
 The function can return a promise. After a 401 or a 403 answer, the library calls the function again and sends the batch one more time. A second 401 or 403 drops the batch.
 
+The library calls the function before each request. The exit flush cannot wait for a promise. It uses the result of the last call. A 401, a 403 and a rotation clear that result. Without a result, the exit flush puts the batch in the emergency queue.
+
 With isolation on, a new `headers` function in `configure()` is a refused change. The session replay uses `replay.headers`, not `headers`.
 
 ## Consent withdrawal
@@ -298,10 +300,3 @@ Set `serviceVersion` to the identifier of the build, for example the version or 
 An error record has `error.stack_trace` with the stack that the browser gives. In a minified build, the stack has minified names and positions.
 
 Backend symbolication is out of scope. The library does not upload a source map, does not write a source-map identifier and does not change a stack. The team that owns the backend must keep the source maps of each `service.version` and apply them there.
-
-## Open items
-
-These facts are not verified against the code.
-
-- The lifetime of the cached result of a `headers` function between two sends.
-- The behavior of `shutdown()` followed by `configure()` with no `securityContext.id` for the batches that the old runtime stored. [Runtime policies](runtime-policies.md) states the rule only for a page reload.

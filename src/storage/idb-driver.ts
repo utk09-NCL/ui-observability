@@ -238,8 +238,9 @@ export class IdbDriver {
         // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style
         const transaction = request.transaction as IDBTransaction;
         const store = transaction.objectStore(INDEXEDDB_STORE_NAME);
-        if (!store.indexNames.contains("routingContext"))
+        if (!store.indexNames.contains("routingContext")) {
           store.createIndex("routingContext", ["routingContextId", "createdAt"]);
+        }
       };
 
       request.onsuccess = () => {

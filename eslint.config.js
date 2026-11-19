@@ -73,7 +73,6 @@ export default defineConfig(
       "prefer-const": ["error", { destructuring: "all" }],
       "no-var": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
-      curly: ["error", "all"],
       "object-shorthand": ["error", "always"],
       "no-param-reassign": ["error", { props: false }],
       "@typescript-eslint/switch-exhaustiveness-check": "error",
@@ -99,7 +98,6 @@ export default defineConfig(
       "prefer-const": ["error", { destructuring: "all" }],
       "no-var": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
-      curly: ["error", "all"],
       "no-empty": ["error", { allowEmptyCatch: false }],
     },
   },
@@ -199,4 +197,7 @@ export default defineConfig(
   },
 
   eslintConfigPrettier,
+
+  // eslint-config-prettier turns curly off, so it must come back after it.
+  { rules: { curly: ["error", "all"] } },
 );

@@ -121,10 +121,18 @@ export class Bus {
    */
   private mayPost(message: BusMessage, peer: object): boolean {
     const permissions = this.sources.get(peer)?.permissions;
-    if (!permissions) return this.config.bus.sourcePolicy === "trusted-origin";
-    if (message.t === BUS_TYPE.journey) return permissions.includes("journey:read");
-    if (message.t === BUS_TYPE.journeyRequest) return permissions.includes("journey:write");
-    if (message.t === BUS_TYPE.sampling) return permissions.includes("sampling:read");
+    if (!permissions) {
+      return this.config.bus.sourcePolicy === "trusted-origin";
+    }
+    if (message.t === BUS_TYPE.journey) {
+      return permissions.includes("journey:read");
+    }
+    if (message.t === BUS_TYPE.journeyRequest) {
+      return permissions.includes("journey:write");
+    }
+    if (message.t === BUS_TYPE.sampling) {
+      return permissions.includes("sampling:read");
+    }
     return true;
   }
 
@@ -138,13 +146,16 @@ export class Bus {
     // Use instanceof here, because the "in" operator throws on a cross-origin window.
     const element = typeof HTMLIFrameElement === "undefined" ? undefined : HTMLIFrameElement;
     const source = element && frame instanceof element ? frame.contentWindow : frame;
-    if (!source || new URL(options.origin).origin !== options.origin || options.origin === "null")
+    if (!source || new URL(options.origin).origin !== options.origin || options.origin === "null") {
       throw new Error("A frame registration requires a window and an exact origin.");
+    }
     const registration = { ...options, permissions: [...(options.permissions ?? ["records"])] };
     this.sources.set(source, registration);
     this.ensureChildrenLink();
     return () => {
-      if (this.sources.get(source) === registration) this.sources.delete(source);
+      if (this.sources.get(source) === registration) {
+        this.sources.delete(source);
+      }
     };
   }
 
@@ -155,7 +166,9 @@ export class Bus {
    * @returns True if the current source policy permits this source.
    */
   isRegistered(source: object | null, origin: string): boolean {
-    if (!source) return false;
+    if (!source) {
+      return false;
+    }
     const registration = this.sources.get(source);
     // A registration is bound to its exact origin under every policy, so it needs no
     // trustedOrigins entry.
@@ -484,7 +497,9 @@ export class Bus {
         reply(answer, plain);
       },
     };
-    if (!this.acceptsMessage(message, source, true)) return;
+    if (!this.acceptsMessage(message, source, true)) {
+      return;
+    }
     if (message.from === this.contextId) {
       return;
     }
@@ -534,15 +549,21 @@ export class Bus {
     const link: Link = {
       ...raw,
       post: (message) => {
-        if (this.mayPost(message, worker)) raw.post(message);
+        if (this.mayPost(message, worker)) {
+          raw.post(message);
+        }
       },
     };
     this.links.push(link);
     return () => {
       link.close();
       const index = this.links.indexOf(link);
-      if (index >= 0) this.links.splice(index, 1);
-      if (this.sources.get(worker) === registration) this.sources.delete(worker);
+      if (index >= 0) {
+        this.links.splice(index, 1);
+      }
+      if (this.sources.get(worker) === registration) {
+        this.sources.delete(worker);
+      }
     };
   }
 
@@ -784,8 +805,9 @@ export class Bus {
           if (
             message.routingContextId &&
             this.handlers.onSecurityContext?.(message.routingContextId) === false
-          )
+          ) {
             break;
+          }
           // Our children may still hold the old id, so pass the owner's id on to them. During a
           // handshake the role can still be "sender", so don't send on the OpenFin link here.
           if (this.config.securityContext.id !== before) {
@@ -819,7 +841,9 @@ export class Bus {
           this.ownerId === message.from &&
           this.ownerPeer === source.peer
         ) {
-          if (this.handlers.onSecurityContext?.(message.id) !== false) this.rotateContext();
+          if (this.handlers.onSecurityContext?.(message.id) !== false) {
+            this.rotateContext();
+          }
         }
         break;
 
@@ -1109,7 +1133,9 @@ export class Bus {
       }
     };
 
-    if (!this.platform.isWorker) this.ensureChildrenLink();
+    if (!this.platform.isWorker) {
+      this.ensureChildrenLink();
+    }
     if (this.platform.isTopLevelDocument) {
       push(createBroadcastLink(BUS_CHANNEL_NAME, this.receive, this.diagnostics));
     }
@@ -1120,7 +1146,9 @@ export class Bus {
 
   /** Opens the link to child frames if it is not already open. */
   private ensureChildrenLink(): void {
-    if (this.links.some((link) => link.kind === "children")) return;
+    if (this.links.some((link) => link.kind === "children")) {
+      return;
+    }
     const link = createChildrenLink(
       this.receive,
       this.config.bus.trustedOrigins,
@@ -1145,7 +1173,9 @@ export class Bus {
       },
       (message, source) => this.mayPost(message, source),
     );
-    if (link) this.links.push(link);
+    if (link) {
+      this.links.push(link);
+    }
   }
 
   /** Returns the singleton OpenFin InterApplicationBus link. */
@@ -1196,8 +1226,9 @@ export class Bus {
       from: this.contextId,
       tabId: this.tabId,
     });
-    if (this.upstream && this.ownerId === null)
+    if (this.upstream && this.ownerId === null) {
       this.upstream.post({ t: BUS_TYPE.hello, from: this.contextId, tabId: this.tabId });
+    }
     this.postJourney({ t: BUS_TYPE.journeyRequest, from: this.contextId });
     this.pollRules();
     // The role is final now. Children welcomed during the handshake got no id, so send it now.

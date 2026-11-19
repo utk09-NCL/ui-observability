@@ -67,7 +67,11 @@ export class BreadcrumbBuffer {
     this.buffer = new Array<Breadcrumb | undefined>(capacity);
     this.pointer = 0;
     this.filled = false;
-    if (capacity) for (const crumb of recent) this.push(crumb);
+    if (capacity) {
+      for (const crumb of recent) {
+        this.push(crumb);
+      }
+    }
   }
 
   /**
@@ -75,7 +79,9 @@ export class BreadcrumbBuffer {
    * @param crumb Breadcrumb to add.
    */
   push(crumb: Breadcrumb): void {
-    if (this.capacity === 0) return;
+    if (this.capacity === 0) {
+      return;
+    }
     this.buffer[this.pointer] = crumb;
     this.pointer = (this.pointer + 1) % this.capacity;
     if (this.pointer === 0) {

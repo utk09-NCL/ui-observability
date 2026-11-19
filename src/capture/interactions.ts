@@ -146,21 +146,30 @@ export class InteractionCapture implements Capture {
 
   /** Rotates the trace context and records a click breadcrumb. */
   private readonly onClick = (event: Event): void => {
-    if (this.ctx.isActive?.() === false) return;
+    if (this.ctx.isActive?.() === false) {
+      return;
+    }
     const target = event.target;
-    if (!(target instanceof Element)) return;
+    if (!(target instanceof Element)) {
+      return;
+    }
     const settings = this.ctx.config.capture.interactions;
     const options = typeof settings === "object" ? settings : {};
     const ignore = options.ignoreSelector === undefined ? IGNORE_SELECTOR : options.ignoreSelector;
-    if (ignore && target.closest(ignore)) return;
+    if (ignore && target.closest(ignore)) {
+      return;
+    }
     // A missing or empty attribute gives "", and the message is then "unknown-click".
     const attribute = options.actionAttribute ?? ACTION_ATTRIBUTE_DEFAULT;
     const action = target.closest(`[${attribute}]`)?.getAttribute(attribute) ?? "";
     const message = (action || "unknown-click").slice(0, this.ctx.config.limits.maxBodyChars);
     const data: Record<string, unknown> = {};
-    if (options.selector) data.selector = describeElement(target);
-    if (options.text)
+    if (options.selector) {
+      data.selector = describeElement(target);
+    }
+    if (options.text) {
       data.text = target.textContent.trim().slice(0, options.maxTextChars ?? CLICK_TEXT_MAX_CHARS);
+    }
     this.ctx.tracing.rotate("interaction");
     this.ctx.breadcrumbs.push({
       t: Date.now(),
@@ -254,7 +263,9 @@ export class InteractionCapture implements Capture {
       return;
     }
     this.lastUrl = to;
-    if (this.ctx.isActive?.() === false) return;
+    if (this.ctx.isActive?.() === false) {
+      return;
+    }
 
     // The comparison above uses the full URL, so a query-only change still counts as a
     // navigation. The record doesn't keep the query unless you set fullUrls.

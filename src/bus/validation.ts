@@ -17,9 +17,13 @@ const FLUSH_STATUSES: readonly unknown[] = ["complete", "timeout", "inactive"];
  * @returns True if the message has the required fields and values.
  */
 export function validMessage(value: unknown): value is BusMessage {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
   const m = value as Record<string, unknown>;
-  if (typeof m.from !== "string" || !m.from || typeof m.t !== "string") return false;
+  if (typeof m.from !== "string" || !m.from || typeof m.t !== "string") {
+    return false;
+  }
   const text = (key: string): boolean => typeof m[key] === "string";
   switch (m.t) {
     case BUS_TYPE.hello:
@@ -49,7 +53,9 @@ export function validMessage(value: unknown): value is BusMessage {
         Array.isArray(m.records) &&
         (m.routingContextId === undefined || text("routingContextId")) &&
         m.records.every((r: unknown) => {
-          if (!isLogRecord(r) || !isLogLevel(r.severityText)) return false;
+          if (!isLogRecord(r) || !isLogLevel(r.severityText)) {
+            return false;
+          }
           return (
             !Array.isArray(r.attributes) &&
             !Array.isArray(r.resource) &&

@@ -240,7 +240,7 @@ The floor prevents a failure from noise on a small value. Without the floor, the
 
 `outage.recoveryToDrainMs` does not use the rule. Its proposed budget is `retryMaxDelayMs` (1000 ms) plus the proposed `outage.drainMs` budget (67 ms), which gives 1067 ms. The random wait of the retry timer can be as long as `retryMaxDelayMs`. The approved budget adds 10 percent, as for each other budget.
 
-A slope budget of 938 bytes for each 10 000 records is approximately 0.1 byte for each record.
+The approved slope budget of 1 032 bytes for each 10 000 records is approximately 0.1 byte for each record.
 
 These metrics have no budget.
 

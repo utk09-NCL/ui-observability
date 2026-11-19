@@ -163,7 +163,8 @@ export function setConfigurationLocked(locked: boolean): void {
  * @param update New identity, routing settings and context attributes.
  * @param options What to do with old records, and the flush deadline.
  * @returns Promise that resolves once the change is complete. It rejects before the first
- * configure() call that works, and while a failed first call still refuses records.
+ * configure() call that works, while a failed first call still refuses records, and after
+ * shutdown().
  */
 export function rotateSecurityContext(
   update: SecurityContextUpdate,
@@ -229,7 +230,9 @@ function trimLoggerCache(): number | null {
  */
 export function getLogger(namespace: string, options?: OneLoggerOptions): Logger {
   const max = trimLoggerCache();
-  if (options || max === 0) return new OneLogger(requireRuntime, namespace, options);
+  if (options || max === 0) {
+    return new OneLogger(requireRuntime, namespace, options);
+  }
 
   let logger = loggers.get(namespace);
 

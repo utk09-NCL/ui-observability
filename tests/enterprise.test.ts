@@ -157,7 +157,9 @@ describe("application-owned privacy policies", () => {
         consoleOutput: true,
         minLevel: "FATAL",
         redact: () => {
-          if (mode === "throw") throw new Error("failed");
+          if (mode === "throw") {
+            throw new Error("failed");
+          }
           return mode === "null" ? null : ({} as LogRecord);
         },
       });
@@ -366,7 +368,9 @@ describe("runtime ownership and cache", () => {
 
   it("bounds 10,000 namespaces, supports LRU resizing, no cache and explicit unbounded caching", async () => {
     configure({ ...base, endpoint: null });
-    for (let i = 0; i < 10000; i++) getLogger(`namespace-${String(i)}`);
+    for (let i = 0; i < 10000; i++) {
+      getLogger(`namespace-${String(i)}`);
+    }
     expect((await getHealth()).loggerCache).toEqual({ size: 256, maxEntries: 256 });
     configure({ loggerCache: { maxEntries: 2 } });
     const a = getLogger("a");
@@ -378,7 +382,9 @@ describe("runtime ownership and cache", () => {
     expect(getLogger("a")).not.toBe(getLogger("a"));
     configure({ loggerCache: { maxEntries: null } });
     configure({ serviceName: "other" });
-    for (let i = 0; i < 300; i++) getLogger(`unlimited-${String(i)}`);
+    for (let i = 0; i < 300; i++) {
+      getLogger(`unlimited-${String(i)}`);
+    }
     expect((await getHealth()).loggerCache.size).toBe(300);
     a.info("old handles still work");
   });

@@ -42,6 +42,7 @@ The library never imports a peer by name. A missing peer cannot break your bundl
 ```ts
 configure({
   endpoint: "https://telemetry.example.com/v1/logs",
+  serviceName: "equities-blotter",
   otelLoader: () => import("@opentelemetry/api"),
   capture: {
     webVitals: { loader: () => import("web-vitals") },
