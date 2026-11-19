@@ -627,6 +627,8 @@ export const BUS_TYPE = {
   sampling: "ui-observability.message.sampling",
   samplingRequest: "ui-observability.message.sampling-request",
   tab: "ui-observability.message.tab",
+  flushRequest: "ui-observability.message.flush-request",
+  flushResult: "ui-observability.message.flush-result",
 } as const;
 
 /** Global window property key used to locate a same-origin runtime instance. */
@@ -1076,6 +1078,15 @@ export const STORAGE_LIMITS: StorageLimits = {
  */
 export const STORAGE_DEADLINE_MS = 10_000;
 
+/** Default wait of flush() and of a rotation's flush, in milliseconds. */
+export const FLUSH_TIMEOUT_MS = 5000;
+
+/**
+ * Longest wait of flush() and of a rotation's flush, in milliseconds. A browser timer fires at
+ * once for a delay above 2^31 - 1 ms, so the wait has a ceiling.
+ */
+export const FLUSH_TIMEOUT_MAX_MS = 600_000;
+
 // ----------------------------------
 // Retry backoff
 // ----------------------------------
@@ -1120,6 +1131,27 @@ export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
  * A new source past it is refused, so a flood of fake names can't grow the map without end.
  */
 export const BUS_MAX_TRACKED_SOURCES = 256;
+
+/**
+ * Max flush requests from other contexts that wait for the next flush. A request past it gets
+ * no answer, so a flood of requests can't grow the list without end.
+ */
+export const BUS_MAX_FLUSH_REQUESTS = 100;
+
+/** Max flush requests of one source that wait, so one frame can't fill the whole list. */
+export const BUS_MAX_FLUSH_REQUESTS_PER_SOURCE = 4;
+
+/**
+ * Min time between the starts of two flushes that the bus runs for other contexts, in
+ * milliseconds. A request in the gap joins the next one, so a flood can't flush without a pause.
+ */
+export const BUS_FLUSH_GAP_MS = 1000;
+
+/**
+ * Share of a forwarder's time left that it gives its sender in a flush request. The rest is for
+ * the answer, so the caller's wait outlasts the callee's deadline at each hop of a chain.
+ */
+export const FLUSH_REQUEST_SHARE = 0.9;
 
 /** Default of buffering.maxHeldRecords, the cap on non-action records in one hold buffer. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;

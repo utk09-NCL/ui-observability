@@ -1106,7 +1106,8 @@ describe("console-only runtime", () => {
     const probe = profiler.probe("grid.render");
     expect(probe.begin()).toBeGreaterThanOrEqual(0);
     span(probe, clock, 3);
-    await expect(flush()).resolves.toBeUndefined();
+    // The point waits for startup, then has no destination.
+    await expect(flush()).resolves.toMatchObject({ status: "complete", dropped: 1 });
     const dropped = runtime().diagnostics.snapshot()["record.dropped_no_destination"];
     await expect(shutdown()).resolves.toBeUndefined();
     return dropped;

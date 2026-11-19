@@ -14,12 +14,13 @@ import {
 } from "../constants";
 import type { ResolvedConfig } from "../models/config";
 import type { LossReporter } from "../models/drop";
+import type { FlushResult } from "../models/health";
 import { estimateBytes } from "../utils/sanitize";
 import type { LogBatch } from "../models/batch";
 import { type LogRecord, nowUnixNano } from "../models/log-record";
 import type { StorageAdapter } from "../models/storage";
 import type { BatchTransport } from "../transport/status-transport";
-import type { RetryEngine, StoreOutcome } from "../transport/retry-engine";
+import type { RetryEngine, StoreOutcome, StoreReport } from "../transport/retry-engine";
 import { withDeadline } from "../utils/deadline";
 import { newId } from "../utils/identity";
 import { unrefTimer } from "../utils/unref";
@@ -55,6 +56,22 @@ type StoreResult = StoreOutcome | "unknown";
 
 /** The results the throttle path can get. Only a failed send splits or rejects a batch. */
 type ThrottledResult = Exclude<StoreResult, "split" | "rejected">;
+
+/** What a flush counts in its snapshot of the pipeline. */
+export type FlushCounts = Pick<FlushResult, "accepted" | "stored" | "dropped" | "pending">;
+
+/** What a dispatch did with a batch's records. */
+type BatchEnd = Omit<FlushCounts, "pending">;
+
+/**
+ * Builds the end of a batch that didn't go out. The records that storage doesn't hold are lost.
+ * @param kept Records that storage holds.
+ * @param records The batch's record count.
+ * @returns The end.
+ */
+function keptEnd(kept: number, records: number): BatchEnd {
+  return { accepted: 0, stored: kept, dropped: records - kept };
+}
 
 /**
  * The text of the send-failure report for each store result. Each one says what happened to
@@ -100,6 +117,8 @@ interface Pending {
   done: Promise<void>;
   /** Resolves `done`. */
   resolve: () => void;
+  /** What the dispatch did with the records. Unset while they have no final state. */
+  end?: BatchEnd;
 }
 
 /** One stream's pending records and the timer that closes a partial batch. */
@@ -249,6 +268,7 @@ export class LogPipeline {
       this.open.delete(pending);
       this.unconfirmed.delete(pending.batch.id);
       this.release(pending.batch.records);
+      pending.end = { accepted: 0, stored: 0, dropped: pending.batch.records.length };
       pending.resolve();
       this.onLoss("buffer_full", pending.batch.records, [pending.batch.id]);
       return true;
@@ -389,12 +409,14 @@ export class LogPipeline {
    * Sends the buffered records through the normal dispatch path, then waits for every batch
    * in the queue and in flight. The throttle check and the concurrency limit apply. A direct
    * send would bypass both.
-   * @returns Promise that resolves once every batch is sent or stored, or on destroy.
+   * @param expired Resolves at the caller's deadline, if it has one.
+   * @returns Promise that resolves to the batches the wait covered, once each one is sent or
+   * stored, or on a hold, a destroy or the deadline.
    */
-  async flushPending(): Promise<void> {
+  async flushPending(expired?: Promise<void>): Promise<Pending[]> {
     // A held pipeline sends nothing, and its queued batches can't finish, so don't wait.
     if (this.paused) {
-      return;
+      return [];
     }
 
     // One batch per stream, because a mixed batch would send a metric to the logs endpoint.
@@ -409,16 +431,44 @@ export class LogPipeline {
     // Queued batches count too. Otherwise the exit flush would send them again under a new id.
     // A hold stops the queue, so the wait ends there and doesn't last the whole pause. Each
     // waiter goes once its flush settles, otherwise each call would keep memory until a hold.
+    const snapshot = [...this.open];
     let stop!: () => void;
     const held = new Promise<void>((resolve) => {
       stop = resolve;
     });
     this.waiters.add(stop);
     try {
-      await Promise.race([Promise.all([...this.open].map((pending) => pending.done)), held]);
+      const all = Promise.all(snapshot.map((pending) => pending.done));
+      await Promise.race(expired ? [all, held, expired] : [all, held]);
     } finally {
       this.waiters.delete(stop);
     }
+
+    return snapshot;
+  }
+
+  /**
+   * Claims the buffered records like flushPending(), then waits for the batches of this call
+   * until each one ends, a hold stops the queue or the deadline passes.
+   * @param expired Resolves at the caller's deadline.
+   * @returns The records of the call's batches by their state when the wait ends. A batch that
+   * ends later doesn't change them.
+   */
+  async flushUntil(expired: Promise<void>): Promise<FlushCounts> {
+    const snapshot = await this.flushPending(expired);
+    const counts: FlushCounts = { accepted: 0, stored: 0, dropped: 0, pending: 0 };
+
+    for (const { batch, end } of snapshot) {
+      if (end) {
+        counts.accepted += end.accepted;
+        counts.stored += end.stored;
+        counts.dropped += end.dropped;
+      } else {
+        counts.pending += batch.records.length;
+      }
+    }
+
+    return counts;
   }
 
   /**
@@ -487,6 +537,10 @@ export class LogPipeline {
    * @returns The records in the queue and in the buffers.
    */
   discard(): LogRecord[] {
+    // A queued batch is lost now, and a flush that waits for it must count it so.
+    for (const pending of this.queue) {
+      pending.end = keptEnd(0, pending.batch.records.length);
+    }
     const queued = this.queue.flatMap((pending) => pending.batch.records);
     const buffered = STREAM_ORDER.flatMap((name) => this.streams[name].take());
     this.destroy();
@@ -651,7 +705,7 @@ export class LogPipeline {
     const { batch } = pending;
 
     try {
-      await this.dispatch(batch);
+      pending.end = await this.dispatch(batch);
     } catch (error) {
       this.diagnostics.report(
         "pipeline.crashed",
@@ -672,8 +726,10 @@ export class LogPipeline {
    * Sends a batch over the HTTP transport. Stores the batch if the transport is throttled
    * or fails.
    * @param batch Batch to deliver.
+   * @returns What became of the records, or undefined when that isn't known yet.
    */
-  private async dispatch(batch: LogBatch): Promise<void> {
+  private async dispatch(batch: LogBatch): Promise<BatchEnd | undefined> {
+    const total = batch.records.length;
     try {
       // Store the batch while the transport is throttled. Sending here would post a batch
       // through the throttle every flush interval. Leave the attempt count alone, because
@@ -683,29 +739,34 @@ export class LogPipeline {
         const result = await this.store(batch);
         this.diagnostics.report("transport.throttled", THROTTLED_TEXT[result], {
           batchId: batch.id,
-          records: batch.records.length,
+          records: total,
           throttledMs,
         });
-        return;
+        return result === "unknown" ? undefined : keptEnd(result === "stored" ? total : 0, total);
       }
 
       try {
         // A keepalive request carries on after unload, so the exit flush must not send it
         // again. A failed send still reaches the retry engine through this batch reference.
-        await this.transport.send(batch, () => {
+        const lost = await this.transport.send(batch, () => {
           this.unconfirmed.delete(batch.id);
         });
+        return { accepted: total - lost, stored: 0, dropped: lost };
       } catch (error) {
-        if (this.stopped) return;
+        if (this.stopped) {
+          return undefined;
+        }
         // Increment the attempt count before storing. Left at 0, the batch would exceed
         // STORAGE_LIMITS.maxAttempts by one and the attempt headers would report one too few.
-        const result = await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
+        const report = await this.storeFailed({ ...batch, attempts: batch.attempts + 1 }, error);
         this.diagnostics.report(
           "transport.http_error",
-          SEND_FAILED_TEXT[result],
-          { batchId: batch.id, records: batch.records.length },
+          SEND_FAILED_TEXT[report?.outcome ?? "unknown"],
+          { batchId: batch.id, records: total },
           error,
         );
+        // An unknown store has no final state, because a late save can still finish.
+        return report ? keptEnd(report.stored, total) : undefined;
       }
     } finally {
       this.unconfirmed.delete(batch.id);
@@ -717,18 +778,16 @@ export class LogPipeline {
    * batch the server won't accept.
    * @param batch Batch to persist, with its attempt already counted.
    * @param error Failure thrown by the transport.
-   * @returns What became of the batch, for the send-failure report.
+   * @returns What became of the batch and the records that storage holds, or undefined when
+   * a storage call threw or ran past its deadline. A late save can still finish, so the caller
+   * reports no drop then.
    */
-  private async storeFailed(batch: LogBatch, error: unknown): Promise<StoreResult> {
-    const outcome = await this.diagnostics.guardAsync(
+  private storeFailed(batch: LogBatch, error: unknown): Promise<StoreReport | undefined> {
+    return this.diagnostics.guardAsync(
       "storage.degraded",
       "The library could not store an undelivered batch.",
       () => this.retry.storeFailed(batch, error),
     );
-
-    // The guard returns undefined when a storage call threw or ran past its deadline. A late
-    // save can still finish and the engine then sends the batch, so don't report a drop.
-    return outcome ?? "unknown";
   }
 
   /**

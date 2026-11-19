@@ -67,9 +67,10 @@ export class HttpTransport extends StatusTransport {
    * to tracesEndpoint. A batch without an endpoint goes nowhere.
    * @param batch Batch to send.
    * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns Promise that resolves to the records lost in a send that ends without an error.
    * @throws TransportError on transient, throttled, 413, or permanent network failures.
    */
-  async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
+  async send(batch: LogBatch, onKeepalive?: () => void): Promise<number> {
     this.assertContext(batch);
     const { config } = this;
     const kind = batchKind(batch, config);
@@ -78,14 +79,14 @@ export class HttpTransport extends StatusTransport {
     // A traces batch without tracesEndpoint has no destination. Count the drop.
     if (!endpoint) {
       this.diagnostics.count("record.dropped_no_destination");
-      return;
+      return batch.records.length;
     }
 
     if (batch.records.length === 0) {
-      return;
+      return 0;
     }
 
-    await this.post(batch, kind, endpoint, onKeepalive);
+    return this.post(batch, kind, endpoint, onKeepalive);
   }
 
   /**
@@ -113,17 +114,18 @@ export class HttpTransport extends StatusTransport {
    * @param endpoint Ingest URL. The caller reads it once, so a reconfigure during the send
    * can't change it.
    * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns The records lost in an accepted batch, or all of them when serializing fails.
    */
   private async post(
     batch: LogBatch,
     kind: BatchKind,
     endpoint: string,
     onKeepalive: (() => void) | undefined,
-  ): Promise<void> {
+  ): Promise<number> {
     const serialized = this.serialize(batch);
 
     if (!serialized) {
-      return;
+      return batch.records.length;
     }
 
     const otlp = isOtlpBatch(kind, this.config.serializer);
@@ -147,10 +149,7 @@ export class HttpTransport extends StatusTransport {
       // The server must list each header in Access-Control-Expose-Headers, or it reads as null.
       const { headers } = response;
       this.accept(kind, headers.get(HEADER_SAMPLING), headers.get(HEADER_DATE));
-      if (body !== undefined) {
-        this.reportPartial(batch, kind, body);
-      }
-      return;
+      return body === undefined ? 0 : this.reportPartial(batch, kind, body);
     }
 
     const status = response.status;

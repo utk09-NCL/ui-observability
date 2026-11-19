@@ -3,8 +3,13 @@
 // Checks the required fields and values of messages from another context.
 
 import type { BusMessage } from "../models/bus";
+import type { FlushResult } from "../models/health";
 import { isLogLevel, isLogRecord } from "../models/log-record";
 import { BUS_TYPE, SEVERITY_NUMBER } from "../constants";
+import { isObject } from "../utils/guards";
+
+/** The statuses a flush result can have. */
+const FLUSH_STATUSES: readonly unknown[] = ["complete", "timeout", "inactive"];
 
 /**
  * Checks the fields that each bus message type requires. unwrap() only checks the envelope.
@@ -35,6 +40,10 @@ export function validMessage(value: unknown): value is BusMessage {
       return (m.to === undefined || text("to")) && "journey" in m;
     case BUS_TYPE.sampling:
       return text("to") && "rules" in m;
+    case BUS_TYPE.flushRequest:
+      return text("id") && typeof m.timeoutMs === "number";
+    case BUS_TYPE.flushResult:
+      return text("id") && "result" in m;
     case BUS_TYPE.records:
       return (
         Array.isArray(m.records) &&
@@ -60,4 +69,27 @@ export function validMessage(value: unknown): value is BusMessage {
     default:
       return false;
   }
+}
+
+/**
+ * Copies a flush result from another context and checks the copy. Each field is read once, so
+ * a getter can't pass the check with one value and hand over another.
+ * @param value The answer's result.
+ * @returns The copy, or null when the status is unknown or a count isn't a safe integer of 0
+ * or more.
+ */
+export function readFlushResult(value: unknown): FlushResult | null {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const { status, accepted, stored, dropped, forwarded, pending } = value;
+  const counts = [accepted, stored, dropped, forwarded, pending];
+  const whole = counts.every((count) => Number.isSafeInteger(count) && (count as number) >= 0);
+  // "complete" means that no record waits, so a count of pending records contradicts it.
+  if (!whole || !FLUSH_STATUSES.includes(status) || (status === "complete" && pending !== 0)) {
+    return null;
+  }
+
+  return { status, accepted, stored, dropped, forwarded, pending } as FlushResult;
 }

@@ -159,6 +159,33 @@ A shutdown can stop a rotation after the rotation took the records of the old co
 
 A rotation that the shutdown meets in its storage step rejects too. It does not apply the new context, so `clearStorage` removes the batches of the right context.
 
+## Flush
+
+`flush()` sends the records in memory and reports what became of them. The README section "Flush result" describes each field.
+
+- The snapshot is the records in the buffers, the queued batches and the batches in flight at the call.
+- Before startup ends, the call waits for startup first. The snapshot then also has the records that the app logs during that wait.
+- A record that the app logs after the call is not in the snapshot. The call does not wait for it.
+- The call waits until each record has a final state, or until `timeoutMs` passes. The default is 5000 ms.
+- At the time limit, the call returns. The library does not cancel the work. A batch that ends later goes to the server or to storage, as this page tells. The result does not change.
+- `accepted` counts the records of a batch that the transport accepted. A `partialSuccess` answer moves its rejected count to `dropped`.
+- `stored` counts the records that storage keeps after a failed send or a throttle. The retry engine sends them later.
+- `dropped` counts the records that the call lost. `onDrop` reports each one, with two exceptions. A batch with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup.
+- `pending` counts the records that have no final state at the end of the wait. A store that throws or passes `STORAGE_DEADLINE_MS` counts here, because a late save can still complete.
+- When storage keeps only one half of a split batch, `stored` counts that half and `dropped` counts the other half.
+- During a rotation, the records of the old context wait for the `pending` rule of the rotation. They count as `pending`.
+- `shutdown({ pending: "discard" })` during the call counts the queued batches as `dropped`. A request in flight stays `pending`, because it can still reach the server.
+
+These are not in the snapshot:
+
+- The batches in storage from earlier failures. The call starts no drain. `getHealth().delivery.stored` counts them.
+- The replay segments. The replay uploader sends them on its own.
+- The exit flush.
+
+In a forwarder, the call gives the forward buffer to the sender. Then it sends a flush request to the sender. A link keeps the order of its messages. The records are thus in the snapshot of the sender before the sender reads the request. The sender runs its own flush with 90 percent of the time that is left. The rest of the time is for the answer. Its counts cover all records in its snapshot, also the records of other contexts. The answer is information only. A false answer can change the counts, but it cannot change the delivery.
+
+`shutdown()`, a rotation and the exit flush keep their own rules. The normal flush of `shutdown()` has no time limit of its own. The request deadline limits each send. A rotation with `pending: "flush"` uses its own `timeoutMs`.
+
 ## Rotation
 
 `rotateSecurityContext()` changes the delivery identity. Its `pending` rule decides what happens to the records of the old identity:

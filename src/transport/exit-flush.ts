@@ -50,7 +50,7 @@ export interface ExitFlushDeps {
    * Runs a normal flush with headers, gzip and retry. Used for a hidden document.
    * It doesn't touch an in-flight batch.
    */
-  flushAlive: () => void | Promise<void>;
+  flushAlive: () => unknown;
   /**
    * Returns the headers that the HTTP transport sent last, or undefined. sendBeacon can't set
    * a header, so when there are headers the exit flush uses a keepalive fetch.

@@ -387,7 +387,7 @@ describe("Worker transport", () => {
     });
     const sent = transport.send(workerJob().batch).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(10);
-    expect(await sent).toBeUndefined();
+    expect(await sent).toBe(0);
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledOnce();
   });

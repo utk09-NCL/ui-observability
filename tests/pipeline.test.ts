@@ -9,7 +9,7 @@ import type { GapReporter, StorageAdapter } from "../src/models/storage";
 import { createStorage } from "../src/storage/factory";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { TransportError } from "../src/transport/errors";
-import { RetryEngine, type StoreOutcome } from "../src/transport/retry-engine";
+import { RetryEngine, type StoreReport } from "../src/transport/retry-engine";
 
 const LOG_FLUSH_MS = 1000;
 const METRIC_FLUSH_MS = 5000;
@@ -21,7 +21,7 @@ const PAST_METRIC_FLUSH_MS = METRIC_FLUSH_MS - LOG_FLUSH_MS + 100;
 
 const limits = { maxBatches: 100, maxAgeMs: 60_000, maxAttempts: 5 };
 
-type Send = (batch: LogBatch, onKeepalive?: () => void) => Promise<void>;
+type Send = (batch: LogBatch, onKeepalive?: () => void) => Promise<number>;
 
 const record = (over: Partial<LogRecord> = {}): LogRecord => ({
   timeUnixNano: "1755543600123000000",
@@ -53,18 +53,18 @@ const setup = (
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const diagnostics = new Diagnostics(handler, 0);
 
-  const send = vi.fn<Send>(() => Promise.resolve());
+  const send = vi.fn<Send>(() => Promise.resolve(0));
   const throttledForMs = vi.fn<(batch: LogBatch) => number>(() => 0);
   const storage = override ?? new MemoryStorage(limits);
   const nudge = vi.fn<() => void>();
 
   // This stub takes the place of the engine's classification. retry-engine.test.ts proves the
   // split and the outcomes, so here the stub only stores, nudges and says "stored".
-  const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<StoreOutcome>>(
+  const storeFailed = vi.fn<(batch: LogBatch, error: unknown) => Promise<StoreReport>>(
     async (failed) => {
       await storage.save(failed);
       nudge();
-      return "stored";
+      return { outcome: "stored", stored: failed.records.length };
     },
   );
 
@@ -127,7 +127,7 @@ describe("LogPipeline", () => {
   });
 
   it("adds the clock offset to a log and a span record but not to a metric point", async () => {
-    const send = vi.fn<Send>(() => Promise.resolve());
+    const send = vi.fn<Send>(() => Promise.resolve(0));
     const clockOffset = vi.fn<() => number | undefined>(() => undefined);
     const pipeline = new LogPipeline(
       { send, throttledForMs: () => 0 },
@@ -207,7 +207,7 @@ describe("LogPipeline", () => {
 
   it("sorts the records of the batches in flight by kind for the exit flush", () => {
     const { pipeline, send } = setup();
-    send.mockImplementation(() => new Promise<void>(() => undefined));
+    send.mockImplementation(() => new Promise<number>(() => undefined));
     pipeline.push(metric({ body: "metric in flight" }));
     // The flush queues the batch, and a queued batch counts as in flight.
     void pipeline.flushPending();
@@ -361,7 +361,7 @@ describe("LogPipeline", () => {
     const save = vi.fn<(batch: LogBatch) => Promise<boolean>>(() => Promise.resolve(kept));
     const nudge = vi.fn<() => void>();
     const pipeline = new LogPipeline(
-      { send: vi.fn<Send>(() => Promise.resolve()), throttledForMs: () => 0 },
+      { send: vi.fn<Send>(() => Promise.resolve(0)), throttledForMs: () => 0 },
       { save } as unknown as StorageAdapter,
       { nudge, storeFailed: vi.fn() } as unknown as RetryEngine,
       diagnostics,
@@ -476,7 +476,7 @@ describe("LogPipeline", () => {
     const { pipeline, send, storeFailed, handler } = setup();
     const failure = new Error("network");
     send.mockRejectedValueOnce(failure);
-    storeFailed.mockResolvedValueOnce(outcome);
+    storeFailed.mockResolvedValueOnce({ outcome, stored: 0 });
 
     pipeline.push(record());
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
@@ -603,7 +603,7 @@ describe("LogPipeline", () => {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });
-    send.mockImplementation(() => new Promise<void>(() => undefined));
+    send.mockImplementation(() => new Promise<number>(() => undefined));
 
     pipeline.push(record({ body: "in-flight" }));
     pipeline.push(record({ body: "in-flight" }));
@@ -627,7 +627,7 @@ describe("LogPipeline", () => {
       logs: { flushIntervalMs: LOG_FLUSH_MS, batchSize: 2 },
       metrics: { flushIntervalMs: METRIC_FLUSH_MS, batchSize: BATCH_SIZE },
     });
-    send.mockImplementation(() => new Promise<void>(() => undefined));
+    send.mockImplementation(() => new Promise<number>(() => undefined));
 
     for (let i = 0; i < 6; i++) {
       pipeline.push(record());
@@ -646,7 +646,7 @@ describe("LogPipeline", () => {
     const { pipeline, send } = setup();
     send.mockImplementation((_batch, onKeepalive) => {
       onKeepalive?.();
-      return new Promise<void>(() => undefined);
+      return new Promise<number>(() => undefined);
     });
 
     pipeline.push(record({ body: "sent" }));
@@ -701,8 +701,10 @@ describe("LogPipeline", () => {
     let finish = (): void => undefined;
     send.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
+        new Promise<number>((resolve) => {
+          finish = () => {
+            resolve(0);
+          };
         }),
     );
 
@@ -780,7 +782,7 @@ describe("LogPipeline hold", () => {
 
   it("settles a flush that waits on a queued batch when the hold starts", async () => {
     const { pipeline, send } = setup();
-    send.mockImplementation(() => new Promise<void>(() => undefined));
+    send.mockImplementation(() => new Promise<number>(() => undefined));
     // Two batches fill the two dispatch slots, so the third one waits in the queue.
     for (const body of ["first", "second", "third"]) {
       pipeline.push(record({ body }));
@@ -814,7 +816,7 @@ describe("LogPipeline hold", () => {
 
   it("lists the records in requests before the buffered ones", async () => {
     const { pipeline, send } = setup();
-    send.mockImplementation(() => new Promise<void>(() => undefined));
+    send.mockImplementation(() => new Promise<number>(() => undefined));
     pipeline.push(record({ body: "in flight" }));
     await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
     pipeline.push(record({ body: "buffered" }));
@@ -833,8 +835,10 @@ describe("LogPipeline flushPending", () => {
     const releases: (() => void)[] = [];
     const send = vi.fn<Send>(
       () =>
-        new Promise<void>((resolve) => {
-          releases.push(resolve);
+        new Promise<number>((resolve) => {
+          releases.push(() => {
+            resolve(0);
+          });
         }),
     );
     return { send, releases };
@@ -845,7 +849,7 @@ describe("LogPipeline flushPending", () => {
    * @param work Promise to watch.
    * @returns A function that reports whether it settled.
    */
-  function watch(work: Promise<void>): () => boolean {
+  function watch(work: Promise<unknown>): () => boolean {
     let settled = false;
     void work.then(() => {
       settled = true;
@@ -994,5 +998,216 @@ describe("LogPipeline flushPending", () => {
     await pipeline.flushPending();
 
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("LogPipeline flushUntil", () => {
+  /**
+   * Builds a deadline that the test ends by hand.
+   * @returns The promise and the function that ends it.
+   */
+  function deadline() {
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    return { expired, end };
+  }
+
+  /** A deadline that never ends, for a call that must end on its own. */
+  const never = (): Promise<void> => new Promise<void>(() => undefined);
+
+  it("counts the accepted records and the records a send lost without an error", async () => {
+    const { pipeline, send } = setup();
+    send.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+    pipeline.push(metric());
+    pipeline.push(record());
+    pipeline.push(record());
+
+    // The metric batch goes first. The server then rejects one of the two log records.
+    expect(await pipeline.flushUntil(never())).toEqual({
+      accepted: 2,
+      stored: 0,
+      dropped: 1,
+      pending: 0,
+    });
+    pipeline.destroy();
+  });
+
+  it.each([
+    ["stored", 2, { stored: 2 }],
+    ["split", 2, { stored: 2 }],
+    ["rejected", 0, { dropped: 2 }],
+    ["not_stored", 0, { dropped: 2 }],
+    ["not_stored", 1, { stored: 1, dropped: 1 }],
+  ] as const)(
+    "counts a failed send that storage reports as %s with %i records kept",
+    async (outcome, kept, counts) => {
+      const { pipeline, send, storeFailed } = setup();
+      send.mockRejectedValue(new TransportError("transient", "down"));
+      storeFailed.mockResolvedValue({ outcome, stored: kept });
+      pipeline.push(record());
+      pipeline.push(record());
+
+      expect(await pipeline.flushUntil(never())).toEqual({
+        accepted: 0,
+        stored: 0,
+        dropped: 0,
+        pending: 0,
+        ...counts,
+      });
+      pipeline.destroy();
+    },
+  );
+
+  it("counts a failed send as pending when the store's result is unknown", async () => {
+    const { pipeline, send, storeFailed } = setup();
+    send.mockRejectedValue(new TransportError("transient", "down"));
+    storeFailed.mockRejectedValue(new Error("quota"));
+    pipeline.push(record());
+
+    expect(await pipeline.flushUntil(never())).toEqual({
+      accepted: 0,
+      stored: 0,
+      dropped: 0,
+      pending: 1,
+    });
+    pipeline.destroy();
+  });
+
+  it.each([
+    ["stored when storage keeps the batch", () => Promise.resolve(true), { stored: 1 }],
+    ["dropped when storage refuses the batch", () => Promise.resolve(false), { dropped: 1 }],
+    ["pending when the save fails", () => Promise.reject(new Error("quota")), { pending: 1 }],
+  ] as const)("counts a throttled batch as %s", async (_name, save, counts) => {
+    const storage = new MemoryStorage(limits);
+    vi.spyOn(storage, "save").mockImplementation(save);
+    const { pipeline, send, throttledForMs } = setup(storage);
+    throttledForMs.mockReturnValue(5000);
+    pipeline.push(record());
+
+    expect(await pipeline.flushUntil(never())).toEqual({
+      accepted: 0,
+      stored: 0,
+      dropped: 0,
+      pending: 0,
+      ...counts,
+    });
+    expect(send).not.toHaveBeenCalled();
+    pipeline.destroy();
+  });
+
+  it("returns at the deadline with the batch in flight as pending, and a late end changes nothing", async () => {
+    const { pipeline, send } = setup();
+    let finish!: () => void;
+    send.mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          finish = () => {
+            resolve(0);
+          };
+        }),
+    );
+    const { expired, end } = deadline();
+    pipeline.push(record());
+
+    const counts = pipeline.flushUntil(expired);
+    await vi.advanceTimersByTimeAsync(0);
+    end();
+    const returned = await counts;
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(returned).toEqual({ accepted: 0, stored: 0, dropped: 0, pending: 1 });
+    expect(pipeline.counts()).toEqual({ pending: 0, inFlight: 0 });
+    pipeline.destroy();
+  });
+
+  it("leaves out a record that arrives after the call", async () => {
+    const { pipeline } = setup();
+    pipeline.push(record({ body: "before" }));
+
+    const counts = pipeline.flushUntil(never());
+    pipeline.push(record({ body: "after" }));
+
+    expect(await counts).toEqual({ accepted: 1, stored: 0, dropped: 0, pending: 0 });
+    expect(pipeline.counts()).toEqual({ pending: 1, inFlight: 0 });
+    pipeline.destroy();
+  });
+
+  it("counts a queued batch that a full buffer evicts as dropped", async () => {
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const policy = resolveConfig(
+      {
+        endpoint: "https://x/v1/logs",
+        serviceName: "svc",
+        buffering: { maxPendingRecords: 2, overflow: "drop-oldest" },
+        delivery: { maxConcurrentRequests: 1 },
+      },
+      diagnostics,
+    );
+    const send = vi.fn<Send>(() => new Promise<number>(() => undefined));
+    const pipeline = new LogPipeline(
+      { send, throttledForMs: () => 0 },
+      new MemoryStorage(limits),
+      { nudge: vi.fn(), storeFailed: vi.fn() } as unknown as RetryEngine,
+      diagnostics,
+      DEFAULT_STREAMS,
+      undefined,
+      policy,
+    );
+    const { expired, end } = deadline();
+
+    // The first batch takes the only slot, so the call's second batch waits in the queue.
+    pipeline.push(record({ body: "in flight" }));
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+    pipeline.push(record({ body: "queued" }));
+    const counts = pipeline.flushUntil(expired);
+    pipeline.push(record({ body: "evicts the queued batch" }));
+    end();
+
+    expect(await counts).toEqual({ accepted: 0, stored: 0, dropped: 1, pending: 1 });
+    pipeline.destroy();
+  });
+
+  it("counts the queued batches of a discard during the call as dropped", async () => {
+    const diagnostics = new Diagnostics(vi.fn(), 0);
+    const policy = resolveConfig(
+      { endpoint: "https://x/v1/logs", serviceName: "svc", delivery: { maxConcurrentRequests: 1 } },
+      diagnostics,
+    );
+    const send = vi.fn<Send>(() => new Promise<number>(() => undefined));
+    const pipeline = new LogPipeline(
+      { send, throttledForMs: () => 0 },
+      new MemoryStorage(limits),
+      { nudge: vi.fn(), storeFailed: vi.fn() } as unknown as RetryEngine,
+      diagnostics,
+      DEFAULT_STREAMS,
+      undefined,
+      policy,
+    );
+
+    // The first batch takes the only slot. A request in flight can still arrive, so it stays
+    // pending, and the queued batch is lost.
+    pipeline.push(record({ body: "in flight" }));
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+    pipeline.push(record({ body: "queued" }));
+    const counts = pipeline.flushUntil(never());
+    pipeline.discard();
+
+    expect(await counts).toEqual({ accepted: 0, stored: 0, dropped: 1, pending: 1 });
+  });
+
+  it("ends the wait at a hold, with the queued records as pending", async () => {
+    const { pipeline, send } = setup();
+    send.mockImplementation(() => new Promise<number>(() => undefined));
+    pipeline.push(record());
+
+    const counts = pipeline.flushUntil(never());
+    await vi.advanceTimersByTimeAsync(0);
+    pipeline.hold(true);
+
+    expect(await counts).toEqual({ accepted: 0, stored: 0, dropped: 0, pending: 1 });
+    pipeline.destroy();
   });
 });

@@ -71,20 +71,22 @@ export class CustomTransport extends StatusTransport {
   /**
    * Sends one batch through the configured transport function.
    * @param batch Batch to send.
+   * @returns Promise that resolves to the records lost in a send that ends without an error.
    * @throws TransportError when the batch is not accepted.
    */
-  async send(batch: LogBatch): Promise<void> {
+  async send(batch: LogBatch): Promise<number> {
     this.assertContext(batch);
     const { transport } = this.config;
 
+    // Without a transport the records have no destination. An empty batch loses nothing.
     if (!transport || batch.records.length === 0) {
-      return;
+      return batch.records.length;
     }
 
     const serialized = this.serialize(batch);
 
     if (!serialized) {
-      return;
+      return batch.records.length;
     }
 
     const kind = batchKind(batch, this.config);
@@ -128,7 +130,7 @@ export class CustomTransport extends StatusTransport {
 
     if (status >= HTTP_SUCCESS_MIN && status < HTTP_SUCCESS_END) {
       this.accept(kind, response.sampling, response.date);
-      return;
+      return 0;
     }
 
     throw this.reject(status, batch.id, kind, {

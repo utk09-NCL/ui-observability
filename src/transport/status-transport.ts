@@ -42,9 +42,11 @@ export interface BatchTransport {
    * Sends one batch.
    * @param batch Batch to send.
    * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns Promise that resolves to the records lost in a send that ends without an error,
+   * for example the records a server rejected in an accepted batch.
    * @throws TransportError when the batch isn't accepted.
    */
-  send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
+  send(batch: LogBatch, onKeepalive?: () => void): Promise<number>;
   /**
    * Returns the remaining throttle delay for a batch's endpoint.
    * @param batch Batch to send.
@@ -142,9 +144,10 @@ export abstract class StatusTransport implements BatchTransport {
    * Sends one batch.
    * @param batch Batch to send.
    * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns Promise that resolves to the records lost in a send that ends without an error.
    * @throws TransportError when the batch isn't accepted.
    */
-  abstract send(batch: LogBatch, onKeepalive?: () => void): Promise<void>;
+  abstract send(batch: LogBatch, onKeepalive?: () => void): Promise<number>;
 
   /**
    * Returns the remaining throttle delay for a batch's endpoint, in milliseconds.
@@ -220,15 +223,16 @@ export abstract class StatusTransport implements BatchTransport {
    * @param batch The accepted batch.
    * @param kind Kind of the batch, which names the count's field.
    * @param body The answer's body text.
+   * @returns The number of rejected records, or 0.
    */
-  protected reportPartial(batch: LogBatch, kind: BatchKind, body: string): void {
+  protected reportPartial(batch: LogBatch, kind: BatchKind, body: string): number {
     const partial = this.diagnostics.guard(
       "transport.http_error",
       "The library could not read the body of the 2xx response.",
       () => partialSuccessOf(body, kind),
     );
     if (!partial) {
-      return;
+      return 0;
     }
 
     const endpoint = endpointFor(kind, this.config);
@@ -240,7 +244,7 @@ export abstract class StatusTransport implements BatchTransport {
         "The server accepted the batch with a warning.",
         { endpoint, serverMessage: partial.message },
       );
-      return;
+      return 0;
     }
 
     this.onLoss("partially_rejected", [], [batch.id], rejected);
@@ -251,6 +255,7 @@ export abstract class StatusTransport implements BatchTransport {
         "The library does not send them again.",
       { endpoint, rejected, serverMessage: partial.message },
     );
+    return rejected;
   }
 
   /**

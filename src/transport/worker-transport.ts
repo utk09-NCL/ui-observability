@@ -40,24 +40,28 @@ class WorkerTransport extends StatusTransport {
     super(config, diagnostics, onSampling, loss, onClock);
   }
 
-  /** Encodes and sends in the worker. Hidden pages keep the main HTTP keepalive path. */
-  async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
+  /**
+   * Encodes and sends in the worker. Hidden pages keep the main HTTP keepalive path.
+   * @param batch Batch to send.
+   * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns Promise that resolves to the records lost in a send that ends without an error.
+   */
+  async send(batch: LogBatch, onKeepalive?: () => void): Promise<number> {
     this.assertContext(batch);
     const kind = batchKind(batch, this.config);
     const endpoint = endpointFor(kind, this.config);
     if (!endpoint) {
       this.diagnostics.count("record.dropped_no_destination");
-      return;
+      return batch.records.length;
     }
     if (batch.records.length === 0) {
-      return;
+      return 0;
     }
 
     const client = this.workerClient();
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
     if (!client || typeof this.config.serializer !== "string" || hidden) {
-      await this.http.send(batch, onKeepalive);
-      return;
+      return this.http.send(batch, onKeepalive);
     }
 
     let result: WorkerResult;
@@ -102,8 +106,7 @@ class WorkerTransport extends StatusTransport {
           this.disabled = true;
           client.close();
         }
-        await this.http.send(batch, onKeepalive);
-        return;
+        return this.http.send(batch, onKeepalive);
       }
       throw new TransportError("transient", "The transport worker request failed.");
     }
@@ -116,7 +119,7 @@ class WorkerTransport extends StatusTransport {
           { batchId: batch.id },
         );
         this.loss("unserializable", batch.records, [batch.id]);
-        return;
+        return batch.records.length;
       }
       const timeout = result.failure === "timeout";
       this.diagnostics.report(
@@ -137,10 +140,7 @@ class WorkerTransport extends StatusTransport {
     }
     if (result.status >= HTTP_SUCCESS_MIN && result.status < HTTP_SUCCESS_END) {
       this.accept(kind, result.sampling, result.date);
-      if (result.body !== undefined) {
-        this.reportPartial(batch, kind, result.body);
-      }
-      return;
+      return result.body === undefined ? 0 : this.reportPartial(batch, kind, result.body);
     }
     throw this.reject(result.status, batch.id, kind, {
       retryAfterMs: result.retryAfterMs,
