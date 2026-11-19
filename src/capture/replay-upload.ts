@@ -175,17 +175,25 @@ export class ReplayUploader {
     this.drain();
   }
 
+  /**
+   * Drops the events of the open segment and keeps the closed ones. A snapshot that fails
+   * halfway leaves its first events here, and a lone meta event is useless to a player.
+   */
+  discardOpen(): void {
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    this.open = [];
+    this.openBytes = 0;
+  }
+
   /** Drops everything that is waiting. A send still in flight no longer changes any state. */
   stop(): void {
     this.generation++;
     this.inFlight?.abort();
     this.inFlight = undefined;
-    clearTimeout(this.flushTimer);
     clearTimeout(this.retryTimer);
-    this.flushTimer = undefined;
     this.retryTimer = undefined;
-    this.open = [];
-    this.openBytes = 0;
+    this.discardOpen();
     this.queue = [];
     this.queueBytes = 0;
     this.busy = false;

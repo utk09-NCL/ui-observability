@@ -131,7 +131,7 @@ The second time starts when the server accepts batch 1. It stops when the server
 
 ### Replay
 
-One round adds 20 rows and sets one attribute on each row. The round ends after one microtask, because the recorder processes mutations in a microtask. The workload sets `replay.maxBufferBytes` to 100 000 000. With the default limit, the recorder drops events in this workload.
+One round adds 20 rows and sets one attribute on each row. The round ends after one microtask, because the recorder processes mutations in a microtask. The workload sets `replay.maxBufferBytes` to 100 000 000. The rounds give about 11 200 000 characters of events in less than 1 second. The default limit of 10 000 000 is then too small for one part. With the default limit, the buffer drops its only part. The library reports `capture.rate_limited`. The replay of the error then has only a new full snapshot. With 100 000 000, the upload has each event of the run. The workload stops its wait at the first segment.
 
 The p99.9 of 2 000 rounds is the third-largest round. Thus `replay.onP999Us` is one sample, and it changes more between runs than the p50.
 

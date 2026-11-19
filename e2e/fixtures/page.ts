@@ -23,6 +23,8 @@ interface E2eHandle {
   startWorker: () => Worker;
   /** Pass this as transportWorker for a worker that never answers ready. */
   startSilentWorker: () => Worker;
+  /** Pass this as replay.loader. It loads the real recorder, the optional peer. */
+  loadRecorder: uiobs.ReplayLoader;
 }
 
 declare global {
@@ -54,4 +56,6 @@ window.e2e = {
     new Worker(new URL("./transport-worker.ts", import.meta.url), { type: "module" }),
   startSilentWorker: () =>
     new Worker(new URL("./silent-worker.ts", import.meta.url), { type: "module" }),
+  // A test can't import the peer by name inside page.evaluate(), so the page owns the import.
+  loadRecorder: () => import("@rrweb/record"),
 };

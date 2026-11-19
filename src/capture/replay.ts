@@ -233,6 +233,10 @@ export class ReplayCapture implements Capture {
         );
       }
 
+      // The real recorder takes its first snapshot inside record(), so a starve report can come
+      // before record() returns.
+      this.starvedReported = false;
+
       const stopRecorder = record({
         ...extra,
         emit: this.emit,
@@ -258,7 +262,6 @@ export class ReplayCapture implements Capture {
 
       this.stopRecorder = stopRecorder;
       this.record = record;
-      this.starvedReported = false;
       this.replayId = newId(this.ctx.diagnostics);
       this.ctx.setContext?.(REPLAY_ID_KEY, this.replayId);
     });
@@ -474,7 +477,7 @@ export class ReplayCapture implements Capture {
         this.starvedReported = true;
         this.ctx.diagnostics.report(
           "capture.rate_limited",
-          "One part of the replay is above replay.maxBufferBytes. The buffer is empty until the next full snapshot. Raise the limit, or block a large element with replay.blockSelectors.",
+          "One part of the replay is above replay.maxBufferBytes. The buffer is empty until the next full snapshot. The replay of an error in that time starts at the error, with no events from before it. Raise the limit, or block a large element with replay.blockSelectors.",
         );
       }
     } catch (error) {
@@ -524,7 +527,7 @@ export class ReplayCapture implements Capture {
         return;
       }
 
-      const lost = this.buffer.takeLost();
+      const { texts, lost } = this.buffer.take();
       if (lost > 0) {
         diagnostics.report(
           "capture.rate_limited",
@@ -532,7 +535,6 @@ export class ReplayCapture implements Capture {
         );
       }
 
-      const texts = this.buffer.take();
       const { takeFullSnapshot } = this.record;
 
       // An empty buffer has no full snapshot, and a player can't do anything without one.
@@ -548,8 +550,25 @@ export class ReplayCapture implements Capture {
       this.live = true;
 
       if (texts.length === 0) {
-        // We're live, so this snapshot goes straight to the uploader.
-        this.record.takeFullSnapshot?.(true);
+        // We're live, so this snapshot goes straight to the uploader. The real recorder throws
+        // here before its start, and without the reset the live period would never end.
+        const taken = diagnostics.guard(
+          "capture.record_failed",
+          "The replay recorder did not take a full snapshot. The library sends no replay for this error.",
+          () => {
+            this.record?.takeFullSnapshot?.(true);
+            return true;
+          },
+        );
+
+        // Nothing went out, so drop what a half-done snapshot left and give the slot back.
+        // The uploader's open segment was empty, because live was off until begin().
+        if (!taken) {
+          this.live = false;
+          this.uploader.discardOpen();
+          this.window.count = Math.max(0, this.window.count - 1);
+          return;
+        }
       } else {
         this.uploader.push(texts);
       }

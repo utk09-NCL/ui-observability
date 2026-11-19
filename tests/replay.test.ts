@@ -1009,6 +1009,107 @@ describe("upload after an error", () => {
     expect(recorder.record.takeFullSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("ends the upload when the snapshot for an empty buffer throws, as the real recorder does before its start", async () => {
+    const error = new Error("please take full snapshot after start recording");
+    const recorder = fakeRecorder();
+    vi.mocked(recorder.record.takeFullSnapshot!).mockImplementation(() => {
+      throw error;
+    });
+    const { run, fail, segments, events } = setup({ afterErrorMs: 1000 }, { recorder });
+    const { emit } = await run();
+
+    fail();
+    // A live period that never ends would stream every later event to the endpoint.
+    emit({ type: 4 });
+    emit({ type: 2 });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(segments).toEqual([]);
+    expect(events.map(({ code, message, cause }) => [code, message, cause])).toEqual([
+      [
+        "capture.record_failed",
+        "The replay recorder did not take a full snapshot. The library sends no replay for this error.",
+        error,
+      ],
+    ]);
+
+    // The events stayed in the buffer, so the next error sends them when its live period ends.
+    fail();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sent(segments)).toEqual([[{ type: 4 }, { type: 2 }]]);
+  });
+
+  it("drops the events of a snapshot that fails halfway, so no lone meta event goes out", async () => {
+    const recorder = fakeRecorder();
+    vi.mocked(recorder.record.takeFullSnapshot!).mockImplementation((isCheckout) => {
+      recorder.calls.at(-1)?.emit({ type: 4, data: "meta" }, isCheckout);
+      throw new Error("snapshot failed");
+    });
+    const { run, fail, segments } = setup({ afterErrorMs: 1000 }, { recorder });
+    await run();
+
+    fail();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(segments).toEqual([]);
+  });
+
+  it("keeps a starved buffer waiting for a snapshot after a failed one, so no upload starts without one", async () => {
+    const recorder = fakeRecorder();
+    vi.mocked(recorder.record.takeFullSnapshot!).mockImplementationOnce(() => {
+      throw new Error("snapshot failed");
+    });
+    const { run, fail, segments } = setup(
+      { maxBufferBytes: 100_000, afterErrorMs: 0 },
+      { recorder },
+    );
+    const { emit } = await run();
+
+    emit({ type: 4 });
+    emit({ type: 3, data: "a".repeat(100_000) });
+    fail();
+    // Nothing with a snapshot comes before this event, so a player couldn't use it.
+    emit({ type: 3, data: "after" });
+    fail();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sent(segments)).toEqual([
+      [
+        { type: 4, data: "meta" },
+        { type: 2, data: "full" },
+      ],
+    ]);
+  });
+
+  it("gives the upload slot back when the snapshot fails, so a later error still gets its upload", async () => {
+    const recorder = fakeRecorder();
+    const snapshot = vi.mocked(recorder.record.takeFullSnapshot!);
+    for (let failed = 0; failed < 3; failed++) {
+      snapshot.mockImplementationOnce(() => {
+        throw new Error("snapshot failed");
+      });
+    }
+    const { run, fail, segments } = setup(
+      { afterErrorMs: 0, uploadsPerWindow: 3, uploadWindowMs: 60_000 },
+      { recorder },
+    );
+    vi.setSystemTime(1_700_000_000_000);
+    await run();
+
+    fail();
+    fail();
+    fail();
+    fail();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sent(segments)).toEqual([
+      [
+        { type: 4, data: "meta" },
+        { type: 2, data: "full" },
+      ],
+    ]);
+  });
+
   it("starts no upload of an empty buffer with a recorder that has no snapshot function", async () => {
     const { run, fail, segments } = setup({}, { recorder: fakeRecorder(false) });
     const { emit } = await run();
@@ -1079,7 +1180,7 @@ describe("upload after an error", () => {
     expect(reports(events)).toEqual([
       [
         "capture.rate_limited",
-        "One part of the replay is above replay.maxBufferBytes. The buffer is empty until the next full snapshot. Raise the limit, or block a large element with replay.blockSelectors.",
+        "One part of the replay is above replay.maxBufferBytes. The buffer is empty until the next full snapshot. The replay of an error in that time starts at the error, with no events from before it. Raise the limit, or block a large element with replay.blockSelectors.",
       ],
     ]);
 
@@ -1094,6 +1195,46 @@ describe("upload after an error", () => {
     expect(sent(segments)[0]).toEqual([
       { type: 4, data: "meta" },
       { type: 2, data: "full" },
+    ]);
+  });
+
+  it("reports a part over the buffer size once per recording, also for a first snapshot that is too large", async () => {
+    const recorder = fakeRecorder();
+    // The real recorder takes its first snapshot inside record(), before it returns.
+    recorder.record.mockImplementation((options: Record<string, unknown>) => {
+      const started = options as unknown as RecordOptions;
+      recorder.calls.push(started);
+      started.emit({ type: 4 }, false);
+      started.emit({ type: 2, data: "a".repeat(100_000) }, false);
+      return recorder.stop;
+    });
+    const { run, events } = setup({ maxBufferBytes: 100_000 }, { recorder });
+    const { emit } = await run();
+
+    emit({ type: 4 }, true);
+    emit({ type: 2, data: "b".repeat(100_000) }, true);
+
+    expect(events.map(({ code }) => code)).toEqual(["capture.rate_limited"]);
+  });
+
+  it("sends the parts that fit the size limit and reports the events it dropped", async () => {
+    const { run, fail, events, segments } = setup({ maxBufferBytes: 100_000, afterErrorMs: 0 });
+    const { emit } = await run();
+
+    emit({ type: 4 });
+    emit({ type: 3, data: "a".repeat(60_000) });
+    // The second part pushes the total above the limit, so the first part goes.
+    emit({ type: 4 }, true);
+    emit({ type: 2, data: "b".repeat(50_000) }, true);
+    fail();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sent(segments)).toEqual([[{ type: 4 }, { type: 2, data: "b".repeat(50_000) }]]);
+    expect(reports(events)).toEqual([
+      [
+        "capture.rate_limited",
+        "The replay buffer was above replay.maxBufferBytes. The library dropped 2 events.",
+      ],
     ]);
   });
 

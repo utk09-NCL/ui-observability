@@ -37,6 +37,7 @@ import {
   createOwnerLink,
   createParentLink,
   createWorkerLink,
+  frameOrigin,
   type Link,
   type Receive,
   type WorkerLike,
@@ -164,9 +165,11 @@ export class Bus {
     if (this.config.bus.sourcePolicy === "registered") {
       return false;
     }
+    // A srcdoc parent's location.origin reads "null", and its same-origin children would then
+    // need a trustedOrigins entry for the page's own origin.
     return (
       origin !== "null" &&
-      (origin === location.origin || this.config.bus.trustedOrigins.includes(origin))
+      (origin === frameOrigin() || this.config.bus.trustedOrigins.includes(origin))
     );
   }
 
@@ -203,9 +206,13 @@ export class Bus {
    * @param message Security context message.
    */
   private postToDirectChildren(message: BusMessage): void {
+    // A direct child runs on this document's origin. In a srcdoc parent, location.origin reads
+    // "null", and without the real origin every child would miss the new id.
+    const origin = frameOrigin();
+
     for (const [peer, ref] of this.directReplies) {
       const reply = ref.deref();
-      if (!reply || peer.closed || !this.isRegistered(peer, location.origin)) {
+      if (!reply || peer.closed || !this.isRegistered(peer, origin)) {
         this.directReplies.delete(peer);
         continue;
       }
@@ -1126,7 +1133,7 @@ export class Bus {
           // report, a registration with the wrong origin silences the frame with no named cause.
           const registered = source !== null && this.sources.has(source);
           const trusted =
-            origin === location.origin || this.config.bus.trustedOrigins.includes(origin);
+            origin === frameOrigin() || this.config.bus.trustedOrigins.includes(origin);
           if (registered || !trusted) {
             this.diagnostics.report(
               "bus.untrusted_origin",
@@ -1313,12 +1320,13 @@ export class Bus {
     }
 
     // A page on another origin can embed this app. Don't let it lower minLevel and read the
-    // records.
+    // records. A srcdoc frame's location.origin reads "null", so compare with its real origin,
+    // as the parent link does.
     const { origin } = source;
 
     if (
       source.link === "parent" &&
-      origin !== location.origin &&
+      origin !== frameOrigin() &&
       !this.config.bus.trustedOrigins.includes(origin)
     ) {
       this.diagnostics.report(

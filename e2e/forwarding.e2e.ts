@@ -230,6 +230,62 @@ test("forwards a srcdoc frame's record through the parent, after the parent's re
   expect(posters.every((frame) => frame === page.mainFrame())).toBe(true);
 });
 
+test("forwards a srcdoc frame's record over the message link when the direct link is refused", async ({
+  page,
+}) => {
+  const posters = watchPosters(page);
+  await page.goto(PAGE_PATH);
+
+  await page.evaluate((endpoint) => {
+    window.e2e.uiobs.configure({
+      endpoint,
+      serviceName: "e2e-parent",
+      redact: (record) => {
+        delete record.attributes.cardNumber;
+        return record;
+      },
+    });
+    // Stands in for a parent whose bus starts listening just after the child's direct check:
+    // the child then needs the message link, and Firefox gives it no parent origin to post to.
+    const key = Symbol.for("ui-observability.runtime");
+    const runtime = (window as unknown as Record<symbol, { busCanAccept: unknown }>)[key];
+    runtime.busCanAccept = () => false;
+  }, LOGS_ENDPOINT);
+
+  const child = await loadSrcdocChild(page);
+  await child.evaluate((endpoint) => {
+    window.e2e.uiobs.configure({
+      endpoint,
+      serviceName: "e2e-srcdoc",
+      onDiagnostic: window.e2e.onDiagnostic,
+    });
+  }, LOGS_ENDPOINT);
+
+  await expect.poll(() => resolvedRoles(child)).toEqual(["forwarder"]);
+  const via = await child.evaluate(() =>
+    window.e2e.diagnostics
+      .filter((event) => event.code === "bus.role_resolved")
+      .map((event) => event.detail?.via),
+  );
+  expect(via).toEqual(["parent"]);
+
+  await child.evaluate(() => {
+    window.e2e.uiobs
+      .getLogger("srcdoc.payments")
+      .info("srcdoc message link", { orderId: "ORD-9", cardNumber: "4111111111111111" });
+  });
+  await flushBoth(page, child);
+
+  await expect.poll(() => readLogs("srcdoc message link")).toHaveLength(1);
+  const [log] = await readLogs("srcdoc message link");
+
+  expect(log.resource["service.name"]).toBe("e2e-srcdoc");
+  expect(log.attributes.orderId).toBe("ORD-9");
+  expect(log.attributes).not.toHaveProperty("cardNumber");
+  expect(posters.length).toBeGreaterThan(0);
+  expect(posters.every((frame) => frame === page.mainFrame())).toBe(true);
+});
+
 test("forwards a cross-origin child's record when the child trusts the parent's origin", async ({
   page,
 }) => {
