@@ -612,7 +612,9 @@ export class LibraryLogger extends OneLogger {
    * @param value Numerical measurement.
    * @param unit Unit of measurement.
    * @param type Metric type classification.
-   * @param attributes Optional metric attributes.
+   * @param attributes Optional metric attributes. With metricsEndpoint they're point attributes.
+   * @param recordOnly Optional attributes for the record only. They stay off the OTLP point,
+   * because a value that changes on each page load would start a new series each time.
    */
   logMetric = (
     name: string,
@@ -620,6 +622,7 @@ export class LibraryLogger extends OneLogger {
     unit = DEFAULT_METRIC_UNIT,
     type: MetricType = "gauge",
     attributes?: Record<string, unknown>,
+    recordOnly?: Record<string, unknown>,
   ): void => {
     // NaN and Infinity become null in JSON, which a backend then reads as a false zero.
     if (!Number.isFinite(value)) {
@@ -633,9 +636,11 @@ export class LibraryLogger extends OneLogger {
 
     const runtime = this.bind();
     this.submit(runtime, "INFO", "metric", (snapshot) => {
-      // Copy the caller's attributes first so the metric fields win.
+      // Copy the caller's attributes first so the metric fields win. The record-only ones aren't
+      // in the key list, so the metrics format leaves them off the point.
       const copied = copyPayload(attributes, runtime.diagnostics);
       const payload = {
+        ...copyPayload(recordOnly, runtime.diagnostics),
         ...copied,
         "metric.name": name,
         "metric.value": value,

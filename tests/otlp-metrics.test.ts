@@ -232,6 +232,50 @@ describe("otlpMetricsSerializer", () => {
     expect(keys).toEqual(["a", "b", "c"]);
   });
 
+  it("keeps a metric. key that isn't a library field, such as the web-vitals rating", () => {
+    // The capture leaves metric.id out of the key list, because the id is new on each page load.
+    const point = record({
+      "metric.name": "web_vitals.lcp",
+      "metric.unit": "ms",
+      "metric.type": "gauge",
+      "metric.value": 1234.568,
+      "metric.attribute_keys": ["metric.rating"],
+      "metric.rating": "good",
+      "metric.id": "v1",
+    });
+
+    expect(metrics([point])[0].gauge.dataPoints[0].attributes).toEqual([
+      { key: "metric.rating", value: { stringValue: "good" } },
+    ]);
+  });
+
+  it("keeps each library metric field off the point, even when a forwarded record names it", () => {
+    // A frame writes its own metric.attribute_keys, so it can name any field the library sets.
+    const fields = [
+      "metric.name",
+      "metric.value",
+      "metric.unit",
+      "metric.type",
+      "metric.start_time_unix_nano",
+      "metric.attribute_keys",
+      "metric.count",
+      "metric.sum",
+      "metric.min",
+      "metric.max",
+      "metric.bounds",
+      "metric.bucket_counts",
+    ];
+    const point = histogramPoint({
+      "metric.attribute_keys": [...fields, "venue"],
+      "metric.value": 7,
+      venue: "LSE",
+    });
+
+    expect(metrics([point])[0].histogram.dataPoints[0].attributes).toEqual([
+      { key: "venue", value: { stringValue: "LSE" } },
+    ]);
+  });
+
   it("writes a point without attributes when the record names no keys", () => {
     const point = record({ "metric.type": "gauge", "metric.value": 1, venue: "LSE" });
 

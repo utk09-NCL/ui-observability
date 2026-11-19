@@ -43,7 +43,8 @@ export interface CaptureLogger {
    * @param value The measurement.
    * @param unit Unit of measurement.
    * @param type Metric type.
-   * @param attrs Optional metric attributes.
+   * @param attrs Optional metric attributes. With metricsEndpoint they're point attributes.
+   * @param recordOnly Optional attributes for the record only, never on the OTLP point.
    */
   logMetric(
     name: string,
@@ -51,6 +52,7 @@ export interface CaptureLogger {
     unit?: string,
     type?: MetricType,
     attrs?: Record<string, unknown>,
+    recordOnly?: Record<string, unknown>,
   ): void;
 
   /**

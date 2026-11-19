@@ -36,12 +36,13 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 | `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`.      |
 | `GET /__echo`     | Returns the headers of this request as the server received them.                             |
 
-Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie.
+Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. For an NDJSON body, it is the list of the parsed lines. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie.
 
 - The server keeps a request only when `UIOBS_MOCK_RECORD` is `1`. Without it, `/__received` returns empty lists. The Playwright config sets it.
 - The server keeps the last 100 entries for each path.
 - The server does not keep a request that it rejects.
 - A second request with a known batch id gets `204`, and the server keeps it with `duplicate: true`. Thus a test that counts the records fails when the library sends a batch two times.
+- A request with no batch id is never a duplicate. The server keeps it with the batch id `(none)`.
 
 `UIOBS_MOCK_PORT` sets the port of the mock server. The default is 8787.
 

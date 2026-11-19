@@ -5,7 +5,13 @@ import { main, runDoctor, runReplayDoctor } from "../src/doctor";
 const INGEST = "https://ingest.example/v1/logs";
 const ORIGIN = "https://app.example";
 const USAGE =
-  'Usage: uiobs doctor <url> --origin <origin> [--replay] [--header "Name: value"]. An origin has no path and no trailing slash. With --replay, the URL is a replay endpoint.';
+  'Usage: uiobs doctor <url> --origin <origin> [--replay] [--credentials include] [--header "Name: value"]. An origin has no path and no trailing slash. With --replay, the URL is a replay endpoint. With --credentials include, a * in a CORS header fails.';
+
+const STAR_NOTE =
+  ' A browser refuses * with credentials: "include". Add --credentials include to check that case.';
+const REFUSED_STAR = 'A browser refuses * with credentials: "include".';
+const PLAIN_STAR = 'A browser does not read * as a wildcard with credentials: "include".';
+const PLAIN_STAR_NOTE = ` ${PLAIN_STAR} Add --credentials include to check that case.`;
 
 const PREFLIGHT_HEADERS = {
   "Access-Control-Allow-Origin": ORIGIN,
@@ -14,10 +20,17 @@ const PREFLIGHT_HEADERS = {
     "Content-Type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt",
 };
 
+const CREDENTIAL_PREFLIGHT = {
+  ...PREFLIGHT_HEADERS,
+  "Access-Control-Allow-Credentials": "true",
+};
+
 const POST_HEADERS = {
   "Access-Control-Allow-Origin": ORIGIN,
   "Access-Control-Expose-Headers": "Retry-After, x-uiobs-sampling, date",
 };
+
+const CREDENTIAL_POST = { ...POST_HEADERS, "Access-Control-Allow-Credentials": "true" };
 
 /** The server's answers for one doctor run, in request order. */
 interface Answers {
@@ -235,6 +248,89 @@ describe("uiobs doctor", () => {
     expect(inflated).toBe(first.init.body);
     expect(inflated).toContain("uiobs-doctor");
     expect(JSON.parse(inflated)).toHaveProperty("resourceLogs");
+  });
+
+  describe("with an Authorization header and a * in Access-Control-Allow-Headers", () => {
+    const AUTHORIZED = [
+      "doctor",
+      INGEST,
+      "--origin",
+      ORIGIN,
+      "--header",
+      "Authorization: Bearer x",
+    ];
+    const NAMES = "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt";
+    const NEVER = "A browser never lets * cover authorization.";
+
+    it("fails the allowed headers rule, because a * never covers Authorization", async () => {
+      stubServer({
+        preflight: answer(204, { ...PREFLIGHT_HEADERS, "Access-Control-Allow-Headers": "*" }),
+      });
+      const { code, lines } = await run(AUTHORIZED);
+
+      expect(code).toBe(1);
+      expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([
+        `FAIL allowed headers: Access-Control-Allow-Headers must include authorization. ${NEVER}`,
+      ]);
+      expect(lines.join("\n")).not.toContain("Bearer");
+    });
+
+    it("passes when the server names Authorization next to the *", async () => {
+      stubServer({
+        preflight: answer(204, {
+          ...PREFLIGHT_HEADERS,
+          "Access-Control-Allow-Headers": "*, Authorization",
+        }),
+      });
+      const { code, lines } = await run(AUTHORIZED);
+
+      expect(code).toBe(0);
+      expect(lines[1]).toBe(
+        `PASS allowed headers: The server allows each request header of the library.${PLAIN_STAR_NOTE}`,
+      );
+    });
+
+    it("gives both reasons with credentials, a * and no Authorization", async () => {
+      stubServer({
+        preflight: answer(204, { ...CREDENTIAL_PREFLIGHT, "Access-Control-Allow-Headers": "*" }),
+        first: answer(202, CREDENTIAL_POST),
+      });
+      const { lines } = await run([...AUTHORIZED, "--credentials", "include"]);
+
+      expect(lines[1]).toBe(
+        `FAIL allowed headers: Access-Control-Allow-Headers must include ${NAMES}, authorization. ${PLAIN_STAR} ${NEVER}`,
+      );
+    });
+
+    it("gives no reason about * when the server sends no * and no Authorization", async () => {
+      stubServer({
+        preflight: answer(204, { ...PREFLIGHT_HEADERS, "Access-Control-Allow-Headers": NAMES }),
+      });
+      const { lines } = await run(AUTHORIZED);
+
+      expect(lines[1]).toBe(
+        "FAIL allowed headers: Access-Control-Allow-Headers must include authorization.",
+      );
+    });
+
+    it("checks the replay endpoint in the same way", async () => {
+      const calls = [] as Call[];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init: RequestInit) => {
+          calls.push({ url, init });
+          return Promise.resolve(
+            calls.length === 1
+              ? answer(204, { ...PREFLIGHT_HEADERS, "Access-Control-Allow-Headers": "*" })
+              : answer(202, POST_HEADERS),
+          );
+        }),
+      );
+      const results = await runReplayDoctor(INGEST, ORIGIN, { Authorization: "Bearer x" });
+
+      expect(results[1].pass).toBe(false);
+      expect(results[1].detail).toContain(NEVER);
+    });
   });
 
   it("accepts wildcards in each CORS header", async () => {
@@ -492,6 +588,284 @@ describe("uiobs doctor", () => {
   });
 });
 
+describe("uiobs doctor --credentials include", () => {
+  const CREDENTIALS = ["doctor", INGEST, "--origin", ORIGIN, "--credentials", "include"];
+  const STAR_PREFLIGHT = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "*",
+    "Access-Control-Allow-Headers": "*",
+  };
+  const STAR_POST = { "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "*" };
+
+  it("passes each rule and says that a browser refuses * when the run has no credentials", async () => {
+    stubServer({ preflight: answer(204, STAR_PREFLIGHT), first: answer(200, STAR_POST) });
+    const { code, lines } = await run();
+
+    expect(code).toBe(0);
+    expect(lines.slice(0, 3)).toEqual([
+      `PASS preflight: The server permits POST from this origin.${STAR_NOTE}`,
+      `PASS allowed headers: The server allows each request header of the library.${PLAIN_STAR_NOTE}`,
+      `PASS test batch: The server accepted a test batch.${STAR_NOTE}`,
+    ]);
+  });
+
+  it("adds no note when the server names the origin and each header", async () => {
+    stubServer();
+    const { lines } = await run();
+
+    expect(lines.join("\n")).not.toContain("credentials");
+  });
+
+  it("adds no note for a * that the server lists next to each header name", async () => {
+    stubServer({
+      preflight: answer(204, {
+        ...PREFLIGHT_HEADERS,
+        "Access-Control-Allow-Headers": `${PREFLIGHT_HEADERS["Access-Control-Allow-Headers"]}, *`,
+      }),
+    });
+    const { code, lines } = await run();
+
+    expect(code).toBe(0);
+    expect(lines.join("\n")).not.toContain("credentials");
+  });
+
+  it("fails each rule that reads a * from the server", async () => {
+    stubServer({ preflight: answer(204, STAR_PREFLIGHT), first: answer(200, STAR_POST) });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(1);
+    expect(lines.slice(0, 3)).toEqual([
+      `FAIL preflight: Access-Control-Allow-Origin is *. ${REFUSED_STAR} It must be ${ORIGIN}.`,
+      'FAIL allowed headers: Access-Control-Allow-Headers must include content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt. A browser does not read * as a wildcard with credentials: "include".',
+      `FAIL test batch: Access-Control-Allow-Origin is *. ${REFUSED_STAR} It must be ${ORIGIN}.`,
+    ]);
+  });
+
+  it("passes a server that names the origin and each header and allows credentials", async () => {
+    const calls = stubServer({
+      preflight: answer(204, CREDENTIAL_PREFLIGHT),
+      first: answer(202, CREDENTIAL_POST),
+    });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(7);
+    expect(lines.every((line) => line.startsWith("PASS "))).toBe(true);
+    expect(lines[0]).toBe("PASS preflight: The server permits POST from this origin.");
+    // The tool has no cookie. The option only changes which CORS answers pass.
+    expect(calls).toHaveLength(5);
+    expect(headersOf(calls[0])).toEqual({
+      Origin: ORIGIN,
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers":
+        "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt",
+    });
+    expect(headersOf(calls[4])).toEqual({
+      Origin: ORIGIN,
+      "Content-Type": "text/plain;charset=UTF-8",
+    });
+  });
+
+  it.each([
+    ["without Access-Control-Allow-Credentials", PREFLIGHT_HEADERS, "null"],
+    [
+      "with another value",
+      { ...PREFLIGHT_HEADERS, "Access-Control-Allow-Credentials": "false" },
+      "false",
+    ],
+  ])("fails the preflight %s", async (_label, headers, value) => {
+    stubServer({ preflight: answer(204, headers), first: answer(202, CREDENTIAL_POST) });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(1);
+    expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([
+      `FAIL preflight: Access-Control-Allow-Credentials is ${value}. It must be true with credentials: "include".`,
+    ]);
+  });
+
+  it("names the missing headers without a note about * when the server sends no *", async () => {
+    stubServer({
+      preflight: answer(204, {
+        ...CREDENTIAL_PREFLIGHT,
+        "Access-Control-Allow-Headers": "content-type",
+      }),
+    });
+    const { lines } = await run(CREDENTIALS);
+
+    expect(lines[1]).toBe(
+      "FAIL allowed headers: Access-Control-Allow-Headers must include content-encoding, x-uiobs-batch-id, x-uiobs-attempt.",
+    );
+  });
+
+  it("says that a browser reads a * in the exposed headers as a plain name when the run has no credentials", async () => {
+    stubServer({ preflight: answer(204, STAR_PREFLIGHT), first: answer(200, STAR_POST) });
+    const { code, lines } = await run();
+
+    expect(code).toBe(0);
+    expect(lines[3]).toBe(
+      `PASS exposed headers: The server exposes Retry-After.${PLAIN_STAR_NOTE}`,
+    );
+  });
+
+  it("adds no note when the server lists each exposed header next to a *", async () => {
+    stubServer({
+      first: answer(202, {
+        ...POST_HEADERS,
+        "Access-Control-Expose-Headers": "retry-after, x-uiobs-sampling, date, *",
+      }),
+    });
+    const { lines } = await run();
+
+    expect(lines[3]).toBe("PASS exposed headers: The server exposes Retry-After.");
+  });
+
+  it("fails the exposed headers rule on a * with credentials", async () => {
+    stubServer({
+      preflight: answer(204, CREDENTIAL_PREFLIGHT),
+      first: answer(202, { ...CREDENTIAL_POST, "Access-Control-Expose-Headers": "*" }),
+    });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(1);
+    expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([
+      `FAIL exposed headers: Access-Control-Expose-Headers must include retry-after. ${PLAIN_STAR}`,
+    ]);
+  });
+
+  it("names a missing Retry-After without a note about * when the server sends no *", async () => {
+    stubServer({
+      preflight: answer(204, CREDENTIAL_PREFLIGHT),
+      first: answer(202, { ...CREDENTIAL_POST, "Access-Control-Expose-Headers": "date" }),
+    });
+    const { lines } = await run(CREDENTIALS);
+
+    expect(lines[3]).toBe(
+      "FAIL exposed headers: Access-Control-Expose-Headers must include retry-after.",
+    );
+  });
+
+  it("names the optional headers that a * leaves hidden with credentials", async () => {
+    stubServer({
+      preflight: answer(204, CREDENTIAL_PREFLIGHT),
+      first: answer(202, { ...CREDENTIAL_POST, "Access-Control-Expose-Headers": "retry-after, *" }),
+    });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(0);
+    expect(lines[3]).toBe(
+      "PASS exposed headers: The server exposes Retry-After. Optional headers stay hidden: x-uiobs-sampling, date.",
+    );
+  });
+
+  it.each([
+    ["without Access-Control-Allow-Credentials", POST_HEADERS, "null"],
+    [
+      "with another value",
+      { ...POST_HEADERS, "Access-Control-Allow-Credentials": "false" },
+      "false",
+    ],
+  ])("fails the test batch rule %s", async (_label, headers, value) => {
+    stubServer({ preflight: answer(204, CREDENTIAL_PREFLIGHT), first: answer(202, headers) });
+    const { code, lines } = await run(CREDENTIALS);
+
+    expect(code).toBe(1);
+    expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([
+      `FAIL test batch: Access-Control-Allow-Credentials is ${value}. It must be true with credentials: "include".`,
+    ]);
+  });
+
+  it("does not ask for Access-Control-Allow-Credentials without the option", async () => {
+    stubServer();
+    expect((await run()).code).toBe(0);
+  });
+
+  it("keeps the other preflight problems first", async () => {
+    stubServer({ preflight: answer(404, {}) });
+    const { lines } = await run(CREDENTIALS);
+
+    expect(lines[0]).toBe("FAIL preflight: The server returned 404.");
+  });
+
+  it("accepts the option before or after a header option and sends no beacon with a header", async () => {
+    const calls = stubServer({
+      preflight: answer(204, {
+        ...CREDENTIAL_PREFLIGHT,
+        "Access-Control-Allow-Headers": `${PREFLIGHT_HEADERS["Access-Control-Allow-Headers"]}, authorization, x-tenant`,
+      }),
+      first: answer(202, CREDENTIAL_POST),
+    });
+    const first = await run([...CREDENTIALS, "--header", "Authorization: Bearer a"]);
+    stubServer({
+      preflight: answer(204, {
+        ...CREDENTIAL_PREFLIGHT,
+        "Access-Control-Allow-Headers": `${PREFLIGHT_HEADERS["Access-Control-Allow-Headers"]}, authorization, x-tenant`,
+      }),
+      first: answer(202, CREDENTIAL_POST),
+    });
+    const second = await run([
+      "doctor",
+      INGEST,
+      "--origin",
+      ORIGIN,
+      "--header",
+      "X-Tenant: acme",
+      "--credentials",
+      "include",
+    ]);
+
+    expect(first.code).toBe(0);
+    expect(second.code).toBe(0);
+    expect(calls).toHaveLength(4);
+    expect(first.lines[6]).toBe(
+      "PASS beacon: The library sends no beacon with custom headers. The tool sent no beacon.",
+    );
+  });
+
+  it.each<[string, string[], string[]]>([
+    ["a flag with no value", ["--credentials"], ["--credentials"]],
+    ["another value", ["--credentials", "omit"], ["--credentials", "<hidden>"]],
+    ["a secret in place of the value", ["--credentials", "secret"], ["--credentials", "<hidden>"]],
+    [
+      "the value before a bad header",
+      ["--credentials", "include", "--header", "secret"],
+      ["--credentials", "include", "--header", "<hidden>"],
+    ],
+    ["the value without its flag", ["include"], ["include"]],
+  ])("prints the usage for %s", async (_label, rest, shown) => {
+    const calls = stubServer();
+    const { code, lines } = await run(["doctor", INGEST, "--origin", ORIGIN, ...rest]);
+
+    expect(code).toBe(2);
+    expect(lines).toEqual([
+      USAGE,
+      `Received: ${JSON.stringify(["doctor", INGEST, "--origin", ORIGIN, ...shown])}`,
+    ]);
+    expect(lines.join("\n")).not.toContain("secret");
+    expect(calls).toEqual([]);
+  });
+
+  it("prints the usage when the replay flag comes after the credentials option", async () => {
+    stubServer();
+    const { code, lines } = await run([...CREDENTIALS, "--replay"]);
+
+    expect(code).toBe(2);
+    expect(lines[1]).toBe(
+      `Received: ${JSON.stringify(["doctor", INGEST, "--origin", ORIGIN, "--credentials", "include", "--replay"])}`,
+    );
+  });
+
+  it("gives runDoctor the credentials as a fourth parameter", async () => {
+    stubServer({ preflight: answer(204, STAR_PREFLIGHT), first: answer(200, STAR_POST) });
+    const results = await runDoctor(INGEST, ORIGIN, {}, true);
+
+    expect(results.slice(0, 3).map(({ rule, pass }) => [rule, pass])).toEqual([
+      ["preflight", false],
+      ["allowed headers", false],
+      ["test batch", false],
+    ]);
+  });
+});
+
 describe("uiobs doctor --replay", () => {
   const REPLAY = "https://ingest.example/v1/replay";
   const ARGS = ["doctor", REPLAY, "--origin", ORIGIN, "--replay"];
@@ -685,6 +1059,86 @@ describe("uiobs doctor --replay", () => {
       ["deduplication", true],
     ]);
     expect(results[3].detail).toBe("This Node version has no CompressionStream.");
+  });
+
+  it("applies the credentials option to the replay rules", async () => {
+    stubReplay({
+      preflight: answer(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+      }),
+      first: answer(202, { "Access-Control-Allow-Origin": "*" }),
+    });
+    const starred = await run(ARGS);
+
+    expect(starred.code).toBe(0);
+    expect(starred.lines.slice(0, 3)).toEqual([
+      `PASS preflight: The server permits POST from this origin.${STAR_NOTE}`,
+      `PASS allowed headers: The server allows each request header of the library.${PLAIN_STAR_NOTE}`,
+      `PASS test segment: The server accepted a test segment.${STAR_NOTE}`,
+    ]);
+
+    stubReplay({
+      preflight: answer(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+      }),
+      first: answer(202, { "Access-Control-Allow-Origin": "*" }),
+    });
+    const refused = await run([...ARGS, "--credentials", "include"]);
+
+    expect(refused.code).toBe(1);
+    expect(refused.lines.slice(0, 3).map((line) => line.split(":")[0])).toEqual([
+      "FAIL preflight",
+      "FAIL allowed headers",
+      "FAIL test segment",
+    ]);
+    expect(refused.lines[0]).toContain(REFUSED_STAR);
+  });
+
+  it("passes a replay endpoint that allows credentials for the origin", async () => {
+    stubReplay({
+      preflight: answer(204, CREDENTIAL_PREFLIGHT),
+      first: answer(202, CREDENTIAL_POST),
+    });
+    const { code, lines } = await run([...ARGS, "--credentials", "include"]);
+
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(6);
+  });
+
+  it.each([
+    ["without Access-Control-Allow-Credentials", POST_HEADERS, "null"],
+    [
+      "with another value",
+      { ...POST_HEADERS, "Access-Control-Allow-Credentials": "false" },
+      "false",
+    ],
+  ])("fails the test segment rule %s", async (_label, headers, value) => {
+    stubReplay({ preflight: answer(204, CREDENTIAL_PREFLIGHT), first: answer(202, headers) });
+    const { code, lines } = await run([...ARGS, "--credentials", "include"]);
+
+    expect(code).toBe(1);
+    expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([
+      `FAIL test segment: Access-Control-Allow-Credentials is ${value}. It must be true with credentials: "include".`,
+    ]);
+  });
+
+  it("fails the replay preflight without Access-Control-Allow-Credentials", async () => {
+    stubReplay();
+    const { code, lines } = await run([...ARGS, "--credentials", "include"]);
+
+    expect(code).toBe(1);
+    expect(lines[0]).toBe(
+      'FAIL preflight: Access-Control-Allow-Credentials is null. It must be true with credentials: "include".',
+    );
+  });
+
+  it("gives runReplayDoctor the credentials as a fourth parameter", async () => {
+    stubReplay();
+    const results = await runReplayDoctor(REPLAY, ORIGIN, {}, true);
+
+    expect(results[0].pass).toBe(false);
   });
 
   it("prints the usage when the replay flag comes after a header option", async () => {

@@ -79,8 +79,8 @@ function cleanAttributes(attributes: MetricAttributes = {}): MetricAttributes {
   const clean: MetricAttributes = {};
 
   for (const key of Object.keys(attributes).sort()) {
-    // The builder and the serializer replace or remove these keys. Keeping them would give
-    // every value its own series with the same output.
+    // The builder replaces the metric fields, so keeping one would give every value its own
+    // series with the same output. An app's other metric. keys stay reserved for the library.
     if (key.startsWith("metric.") || RECORD_KEYS.has(key)) {
       continue;
     }

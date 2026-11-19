@@ -774,6 +774,18 @@ export const METRIC_KEYS = {
   buckets: "metric.bucket_counts",
 } as const;
 
+/**
+ * Every metric field the library writes on a metric record. The OTLP metrics serializer keeps
+ * them off a point's attributes, because the record holds the library's value under that name.
+ */
+export const METRIC_FIELD_KEYS: readonly string[] = [
+  "metric.name",
+  "metric.value",
+  "metric.unit",
+  "metric.type",
+  ...Object.values(METRIC_KEYS),
+];
+
 /** Precision of the profiler histogram: 2^4 = 16 sub-buckets per power of two. */
 export const PROFILE_SUB_BITS = 4;
 

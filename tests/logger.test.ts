@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LibraryLogger, OneLogger } from "../src/core/logger";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type { LogRecord } from "../src/models/log-record";
+import { otlpSerializer } from "../src/transport/serializers/otlp";
+import { otlpMetricsSerializer } from "../src/transport/serializers/otlp-metrics";
 import {
   addBreadcrumb,
   configure,
@@ -165,6 +167,30 @@ describe("the capture logger's logMetric", () => {
 
     expect(records[0].attributes["metric.attribute_keys"]).toEqual(["route"]);
     expect(records[1].attributes["metric.attribute_keys"]).toEqual([]);
+  });
+
+  it("keeps a record-only attribute on the log record and off the OTLP gauge point", () => {
+    const records = capture();
+    const rating = { key: "metric.rating", value: { stringValue: "good" } };
+    const id = { key: "metric.id", value: { stringValue: "v1" } };
+
+    metrics().logMetric(
+      "web_vitals.lcp",
+      1234.568,
+      "ms",
+      "gauge",
+      { "metric.rating": "good" },
+      { "metric.id": "v1" },
+    );
+
+    const point = JSON.parse(otlpMetricsSerializer.serialize(records).body).resourceMetrics[0]
+      .scopeMetrics[0].metrics[0].gauge.dataPoints[0];
+    const log = JSON.parse(otlpSerializer.serialize(records).body).resourceLogs[0].scopeLogs[0]
+      .logRecords[0];
+
+    expect(records[0].attributes["metric.attribute_keys"]).toEqual(["metric.rating"]);
+    expect(point.attributes).toEqual([rating]);
+    expect(log.attributes).toEqual(expect.arrayContaining([rating, id]));
   });
 
   it("marks the record when the attributes cannot be read", () => {

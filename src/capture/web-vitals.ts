@@ -98,7 +98,10 @@ export class WebVitalsCapture implements Capture {
           Math.round(metric.value * 1000) / 1000,
           unit,
           "gauge",
-          { "metric.rating": metric.rating, "metric.id": metric.id },
+          { "metric.rating": metric.rating },
+          // The id is new on each page load, so as a point attribute it would start a new
+          // series for every visit. The log record keeps it to identify the report.
+          { "metric.id": metric.id },
         );
       };
 

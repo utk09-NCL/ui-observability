@@ -33,7 +33,7 @@ Each peer is optional. The library has no runtime dependency.
 
 Install `@rrweb/record` (`^2`) for the session replay, and set `replay.loader`. See [Session replay](docs/api.md#session-replay).
 
-Install `web-vitals` (`^4 || ^5 || ^6`) for `capture.webVitals`, and set `capture.webVitals.loader`. The object turns the capture on. Without the loader, the library reports `config.invalid`. LCP, CLS and INP then stay off, and the navigation timing continues.
+Install `web-vitals` (`^4 || ^5 || ^6`) for `capture.webVitals`, and set `capture.webVitals.loader`. The object turns the capture on. Without the loader, the library reports `config.invalid`. LCP, CLS, INP, FCP and TTFB then stay off, and the navigation timing continues.
 
 Install `@opentelemetry/api` (`^1`) to put records on the traces of your spans. Set `otelLoader` to load it. Without `otelLoader`, OTel is off. The library then makes its own `trace_id`.
 

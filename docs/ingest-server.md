@@ -8,6 +8,11 @@ The ingest server must meet these requirements:
    - With `credentials: "omit"` or `"same-origin"`, that batch is a keepalive `fetch` with no custom header. It obeys `credentials`. Thus it sends no cookie to another origin.
    - With `credentials: "include"`, that batch is a beacon. `sendBeacon` always sends the cookies. Thus the library uses it only when the app asks for cookies.
    - The batch id and the exit reason are in the query parameters `uiobs_batch_id` and `uiobs_exit`.
+   - The body of a `text/plain` batch has the format of the serializer. It is OTLP JSON, or ECS NDJSON with `serializer: "ecs"`. Read the body to tell them apart.
+   - An OTLP body has `resourceLogs`, `resourceMetrics` or `resourceSpans`. An ECS body has none of them. A body with one ECS record is also one valid JSON object. Do not decide on valid JSON alone.
+   - Parse an NDJSON body line by line. Answer `400` when a line is not JSON.
+   - Answer `400` for a `text/plain` body that is not OTLP and has no ECS document, for example `{}`, `null` or an empty body. An ECS document is a JSON object with the field `@timestamp`.
+   - Answer `400` for `application/x-ndjson` on a replay endpoint. A replay segment has no ECS form.
    - The answer to the keepalive `fetch` must permit the origin. If it does not, a page that is still open sends the batch again at the next page load.
    - It is possible that a keepalive `fetch` is less reliable than a beacon at page exit in some browsers. This is a hypothesis. `e2e/exit-flush.e2e.ts` shows that the `fetch` arrives after a navigation in Chromium, Firefox and WebKit.
    - An endpoint on the origin of the page gets the exit batch with the content type of the serializer. For OTLP, that is `application/json`. A same-origin request needs no CORS preflight. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame still send the `text/plain` batch.
@@ -27,7 +32,7 @@ The ingest server must meet these requirements:
    - After a failed preflight, the library sends the batch 4 more times with the default `retention.maxAttempts`. It then drops the batch.
    - Only the `text/plain` batches of the exit flush arrive, because they have no custom header.
 
-3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours. With a longer `retention.maxAgeMs`, keep them for that time.
+3. **Deduplication:** Deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep the ids for at least 24 hours. With a longer `retention.maxAgeMs`, keep them for that time. A limit on the number of ids can break this rule. The server then stores a repeated batch two times. A request with no batch id has nothing to deduplicate on.
 4. **Throttling:** Return `429` or `503` with `Retry-After`. Expose the header with `Access-Control-Expose-Headers: retry-after`. The library waits 60 s at most.
 5. **Status codes:** Each `2xx` status accepts the batch, for example `200`, `202` or `204`. `413` makes the library split the batch. A `413` body can give the limit as JSON, for example `{"maxBytes": 65536}`. The library reads at most 16 KiB of a response body. `delivery.requestTimeoutMs` also limits that read. An OTLP `2xx` answer can have `partialSuccess` in a JSON body. The library gives the rejected count to `onDrop` with the reason `partially_rejected`. It does not send the batch again. `408` and each `5xx` make the library send the batch again later. With a `headers` function, a `401` or `403` gets one more send with new headers. The library drops a batch that gets any other `4xx`.
 6. **Metrics and traces endpoints (optional):** With `metricsEndpoint`, the library sends each batch of metric records there as an OTLP/JSON `ExportMetricsServiceRequest`. With `tracesEndpoint`, it sends each batch of span records there as an OTLP/JSON `ExportTraceServiceRequest`. The rules 1 to 5 also apply to these endpoints. A throttle or a failed batch of one endpoint does not hold back the batches of another endpoint. `headers` applies to each endpoint. Each counter and histogram point is a delta from the previous point of its attribute set. A gauge point has no temporality. A histogram point with a negative value has no `sum`.
@@ -43,7 +48,16 @@ The ingest server must meet these requirements:
 - Keep the segments of one `replay.id` in the order of `sequence`. A player needs the segment with the full snapshot before the later segments.
 - `tools/mock-ingest-server.mjs` and `tools/reference-collector.mjs` accept `/v1/replay` and print one line for each segment. The reference collector accepts a replay body of at most `MAX_REPLAY_BODY_BYTES` (16 MiB by default). `uiobs doctor` tests the replay endpoint with the option `--replay`. See [Check an ingest server](#check-an-ingest-server).
 
-`tools/reference-collector.mjs` implements each rule with no dependencies. It is not part of the package. Run `node tools/reference-collector.mjs`. Set `ALLOWED_ORIGINS` to the origins of your app. Set `UPSTREAM_URL` to an OTLP/HTTP collector, for example `http://localhost:4318`, to forward each OTLP batch there. The file lists the other settings: `HOST`, `PORT`, `ALLOW_CREDENTIALS`, `AUTH_TOKEN`, `SAMPLING_RULES`, `MAX_BODY_BYTES` and `MAX_REQUESTS_PER_SECOND`.
+`tools/reference-collector.mjs` implements each rule with no dependencies. It is not part of the package. Run `node tools/reference-collector.mjs`. Set `ALLOWED_ORIGINS` to the origins of your app. Set `UPSTREAM_URL` to an OTLP/HTTP collector, for example `http://localhost:4318`, to forward each OTLP batch there. The file lists the other settings: `HOST`, `PORT`, `ALLOW_CREDENTIALS`, `AUTH_TOKEN`, `SAMPLING_RULES`, `MAX_BODY_BYTES`, `MAX_REPLAY_BODY_BYTES`, `MAX_REQUESTS_PER_SECOND` and `DEDUP_MAX_IDS`.
+
+- With `UPSTREAM_URL`, the collector gives the answer of the upstream to the library. A `2xx` answer keeps its status and its body, so the library can read a `partialSuccess`. The collector sends no body that is larger than 16 KiB, because the library ignores it.
+- A `408`, `429` or `503` answer keeps its status. It also keeps its `Retry-After` header, when the upstream sends one. A `413` answer stays `413`. Another `5xx`, a `401` and a `403` become `503`. Another `4xx` becomes `400`.
+- A `429` or `503` with no upstream `Retry-After` gets `Retry-After: 5`. Each `503` that the collector makes itself gets it too, for example after a `401`, a `403`, another `5xx` or a failed request.
+- The library reads `Retry-After` only on `429` and `503`. A `408` is a plain retry.
+- When the upstream sends a `2xx` status and then its body fails or stalls, the collector keeps the `2xx` status with no body. The upstream accepted the batch, so the library must not send it again.
+- `DEDUP_MAX_IDS` is the number of batch ids that the collector keeps in memory. The default is 100000. When the table is full, the collector forgets the oldest id.
+- A client that sends a forgotten batch again gets the batch stored two times. The collector writes a `[dedup]` warning when it forgets an id that is younger than 24 hours. It writes one warning each minute at most.
+- To keep each id for 24 hours, set `DEDUP_MAX_IDS` above the number of batches that arrive in 24 hours.
 
 ## Check an ingest server
 
@@ -78,8 +92,22 @@ The tool prints `PASS` or `FAIL` for each rule. The exit code is 0 when each rul
 
 - The tool sends each custom header with each batch. The preflight names the header, and `allowed headers` tests that the server allows it.
 - With a custom header, the tool sends no `beacon` batch. The exit flush of the library then uses a keepalive fetch with the content type of the serializer.
+- Add `--credentials include` when your app sets `credentials: "include"`. It is the only value that the option accepts. Any other value is a wrong command.
 
-To test a replay endpoint, give the value of `replay.endpoint` and add `--replay` directly after the origin. Give each header of your `replay.headers` option with `--header`.
+  ```bash
+  pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example --credentials include
+  ```
+
+- With credentials, a browser refuses `*` in `Access-Control-Allow-Origin`. It reads `*` in `Access-Control-Allow-Headers` and in `Access-Control-Expose-Headers` as a plain name, not as a wildcard.
+- With a plain name, the library cannot read `Retry-After`, `X-UiObs-Sampling` or `Date`.
+- Without the option, a `*` in one of these headers passes. The `PASS` line then says why a browser refuses it with `credentials: "include"` and names the option.
+- A `*` in `Access-Control-Allow-Headers` never covers `Authorization`, with or without the option. With `--header "Authorization: ..."`, the `allowed headers` rule fails until the server names `authorization`. The `FAIL` line says so.
+- With the option, the `preflight` and `test batch` rules fail on a `*` in `Access-Control-Allow-Origin`. The `allowed headers` rule fails when `Access-Control-Allow-Headers` has a `*` and does not list each header.
+- With the option, the `exposed headers` rule fails when `Access-Control-Expose-Headers` has a `*` and does not list `Retry-After`. Each `FAIL` line gives the reason.
+- With the option, the `preflight` and `test batch` rules also need `Access-Control-Allow-Credentials: true`. Without it, a browser rejects the answer. The library then sees a network error and sends the batch again.
+- The option does not make the tool send a cookie. The `beacon` rule does not change. It needs only a `2xx` status. With `credentials: "include"`, the exit flush sends the same batch as a beacon.
+
+To test a replay endpoint, give the value of `replay.endpoint` and add `--replay` directly after the origin. Give each header of your `replay.headers` option with `--header`. The option `--credentials include` also applies to a replay endpoint. There, the `test segment` rule needs `Access-Control-Allow-Credentials: true` in the same way.
 
 ```bash
 pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/replay --origin https://app.example --replay
