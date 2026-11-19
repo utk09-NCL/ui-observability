@@ -119,6 +119,22 @@ describe("segments", () => {
     ]);
   });
 
+  it("drops the open segment's events at discardOpen() and keeps the closed segments", async () => {
+    const { uploader, segments } = setup({ maxSegmentEvents: 2, flushIntervalMs: 500 });
+
+    uploader.push(["1", "2", "3"]);
+    uploader.discardOpen();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // The closed segment still goes, and the next segment holds only the events after the drop.
+    uploader.push(["4"]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(segments.map(({ sequence, payload }) => [sequence, payload])).toEqual([
+      [0, "[1,2]"],
+      [1, "[4]"],
+    ]);
+  });
+
   it("closes a partial segment after the wait", async () => {
     const { uploader, segments } = setup({ maxSegmentEvents: 3, flushIntervalMs: 500 });
 

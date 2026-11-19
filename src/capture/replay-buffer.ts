@@ -26,7 +26,7 @@ export class ReplayBuffer {
    */
   private starved = false;
 
-  /** Events dropped by the size limit since this was last read. */
+  /** Events dropped by the size limit since the last take. */
   private lost = 0;
 
   /**
@@ -77,31 +77,26 @@ export class ReplayBuffer {
   }
 
   /**
-   * Returns every event in order and empties the buffer.
-   * @returns The events as JSON text.
+   * Returns every event in order with the dropped count, and empties the buffer. A starved
+   * buffer stays starved, because the events after a take still have no snapshot in front.
+   * @returns The events as JSON text, and how many events the size limit dropped.
    */
-  take(): string[] {
-    const texts = this.parts.flat();
-    this.clear();
-    return texts;
+  take(): { texts: string[]; lost: number } {
+    const taken = { texts: this.parts.flat(), lost: this.lost };
+    this.parts = [];
+    this.sizes = [];
+    this.total = 0;
+    this.lost = 0;
+    return taken;
   }
 
-  /** Empties the buffer. */
+  /** Empties the buffer and its dropped count, so the next upload doesn't report old drops. */
   clear(): void {
     this.parts = [];
     this.sizes = [];
     this.total = 0;
     this.starved = false;
-  }
-
-  /**
-   * Returns how many events the size limit dropped, and resets the count.
-   * @returns The number of dropped events.
-   */
-  takeLost(): number {
-    const { lost } = this;
     this.lost = 0;
-    return lost;
   }
 
   /**

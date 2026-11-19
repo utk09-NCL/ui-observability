@@ -116,18 +116,26 @@ function untrustedText(origin: string, what: string): string {
 }
 
 /**
- * Reads the parent frame's origin. A cross-origin parent doesn't expose its location.
+ * Reads the parent frame's origin. A cross-origin parent doesn't expose it.
+ * @param diagnostics Counts a blocked read of the parent's origin global.
  * @returns The origin, or null when the browser doesn't reveal it.
  */
-function parentOrigin(): string | null {
+function parentOrigin(diagnostics: Diagnostics): string | null {
   const ancestors = (location as LocationWithAncestors).ancestorOrigins;
   if (ancestors && ancestors.length > 0) {
     return ancestors.item(0);
   }
 
-  // Firefox has no ancestorOrigins, so use the referrer, which for a frame is the page that
-  // loaded it. A Referrer-Policy of no-referrer gives "", and the caller then reports an
-  // unknown origin.
+  return referrerOrigin() ?? sameOriginParent(diagnostics);
+}
+
+/**
+ * Reads the parent's origin from the referrer, which for a frame is the page that loaded it.
+ * Firefox has no ancestorOrigins, so this is its first source.
+ * @returns The origin, or null for an empty referrer, as with Referrer-Policy: no-referrer, or
+ * for a referrer that isn't a URL.
+ */
+function referrerOrigin(): string | null {
   const referrer = document.referrer;
   if (referrer === "") {
     return null;
@@ -141,13 +149,42 @@ function parentOrigin(): string | null {
 }
 
 /**
+ * Reads the parent's origin straight from its origin global. Firefox gives a srcdoc frame no
+ * ancestorOrigins and an empty referrer, so without this it can't find even a same-origin parent.
+ * The origin global, unlike location.origin, is also real in a srcdoc parent.
+ * @param diagnostics Counts a blocked read.
+ * @returns The origin, or null for a cross-origin parent, an opaque one or a value that isn't a
+ * string.
+ */
+function sameOriginParent(diagnostics: Diagnostics): string | null {
+  let origin: unknown;
+  try {
+    origin = (window.parent as { origin?: unknown }).origin;
+  } catch {
+    // A cross-origin or sandboxed parent throws here. Count it, but don't report it, because the
+    // caller already reports the unknown origin.
+    diagnostics.count("platform.api_blocked");
+    return null;
+  }
+
+  // A cross-origin parent with a child frame named "origin" gives that frame's window here
+  // instead of a throw, and a parent script can overwrite the global. Only a same-origin parent
+  // gives a string, and no message may target "null".
+  if (typeof origin !== "string" || origin === OPAQUE_ORIGIN) {
+    return null;
+  }
+
+  return origin;
+}
+
+/**
  * Returns the origin this frame runs on. A srcdoc or about:blank frame runs on the origin of
  * the document that made it, but its location.origin reads "null", because that comes from
  * the URL.
  * @returns location.origin, or the origin global when location.origin is "null". A frame
  * sandboxed from a URL keeps its URL origin here, and the parent refuses its "null" messages.
  */
-function frameOrigin(): string {
+export function frameOrigin(): string {
   if (location.origin !== OPAQUE_ORIGIN) {
     return location.origin;
   }
@@ -278,7 +315,7 @@ export function createParentLink(
   }
 
   const trusted = new Set([self, ...trustedOrigins]);
-  const target = parentOrigin();
+  const target = parentOrigin(diagnostics);
   if (target === null || !trusted.has(target)) {
     diagnostics.report(
       "bus.untrusted_origin",

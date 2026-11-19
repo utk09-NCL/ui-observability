@@ -769,6 +769,21 @@ describe("registered bus control traffic", () => {
     bus.destroy();
   });
 
+  it("trusts its same-origin children under trusted-origin when this parent is a srcdoc frame", () => {
+    const { bus, config } = create();
+    const realOrigin = location.origin;
+    const child = {} as Window;
+    config.bus.sourcePolicy = "trusted-origin";
+    // A srcdoc parent's location.origin reads "null", and its origin global holds the real one.
+    vi.stubGlobal("location", { origin: "null" });
+    vi.stubGlobal("origin", realOrigin);
+
+    expect(bus.isRegistered(child, realOrigin)).toBe(true);
+    // The location's "null" is no origin of this page, so an opaque child still gets nothing.
+    expect(bus.isRegistered(child, "null")).toBe(false);
+    bus.destroy();
+  });
+
   it("grants and revokes worker control capabilities in both directions", () => {
     const { bus, h } = create();
     const worker = {
@@ -2029,6 +2044,32 @@ describe("nested frames, carry timing and early encoding", () => {
     bus.destroy();
   });
 
+  it("doesn't call an unregistered same-origin child untrusted when this parent is a srcdoc frame", async () => {
+    const { envelope: wrap } = await import("../src/models/bus");
+    const { bus } = makeBus();
+    const realOrigin = location.origin;
+    const frame = document.createElement("iframe");
+    frame.srcdoc = "";
+    document.body.append(frame);
+    bus["ensureChildrenLink"]();
+    // A srcdoc parent's location.origin reads "null", and its origin global holds the real one.
+    vi.stubGlobal("location", { origin: "null" });
+    vi.stubGlobal("origin", realOrigin);
+
+    dispatchEvent(
+      new MessageEvent("message", {
+        data: wrap({ t: "ui-observability.message.hello", from: "frame", tabId: "tab" }),
+        source: frame.contentWindow,
+        origin: realOrigin,
+      }),
+    );
+
+    // The default policy wants a registration, so the bus counts the message. Its origin is fine.
+    expect(bus["diagnostics"].snapshot()["bus.rejected_message"]).toBe(1);
+    expect(bus["diagnostics"].snapshot()["bus.untrusted_origin"]).toBeUndefined();
+    bus.destroy();
+  });
+
   it("delivers logger calls while carry stores old batches again, without duplicates", async () => {
     const { Sender } = await import("../src/core/sender");
     const send = createMemoryTransport();
@@ -2274,6 +2315,37 @@ describe("rotation reach on the direct link", () => {
     );
     bus.destroy();
     expect(bus["directReplies"].size).toBe(0);
+  });
+
+  it("sends a rotated id to its direct children when this parent is a srcdoc frame", () => {
+    const { bus, config } = makeBus();
+    const realOrigin = location.origin;
+    const [registered, trusted] = [{}, {}] as Window[];
+    bus.registerFrame(registered, { origin: realOrigin });
+    // A srcdoc parent's location.origin reads "null", and its origin global holds the real one.
+    vi.stubGlobal("location", { origin: "null" });
+    vi.stubGlobal("origin", realOrigin);
+    config.bus.sourcePolicy = "trusted-origin";
+    const reply = vi.fn();
+    for (const peer of [registered, trusted]) {
+      bus.acceptDirect(
+        { t: "ui-observability.message.hello", from: "child", tabId: "tab" },
+        reply,
+        peer,
+      );
+    }
+
+    reply.mockClear();
+    bus.rotateContext();
+
+    // Without the real origin, both children keep the old id and their next batch is dropped.
+    expect([...bus["directReplies"].keys()]).toEqual([registered, trusted]);
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(reply).toHaveBeenCalledWith(
+      { t: "ui-observability.message.security-context", from: "host", id: "A" },
+      { link: "direct", origin: "same-origin", peer: trusted },
+    );
+    bus.destroy();
   });
 
   it("sends the id to the next direct child when one reply throws", () => {

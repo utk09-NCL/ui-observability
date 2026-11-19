@@ -154,6 +154,22 @@ With isolation on, which is the default, `configure({ headers: null })` is a ref
 
 If the rotation rejects, the library stops the delivery of the old context. It sends no record with the old token. It keeps the unsent records of the old context in storage under the old ID. It drops each new record and reports it to `onDrop` with `security_context`. `getHealth()` shows the issue `security.rotation_failed`. Revoke the token anyway. Then call `rotateSecurityContext()` again with valid routing settings, for example `{ routing: {} }` for console-only mode. That rotation applies its `pending` rule to the records of the old user. With `flush`, the library removes them, because it does not send them with the old token.
 
+The rotation code is a separate file. The library loads it on the first rotation. If this load fails, for example on a network error, the rotation rejects with a `TypeError`. The browser keeps the failed load for the life of the page. Each later rotation in that page rejects in the same way. Each such call closes the delivery again.
+
+Until a reload of the page, do not call `rotateSecurityContext()`. For each change of context, do these steps.
+
+1. Call `await shutdown({ pending: "discard", clearStorage: "context" })`. This removes the stored batches and the session id of the old context.
+2. Call `configure()` with the settings of the next context.
+
+```ts
+import { configure, shutdown } from "@utk09/ui-observability";
+
+await shutdown({ pending: "discard", clearStorage: "context" });
+configure(nextContextConfig);
+```
+
+A plain `shutdown()` keeps the stored batches and the session id of the old user. The next user then continues that session. A reload of the page loads the rotation code again. The tests in `e2e/rotation-chunk.e2e.ts` measured this behavior in Chromium 145, Firefox 146 and WebKit 26 on 2026-11-19.
+
 A logout rotation can start while a login rotation runs. It then waits, and it runs after the login rotation.
 
 A rotation rejects in a forwarder, and the delivery of the forwarder stays open. Do the rotation in the upstream owner. Other tabs keep their active context, and the host must coordinate them.

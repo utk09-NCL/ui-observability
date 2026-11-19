@@ -193,6 +193,14 @@ detachWorker();
 
 A frame registration binds the actual window and the exact expected origin. You can register an iframe element or a `Window`, for example a cross-origin popup. The registration authorizes that child origin without a second `trustedOrigins` entry. A child still lists a cross-origin parent in its own `bus.trustedOrigins`. Forwarding does not support sandboxed opaque origins. Registrations also apply to the same-origin direct path. A registration also connects a same-origin `srcdoc` or `about:blank` frame. The `location.origin` of such a frame is `"null"`. The frame gives the parent the value of its `origin` global instead. Register such a frame with the origin of the parent. You can call their cleanup functions before the asynchronous bus construction completes.
 
+Without a direct link, a frame tries the message link to its parent. The frame looks for the origin of its parent in this order.
+
+1. `location.ancestorOrigins`. Firefox does not have it.
+2. The origin of `document.referrer`. A `srcdoc` frame in Firefox has an empty referrer.
+3. The `origin` global of the parent. Only a same-origin parent gives a string. The frame refuses each other value.
+
+The frame never uses the origin `"null"`. It posts to the parent only when that origin is its own origin or an entry of `bus.trustedOrigins`. It never posts to `"*"`. A `srcdoc` frame uses its `origin` global as its own origin. As a parent, it uses that value for the source policy and for a new security context. As a forwarder, it uses that value to check the sampling rules of its parent.
+
 Permissions default to `['records']`. The other permissions are `journey:read`, `journey:write` and `sampling:read`. Incoming requests and outgoing control messages both obey these permissions. Handshakes and delivery-context updates need no permission. Only the established upstream owner can publish sampling and security-context messages. A child cannot get owner authority with a false message field.
 
 `sourcePolicy: 'trusted-origin'` turns on automatic child discovery. Then this document's origin and the `trustedOrigins` can send messages. Explicit registrations still apply their permissions and bind their exact origin. A registered origin needs no `trustedOrigins` entry. The bus always checks each record and each control message. It checks the protocol union, forwarded record fields, known severities, timestamps, trace identifiers and finite numeric values. Each bus message carries the envelope tag `ui-observability/2`. Its type name starts with `ui-observability.message.`, for example `ui-observability.message.hello`. These names are a fixed protocol. Each frame must use the same values. The child link of a nested frame ignores the messages of its parent. The parent link receives them.

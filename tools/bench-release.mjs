@@ -75,7 +75,9 @@ const WORKLOAD = {
     outageMs: 3_000,
     delivery: { retryBaseDelayMs: 200, retryMaxDelayMs: 1_000 },
   },
-  // The buffer limit is above the default, so the recorder keeps every event of the run.
+  // The rounds give about 11 MB of events within one checkout, so the default 10 MB buffer
+  // drops its only part and the error's replay has no event from before it. This limit keeps
+  // every event of the run.
   replay: { warmupRounds: 200, rounds: 2_000, changesPerRound: 20, maxBufferBytes: 100_000_000 },
 };
 

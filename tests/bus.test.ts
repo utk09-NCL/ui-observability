@@ -602,6 +602,115 @@ describe("createParentLink", () => {
     expect(createParentLink(vi.fn<Receive>(), [PARENT], diag())).toBeNull();
   });
 
+  /**
+   * Turns this document into a frame of a same-origin parent that the browser gives no
+   * ancestor list and no referrer for, as Firefox does for a srcdoc frame.
+   * @param origin What the parent's origin global reads.
+   * @param locationOrigin What the parent's location.origin reads. A srcdoc parent reads "null".
+   * @returns The fake parent window and its postMessage spy.
+   */
+  function hiddenParent(origin: unknown, locationOrigin = origin) {
+    const postMessage = vi.fn();
+    const fakeParent = {
+      postMessage,
+      origin,
+      location: { origin: locationOrigin },
+    } as unknown as Window & typeof globalThis;
+    vi.spyOn(window, "parent", "get").mockReturnValue(fakeParent);
+    vi.spyOn(document, "referrer", "get").mockReturnValue("");
+    return { fakeParent, postMessage };
+  }
+
+  it("reads a same-origin parent's origin when there's no ancestor list and no referrer", () => {
+    const { postMessage } = hiddenParent(PARENT);
+    nullLocation(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    const link = createParentLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0));
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+
+    expect(link?.kind).toBe("parent");
+    expect(handler).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith(
+      envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
+      PARENT,
+    );
+    link?.close();
+  });
+
+  it("reads a same-origin parent's origin when the referrer isn't a URL", () => {
+    const { postMessage } = hiddenParent(location.origin);
+    vi.spyOn(document, "referrer", "get").mockReturnValue("not a url");
+
+    const link = createParentLink(vi.fn<Receive>(), [], diag());
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+
+    expect(postMessage).toHaveBeenCalledWith(expect.anything(), location.origin);
+    link?.close();
+  });
+
+  it("keeps the parent origin unknown when the read of the parent's origin throws", () => {
+    vi.spyOn(window, "parent", "get").mockReturnValue(crossOriginParent());
+    vi.spyOn(document, "referrer", "get").mockReturnValue("");
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const diagnostics = new Diagnostics(handler, 0);
+
+    expect(createParentLink(vi.fn<Receive>(), [PARENT], diagnostics)).toBeNull();
+    // The blocked read only counts, so the frame reports the unknown origin once.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message: "The origin of the parent frame is unknown. This context sends its own records.",
+        detail: { origin: "", type: "parent" },
+      }),
+    );
+    expect(diagnostics.snapshot()["platform.api_blocked"]).toBe(1);
+  });
+
+  it("finds a srcdoc parent's real origin, for a srcdoc frame inside a srcdoc frame", () => {
+    // The parent's location.origin reads "null", but its origin global holds the real origin.
+    const { postMessage } = hiddenParent(PARENT, "null");
+    nullLocation(PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    const link = createParentLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0));
+    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith(expect.anything(), PARENT);
+    link?.close();
+  });
+
+  it("keeps the parent origin unknown when the parent's origin isn't a string, as for a cross-origin parent with a frame named origin", () => {
+    // Such a parent gives the named frame's window instead of a throw.
+    const { postMessage } = hiddenParent({ postMessage: vi.fn() }, PARENT);
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    expect(createParentLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "The origin of the parent frame is unknown. This context sends its own records.",
+      }),
+    );
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('never takes "null" from an opaque parent as the parent origin', () => {
+    // An opaque parent's origin reads "null", and no message may target it.
+    const { postMessage } = hiddenParent("null");
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+
+    expect(createParentLink(vi.fn<Receive>(), [], new Diagnostics(handler, 0))).toBeNull();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.untrusted_origin",
+        message: "The origin of the parent frame is unknown. This context sends its own records.",
+      }),
+    );
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
   it("returns null and reports when the parent is on an origin that is not trusted", () => {
     frameOf("https://evil.example");
     const handler = vi.fn<(event: DiagnosticEvent) => void>();
@@ -1692,6 +1801,39 @@ describe("Bus role resolution: auto mode", () => {
       parentOrigin,
     );
     expect(busAccept).not.toHaveBeenCalled();
+    bus.destroy();
+  });
+
+  it("connects a srcdoc frame through the message link when the browser hides the parent's origin", async () => {
+    const parentOrigin = location.origin;
+    const busAccept = vi.fn();
+    const postMessage = skewedParent({ busAccept }, true);
+    // Firefox gives a srcdoc frame no ancestorOrigins and an empty referrer, so only the
+    // same-origin read of the parent's origin global finds it.
+    Object.assign(window.parent, { origin: parentOrigin });
+    vi.spyOn(document, "referrer", "get").mockReturnValue("");
+    nullLocation(parentOrigin);
+    const { bus, handler } = frameBus();
+
+    expect(await bus.start()).toBe("forwarder");
+
+    const codes = handler.mock.calls.map(([event]) => event.code);
+    expect(codes).not.toContain("bus.untrusted_origin");
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "bus.role_resolved",
+        detail: { role: "forwarder", via: "parent" },
+      }),
+    );
+
+    bus.sendRecords(oneRecord());
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        p: BUS_PROTOCOL,
+        m: expect.objectContaining({ t: "ui-observability.message.records" }),
+      },
+      parentOrigin,
+    );
     bus.destroy();
   });
 
@@ -3046,6 +3188,22 @@ describe("Bus remote sampling", () => {
     );
 
     expect(h.remote.sampling).not.toBeNull();
+  });
+
+  it("accepts rules from a parent on its real origin when this frame is a srcdoc frame", () => {
+    const realOrigin = location.origin;
+    const { bus, handlers: h, diagnostics } = forwarder();
+    nullLocation(realOrigin);
+    const rules = { t: "ui-observability.message.sampling", from: "owner", to: "ctx-1" } as const;
+
+    // The location's "null" is no origin of this frame, so a parent there gets no say.
+    deliver(bus, { ...rules, rules: wire }, { link: "parent", origin: "null" });
+    expect(h.remote.sampling).toBeNull();
+    expect(diagnostics.snapshot()["bus.untrusted_origin"]).toBe(1);
+
+    deliver(bus, { ...rules, rules: wire }, { link: "parent", origin: realOrigin });
+    expect(h.remote.sampling?.current()).toEqual({ rates: { grid: 1 } });
+    expect(diagnostics.snapshot()["bus.untrusted_origin"]).toBe(1);
   });
 
   it("refuses rules from a parent on an origin that is not trusted, and reports it", () => {

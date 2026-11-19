@@ -44,8 +44,8 @@ describe("ReplayBuffer", () => {
     buffer.add("c1", CHANGE, false);
     buffer.add("c2", CHANGE, false);
 
-    expect(buffer.take()).toEqual(["meta-a", "full-a", "c1", "c2"]);
-    expect(buffer.take()).toEqual([]);
+    expect(buffer.take()).toEqual({ texts: ["meta-a", "full-a", "c1", "c2"], lost: 0 });
+    expect(buffer.take()).toEqual({ texts: [], lost: 0 });
   });
 
   it("starts one part for the meta event and the snapshot of a checkout", () => {
@@ -57,7 +57,7 @@ describe("ReplayBuffer", () => {
       buffer.add(`c-${name}`, CHANGE, false);
     }
 
-    expect(buffer.take()).toEqual([
+    expect(buffer.take().texts).toEqual([
       "meta-b",
       "full-b",
       "c-b",
@@ -80,9 +80,8 @@ describe("ReplayBuffer", () => {
     buffer.add("c2", CHANGE, false);
     buffer.add("c3", CHANGE, false);
 
-    expect(buffer.takeLost()).toBe(3);
-    expect(buffer.takeLost()).toBe(0);
-    expect(buffer.take()).toEqual(["meta-b", "full-b", "c2", "c3"]);
+    expect(buffer.take()).toEqual({ texts: ["meta-b", "full-b", "c2", "c3"], lost: 3 });
+    expect(buffer.take().lost).toBe(0);
   });
 
   it("drops its only part above the size limit and waits for the next snapshot", () => {
@@ -94,14 +93,38 @@ describe("ReplayBuffer", () => {
     buffer.add("c1", CHANGE, false);
     buffer.add("full-with-no-meta", SNAPSHOT, true);
 
-    expect(buffer.take()).toEqual([]);
-    expect(buffer.takeLost()).toBe(5);
+    expect(buffer.take()).toEqual({ texts: [], lost: 5 });
 
     snapshot(buffer, "b");
     buffer.add("c2", CHANGE, false);
 
-    expect(buffer.take()).toEqual(["meta-b", "full-b", "c2"]);
-    expect(buffer.takeLost()).toBe(0);
+    expect(buffer.take()).toEqual({ texts: ["meta-b", "full-b", "c2"], lost: 0 });
+  });
+
+  it("stays starved after a take, so the events after it wait for the next snapshot", () => {
+    const { buffer } = setup(20);
+
+    snapshot(buffer, "a", false);
+    buffer.add("a-long-change-event", CHANGE, false);
+    buffer.take();
+    // A failed snapshot at the error leaves the buffer here. These events have no snapshot.
+    buffer.add("c1", CHANGE, false);
+    expect(buffer.take()).toEqual({ texts: [], lost: 1 });
+
+    snapshot(buffer, "b");
+    expect(buffer.take()).toEqual({ texts: ["meta-b", "full-b"], lost: 0 });
+  });
+
+  it("forgets the dropped events at clear(), so a new recording doesn't report them", () => {
+    const { buffer } = setup(20);
+
+    snapshot(buffer, "a", false);
+    buffer.add("a-long-change-event", CHANGE, false);
+    // A stop or a new session clears the buffer, and the next upload belongs to a new recording.
+    buffer.clear();
+    snapshot(buffer, "b", false);
+
+    expect(buffer.take()).toEqual({ texts: ["meta-b", "full-b"], lost: 0 });
   });
 
   it("reads the size limit at each event", () => {
@@ -112,10 +135,10 @@ describe("ReplayBuffer", () => {
     limit.maxBytes = 15;
     buffer.add("c1", CHANGE, false);
 
-    expect(buffer.take()).toEqual(["meta-b", "full-b", "c1"]);
+    expect(buffer.take().texts).toEqual(["meta-b", "full-b", "c1"]);
   });
 
-  it("takes events again after clear() and after take(), with no snapshot flag", () => {
+  it("takes events again after clear(), and after a take of a buffer that isn't starved", () => {
     const { buffer } = setup(20);
 
     snapshot(buffer, "a", false);
@@ -124,9 +147,9 @@ describe("ReplayBuffer", () => {
     buffer.add("c1", CHANGE, false);
 
     // clear() also stops waiting for a snapshot. The capture asks for a new one afterwards.
-    expect(buffer.take()).toEqual(["c1"]);
+    expect(buffer.take().texts).toEqual(["c1"]);
 
     buffer.add("c2", CHANGE, false);
-    expect(buffer.take()).toEqual(["c2"]);
+    expect(buffer.take().texts).toEqual(["c2"]);
   });
 });
