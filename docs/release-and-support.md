@@ -30,10 +30,10 @@ The configuration contract is the type `ObservabilityConfig`. The README section
 These are the top-level keys of `ObservabilityConfig`.
 
 - Destination and identity of the service: `endpoint`, `metricsEndpoint`, `tracesEndpoint`, `serviceName`, `serviceVersion`, `environment`, `enabled`.
-- Records: `minLevel`, `minLevels`, `payloadMode`, `sampling`, `limits`, `console`, `contextProvider`, `processors`, `redact`.
-- Delivery: `transport`, `transportOnExit`, `transportWorker`, `serializer`, `compression`, `credentials`, `headers`, `batching`, `retention`, `storage`, `delivery`, `buffering`, `persistence`.
+- Records: `minLevel`, `minLevels`, `payloadMode`, `sampling`, `limits`, `consoleOutput`, `contextProvider`, `processors`, `redact`.
+- Delivery: `transport`, `transportOnExit`, `transportWorker`, `serializer`, `compression`, `credentials`, `headers`, `batching`, `retention`, `storage`, `delivery`, `buffering`.
 - Contexts: `bus`, `journey`, `identity`, `correlation`, `securityContext`.
-- Capture: `capture`, `capturePolicy`, `metadata`, `metrics`, `profiler`, `replay`, `otelLoader`.
+- Capture: `capture`, `captureLimits`, `metadata`, `metrics`, `profiler`, `replay`, `otelLoader`.
 - Control and feedback: `lockConfiguration`, `loggerCache`, `debugBuffer`, `diagnostics`, `onDiagnostic`, `onDrop`.
 
 ### Experimental features
@@ -156,7 +156,7 @@ Version skew is two contexts, or two copies in one context, that run different v
 - The two contexts share no journey, no sampling rule and no security-context change over the bus.
 - The tag changed last in version 0.9.5. A context before 0.9.5 and a context on 0.9.5 or later ignore each other.
 
-**Two contexts with the same tag.** Each context accepts the envelope of the other. The bus then checks the type and the fields of each message while `bus.validation` is `"strict"`.
+**Two contexts with the same tag.** Each context accepts the envelope of the other. The bus then checks the type and the fields of each message.
 
 **A same-origin child frame.** This frame calls the runtime of its parent directly. That call has no envelope. The frame first compares the bus protocol tag of the parent runtime with its own tag.
 

@@ -30,13 +30,13 @@ Vite prints the console warnings and errors of the browser in its terminal, with
 
 Copy `src/logger.ts`. Import it before each other module that logs.
 
-| Option                 | Effect                                                                    |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `endpoint: null`       | The library loads no transport, no storage and no exit flush.             |
-| `identity: "memory"`   | The library keeps the session, tab and journey ids in memory.             |
-| `storage: "none"`      | The library keeps no undelivered batch.                                   |
-| `bus: { mode: "off" }` | The library starts no bus.                                                |
-| `console`              | `DEBUG` and above in development. `WARN` and above in a production build. |
+| Option                         | Effect                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `endpoint: null`               | The library loads no transport, no storage and no exit flush.             |
+| `identity: "memory"`           | The library keeps the session, tab and journey ids in memory.             |
+| `storage: { backend: "none" }` | The library keeps no undelivered batch.                                   |
+| `bus: { mode: "off" }`         | The library starts no bus.                                                |
+| `consoleOutput`                | `DEBUG` and above in development. `WARN` and above in a production build. |
 
 See [Console Only (No Network)](../../README.md#console-only-no-network) and [Console Output](../../README.md#console-output).
 

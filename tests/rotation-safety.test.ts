@@ -4,7 +4,7 @@
 // record leaves with the old context's settings after the app asked to leave it, also when a
 // rotation fails, overlaps another one or races the delivery stack load.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { Sender } from "../src/core/sender";
 import type { DropSummary } from "../src/models/drop";
@@ -15,9 +15,16 @@ import {
   flush,
   getHealth,
   getLogger,
+  getStats,
   rotateSecurityContext,
   shutdown,
 } from "../src/index";
+
+// The retry engine's idle wait is a constant. A short one lets a stored batch drain in a test.
+vi.mock("../src/constants", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  RETRY_IDLE_DELAY_MS: 20,
+}));
 
 /** A runtime config with fast retries, no captures and no bus. */
 const base = {
@@ -25,7 +32,7 @@ const base = {
   identity: "memory",
   bus: { mode: "off" },
   capture: { errors: false, rejections: false },
-  delivery: { retryIdleDelayMs: 20, retryBaseDelayMs: 20 },
+  delivery: { retryBaseDelayMs: 20 },
 } as const;
 
 const rt = (): ObservabilityRuntime => ObservabilityRuntime.current()!;
@@ -42,7 +49,7 @@ async function storeOldBatch(isolation = true): Promise<void> {
   failing.respondWith(500);
   configure({
     ...base,
-    storage: "localstorage",
+    storage: { backend: "localstorage" },
     transport: failing.transport,
     securityContext: { id: "A", isolation },
   });
@@ -63,14 +70,14 @@ describe("a rotation that fails while the delivery stack loads", () => {
     const next = createMemoryTransport();
     configure({
       ...base,
-      storage: "localstorage",
+      storage: { backend: "localstorage" },
       transport: next.transport,
       securityContext: { id: "A" },
     });
 
     // The delivery stack is still loading, and the pending rule is a typo.
     await expect(
-      rotateSecurityContext({ id: "B", delivery: {} }, { pending: "flsh" as never }),
+      rotateSecurityContext({ id: "B", routing: {} }, { pending: "flsh" as never }),
     ).rejects.toThrow("Invalid security-context rotation options");
     const sentAtRejection = next.records().length;
     await wait(200);
@@ -97,7 +104,7 @@ describe.each([true, false])(
       const onDrop = vi.fn<(summary: DropSummary) => void>();
       configure({
         ...base,
-        storage: "localstorage",
+        storage: { backend: "localstorage" },
         transport: failing.transport,
         onDrop,
         securityContext: { id: "A", isolation },
@@ -105,9 +112,9 @@ describe.each([true, false])(
       await flush();
 
       await expect(
-        rotateSecurityContext({ id: "B", delivery: { credentials: "bogus" as never } }),
-      ).rejects.toThrow("Invalid delivery settings");
-      await rotateSecurityContext({ id: "C", delivery: { transport: next.transport } });
+        rotateSecurityContext({ id: "B", routing: { credentials: "bogus" as never } }),
+      ).rejects.toThrow("Invalid routing settings");
+      await rotateSecurityContext({ id: "C", routing: { transport: next.transport } });
       await wait(200);
       await flush();
 
@@ -124,14 +131,14 @@ describe("overlapping rotations", () => {
     const tenant = createMemoryTransport();
     configure({
       ...base,
-      storage: "memory",
+      storage: { backend: "memory" },
       transport: createMemoryTransport().transport,
       securityContext: { id: "A" },
     });
     await flush();
 
-    const login = rotateSecurityContext({ id: "B", delivery: { transport: tenant.transport } });
-    const logout = rotateSecurityContext({ id: "anon", delivery: {} });
+    const login = rotateSecurityContext({ id: "B", routing: { transport: tenant.transport } });
+    const logout = rotateSecurityContext({ id: "anon", routing: {} });
     await login;
     await logout;
     getLogger("pay").info("after the logout");
@@ -162,11 +169,11 @@ describe("overlapping rotations", () => {
     });
 
     const login = rotateSecurityContext(
-      { id: "B", delivery: { transport: tenantB.transport } },
+      { id: "B", routing: { transport: tenantB.transport } },
       { pending: "carry" },
     );
     const switchUser = rotateSecurityContext(
-      { id: "C", delivery: { transport: tenantC.transport } },
+      { id: "C", routing: { transport: tenantC.transport } },
       { pending: "flush" },
     );
     await login;
@@ -201,7 +208,7 @@ describe("records built during a rotation that succeeds", () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({
       ...base,
-      storage: "memory",
+      storage: { backend: "memory" },
       transport: createMemoryTransport().transport,
       onDrop,
       securityContext: { id: "A" },
@@ -210,7 +217,7 @@ describe("records built during a rotation that succeeds", () => {
 
     const rotating = rotateSecurityContext({
       id: "B",
-      delivery: { transport: createMemoryTransport().transport },
+      routing: { transport: createMemoryTransport().transport },
     });
     for (let i = 0; i < 3; i++) {
       rt().emit(built(`point ${String(i)}`));
@@ -224,16 +231,93 @@ describe("records built during a rotation that succeeds", () => {
 
 describe("a rotation in a forwarder", () => {
   it("rejects as a usage error and leaves the delivery open", async () => {
-    configure({ ...base, storage: "memory", endpoint: null, securityContext: { id: "A" } });
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
     await flush();
     Object.assign(rt(), { role: () => "forwarder" });
 
-    await expect(rotateSecurityContext({ id: "B", delivery: {} })).rejects.toThrow(
-      "upstream owner",
-    );
+    await expect(rotateSecurityContext({ id: "B", routing: {} })).rejects.toThrow("upstream owner");
 
-    expect(rt()["deliveryClosed"]).toBe(false);
     expect((await getHealth()).issues).not.toContain("security.rotation_failed");
+  });
+
+  it("reports a record built during the rejected call to onDrop", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      onDrop,
+      securityContext: { id: "A" },
+    });
+    await flush();
+    Object.assign(rt(), { role: () => "forwarder" });
+
+    const rotation = rotateSecurityContext({ id: "B", routing: {} });
+    rt().emit(built("built during the call"));
+    await expect(rotation).rejects.toThrow("upstream owner");
+    await flush();
+
+    expect(lost(onDrop, "security_context")).toBe(1);
+  });
+});
+
+describe("the stored count after a failed rotation", () => {
+  it("still counts the closed context's stored batches", async () => {
+    const failing = createMemoryTransport();
+    failing.respondWith(500);
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      transport: failing.transport,
+      securityContext: { id: "A" },
+    });
+    getLogger("pay").info("user A");
+    await flush();
+    const before = (await getStats()).stored;
+
+    await expect(
+      rotateSecurityContext({ id: "B", routing: { credentials: "bogus" as never } }),
+    ).rejects.toThrow();
+
+    expect(before).toBe(1);
+    expect((await getStats()).stored).toBe(1);
+    expect((await getHealth()).stored).toBe(1);
+  });
+});
+
+describe("the rotation timeoutMs", () => {
+  it.each([-1, 600_001, 2 ** 31])("rejects %s as an invalid option", async (timeoutMs) => {
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
+    await flush();
+
+    await expect(rotateSecurityContext({ id: "B", routing: {} }, { timeoutMs })).rejects.toThrow(
+      "Invalid security-context rotation options.",
+    );
+  });
+
+  it("accepts 0 and 600000", async () => {
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
+    await flush();
+
+    await rotateSecurityContext({ id: "B", routing: {} }, { timeoutMs: 0 });
+    await rotateSecurityContext({ id: "C", routing: {} }, { timeoutMs: 600_000 });
+
+    expect(rt().config.securityContext.id).toBe("C");
   });
 });
 
@@ -242,7 +326,7 @@ describe("queued rotations", () => {
     const next = createMemoryTransport();
     configure({
       ...base,
-      storage: "memory",
+      storage: { backend: "memory" },
       transport: createMemoryTransport().transport,
       securityContext: { id: "A" },
     });
@@ -250,10 +334,10 @@ describe("queued rotations", () => {
 
     const failing = rotateSecurityContext({
       id: "B",
-      delivery: { credentials: "bogus" as never },
+      routing: { credentials: "bogus" as never },
     });
-    const good = rotateSecurityContext({ id: "C", delivery: { transport: next.transport } });
-    await expect(failing).rejects.toThrow("Invalid delivery settings");
+    const good = rotateSecurityContext({ id: "C", routing: { transport: next.transport } });
+    await expect(failing).rejects.toThrow("Invalid routing settings");
     await good;
     getLogger("pay").info("in C");
     await flush();
@@ -262,16 +346,66 @@ describe("queued rotations", () => {
   });
 
   it("rejects a queued rotation that starts after shutdown()", async () => {
-    configure({ ...base, storage: "memory", endpoint: null, securityContext: { id: "A" } });
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
     await flush();
 
-    const first = rotateSecurityContext({ id: "B", delivery: {} });
-    const second = rotateSecurityContext({ id: "C", delivery: {} });
+    const first = rotateSecurityContext({ id: "B", routing: {} });
+    const second = rotateSecurityContext({ id: "C", routing: {} });
     const closing = shutdown();
 
     await expect(second).rejects.toThrow("The runtime has stopped.");
     await first.catch(() => undefined);
     await closing;
+  });
+});
+
+describe("a shutdown while the rotation code loads", () => {
+  it("rejects the rotation and keeps the stored batch", async () => {
+    let loading = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.doMock("../src/core/rotation", async (importOriginal) => {
+      loading = true;
+      await gate;
+      return importOriginal();
+    });
+    onTestFinished(() => {
+      vi.doUnmock("../src/core/rotation");
+    });
+    await storeOldBatch();
+    const failing = createMemoryTransport();
+    failing.respondWith(500);
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({
+      ...base,
+      storage: { backend: "localstorage" },
+      transport: failing.transport,
+      onDrop,
+      securityContext: { id: "A" },
+    });
+    await flush();
+
+    const rotation = rotateSecurityContext(
+      { id: "B", routing: { transport: createMemoryTransport().transport } },
+      { pending: "discard" },
+    );
+    await vi.waitFor(() => {
+      expect(loading).toBe(true);
+    });
+    const closing = shutdown();
+    release();
+
+    await expect(rotation).rejects.toThrow("The runtime has stopped.");
+    await closing;
+    expect(secretAtRest()).toBe(true);
+    expect(lost(onDrop, "security_context")).toBe(0);
   });
 });
 
@@ -283,7 +417,7 @@ describe("a closed context and the next rotation's flush rule", () => {
     const onDrop = vi.fn<(summary: DropSummary) => void>();
     configure({
       ...base,
-      storage: "memory",
+      storage: { backend: "memory" },
       transport: failing.transport,
       onDrop,
       securityContext: { id: "A" },
@@ -292,11 +426,11 @@ describe("a closed context and the next rotation's flush rule", () => {
     await flush();
 
     await expect(
-      rotateSecurityContext({ id: "B", delivery: { credentials: "bogus" as never } }),
+      rotateSecurityContext({ id: "B", routing: { credentials: "bogus" as never } }),
     ).rejects.toThrow();
     failing.respondWith(200);
     await rotateSecurityContext(
-      { id: "C", delivery: { transport: next.transport } },
+      { id: "C", routing: { transport: next.transport } },
       { pending: "flush" },
     );
     await flush();
@@ -309,45 +443,73 @@ describe("a closed context and the next rotation's flush rule", () => {
 });
 
 describe("a delivery stack load that ends after the context closed", () => {
-  it("parks its sender instead of sending, and retires a second late one", async () => {
+  it("parks its sender instead of sending, and the next rotation retires it", async () => {
+    vi.doMock("../src/core/rotation", () => {
+      throw new Error("The rotation chunk did not load.");
+    });
+    onTestFinished(() => {
+      vi.doUnmock("../src/core/rotation");
+    });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const original = Sender.create.bind(Sender);
+    const old = createMemoryTransport();
+    const next = createMemoryTransport();
+    const codes: string[] = [];
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A", isolation: false },
+      onDiagnostic: (event) => {
+        codes.push(event.code);
+      },
+    });
+    await flush();
     vi.spyOn(Sender, "create").mockImplementation(async (deps) => {
       await gate;
       return original(deps);
     });
-    const retire = vi.spyOn(Sender.prototype, "retire");
-    configure({
-      ...base,
-      storage: "memory",
-      transport: createMemoryTransport().transport,
-      securityContext: { id: "A" },
+    // This load runs while the rotation fails, so the closed context's sender comes late.
+    configure({ transport: old.transport });
+    const failed = rotateSecurityContext({ id: "B", routing: { transport: next.transport } });
+    getLogger("pay").info("user A");
+    // The failed rotation closes the context, then waits for this load.
+    await vi.waitFor(() => {
+      expect(codes).toContain("security.rotation_failed");
     });
-    // A failed rotation closed the context while this load ran.
-    Object.assign(rt(), { deliveryClosed: true });
     release();
-    await rt()["senderLoad"];
+    await expect(failed).rejects.toThrow();
+    await flush();
 
-    expect(rt()["sender"]).toBeUndefined();
-    expect(rt()["parkedSender"]).toBeDefined();
+    expect(old.batches()).toEqual([]);
+    expect(await getHealth()).toMatchObject({
+      senderReady: false,
+      issues: ["security.rotation_failed"],
+    });
 
-    rt()["senderLoad"] = undefined;
-    await rt()["loadSender"]();
+    vi.doUnmock("../src/core/rotation");
+    const retire = vi.spyOn(Sender.prototype, "retire");
+    await rotateSecurityContext({ id: "C", routing: { transport: next.transport } });
 
-    expect(rt()["sender"]).toBeUndefined();
-    expect(retire).toHaveBeenCalledWith("retain", 0, "A");
+    expect(retire).toHaveBeenCalledWith("discard", 5000, "A");
+    expect(old.batches()).toEqual([]);
   });
 });
 
 describe("a rotation to an endpoint that isn't a plain absolute URL", () => {
   it("applies a relative endpoint in its absolute form", async () => {
-    configure({ ...base, storage: "memory", endpoint: null, securityContext: { id: "A" } });
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      endpoint: null,
+      securityContext: { id: "A" },
+    });
     await flush();
 
-    await rotateSecurityContext({ id: "B", delivery: { endpoint: "/v1/logs" } });
+    await rotateSecurityContext({ id: "B", routing: { endpoint: "/v1/logs" } });
 
     expect(rt().config.endpoint).toBe(new URL("/v1/logs", document.baseURI).href);
   });
@@ -355,11 +517,16 @@ describe("a rotation to an endpoint that isn't a plain absolute URL", () => {
   it.each([["https://user:pw@ingest.example/v1/logs"], ["   "]])(
     "rejects %j and closes the delivery",
     async (endpoint) => {
-      configure({ ...base, storage: "memory", endpoint: null, securityContext: { id: "A" } });
+      configure({
+        ...base,
+        storage: { backend: "memory" },
+        endpoint: null,
+        securityContext: { id: "A" },
+      });
       await flush();
 
-      await expect(rotateSecurityContext({ id: "B", delivery: { endpoint } })).rejects.toThrow(
-        "Invalid delivery settings",
+      await expect(rotateSecurityContext({ id: "B", routing: { endpoint } })).rejects.toThrow(
+        "Invalid routing settings",
       );
 
       expect((await getHealth()).issues).toEqual(["security.rotation_failed"]);

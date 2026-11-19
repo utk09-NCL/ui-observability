@@ -518,7 +518,7 @@ export class ReplayCapture implements Capture {
           uploadsPerWindow,
           diagnostics,
           "replay uploads",
-          config.capturePolicy.windowMs,
+          config.replay.uploadWindowMs,
         )
       ) {
         return;

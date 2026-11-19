@@ -7,7 +7,7 @@ import { configure, createMemoryTransport, flush, rotateSecurityContext } from "
 const base = {
   endpoint: null,
   serviceName: "svc",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   bus: { mode: "off" },
 } as const;
@@ -95,7 +95,7 @@ describe("diagnostics.records", () => {
     });
     await flush();
 
-    await rotateSecurityContext({ id: "new", delivery: { transport: memory.transport } });
+    await rotateSecurityContext({ id: "new", routing: { transport: memory.transport } });
     await flush();
 
     expect(memory.records().map((one) => one.attributes["diagnostic.code"])).toContain(

@@ -67,15 +67,15 @@ export class LifecycleCapture implements Capture {
     this.phase.state = state;
     this.phase.enteredAt = now;
 
-    const { capturePolicy } = this.ctx.config;
+    const { captureLimits } = this.ctx.config;
     if (
       this.ctx.isActive?.() === false ||
       !allowInWindow(
         this.window,
-        capturePolicy.lifecyclePerWindow,
+        captureLimits.lifecyclePerWindow,
         this.ctx.diagnostics,
         "lifecycle events",
-        capturePolicy.windowMs,
+        captureLimits.windowMs,
       )
     ) {
       return;

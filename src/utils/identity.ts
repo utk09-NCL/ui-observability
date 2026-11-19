@@ -253,7 +253,6 @@ export class SessionTouch {
   constructor(
     private diagnostics: Diagnostics,
     private readonly stores: IdentityStores = BROWSER_STORES,
-    private readonly touchMs = SESSION_TOUCH_MS,
     private readonly idleMs: number | null = SESSION_IDLE_MS,
   ) {}
 
@@ -264,7 +263,7 @@ export class SessionTouch {
   touch(sessionId: string): void {
     const now = Date.now();
 
-    if (now - this.lastTouchAt < this.touchMs) {
+    if (now - this.lastTouchAt < SESSION_TOUCH_MS) {
       return;
     }
 

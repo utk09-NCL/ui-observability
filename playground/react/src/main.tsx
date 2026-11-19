@@ -14,17 +14,16 @@ configure({
   serviceVersion: "0.0.0",
   environment: "local",
   minLevel: "TRACE",
-  console: true,
+  consoleOutput: true,
   capture: {
     errors: true,
     rejections: true,
     fetch: true,
     interactions: true,
     navigation: true,
-    webVitals: true,
-    // Required, because the library never imports web-vitals by name. Without it the library
-    // reports config.invalid and LCP, CLS and INP stay off.
-    webVitalsLoader: () => import("web-vitals"),
+    // The loader is required, because the library never imports web-vitals by name. Without it
+    // the library reports config.invalid and LCP, CLS and INP stay off.
+    webVitals: { loader: () => import("web-vitals") },
   },
 });
 

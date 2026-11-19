@@ -4,7 +4,7 @@
 // sends them out first, so they show what happened before the error.
 
 import { ATTR_DEBUG_BUFFER } from "../constants";
-import type { DebugBufferPolicy } from "../models/config";
+import type { DebugBufferOptions } from "../models/config";
 import type { LogRecord } from "../models/log-record";
 
 /** One kept record, with the time the buffer took it. */
@@ -23,7 +23,7 @@ export class DebugBuffer {
   /**
    * @param policy Returns the current settings. A later configure() can change them.
    */
-  constructor(private readonly policy: () => DebugBufferPolicy) {}
+  constructor(private readonly policy: () => DebugBufferOptions) {}
 
   /**
    * Keeps a record. When the buffer is full, the oldest record goes first.

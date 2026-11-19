@@ -52,7 +52,7 @@ configure({
   environment: "local",
   minLevel: "DEBUG",
   // Mirrors every record to the devtools console at its own level.
-  console: "DEBUG",
+  consoleOutput: "DEBUG",
   // The cross-origin copy on port 5174 has to trust its parent's origin. Otherwise it refuses
   // the parent's welcome and sends its own records.
   bus: { trustedOrigins: ["http://localhost:5173"] },

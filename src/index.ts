@@ -38,29 +38,38 @@ export { serveTransportWorker } from "./transport/worker-entry";
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
 export type { Journey, ObservabilityConfig, OneLoggerOptions };
 export type {
-  DeliveryPolicy,
-  BufferingPolicy,
-  MetricsPolicy,
-  CorrelationPolicy,
-  DiagnosticsPolicy,
-  PersistencePolicy,
-  MetadataPolicy,
-  CapturePolicy,
-  DebugBufferPolicy,
-  ProfilerPolicy,
-  ReplayPolicy,
+  BatchingOptions,
+  BufferingOptions,
   BusOptions,
+  CaptureLimitsOptions,
   CaptureOptions,
-  InteractionOptions,
-  ResourceTimingOptions,
-  RemoteCaptureFlag,
-  LoggerCacheOptions,
-  SecurityContextOptions,
-  SecurityContextUpdate,
-  SecurityContextRotationOptions,
-  DeliveryOptions,
-  ConsoleOptions,
+  ConsoleCaptureOptions,
+  ConsoleOutputOptions,
   ConsoleStyles,
+  CorrelationOptions,
+  DebugBufferOptions,
+  DeliveryOptions,
+  DiagnosticsOptions,
+  InteractionOptions,
+  JourneyOptions,
+  LimitsOptions,
+  LoggerCacheOptions,
+  LongFramesOptions,
+  MetadataOptions,
+  MetricsOptions,
+  ProfilerOptions,
+  RemoteCaptureFlag,
+  ReplayOptions,
+  ResourceTimingOptions,
+  RetentionOptions,
+  RoutingOptions,
+  SamplingOptions,
+  SecurityContextOptions,
+  SecurityContextRotationOptions,
+  SecurityContextUpdate,
+  StorageOptions,
+  UserTimingOptions,
+  WebVitalsOptions,
   ExitTransport,
   Transport,
   TransportRequest,
@@ -144,7 +153,7 @@ export function setConfigurationLocked(locked: boolean): void {
 /**
  * Stops delivery for the old context and starts it for the new one. A call during another
  * rotation runs after it.
- * @param update New identity, delivery settings and context attributes.
+ * @param update New identity, routing settings and context attributes.
  * @param options What to do with old records, and the flush deadline.
  * @returns Promise that resolves once the change is complete.
  */

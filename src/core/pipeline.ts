@@ -449,7 +449,7 @@ export class LogPipeline {
       createdAt: Date.now(),
       attempts: 0,
       routingContextId: this.routingContextId?.(),
-      persistenceNamespace: this.policy?.persistence.namespace,
+      persistenceNamespace: this.policy?.storage.namespace,
     };
   }
 
@@ -472,8 +472,8 @@ export class LogPipeline {
         name === "logs" &&
         !this.ceiling.allow(
           record,
-          this.policy?.capturePolicy.errorCeiling,
-          this.policy?.capturePolicy.windowMs,
+          this.policy?.sampling.errorCeiling,
+          this.policy?.sampling.errorCeilingWindowMs,
           this.policy?.sampling.alwaysSampleFrom,
         )
       ) {

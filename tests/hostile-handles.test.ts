@@ -44,7 +44,7 @@ async function start(plugins: CapturePlugin[] = []) {
   configure({
     endpoint: null,
     serviceName: "svc",
-    storage: "memory",
+    storage: { backend: "memory" },
     identity: "memory",
     bus: { mode: "off" },
     capture: { errors: false, rejections: false, plugins },

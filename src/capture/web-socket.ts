@@ -258,10 +258,10 @@ export class WebSocketCapture implements CapturePlugin {
       state.active &&
       allowInWindow(
         this.window,
-        this.config.capturePolicy.webSocketPerWindow,
+        this.config.captureLimits.webSocketPerWindow,
         this.diagnostics,
         "WebSocket events",
-        this.config.capturePolicy.windowMs,
+        this.config.captureLimits.windowMs,
       )
     );
   }

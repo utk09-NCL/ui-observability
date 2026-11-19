@@ -17,7 +17,7 @@ void bootstrapApplication(AppComponent, {
       serviceVersion: "0.0.0",
       environment: "local",
       minLevel: "TRACE",
-      console: true,
+      consoleOutput: true,
       capture: { errors: true, rejections: true, fetch: true, xhr: true, navigation: true },
     }),
   ],

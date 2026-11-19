@@ -167,9 +167,9 @@ describe("UserTimingCapture", () => {
     sut.uninstall();
   });
 
-  it("records only the names that userTimingInclude selects", () => {
+  it("records only the names that userTiming.include selects", () => {
     support(USER_TIMING_TYPES);
-    const { sut, ctx } = setup({ userTimingInclude: [/^app\./, "checkout"] });
+    const { sut, ctx } = setup({ userTiming: { include: [/^app\./, "checkout"] } });
     sut.install();
 
     active().emit(
@@ -260,7 +260,7 @@ describe("capture.userTiming in the runtime", () => {
     });
   });
 
-  it("applies a new userTimingInclude pattern from a later configure()", async () => {
+  it("applies a new userTiming.include pattern from a later configure()", async () => {
     support(USER_TIMING_TYPES);
     configure({
       endpoint: null,
@@ -269,8 +269,7 @@ describe("capture.userTiming in the runtime", () => {
       capture: {
         errors: false,
         rejections: false,
-        userTiming: true,
-        userTimingInclude: [/^old\./],
+        userTiming: { include: [/^old\./] },
       },
     });
     await flush();
@@ -278,7 +277,7 @@ describe("capture.userTiming in the runtime", () => {
       expect(FakeObserver.created).toHaveLength(1);
     });
 
-    configure({ capture: { userTimingInclude: [/^new\./] } });
+    configure({ capture: { userTiming: { include: [/^new\./] } } });
     await vi.waitFor(() => {
       active().emit({ entryType: "mark", name: "new.mark" });
       expect(ObservabilityRuntime.current()?.breadcrumbs.snapshot()).toContainEqual(

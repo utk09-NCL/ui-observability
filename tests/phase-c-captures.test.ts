@@ -212,7 +212,7 @@ describe("ResourceTimingCapture", () => {
   });
 
   it("applies the resource rate limit after URL filtering", () => {
-    const { ctx, sut } = setup({ capturePolicy: { resourcesPerWindow: 1 } });
+    const { ctx, sut } = setup({ captureLimits: { resourcesPerWindow: 1 } });
     sut.install();
     ctx.isActive = () => false;
     ResourceObserver.latest.emit(resource());
@@ -324,7 +324,7 @@ describe("ReportCapture", () => {
 
   it("contains failed report reads and limits reports in each window", () => {
     vi.stubGlobal("ReportingObserver", ReportObserver);
-    const ctx = context({ capturePolicy: { reportsPerWindow: 2 } });
+    const ctx = context({ captureLimits: { reportsPerWindow: 2 } });
     const sut = new ReportCapture(ctx);
     sut.install();
     ctx.isActive = () => false;
@@ -417,7 +417,7 @@ describe("LifecycleCapture", () => {
   });
 
   it("updates state while inactive and while events exceed the limit", () => {
-    const ctx = context({ capturePolicy: { lifecyclePerWindow: 1 } });
+    const ctx = context({ captureLimits: { lifecyclePerWindow: 1 } });
     ctx.isActive = () => false;
     const sut = new LifecycleCapture(ctx);
     sut.install();

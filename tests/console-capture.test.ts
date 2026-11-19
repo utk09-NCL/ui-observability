@@ -108,7 +108,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("uses the error message, then the method name, when the call has no string", () => {
-    const { logger } = setup(["error"]);
+    const { logger } = setup({ levels: ["error"] });
 
     console.error(new Error("from error"));
     console.error({ code: 3 });
@@ -123,7 +123,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("records an error from another realm as the error of the record", () => {
-    const { logger } = setup(["error"]);
+    const { logger } = setup({ levels: ["error"] });
     // An error from an iframe fails instanceof Error in this realm.
     const foreign = { name: "TypeError", message: "x is undefined", stack: "TypeError: x" };
 
@@ -137,7 +137,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("records warn as a WARN record, and keeps its Error in the arguments", () => {
-    const { logger } = setup(["warn"]);
+    const { logger } = setup({ levels: ["warn"] });
     const cause = new Error("slow");
 
     console.warn("deprecated API", cause);
@@ -149,7 +149,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("records info and log as breadcrumbs only, and shortens a long message", () => {
-    const { logger, breadcrumbs } = setup(["info", "log"]);
+    const { logger, breadcrumbs } = setup({ levels: ["info", "log"] });
 
     console.info("loaded");
     console.log("x".repeat(CONSOLE_BREADCRUMB_MAX_CHARS + 50));
@@ -166,7 +166,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("wraps a method once when the list names it twice, or when install runs again", () => {
-    const { sut, logger } = setup(["error", "error"]);
+    const { sut, logger } = setup({ levels: ["error", "error"] });
 
     sut.install();
     console.error("once");
@@ -176,7 +176,7 @@ describe("ConsoleCapture", () => {
 
   it("reports a value that is not usable, and wraps nothing", () => {
     const { events: text } = setup("error");
-    const { events: unknown } = setup(["error", "trace"]);
+    const { events: unknown } = setup({ levels: ["error", "trace"] });
 
     expect(console.error).toBe(base.error);
     expect([...text, ...unknown].map((event) => event.code)).toEqual([
@@ -307,7 +307,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("restores each method on uninstall", () => {
-    const { sut } = setup(["error", "warn", "info", "log"]);
+    const { sut } = setup({ levels: ["error", "warn", "info", "log"] });
 
     sut.uninstall();
     sut.uninstall();
@@ -318,7 +318,7 @@ describe("ConsoleCapture", () => {
   });
 
   it("leaves a later wrapper in place on uninstall, and stops recording", () => {
-    const { sut, logger, events } = setup(["error"]);
+    const { sut, logger, events } = setup({ levels: ["error"] });
     const library = console.error;
     const host = (...args: unknown[]): void => {
       library(...args);

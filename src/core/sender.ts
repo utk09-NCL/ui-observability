@@ -89,29 +89,25 @@ export class Sender {
     const backing =
       deps.storage ??
       (await createStorage(
-        config.storage,
-        storageName(config.persistence.namespace),
+        config.storage.backend,
+        storageName(config.storage.namespace),
         storageLimits(config.retention),
         diagnostics,
         deps.onGap,
-        config.persistence.namespace,
+        config.storage.namespace,
       ));
     deps.onStorage?.(backing);
 
     // Ask only for a store that outlives the page.
     if (
-      config.persistence.requestPersistent &&
+      config.storage.requestPersistent &&
       (backing.name === STORAGE_NAME_INDEXEDDB || backing.name === STORAGE_NAME_LOCAL)
     ) {
       deps.onPersistence?.("pending");
       void requestPersistence(diagnostics).then(deps.onPersistence);
     }
 
-    const storage = new ContextStorage(
-      backing,
-      config.securityContext,
-      config.persistence.namespace,
-    );
+    const storage = new ContextStorage(backing, config.securityContext, config.storage.namespace);
     const onSampling = (raw: unknown): void => {
       const update = parseRemoteRules(raw, diagnostics);
 
@@ -163,7 +159,10 @@ export class Sender {
       {
         logs: { flushIntervalMs: batching.logFlushIntervalMs, batchSize: batching.logBatchSize },
         metrics: {
-          flushIntervalMs: batching.metricFlushIntervalMs,
+          // Read on each batch, so a later metrics.intervalMs applies here as it does to the meter.
+          get flushIntervalMs() {
+            return config.metrics.intervalMs;
+          },
           batchSize: batching.metricBatchSize,
         },
         // A span is the size of a log record, so the traces stream uses the log batching.

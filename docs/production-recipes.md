@@ -10,7 +10,7 @@ See [runtime policies](runtime-policies.md) for each default and each range. See
 2. Give the full config in that call. Include `securityContext.id` when the application must resume stored batches after a reload.
 3. Call `getLogger()` in each module. A microfrontend usually calls only `getLogger()`.
 4. Call `startReplay()` after the user agrees, when `replay.requireConsent` is `true`.
-5. Use `rotateSecurityContext()` for each later change of identity or delivery settings.
+5. Use `rotateSecurityContext()` for each later change of identity or routing settings.
 
 A log call before `configure()` starts a runtime with default settings. The call does not throw. That runtime already has the default `correlation` and `identity` settings, and the first `configure()` cannot change them.
 
@@ -20,18 +20,18 @@ A log call before `configure()` starts a runtime with default settings. The call
 
 A later `configure()` call reports `config.invalid` for these settings and keeps the current values. The other settings in the same call apply.
 
-| Setting                            | Fixed from                                                                                                             |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `identity`                         | The start of the runtime.                                                                                              |
-| `correlation` (each key)           | The start of the runtime.                                                                                              |
-| `limits` (each key)                | The first `configure()` call of the application.                                                                       |
-| `journey.maxAgeMs`                 | The first `configure()` call of the application.                                                                       |
-| `profiler.maxProbes`               | The first `configure()` call of the application.                                                                       |
-| `persistence` (each key)           | The start of the runtime. After an early log call, the first `configure()` can set it before the delivery stack loads. |
-| `storage`                          | The time that the delivery stack builds the storage adapter.                                                           |
-| `batching`, `retention` (each key) | The load of the delivery stack.                                                                                        |
-| `transport`, `transportWorker`     | The load of the delivery stack. `configure()` cannot add or remove one.                                                |
-| `endpoint` (removal only)          | The load of the delivery stack. `configure()` cannot remove it.                                                        |
+| Setting                            | Fixed from                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `identity`                         | The start of the runtime.                                                                                                      |
+| `correlation` (each key)           | The start of the runtime.                                                                                                      |
+| `limits` (each key)                | The first `configure()` call of the application.                                                                               |
+| `journey.maxAgeMs`                 | The first `configure()` call of the application.                                                                               |
+| `profiler.maxProbes`               | The first `configure()` call of the application.                                                                               |
+| `storage` (each key)               | The start of the runtime. After an early log call, the first `configure()` can set it until a delivery stack builds the store. |
+| `bus.mode`, `bus.openFinRole`      | The start of the runtime.                                                                                                      |
+| `batching`, `retention` (each key) | The load of the delivery stack.                                                                                                |
+| `transport`, `transportWorker`     | The load of the delivery stack. `configure()` cannot add or remove one.                                                        |
+| `endpoint` (removal only)          | The load of the delivery stack. `configure()` cannot remove it.                                                                |
 
 Three more rules refuse a change at runtime.
 
@@ -45,13 +45,13 @@ A function counts as identical only when it is the same reference. Keep the `hea
 
 Each function stops a different part. Select the function from this table, not from its name.
 
-| Call                                      | What stops                                                                                                                                                                                                                       | Data in memory                                                                                                                                                                                                            | Data in storage                                                                                                                                                         | How to start again                                                                                                                               |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `configure({ enabled: false })`           | The library builds no new record. This includes log, action, metric and span records. Logger calls print nothing to the console. The delivery stack, the installed captures and the session replay recorder continue to operate. | Records that are in the buffers stay. The library continues to send them. Context attributes and breadcrumbs stay.                                                                                                        | No change. The retry engine continues to send the stored batches.                                                                                                       | `configure({ enabled: true })`. A locked configuration refuses both calls.                                                                       |
-| `stopReplay()`                            | The session replay recorder and the replay request in flight. Logging and delivery continue.                                                                                                                                     | The library drops the replay buffer and each replay segment that is not sent. Log records stay.                                                                                                                           | No change.                                                                                                                                                              | `startReplay()`. A later `configure()` does not start the recorder.                                                                              |
-| `shutdown()`                              | Each subsystem. The library runs a normal flush, then the exit flush. It then cancels each open request, removes each capture and stops the bus. Later calls do nothing.                                                         | The final flush sends the pending records or stores them. Records that wait for the load of the delivery stack are lost with `load_failed`. `getHealth()` and `getStats()` can read the stopped runtime.                  | Stored batches stay. The stored batch of a cancelled request also stays.                                                                                                | `configure()` with the full config. The new runtime does not get the old config or the old context attributes.                                   |
-| `clearPersistedLogs(scope?)`              | Nothing.                                                                                                                                                                                                                         | No change. A pending record or a request in flight can write to storage again after the call.                                                                                                                             | The call removes the stored batches and the emergency queue of the active context. With `"namespace"`, it removes them for each context in the `persistence.namespace`. | No action is necessary.                                                                                                                          |
-| `rotateSecurityContext(update, options?)` | The sender of the old context, its retries and its open requests. The active trace and the active journey end. During the rotation, the library drops logger calls, metric values and forwarded records.                         | The `pending` rule decides for the old records. The library clears the context attributes, the breadcrumbs, the debug buffer and the replay buffer. It applies `update.context` and starts a new session and a new trace. | `discard` and `flush` remove the stored batches and the emergency queue of the old context. `retain` keeps them under the old ID. `carry` moves them to the new ID.     | Delivery starts automatically with `update.delivery`. With `delivery: {}`, the runtime is console-only until a later rotation gives an endpoint. |
+| Call                                      | What stops                                                                                                                                                                                                                       | Data in memory                                                                                                                                                                                                            | Data in storage                                                                                                                                                     | How to start again                                                                                                                             |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `configure({ enabled: false })`           | The library builds no new record. This includes log, action, metric and span records. Logger calls print nothing to the console. The delivery stack, the installed captures and the session replay recorder continue to operate. | Records that are in the buffers stay. The library continues to send them. Context attributes and breadcrumbs stay.                                                                                                        | No change. The retry engine continues to send the stored batches.                                                                                                   | `configure({ enabled: true })`. A locked configuration refuses both calls.                                                                     |
+| `stopReplay()`                            | The session replay recorder and the replay request in flight. Logging and delivery continue.                                                                                                                                     | The library drops the replay buffer and each replay segment that is not sent. Log records stay.                                                                                                                           | No change.                                                                                                                                                          | `startReplay()`. A later `configure()` does not start the recorder.                                                                            |
+| `shutdown()`                              | Each subsystem. The library runs a normal flush, then the exit flush. It then cancels each open request, removes each capture and stops the bus. Later calls do nothing.                                                         | The final flush sends the pending records or stores them. Records that wait for the load of the delivery stack are lost with `load_failed`. `getHealth()` and `getStats()` can read the stopped runtime.                  | Stored batches stay. The stored batch of a cancelled request also stays.                                                                                            | `configure()` with the full config. The new runtime does not get the old config or the old context attributes.                                 |
+| `clearPersistedLogs(scope?)`              | Nothing.                                                                                                                                                                                                                         | No change. A pending record or a request in flight can write to storage again after the call.                                                                                                                             | The call removes the stored batches and the emergency queue of the active context. With `"namespace"`, it removes them for each context in the `storage.namespace`. | No action is necessary.                                                                                                                        |
+| `rotateSecurityContext(update, options?)` | The sender of the old context, its retries and its open requests. The active trace and the active journey end. During the rotation, the library drops logger calls, metric values and forwarded records.                         | The `pending` rule decides for the old records. The library clears the context attributes, the breadcrumbs, the debug buffer and the replay buffer. It applies `update.context` and starts a new session and a new trace. | `discard` and `flush` remove the stored batches and the emergency queue of the old context. `retain` keeps them under the old ID. `carry` moves them to the new ID. | Delivery starts automatically with `update.routing`. With `routing: {}`, the runtime is console-only until a later rotation gives an endpoint. |
 
 Notes for the table.
 
@@ -65,7 +65,7 @@ Notes for the table.
 The application has an anonymous context before login. A rotation starts the context of the user.
 
 1. Make an opaque context ID for the login. Do not put a secret or personal data in the ID.
-2. Call `rotateSecurityContext()` with the ID, the delivery settings and the context attributes of the user.
+2. Call `rotateSecurityContext()` with the ID, the routing settings and the context attributes of the user.
 3. Select the `pending` rule for the records from before login. `discard` is the default.
 4. Wait for the promise before the application logs for the user.
 5. Create new scoped loggers when their attributes name the previous user.
@@ -76,7 +76,7 @@ import { rotateSecurityContext } from "@utk09/ui-observability";
 await rotateSecurityContext(
   {
     id: opaqueLoginContextId,
-    delivery: {
+    routing: {
       endpoint: "https://ingest.example/v1/logs",
       headers: authHeaders,
     },
@@ -86,14 +86,14 @@ await rotateSecurityContext(
 );
 ```
 
-`flush` tries to send the old records with the old settings. `timeoutMs` limits the wait, and its default is 5000. `delivery` replaces each delivery setting. A field that you omit resets to its default.
+`flush` tries to send the old records with the old settings. `timeoutMs` limits the wait. Its default is 5000, and its range is 0 to 600000. `routing` replaces each routing setting. A field that you omit resets to its default.
 
 After a reload with a user who is logged in, give the same `securityContext.id` in the first `configure()` call. A generated ID does not resume the stored batches of a previous page.
 
 ## Logout
 
 1. Call `rotateSecurityContext()` before the application revokes the token. A `flush` needs the old headers.
-2. Give the delivery settings of the anonymous context. Omit `id`, and the runtime makes a new ID.
+2. Give the routing settings of the anonymous context. Omit `id`, and the runtime makes a new ID.
 3. Wait for the promise.
 4. Revoke the token and clear the application state.
 5. Update each `contextProvider` closure and each scoped logger that has attributes of the user.
@@ -102,7 +102,7 @@ After a reload with a user who is logged in, give the same `securityContext.id` 
 import { rotateSecurityContext } from "@utk09/ui-observability";
 
 await rotateSecurityContext(
-  { delivery: { endpoint: "https://ingest.example/v1/logs" } },
+  { routing: { endpoint: "https://ingest.example/v1/logs" } },
   { pending: "flush", timeoutMs: 3000 },
 );
 await revokeToken();
@@ -112,7 +112,7 @@ The rotation clears the context attributes, the breadcrumbs and the replay buffe
 
 With isolation on, which is the default, `configure({ headers: null })` is a refused change. Use the rotation for logout. `headers: undefined` keeps the token in each `configure()` call. With isolation off, `configure({ headers: null })` clears the headers.
 
-If the rotation rejects, the library stops the delivery of the old context. It sends no record with the old token. It keeps the unsent records of the old context in storage under the old ID. It drops each new record and reports it to `onDrop` with `security_context`. `getHealth()` shows the issue `security.rotation_failed`. Revoke the token anyway. Then call `rotateSecurityContext()` again with valid delivery settings, for example `{ delivery: {} }` for console-only mode. That rotation applies its `pending` rule to the records of the old user. With `flush`, the library removes them, because it does not send them with the old token.
+If the rotation rejects, the library stops the delivery of the old context. It sends no record with the old token. It keeps the unsent records of the old context in storage under the old ID. It drops each new record and reports it to `onDrop` with `security_context`. `getHealth()` shows the issue `security.rotation_failed`. Revoke the token anyway. Then call `rotateSecurityContext()` again with valid routing settings, for example `{ routing: {} }` for console-only mode. That rotation applies its `pending` rule to the records of the old user. With `flush`, the library removes them, because it does not send them with the old token.
 
 A logout rotation can start while a login rotation runs. It then waits, and it runs after the login rotation.
 
@@ -121,7 +121,7 @@ A rotation rejects in a forwarder, and the delivery of the forwarder stays open.
 ## Tenant rotation
 
 1. Make a new opaque context ID for the new tenant. Never use one ID for two tenants.
-2. Give the endpoint, the headers and the credentials of the new tenant together in `delivery`.
+2. Give the endpoint, the headers and the credentials of the new tenant together in `routing`.
 3. Select `discard` to remove the records of the old tenant. Select `retain` to keep them under the old ID.
 4. Wait for the promise. A rotation that starts during another rotation runs after it.
 
@@ -131,7 +131,7 @@ import { rotateSecurityContext } from "@utk09/ui-observability";
 await rotateSecurityContext(
   {
     id: opaqueContextIdTenantB,
-    delivery: {
+    routing: {
       endpoint: "https://tenant-b.example/v1/logs",
       headers: tenantBHeaders,
       credentials: "omit",
@@ -142,9 +142,9 @@ await rotateSecurityContext(
 );
 ```
 
-Invalid delivery settings reject the promise before the old sender stops. A warning does not reject it, for example `transport` with `transportWorker`. A key that is not a delivery setting reports `config.invalid`, and the rotation ignores it. With `retain`, the library sends the old records only when the old ID is active again.
+Invalid routing settings reject the promise. Each rejection closes the delivery of the old context. The old sender then stops. Its stored batches stay under the old ID. A warning does not reject the promise, for example `transport` with `transportWorker`. A key that is not a routing setting reports `config.invalid`, and the rotation ignores it. With `retain`, the library sends the old records only when the old ID is active again.
 
-After a rejection, the library sends nothing more to the old tenant. The unsent records of the old tenant stay stored under the old ID. Each new record is dropped and reported to `onDrop` with `security_context`, until a rotation succeeds. Correct the delivery settings and call `rotateSecurityContext()` again. The `pending` rule of that call applies to the records of the old tenant, so `discard` removes them also with isolation off. Do not use `configure()` to change the tenant. It does not open the delivery again.
+After a rejection, the library sends nothing more to the old tenant. The unsent records of the old tenant stay stored under the old ID. Each new record is dropped and reported to `onDrop` with `security_context`, until a rotation succeeds. Correct the routing settings and call `rotateSecurityContext()` again. The `pending` rule of that call applies to the records of the old tenant, so `discard` removes them also with isolation off. Do not use `configure()` to change the tenant. It does not open the delivery again.
 
 ## Token refresh
 
@@ -180,7 +180,7 @@ With isolation on, a new `headers` function in `configure()` is a refused change
 1. Unlock the configuration when the application locked it.
 2. Call `configure({ enabled: false })`. The library then builds no new record.
 3. Call `stopReplay()`. The library drops the replay data that is not sent.
-4. Call `rotateSecurityContext()` with an empty `delivery` and `pending: "discard"`. This removes the pending and stored records of the active context.
+4. Call `rotateSecurityContext()` with an empty `routing` and `pending: "discard"`. This removes the pending and stored records of the active context.
 5. Call `clearPersistedLogs("namespace")` when the parked batches of other contexts must also go.
 
 ```ts
@@ -198,13 +198,13 @@ configure({ enabled: false });
 setConfigurationLocked(true);
 
 stopReplay();
-await rotateSecurityContext({ delivery: {} }, { pending: "discard" });
+await rotateSecurityContext({ routing: {} }, { pending: "discard" });
 await clearPersistedLogs("namespace");
 ```
 
-An empty `delivery` resets the endpoint to `null`. The runtime is then console-only and sends nothing. The library cannot recall a request or a beacon that the server accepted.
+An empty `routing` resets the endpoint to `null`. The runtime is then console-only and sends nothing. The library cannot recall a request or a beacon that the server accepted.
 
-`clearPersistedLogs("namespace")` applies to the configured `persistence.namespace` only. It removes the stored batches of each context in that namespace, including parked batches.
+`clearPersistedLogs("namespace")` applies to the configured `storage.namespace` only. It removes the stored batches of each context in that namespace, including parked batches.
 
 A rotation rejects in a forwarder. Do step 4 in the upstream owner.
 

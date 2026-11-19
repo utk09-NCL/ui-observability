@@ -8,6 +8,7 @@ import { createChildrenLink, createDirectLink, type Receive } from "../src/bus/l
 import {
   BATCH_KEY_TIME_WIDTH,
   BATCH_STORAGE_KEY_PREFIX,
+  BUS_MAX_TRACKED_SOURCES,
   BUS_PROTOCOL,
   SESSION_ID_KEY,
 } from "../src/constants";
@@ -64,7 +65,7 @@ const memory = () => new MemoryStorage({ maxBatches: 500, maxAgeMs: 60000, maxAt
 const base = {
   endpoint: null,
   serviceName: "policies",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   capture: { errors: false, rejections: false },
   bus: { mode: "off" },
@@ -223,7 +224,7 @@ describe("policy validation", () => {
     { capture: { interactions: { deadClicks: 1, deadClickMs: 20_000 } } },
     { loggerCache: { maxEntries: -1 } },
     { loggerCache: { maxEntries: Infinity } },
-    { bus: { sourcePolicy: "all", validation: "off", maxMessageBytes: -1, maxTrackedSources: -1 } },
+    { bus: { sourcePolicy: "all", maxMessageBytes: -1, maxMessagesPerSecond: -1 } },
   ])("reports invalid policy settings without broadening capture %#", (input) => {
     const diagnostics = diag();
     const config = resolveConfig({ ...base, ...input } as never, diagnostics);
@@ -282,23 +283,23 @@ describe("health and transition lifecycle", () => {
     await expect(
       rotateSecurityContext({
         id: "B",
-        delivery: { metricsEndpoint: "https://user:pw@ingest.example/v1/metrics" },
+        routing: { metricsEndpoint: "https://user:pw@ingest.example/v1/metrics" },
       }),
-    ).rejects.toThrow("Invalid delivery");
+    ).rejects.toThrow("Invalid routing");
     expect(rt().config.securityContext.id).toBe("A");
     getLogger("still-active").info("A stops");
     await flush();
     // The app asked to leave context A, so its transport sends nothing more.
     expect(send.records()).toEqual([]);
     await shutdown();
-    await expect(rotateSecurityContext({ delivery: {} })).rejects.toThrow("stopped");
+    await expect(rotateSecurityContext({ routing: {} })).rejects.toThrow("stopped");
   });
 
   it("starts a fresh generated context without a destination, and refuses configure while rotating", async () => {
     configure(base);
     await flush();
     const before = rt().config.securityContext.id;
-    const changing = rotateSecurityContext({ delivery: {} });
+    const changing = rotateSecurityContext({ routing: {} });
     configure({ serviceName: "refused" });
     addBreadcrumb("during");
     counter("during").add(1);
@@ -351,7 +352,7 @@ describe("health and transition lifecycle", () => {
     } as never);
     capture.install();
     const request = fetch("https://api.example/account/A");
-    await rotateSecurityContext({ delivery: {} });
+    await rotateSecurityContext({ routing: {} });
     resolve(new Response("", { status: 500 }));
     await request;
     expect(logger.warn).not.toHaveBeenCalled();
@@ -484,7 +485,7 @@ describe("bus capability and delivery boundaries", () => {
   });
 
   it("checks physical source budgets, finite fields and broadcast data-plane permission", () => {
-    const { bus, config, handlers, receive } = create();
+    const { bus, handlers, receive } = create();
     const m: BusMessage = {
       t: "ui-observability.message.records",
       from: "peer",
@@ -492,15 +493,14 @@ describe("bus capability and delivery boundaries", () => {
       records: [record()],
     };
     receive(m, { link: "broadcast", origin: "same-origin" });
-    receive(
-      { ...m, records: [{ ...record(), attributes: { value: Infinity } }] },
-      { link: "openfin", origin: "openfin", peer: "one" },
-    );
-    config.bus.maxTrackedSources = 1;
-    receive(m, { link: "openfin", origin: "openfin", peer: "two" });
+    // A non-finite value refuses each message, but the bus still tracks its named source.
+    const infinite = { ...m, records: [{ ...record(), attributes: { value: Infinity } }] };
+    for (let i = 0; i < BUS_MAX_TRACKED_SOURCES; i++) {
+      receive(infinite, { link: "openfin", origin: "openfin", peer: `peer-${String(i)}` });
+    }
+    receive(m, { link: "openfin", origin: "openfin", peer: "one too many" });
     expect(handlers.onRecords).not.toHaveBeenCalled();
-    config.bus.maxTrackedSources = null;
-    receive(m, { link: "openfin", origin: "openfin", peer: "three" });
+    receive(m, { link: "openfin", origin: "openfin", peer: "peer-0" });
     expect(handlers.onRecords).toHaveBeenCalledTimes(1);
     bus.destroy();
     receive(m, { link: "openfin", origin: "openfin" });
@@ -575,10 +575,10 @@ describe("delivery cancellation and owner adoption", () => {
     getLogger("orders").info("park A");
     await flush();
     await rotateSecurityContext(
-      { id: "B", delivery: { transport: send.transport } },
+      { id: "B", routing: { transport: send.transport } },
       { pending: "retain" },
     );
-    await rotateSecurityContext({ id: "A", delivery: { transport: send.transport } });
+    await rotateSecurityContext({ id: "A", routing: { transport: send.transport } });
     send.respondWith(204);
     await rt()["sender"]!["retry"]["drain"]();
     expect(send.records()[0].body).toBe("park A");
@@ -605,7 +605,7 @@ describe("delivery cancellation and owner adoption", () => {
     expect(adopt("owner-B")).toBe(true);
     bus["role"] = "forwarder";
     expect((await getHealth()).mode).toBe("forwarder");
-    await expect(rotateSecurityContext({ delivery: {} })).rejects.toThrow("upstream owner");
+    await expect(rotateSecurityContext({ routing: {} })).rejects.toThrow("upstream owner");
     runtime["ingestForwarded"]([]);
   });
 
@@ -630,7 +630,7 @@ describe("delivery cancellation and owner adoption", () => {
     expect((await getHealth()).status).toBe("starting");
     const bus = (await rt()["constructBus"]())!;
     expect(bus["handlers"].onSecurityContext!("initial-owner")).toBe(true);
-    const changing = rotateSecurityContext({ delivery: {} });
+    const changing = rotateSecurityContext({ routing: {} });
     expect((await getHealth()).status).toBe("rotating");
     getLogger("orders").error("during", new Error("secret"));
     rt()["ingestForwarded"]([record()]);
@@ -658,9 +658,9 @@ describe("delivery cancellation and owner adoption", () => {
     ]) {
       await expect(rotateSecurityContext(update as never)).rejects.toThrow("Invalid");
     }
-    await expect(rotateSecurityContext({ delivery: {} }, { timeoutMs: -1 })).rejects.toThrow();
+    await expect(rotateSecurityContext({ routing: {} }, { timeoutMs: -1 })).rejects.toThrow();
     await expect(
-      rotateSecurityContext({ delivery: {} }, { pending: "unknown" as never }),
+      rotateSecurityContext({ routing: {} }, { pending: "unknown" as never }),
     ).rejects.toThrow();
   });
 
@@ -680,13 +680,14 @@ describe("delivery cancellation and owner adoption", () => {
       await gate;
       return original.apply(this, args);
     });
-    const changing = rotateSecurityContext({ delivery: {} });
+    const changing = rotateSecurityContext({ routing: {} });
     await vi.waitFor(() => {
       expect(retiring).toHaveBeenCalled();
     });
     const closing = shutdown();
     release();
-    await Promise.all([changing, closing]);
+    await expect(changing).rejects.toThrow("The runtime has stopped.");
+    await closing;
     expect((await getHealth()).status).toBe("stopped");
   });
 
@@ -896,7 +897,7 @@ describe("registered bus control traffic", () => {
   });
 
   it("drops unregistered direct traffic and non-finite data, and expires named-source budgets", () => {
-    const { bus, config, h, receive } = create();
+    const { bus, h, receive } = create();
     bus.acceptDirect({ t: "ui-observability.message.hello", from: "child", tabId: "tab" }, vi.fn());
     const m: BusMessage = {
       t: "ui-observability.message.records",
@@ -904,12 +905,14 @@ describe("registered bus control traffic", () => {
       records: [record()],
       routingContextId: "A",
     };
-    receive(m, { link: "openfin", origin: "openfin", peer: "old" });
+    for (let i = 0; i < BUS_MAX_TRACKED_SOURCES; i++) {
+      receive(m, { link: "openfin", origin: "openfin", peer: `old-${String(i)}` });
+    }
     const now = Date.now();
+    // Every old source's second has ended, so a new name finds room.
     vi.spyOn(Date, "now").mockReturnValue(now + 1001);
-    config.bus.maxTrackedSources = 1;
     receive(m, { link: "openfin", origin: "openfin", peer: "new" });
-    expect(h.onRecords).toHaveBeenCalledTimes(2);
+    expect(h.onRecords).toHaveBeenCalledTimes(BUS_MAX_TRACKED_SOURCES + 1);
     bus.destroy();
   });
 });
@@ -1093,11 +1096,11 @@ describe("policy edge cases", () => {
     await flush();
     getLogger("pending").info("buffered A");
     await rotateSecurityContext(
-      { id: "B", delivery: { transport: send.transport } },
+      { id: "B", routing: { transport: send.transport } },
       { pending: "retain" },
     );
-    await rotateSecurityContext({ id: "A", delivery: { transport: send.transport } });
-    await rotateSecurityContext({ id: "C", delivery: {} }, { pending: "flush" });
+    await rotateSecurityContext({ id: "A", routing: { transport: send.transport } });
+    await rotateSecurityContext({ id: "C", routing: {} }, { pending: "flush" });
     expect(send.records()[0].body).toBe("buffered A");
     expect(send.batches()[0].routingContextId).toBe("A");
   });
@@ -1105,8 +1108,9 @@ describe("policy edge cases", () => {
   it("still shuts down cleanly when a concurrently awaited rotation rejects", async () => {
     configure(base);
     await flush();
-    const change = rotateSecurityContext({ delivery: { credentials: "invalid" as never } });
-    const rejected = expect(change).rejects.toThrow("Invalid delivery");
+    const change = rotateSecurityContext({ routing: { credentials: "invalid" as never } });
+    // The call starts on a later microtask, so the shutdown in this task comes first.
+    const rejected = expect(change).rejects.toThrow("The runtime has stopped.");
     const closing = shutdown();
     await rejected;
     await closing;
@@ -1121,7 +1125,7 @@ describe("policy edge cases", () => {
   });
 
   it("honors a master disable triggered while preparing a console-only error", () => {
-    configure({ ...base, minLevel: "FATAL", console: true, redact: (r) => r });
+    configure({ ...base, minLevel: "FATAL", consoleOutput: true, redact: (r) => r });
     const write = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const error = new Error("private");
     Object.defineProperty(error, "name", {
@@ -1386,10 +1390,10 @@ describe("rotation reach, frame registration and partial storage reads", () => {
       getLogger("pending").info(`buffered ${String(i)}`);
     }
     await rotateSecurityContext(
-      { id: "B", delivery: { transport: send.transport } },
+      { id: "B", routing: { transport: send.transport } },
       { pending: "retain" },
     );
-    await rotateSecurityContext({ id: "A", delivery: { transport: send.transport } });
+    await rotateSecurityContext({ id: "A", routing: { transport: send.transport } });
     await rt()["sender"]!["retry"]["drain"]();
     const bodies = send.records().map((r) => r.body);
     expect(bodies.filter((body) => body.startsWith("buffered"))).toHaveLength(5);
@@ -1690,7 +1694,7 @@ describe("rotation delivery limits and early configuration", () => {
     send.clear();
     send.respondWith(204);
     await rotateSecurityContext(
-      { id: "B", delivery: { transport: send.transport } },
+      { id: "B", routing: { transport: send.transport } },
       { pending: "carry" },
     );
     await rt()["sender"]!["retry"]["drain"]();
@@ -1700,7 +1704,7 @@ describe("rotation delivery limits and early configuration", () => {
     expect(send.batches().every((b) => b.routingContextId === "B")).toBe(true);
     // No stored batch to carry, then no new sender to take the stored batches.
     await rotateSecurityContext(
-      { id: "C", delivery: { transport: send.transport } },
+      { id: "C", routing: { transport: send.transport } },
       { pending: "carry" },
     );
     send.respondWith(503);
@@ -1709,7 +1713,7 @@ describe("rotation delivery limits and early configuration", () => {
     getLogger("backlog").info("buffered in C");
     onDrop.mockClear();
     // A context without a sender can't take the stored batch, so it stays parked under C.
-    await rotateSecurityContext({ id: "D", delivery: {} }, { pending: "carry" });
+    await rotateSecurityContext({ id: "D", routing: {} }, { pending: "carry" });
     const parked = await rt()["memoryStorage"]!.take(10);
     expect(parked.map((b) => [b.routingContextId, b.records[0].body])).toEqual([
       ["C", "stored in C"],
@@ -1782,10 +1786,10 @@ describe("rotation delivery limits and early configuration", () => {
     expect((await getHealth()).issues).toContain("security.context_mismatch");
   });
 
-  it("accepts a persistence namespace in the first configure after an implicit start", () => {
+  it("accepts a storage namespace in the first configure after an implicit start", () => {
     getLogger("early").info("before configure");
-    configure({ ...base, persistence: { namespace: "orders" } });
-    expect(rt().config.persistence.namespace).toBe("orders");
+    configure({ ...base, storage: { namespace: "orders" } });
+    expect(rt().config.storage.namespace).toBe("orders");
   });
 
   it("keeps a lock change that the app makes during a rotation", async () => {
@@ -1797,7 +1801,7 @@ describe("rotation delivery limits and early configuration", () => {
       expect(hang).toHaveBeenCalled();
     });
     const rotating = rotateSecurityContext(
-      { id: "B", delivery: { transport: createMemoryTransport().transport } },
+      { id: "B", routing: { transport: createMemoryTransport().transport } },
       { pending: "flush", timeoutMs: 50 },
     );
     // Wait until the rotation reads its next settings and waits for the old flush.
@@ -1832,7 +1836,7 @@ describe("rotation delivery limits and early configuration", () => {
       },
     });
     await expect(
-      rotateSecurityContext({ id: "B", delivery: { transport: send.transport }, context }),
+      rotateSecurityContext({ id: "B", routing: { transport: send.transport }, context }),
     ).rejects.toThrow("getter failed");
     expect(rt().config.securityContext.id).toBe("A");
     getLogger("orders").info("after the rejection");
@@ -1852,7 +1856,7 @@ describe("rotation delivery limits and early configuration", () => {
     });
     await flush();
     const action = { ...record(), body: "SECRET_ACTION", attributes: { "log.type": "action" } };
-    const rotating = rotateSecurityContext({ id: "B", delivery: {} });
+    const rotating = rotateSecurityContext({ id: "B", routing: {} });
     rt()["ingestForwarded"]([action, { malformed: true }]);
     await rotating;
     await flush();
@@ -2046,7 +2050,7 @@ describe("nested frames, carry timing and early encoding", () => {
       return adopt.apply(this, args);
     });
     const carrying = rotateSecurityContext(
-      { id: "B", delivery: { transport: send.transport } },
+      { id: "B", routing: { transport: send.transport } },
       { pending: "carry" },
     );
     await vi.waitFor(() => {
@@ -2120,7 +2124,7 @@ describe("configurable click action attribute and namespaced locks", () => {
     capture.uninstall();
   });
 
-  it("names the retry and emergency locks by the persistence namespace", async () => {
+  it("names the retry and emergency locks by the storage namespace", async () => {
     const { lockName } = await import("../src/utils/lock");
     const { RetryEngine } = await import("../src/transport/retry-engine");
     expect(lockName("ui-observability.drain", "")).toBe("ui-observability.drain");
@@ -2134,7 +2138,7 @@ describe("configurable click action attribute and namespaced locks", () => {
       memory(),
       { send: vi.fn(), throttledForMs: () => 0 },
       diag(),
-      resolveConfig({ ...base, persistence: { namespace: "orders app" } }, diag()),
+      resolveConfig({ ...base, storage: { namespace: "orders app" } }, diag()),
     );
     await retry["drain"]();
     retry.stop();

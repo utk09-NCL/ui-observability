@@ -118,7 +118,7 @@ The first 15 checkpoints are not in the fit. The budget is on the slope. The fix
 
 ### Outage
 
-The page uses the default storage, which is IndexedDB in Chromium. The workload sets `retention.maxAgeMs` and `retention.maxAttempts` to `null`. It sets `retryBaseDelayMs` to 200, `retryMaxDelayMs` to 1000 and `retryIdleDelayMs` to 1000.
+The page uses the default storage, which is IndexedDB in Chromium. The workload sets `retention.maxAgeMs` and `retention.maxAttempts` to `null`. It sets `retryBaseDelayMs` to 200 and `retryMaxDelayMs` to 1000.
 
 The benchmark reports two times.
 

@@ -37,7 +37,7 @@ function start(over: Partial<ObservabilityConfig> = {}): ReturnType<typeof creat
     endpoint: "https://ingest.example/v1/logs",
     transport: memory.transport,
     serviceName: "svc",
-    storage: "memory",
+    storage: { backend: "memory" },
     identity: "memory",
     bus: { mode: "off" },
     capture: { errors: false, rejections: false },
@@ -51,7 +51,7 @@ describe("a browser without Object.hasOwn", () => {
     const print = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     await withoutHasOwn(() => {
-      start({ console: true });
+      start({ consoleOutput: true });
       info("shown in devtools");
     });
 

@@ -66,7 +66,7 @@ const freshOnce = (): CaptureOnce => ({
  * Builds a capture context and attaches this library version's profiler core.
  * @param once The `once` flags. Two captures sharing one object behave like a reinstall in the
  * same document.
- * @param framesPerWindow Value for capturePolicy.longFramesPerWindow.
+ * @param framesPerWindow Value for captureLimits.longFramesPerWindow.
  * @returns The context, the spy metric logger, the clock, the events and the profiler records.
  */
 function setup(once = freshOnce(), framesPerWindow = 20) {
@@ -83,7 +83,7 @@ function setup(once = freshOnce(), framesPerWindow = 20) {
       {
         endpoint: null,
         serviceName: "svc",
-        capturePolicy: { longFramesPerWindow: framesPerWindow },
+        captureLimits: { longFramesPerWindow: framesPerWindow },
       },
       diagnostics,
     ),

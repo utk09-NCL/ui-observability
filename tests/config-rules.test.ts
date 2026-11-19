@@ -84,16 +84,16 @@ const HOOKS: Hook[] = [
     read: (c) => c.capture.urlTransform,
   },
   {
-    key: "capture.webVitalsLoader",
-    input: (value) => ({ capture: { webVitalsLoader: value as never } }),
-    read: (c) => c.capture.webVitalsLoader,
+    key: "capture.webVitals.loader",
+    input: (value) => ({ capture: { webVitals: { loader: value as never } } }),
+    read: (c) => (c.capture.webVitals as { loader?: unknown }).loader,
   },
 ];
 
 describe("undefined keeps the current value", () => {
   it("keeps redact on a record after configure() passes redact: undefined", () => {
     const redact = vi.fn((record: LogRecord) => ({ ...record, body: "[redacted]" }));
-    configure({ ...valid(), console: "DEBUG", redact });
+    configure({ ...valid(), consoleOutput: "DEBUG", redact });
     configure({ redact: undefined });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
@@ -177,15 +177,14 @@ const inputAt = (section: string, key: string, value: unknown): Partial<Observab
 
 /** Limit keys where 0 means zero, so nothing is allowed. */
 const ZERO_MEANS_ZERO = [
-  ["capturePolicy", "maxErrorSignatures"],
-  ["capturePolicy", "errorsPerWindow"],
-  ["capturePolicy", "consolePerWindow"],
-  ["capturePolicy", "longFramesPerWindow"],
-  ["capturePolicy", "webSocketPerWindow"],
-  ["capturePolicy", "reportsPerWindow"],
-  ["capturePolicy", "resourcesPerWindow"],
-  ["capturePolicy", "lifecyclePerWindow"],
-  ["capturePolicy", "errorCeiling"],
+  ["captureLimits", "errorsPerWindow"],
+  ["captureLimits", "consolePerWindow"],
+  ["captureLimits", "longFramesPerWindow"],
+  ["captureLimits", "webSocketPerWindow"],
+  ["captureLimits", "reportsPerWindow"],
+  ["captureLimits", "resourcesPerWindow"],
+  ["captureLimits", "lifecyclePerWindow"],
+  ["sampling", "errorCeiling"],
   ["metrics", "maxSeries"],
   ["metrics", "maxInstruments"],
   ["metrics", "maxHistogramBoundaries"],
@@ -202,7 +201,6 @@ const ZERO_REFUSED = [
   ["bus", "maxMessageBytes", "1 to 9007199254740991", 262_144],
   ["bus", "maxRecordsPerMessage", "1 to 9007199254740991", 100],
   ["bus", "maxMessagesPerSecond", "1 to 9007199254740991", 100],
-  ["bus", "maxTrackedSources", "1 to 9007199254740991", 256],
   ["retention", "maxAgeMs", "60000 to 604800000", 86_400_000],
   ["retention", "maxAttempts", "1 to 20", 5],
 ] as const;
@@ -259,17 +257,17 @@ describe("null means no limit, and 0 means zero", () => {
   it("refuses a window of 0 ms and null, because only the limits can turn rate limiting off", () => {
     const { events, diagnostics } = collect();
 
-    const zero = resolveConfig({ ...valid(), capturePolicy: { windowMs: 0 } }, diagnostics);
+    const zero = resolveConfig({ ...valid(), captureLimits: { windowMs: 0 } }, diagnostics);
     const none = resolveConfig(
-      { ...valid(), capturePolicy: { windowMs: null as unknown as number } },
+      { ...valid(), captureLimits: { windowMs: null as unknown as number } },
       diagnostics,
     );
 
-    expect(zero.capturePolicy.windowMs).toBe(10_000);
-    expect(none.capturePolicy.windowMs).toBe(10_000);
+    expect(zero.captureLimits.windowMs).toBe(10_000);
+    expect(none.captureLimits.windowMs).toBe(10_000);
     expect(messages(events)).toEqual([
-      "capturePolicy.windowMs must be an integer from 1 to 2147483647. The value is 0. The library keeps 10000.",
-      "capturePolicy.windowMs must be an integer from 1 to 2147483647. The value is null. The library keeps 10000.",
+      "captureLimits.windowMs must be an integer from 1 to 2147483647. The value is 0. The library keeps 10000.",
+      "captureLimits.windowMs must be an integer from 1 to 2147483647. The value is null. The library keeps 10000.",
     ]);
   });
 
@@ -710,18 +708,18 @@ describe("undefined inside the console styles", () => {
   it("keeps a style when the next call passes undefined for it, and reports nothing", () => {
     const { events, diagnostics } = collect();
     const live = resolveConfig(
-      { ...valid(), console: { styles: { INFO: "color:#0a7" } } },
+      { ...valid(), consoleOutput: { styles: { INFO: "color:#0a7" } } },
       diagnostics,
     );
 
     const next = resolveConfig(
-      { console: { styles: { INFO: undefined, WARN: "color:#f80" } } },
+      { consoleOutput: { styles: { INFO: undefined, WARN: "color:#f80" } } },
       diagnostics,
       live,
     );
 
-    expect(next.console.styles.INFO).toBe("color:#0a7");
-    expect(next.console.styles.WARN).toBe("color:#f80");
+    expect(next.consoleOutput.styles.INFO).toBe("color:#0a7");
+    expect(next.consoleOutput.styles.WARN).toBe("color:#f80");
     expect(messages(events)).toEqual([]);
   });
 });
@@ -729,7 +727,7 @@ describe("undefined inside the console styles", () => {
 /** A runtime config that sends nothing to the network and stores nothing on the device. */
 const quiet = {
   serviceName: "rules",
-  storage: "memory",
+  storage: { backend: "memory" },
   identity: "memory",
   capture: { errors: false, rejections: false },
   bus: { mode: "off" },
@@ -754,7 +752,7 @@ describe("a redact value that isn't a function fails closed", () => {
   it("drops every record on each path until a later call sets a function", async () => {
     const memory = createMemoryTransport();
     const notAHook = { default: (record: LogRecord) => record } as never;
-    configure({ ...quiet, console: "DEBUG", transport: memory.transport, redact: notAHook });
+    configure({ ...quiet, consoleOutput: "DEBUG", transport: memory.transport, redact: notAHook });
     const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     getLogger("pay").info("card 4111");
@@ -829,7 +827,7 @@ describe("a redact value that isn't a function fails closed", () => {
 describe("a security-context rotation", () => {
   const transport = () => createMemoryTransport();
 
-  it("accepts a combination that only warns, and ignores a key that isn't a delivery setting", async () => {
+  it("accepts a combination that only warns, and ignores a key that isn't a routing setting", async () => {
     const before = transport();
     const after = transport();
     const redact = (record: LogRecord): LogRecord => ({ ...record, body: "[redacted]" });
@@ -848,7 +846,7 @@ describe("a security-context rotation", () => {
 
     await rotateSecurityContext({
       id: "B",
-      delivery: {
+      routing: {
         transport: after.transport,
         transportWorker: () => ({}) as Worker,
         redact: null,
@@ -860,8 +858,8 @@ describe("a security-context rotation", () => {
     expect(rt().config.redact).toBe(redact);
     expect(rt().config.capture.fullUrls).toBe(false);
     expect(reports).toEqual([
-      "rotateSecurityContext() ignores delivery.redact. A rotation changes only the delivery settings.",
-      "rotateSecurityContext() ignores delivery.capture. A rotation changes only the delivery settings.",
+      "rotateSecurityContext() ignores routing.redact. A rotation changes only the routing settings.",
+      "rotateSecurityContext() ignores routing.capture. A rotation changes only the routing settings.",
       "transportWorker has no effect with transport. The value stays.",
     ]);
     getLogger("pay").info("card 4111");
@@ -878,7 +876,7 @@ describe("a security-context rotation", () => {
     });
     await flush();
 
-    await rotateSecurityContext({ id: "B", delivery: { endpoint: ENDPOINT, headers: undefined } });
+    await rotateSecurityContext({ id: "B", routing: { endpoint: ENDPOINT, headers: undefined } });
 
     expect(rt().config.headers).toBeUndefined();
   });
@@ -892,11 +890,11 @@ describe("a security-context rotation", () => {
 
     const rejected = rotateSecurityContext({
       id: "B",
-      delivery: { transport: before.transport, credentials: "all" as never },
+      routing: { transport: before.transport, credentials: "all" as never },
     });
     // A record that arrives during the rotation belongs to the context the app leaves.
     rt().emit(built("during"));
-    await expect(rejected).rejects.toThrow("Invalid delivery settings");
+    await expect(rejected).rejects.toThrow("Invalid routing settings");
 
     getLogger("pay").info("after the rejection");
     await flush();
@@ -913,7 +911,7 @@ describe("a security-context rotation", () => {
       issues: ["security.rotation_failed"],
     });
 
-    await rotateSecurityContext({ id: "C", delivery: { transport: after.transport } });
+    await rotateSecurityContext({ id: "C", routing: { transport: after.transport } });
     getLogger("pay").info("new context");
     await flush();
 
@@ -925,12 +923,16 @@ describe("a security-context rotation", () => {
 describe("console styles with the console off", () => {
   it("keeps the console off when the next call sets only the styles", () => {
     const { events, diagnostics } = collect();
-    const live = resolveConfig({ ...valid(), console: false }, diagnostics);
+    const live = resolveConfig({ ...valid(), consoleOutput: false }, diagnostics);
 
-    const next = resolveConfig({ console: { styles: { INFO: "color:#0a7" } } }, diagnostics, live);
+    const next = resolveConfig(
+      { consoleOutput: { styles: { INFO: "color:#0a7" } } },
+      diagnostics,
+      live,
+    );
 
-    expect(next.console.level).toBeNull();
-    expect(next.console.styles.INFO).toBe("color:#0a7");
+    expect(next.consoleOutput.level).toBeNull();
+    expect(next.consoleOutput.styles.INFO).toBe("color:#0a7");
     expect(messages(events)).toEqual([]);
   });
 });
@@ -1115,7 +1117,7 @@ describe("null and an empty string in a rotation", () => {
 
     await rotateSecurityContext({
       id: "B",
-      delivery: { transport: after.transport, transportOnExit: null, metricsEndpoint: "" },
+      routing: { transport: after.transport, transportOnExit: null, metricsEndpoint: "" },
     });
 
     expect(rt().config.transportOnExit).toBeUndefined();
@@ -1124,9 +1126,9 @@ describe("null and an empty string in a rotation", () => {
       await expect(
         rotateSecurityContext({
           id: "C",
-          delivery: { transport: after.transport, credentials: credentials as never },
+          routing: { transport: after.transport, credentials: credentials as never },
         }),
-      ).rejects.toThrow("Invalid delivery settings");
+      ).rejects.toThrow("Invalid routing settings");
     }
   });
 
@@ -1145,15 +1147,15 @@ describe("console.styles that isn't an object", () => {
   it("reports null and keeps the current styles", () => {
     const { events, diagnostics } = collect();
     const live = resolveConfig(
-      { ...valid(), console: { level: "INFO", styles: { INFO: "color:#0a7" } } },
+      { ...valid(), consoleOutput: { level: "INFO", styles: { INFO: "color:#0a7" } } },
       diagnostics,
     );
 
-    const next = resolveConfig({ console: { styles: null as never } }, diagnostics, live);
+    const next = resolveConfig({ consoleOutput: { styles: null as never } }, diagnostics, live);
 
-    expect(next.console.styles.INFO).toBe("color:#0a7");
+    expect(next.consoleOutput.styles.INFO).toBe("color:#0a7");
     expect(messages(events)).toEqual([
-      "console.styles must be an object of CSS strings. The value is null. The library keeps the styles.",
+      "consoleOutput.styles must be an object of CSS strings. The value is null. The library keeps the styles.",
     ]);
   });
 });
@@ -1171,7 +1173,7 @@ describe("records built during a rotation", () => {
     });
     await flush();
 
-    const rejected = rotateSecurityContext({ id: "A", delivery: { transport: memory.transport } });
+    const rejected = rotateSecurityContext({ id: "A", routing: { transport: memory.transport } });
     for (let i = 0; i <= 200; i++) {
       rt().emit(built(`during ${String(i)}`));
     }

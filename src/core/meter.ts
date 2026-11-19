@@ -16,7 +16,7 @@ import {
   METRIC_DEFAULT_BOUNDARIES,
   METRIC_KEYS,
 } from "../constants";
-import type { MetricsPolicy } from "../models/config";
+import type { MetricsOptions } from "../models/config";
 import type {
   Counter,
   Histogram,
@@ -272,7 +272,7 @@ export class Meter {
       fields: Record<string, unknown>,
     ) => void,
     private readonly diagnostics: Diagnostics,
-    private readonly policy: MetricsPolicy = {
+    private readonly policy: Omit<MetricsOptions, "intervalMs"> = {
       maxSeries: 100,
       maxInstruments: 1000,
       maxHistogramBoundaries: 50,

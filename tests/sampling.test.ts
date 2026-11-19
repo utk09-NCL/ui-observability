@@ -405,12 +405,11 @@ describe("alwaysSampleFrom in the runtime", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       transport: memory.transport,
-      sampling: { alwaysSampleFrom: "INFO" },
-      capturePolicy: { errorCeiling: 1 },
+      sampling: { alwaysSampleFrom: "INFO", errorCeiling: 1 },
     });
     const log = getLogger("app");
 
@@ -429,7 +428,7 @@ describe("alwaysSampleFrom in the runtime", () => {
     configure({
       endpoint: null,
       serviceName: "svc",
-      storage: "memory",
+      storage: { backend: "memory" },
       identity: "memory",
       bus: { mode: "off" },
       transport: memory.transport,

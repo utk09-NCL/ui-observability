@@ -651,7 +651,10 @@ export const TRANSPORT_CALL_KEY = "ui-observability.transport-calls";
 /** Maximum error records captured per throttling window before suppression. */
 export const ERROR_STORM_MAX_PER_WINDOW = 20;
 
-/** Error rate-limiting window duration in milliseconds. */
+/**
+ * Default length of the capture rate limit window, and of the replay upload and error ceiling
+ * windows, in milliseconds.
+ */
 export const ERROR_STORM_WINDOW_MS = 10_000;
 
 /**
@@ -783,9 +786,6 @@ export const PROFILE_MAX_US = 67_108_863;
 
 /** Cap on the buckets in one profiler summary record, to keep the payload small. */
 export const PROFILE_POINT_BUCKETS = 100;
-
-/** Default interval between profiler summary records, in ms. */
-export const PROFILER_FLUSH_INTERVAL_MS = 10_000;
 
 /** Default probe limit. The runtime fixes the limit at startup. */
 export const PROFILER_MAX_PROBES = 64;
@@ -974,9 +974,9 @@ export const UNDEFAULTED_CONFIG_KEYS = [
  * @see {@link ResolvedConfig}
  */
 export const CONFIG_SECTIONS = [
-  "capturePolicy",
+  "captureLimits",
   "metadata",
-  "persistence",
+  "storage",
   "diagnostics",
   "correlation",
   "metrics",
@@ -1001,9 +1001,9 @@ export const CONFIG_SECTIONS = [
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
 export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], string[]> = {
-  capturePolicy: [],
+  captureLimits: [],
   metadata: [],
-  persistence: [],
+  storage: [],
   diagnostics: [],
   correlation: [],
   metrics: [],
@@ -1017,13 +1017,13 @@ export const UNDEFAULTED_SECTION_KEYS: Record<(typeof CONFIG_SECTIONS)[number], 
   batching: [],
   retention: [],
   limits: [],
-  capture: ["webVitalsLoader", "urlTransform"],
+  capture: ["urlTransform"],
   debugBuffer: [],
   profiler: [],
   replay: [],
 };
 
-/** Console mirroring level used when a consumer passes `console: true`. */
+/** Console output level used when a consumer passes `consoleOutput: true`. */
 export const CONSOLE_DEFAULT_LEVEL: LogLevel = "DEBUG";
 
 // ----------------------------------
@@ -1037,11 +1037,11 @@ export const LOG_FLUSH_INTERVAL_MS = 2000;
 export const LOG_BATCH_SIZE = 100;
 
 /**
- * Max time a partial metric batch waits before the pipeline sends it, in milliseconds.
- * Metric batches wait longer than log batches because metrics have a higher volume and
- * no caller is waiting for them.
+ * Default interval of the counter, histogram and profiler points, in milliseconds. A partial
+ * metric batch waits this long too, longer than a log batch, because metrics have a higher
+ * volume and no caller is waiting for them.
  */
-export const METRIC_FLUSH_INTERVAL_MS = 10_000;
+export const METRIC_INTERVAL_MS = 10_000;
 
 /** Max records per metric batch. At this count, the pipeline sends the batch early. */
 export const METRIC_BATCH_SIZE = 500;
@@ -1118,6 +1118,12 @@ export const BUS_HANDSHAKE_TIMEOUT_MS = 1500;
 /** Handshake attempts allowed before a cross-origin forwarder promotes itself to sender. */
 export const BUS_MAX_HANDSHAKE_ATTEMPTS = 3;
 
+/**
+ * Max named sources, for example OpenFin identities, whose message rate the bus tracks at once.
+ * A new source past it is refused, so a flood of fake names can't grow the map without end.
+ */
+export const BUS_MAX_TRACKED_SOURCES = 256;
+
 /** Default of buffering.maxHeldRecords, the cap on non-action records in one hold buffer. */
 export const BUS_MAX_BOOT_BUFFER_RECORDS = 500;
 
@@ -1170,6 +1176,24 @@ export const RECORD_LIMITS = {
 // ----------------------------------
 
 /**
+ * Routing settings a rotation resets when the update leaves them out. The rotation also spreads
+ * this into its base, where undefined means no hook, so an undefined key in the update resets too.
+ */
+export const ROUTING_RESET = {
+  endpoint: null,
+  metricsEndpoint: null,
+  tracesEndpoint: null,
+  headers: undefined,
+  credentials: "omit",
+  transport: undefined,
+  transportOnExit: undefined,
+  transportWorker: undefined,
+} as const;
+
+/** Routing settings that configure() can't change while isolation is on. */
+export const ROUTING_KEYS = Object.keys(ROUTING_RESET) as (keyof typeof ROUTING_RESET)[];
+
+/**
  * The default runtime config, before the consumer calls `configure()`. `serializer` is left
  * out, because `resolveConfig` supplies that default to avoid a circular import.
  * This sits below the constants it reads, since a const can't be read before its own line.
@@ -1177,10 +1201,9 @@ export const RECORD_LIMITS = {
  * @see {@link UNDEFAULTED_CONFIG_KEYS}
  */
 export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
-  capturePolicy: {
+  captureLimits: {
     breadcrumbs: MAX_BREADCRUMBS,
     errorDedupeMs: ERROR_DEDUPE_MS,
-    maxErrorSignatures: MAX_TRACKED_ERROR_SIGNATURES,
     errorsPerWindow: 20,
     consolePerWindow: 20,
     longFramesPerWindow: 20,
@@ -1188,14 +1211,12 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     reportsPerWindow: 20,
     resourcesPerWindow: 100,
     lifecyclePerWindow: 20,
-    windowMs: 10000,
-    errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
+    windowMs: ERROR_STORM_WINDOW_MS,
   },
   metadata: { pageUrl: true, userAgent: true, openfin: true, clockOffset: true },
   debugBuffer: { enabled: false, maxRecords: 200, maxAgeMs: 60_000 },
   profiler: {
     enabled: false,
-    flushIntervalMs: PROFILER_FLUSH_INTERVAL_MS,
     maxProbes: PROFILER_MAX_PROBES,
     framePhases: false,
     framePacing: false,
@@ -1209,8 +1230,9 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     maxBufferBytes: 10_000_000,
     afterErrorMs: 5000,
     uploadsPerWindow: 3,
-    batchSize: 200,
-    batchBytes: 512_000,
+    uploadWindowMs: ERROR_STORM_WINDOW_MS,
+    maxSegmentEvents: 200,
+    maxSegmentBytes: 512_000,
     flushIntervalMs: 2000,
     maxQueueBytes: 20_000_000,
     maxAttempts: 3,
@@ -1225,14 +1247,11 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     plugins: [],
     recordOptions: {},
   },
-  persistence: { namespace: "", requestPersistent: false },
+  storage: { backend: "auto", namespace: "", requestPersistent: false },
   diagnostics: { throttleMs: 1000, consoleFallback: false, records: false },
-  correlation: {
-    sessionIdleMs: SESSION_IDLE_MS,
-    sessionTouchMs: SESSION_TOUCH_MS,
-    traceMaxAgeMs: TRACE_MAX_AGE_MS,
-  },
+  correlation: { sessionIdleMs: SESSION_IDLE_MS, traceMaxAgeMs: TRACE_MAX_AGE_MS },
   metrics: {
+    intervalMs: METRIC_INTERVAL_MS,
     maxSeries: METRIC_MAX_SERIES,
     maxInstruments: 1000,
     maxHistogramBoundaries: METRIC_MAX_BOUNDARIES,
@@ -1248,8 +1267,6 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,
     retryBaseDelayMs: RETRY_BASE_DELAY_MS,
     retryMaxDelayMs: RETRY_MAX_DELAY_MS,
-    retryIdleDelayMs: RETRY_IDLE_DELAY_MS,
-    batchesPerDrain: BATCHES_PER_DRAIN,
     priority: "low",
   },
   lockConfiguration: false,
@@ -1269,13 +1286,14 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
   processors: [],
   compression: "gzip",
   credentials: "omit",
-  storage: "auto",
   identity: "storage",
   sampling: {
     defaultRate: 1,
     rates: {},
     alwaysSampleTypes: ["action"],
     alwaysSampleFrom: "ERROR",
+    errorCeiling: ERROR_CEILING_MAX_PER_WINDOW,
+    errorCeilingWindowMs: ERROR_STORM_WINDOW_MS,
     remote: false,
     remoteMaxRate: 1,
   },
@@ -1284,17 +1302,14 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     trustedOrigins: [],
     openFinRole: "auto",
     sourcePolicy: "registered",
-    validation: "strict",
     maxMessageBytes: 262144,
     maxRecordsPerMessage: 100,
     maxMessagesPerSecond: 100,
-    maxTrackedSources: 256,
   },
   journey: { scope: "auto", maxAgeMs: JOURNEY_MAX_AGE_MS },
   batching: {
     logFlushIntervalMs: LOG_FLUSH_INTERVAL_MS,
     logBatchSize: LOG_BATCH_SIZE,
-    metricFlushIntervalMs: METRIC_FLUSH_INTERVAL_MS,
     metricBatchSize: METRIC_BATCH_SIZE,
   },
   retention: { ...STORAGE_LIMITS },
@@ -1310,7 +1325,6 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     navigation: false,
     webVitals: false,
     longFrames: false,
-    longFrameMs: LONG_FRAME_THRESHOLD_MS,
     console: false,
     fullUrls: false,
     ignoreUrls: [],
@@ -1323,8 +1337,7 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "serializer"> = {
     reports: false,
     resourceTiming: false,
     lifecycle: false,
-    userTimingInclude: [],
     plugins: [],
   },
-  console: { level: null, styles: CONSOLE_DEFAULT_STYLES },
+  consoleOutput: { level: null, styles: CONSOLE_DEFAULT_STYLES },
 };

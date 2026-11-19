@@ -126,15 +126,15 @@ export class FramePhasesCapture implements Capture {
       return;
     }
 
-    const { capturePolicy } = this.ctx.config;
+    const { captureLimits } = this.ctx.config;
 
     if (
       !allowInWindow(
         this.window,
-        capturePolicy.longFramesPerWindow,
+        captureLimits.longFramesPerWindow,
         this.ctx.diagnostics,
         "profiler frames",
-        capturePolicy.windowMs,
+        captureLimits.windowMs,
       )
     ) {
       return;

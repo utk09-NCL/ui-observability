@@ -4,7 +4,12 @@
 // There is only ever one timer, never a chain of timers, because every scheduling path
 // clears the pending timer first.
 
-import { DRAIN_LOCK_NAME, STORAGE_DEADLINE_MS } from "../constants";
+import {
+  BATCHES_PER_DRAIN,
+  DRAIN_LOCK_NAME,
+  RETRY_IDLE_DELAY_MS,
+  STORAGE_DEADLINE_MS,
+} from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
 import { type LogBatch, splitBatch } from "../models/batch";
 import type { BatchKind, ResolvedConfig } from "../models/config";
@@ -70,7 +75,7 @@ export class RetryEngine {
     private readonly transport: BatchTransport,
     private readonly diagnostics: Diagnostics,
     private readonly config: ResolvedConfig,
-    private readonly batchesPerDrain?: number,
+    private readonly batchesPerDrain = BATCHES_PER_DRAIN,
     private readonly onLoss: LossReporter = () => undefined,
   ) {
     this.maxAttempts = storageLimits(config.retention).maxAttempts;
@@ -84,7 +89,7 @@ export class RetryEngine {
       addEventListener("online", this.onOnline);
     }
 
-    this.schedule(this.config.delivery.retryIdleDelayMs);
+    this.schedule(RETRY_IDLE_DELAY_MS);
   }
 
   /** Schedules an earlier retry when storage receives a new offline batch. */
@@ -216,13 +221,13 @@ export class RetryEngine {
     this.draining = true;
 
     try {
-      const lock = lockName(DRAIN_LOCK_NAME, this.config.persistence.namespace);
+      const lock = lockName(DRAIN_LOCK_NAME, this.config.storage.namespace);
       const ran = await withDrainLock(lock, this.diagnostics, () => this.drainLocked());
 
       // The value is undefined when another window holds the lock. Without this reschedule,
       // one lost lock race would stop all drains in this window.
       if (ran !== true) {
-        this.schedule(this.config.delivery.retryIdleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
       }
     } finally {
       this.draining = false;
@@ -237,16 +242,14 @@ export class RetryEngine {
   private async drainLocked(): Promise<true> {
     try {
       if (!isOnline()) {
-        this.schedule(this.config.delivery.retryIdleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return true;
       }
 
-      const batches = await this.bounded(
-        this.storage.take(this.batchesPerDrain ?? this.config.delivery.batchesPerDrain),
-      );
+      const batches = await this.bounded(this.storage.take(this.batchesPerDrain));
 
       if (batches.length === 0) {
-        this.schedule(this.config.delivery.retryIdleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return true;
       }
 
@@ -280,11 +283,7 @@ export class RetryEngine {
       if (blocked.size > 0) {
         this.schedule(delayMs);
       } else {
-        this.schedule(
-          batches.length === (this.batchesPerDrain ?? this.config.delivery.batchesPerDrain)
-            ? 0
-            : this.config.delivery.retryIdleDelayMs,
-        );
+        this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
       }
       return true;
     } catch (error) {
@@ -335,7 +334,7 @@ export class RetryEngine {
 
       // Offline stops every kind, because the other endpoints aren't reachable either.
       if (failure?.kind === "offline") {
-        this.schedule(this.config.delivery.retryIdleDelayMs);
+        this.schedule(RETRY_IDLE_DELAY_MS);
         return "stop";
       }
 

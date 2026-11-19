@@ -252,7 +252,7 @@ const diagnostics = new Set<string>();
 configure({
   serviceName: "profiler-bench",
   transport: memory.transport,
-  storage: "none",
+  storage: { backend: "none" },
   identity: "memory",
   bus: { mode: "off" },
   capture: {
@@ -275,7 +275,8 @@ configure({
     resourceTiming: false,
     lifecycle: false,
   },
-  profiler: { enabled: true, flushIntervalMs: FLUSH_INTERVAL_MS },
+  profiler: { enabled: true },
+  metrics: { intervalMs: FLUSH_INTERVAL_MS },
   onDiagnostic: (event) => {
     // Every later configure() call reports config.reconfigured. That one isn't a fault.
     if (event.code !== "config.reconfigured") {

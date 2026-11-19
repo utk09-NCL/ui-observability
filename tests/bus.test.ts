@@ -38,7 +38,20 @@ const RUNTIME_KEY = Symbol.for("ui-observability.runtime");
 
 const diag = () => new Diagnostics(vi.fn<(event: DiagnosticEvent) => void>(), 0);
 
-const oneRecord = (): LogRecord[] => [{ body: "x" } as unknown as LogRecord];
+/** One record that passes the bus's record check. */
+const oneRecord = (): LogRecord[] => [
+  {
+    timeUnixNano: "1",
+    traceId: "",
+    spanId: "",
+    traceFlags: 1,
+    severityNumber: 9,
+    severityText: "INFO",
+    body: "x",
+    attributes: {},
+    resource: {},
+  },
+];
 
 const fakeJourney = (over: Partial<Journey> = {}): Journey =>
   ({
@@ -103,7 +116,7 @@ function make(
     {
       endpoint: "https://x/v1/logs",
       serviceName: "svc",
-      bus: { sourcePolicy: "trusted-origin", validation: "envelope", ...busOver },
+      bus: { sourcePolicy: "trusted-origin", ...busOver },
     },
     diagnostics,
   );
@@ -1513,7 +1526,7 @@ describe("Bus role resolution: auto mode", () => {
       {
         endpoint: "https://x/v1/logs",
         serviceName: "svc",
-        bus: { sourcePolicy: "trusted-origin", validation: "envelope" },
+        bus: { sourcePolicy: "trusted-origin" },
       },
       diagnostics,
     );

@@ -6,7 +6,7 @@ import { matchesAny } from "../src/capture/types";
 import type { CaptureContext, CaptureLogger } from "../src/capture/types";
 import { WebVitalsCapture } from "../src/capture/web-vitals";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
-import { ERROR_DEDUPE_MS } from "../src/constants";
+import { ERROR_DEDUPE_MS, MAX_TRACKED_ERROR_SIGNATURES } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -143,30 +143,34 @@ describe("ErrorCapture", () => {
     capture.uninstall();
   });
 
-  it("logs every repeat with maxErrorSignatures 0, because no signature is kept", () => {
+  it("forgets the oldest error signature past the cap, so its repeat logs again", () => {
     const { ctx: c, logger } = ctx();
-    c.config.capturePolicy.maxErrorSignatures = 0;
+    c.config.captureLimits.errorsPerWindow = null;
     const capture = new ErrorCapture(c);
     capture.install();
+    const fail = (message: string): void => {
+      dispatchEvent(new ErrorEvent("error", { error: new Error(message), message }));
+    };
 
-    for (let i = 0; i < 3; i++) {
-      dispatchEvent(new ErrorEvent("error", { error: new Error("boom"), message: "boom" }));
+    for (let i = 0; i <= MAX_TRACKED_ERROR_SIGNATURES; i++) {
+      fail(`boom ${String(i)}`);
     }
+    fail("boom 0");
 
-    expect(logger.error).toHaveBeenCalledTimes(3);
+    expect(logger.error).toHaveBeenCalledTimes(MAX_TRACKED_ERROR_SIGNATURES + 2);
     capture.uninstall();
   });
 
   it("captures no error with errorsPerWindow 0, and every error with null", () => {
     const { ctx: c, logger } = ctx();
-    c.config.capturePolicy.errorsPerWindow = 0;
+    c.config.captureLimits.errorsPerWindow = 0;
     const capture = new ErrorCapture(c);
     capture.install();
 
     dispatchEvent(new ErrorEvent("error", { error: new Error("first"), message: "first" }));
     expect(logger.error).not.toHaveBeenCalled();
 
-    c.config.capturePolicy.errorsPerWindow = null;
+    c.config.captureLimits.errorsPerWindow = null;
     for (let i = 0; i < 30; i++) {
       const message = `storm ${String(i)}`;
       dispatchEvent(new ErrorEvent("error", { error: new Error(message), message }));
@@ -2015,15 +2019,16 @@ describe("WebVitalsCapture", () => {
       reporters[name] = report;
     };
     const { ctx: c, logger } = ctx({
-      webVitals: true,
-      webVitalsLoader: () =>
-        Promise.resolve({
-          onLCP: subscribe("lcp"),
-          onCLS: subscribe("cls"),
-          onINP: subscribe("inp"),
-          onFCP: subscribe("fcp"),
-          onTTFB: subscribe("ttfb"),
-        }),
+      webVitals: {
+        loader: () =>
+          Promise.resolve({
+            onLCP: subscribe("lcp"),
+            onCLS: subscribe("cls"),
+            onINP: subscribe("inp"),
+            onFCP: subscribe("fcp"),
+            onTTFB: subscribe("ttfb"),
+          }),
+      },
     });
 
     const capture = new WebVitalsCapture(c);
@@ -2042,7 +2047,7 @@ describe("WebVitalsCapture", () => {
   });
 
   it("says what is missing when the optional peer is not installed", async () => {
-    const { ctx: c } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+    const { ctx: c } = ctx({ webVitals: { loader: nullLoader } });
 
     new WebVitalsCapture(c).install();
 
@@ -2053,7 +2058,7 @@ describe("WebVitalsCapture", () => {
 
   it("reports config.invalid and imports nothing without a loader", async () => {
     // The Vite dev server fails on a bare import of a peer that is not installed.
-    // web-vitals loads only through webVitalsLoader.
+    // web-vitals loads only through capture.webVitals.loader.
     const { ctx: c } = ctx({ webVitals: true });
     const guardAsync = vi.spyOn(c.diagnostics, "guardAsync");
 
@@ -2075,14 +2080,16 @@ describe("WebVitalsCapture", () => {
     first.install();
     first.uninstall();
 
-    c.config.capture.webVitalsLoader = () =>
-      Promise.resolve({
-        onLCP: subscribe(),
-        onCLS: subscribe(),
-        onINP: subscribe(),
-        onFCP: subscribe(),
-        onTTFB: subscribe(),
-      });
+    c.config.capture.webVitals = {
+      loader: () =>
+        Promise.resolve({
+          onLCP: subscribe(),
+          onCLS: subscribe(),
+          onINP: subscribe(),
+          onFCP: subscribe(),
+          onTTFB: subscribe(),
+        }),
+    };
     const second = new WebVitalsCapture(c);
     second.install();
 
@@ -2099,19 +2106,20 @@ describe("WebVitalsCapture", () => {
     };
     let loads = 0;
     const { ctx: c } = ctx({
-      webVitals: true,
-      webVitalsLoader: () => {
-        loads++;
-        // The first load fails, for example a chunk the network didn't deliver.
-        return loads === 1
-          ? Promise.reject(new Error("chunk failed"))
-          : Promise.resolve({
-              onLCP: subscribe(),
-              onCLS: subscribe(),
-              onINP: subscribe(),
-              onFCP: subscribe(),
-              onTTFB: subscribe(),
-            });
+      webVitals: {
+        loader: () => {
+          loads++;
+          // The first load fails, for example a chunk the network didn't deliver.
+          return loads === 1
+            ? Promise.reject(new Error("chunk failed"))
+            : Promise.resolve({
+                onLCP: subscribe(),
+                onCLS: subscribe(),
+                onINP: subscribe(),
+                onFCP: subscribe(),
+                onTTFB: subscribe(),
+              });
+        },
       },
     });
 
@@ -2136,15 +2144,16 @@ describe("WebVitalsCapture", () => {
       subscriptions++;
     };
     const { ctx: c } = ctx({
-      webVitals: true,
-      webVitalsLoader: () =>
-        Promise.resolve({
-          onLCP: subscribe(),
-          onCLS: subscribe(),
-          onINP: subscribe(),
-          onFCP: subscribe(),
-          onTTFB: subscribe(),
-        }),
+      webVitals: {
+        loader: () =>
+          Promise.resolve({
+            onLCP: subscribe(),
+            onCLS: subscribe(),
+            onINP: subscribe(),
+            onFCP: subscribe(),
+            onTTFB: subscribe(),
+          }),
+      },
     });
 
     const first = new WebVitalsCapture(c);
@@ -2162,7 +2171,7 @@ describe("WebVitalsCapture", () => {
   });
 
   it("emits navigation timing, and skips a measurement that is not real", () => {
-    const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+    const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([
       {
         domainLookupEnd: 10,
@@ -2217,7 +2226,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("waits for the load event instead of reporting a load time of 0", async () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       const nav = { ...entry };
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
       vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
@@ -2243,7 +2252,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("reads one task later when it starts inside a load handler", async () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       const nav = { ...entry, domComplete: 50 };
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
       // readyState is already "complete" while the load handlers run, and no second load
@@ -2258,7 +2267,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("leaves out a milestone that is still 0 after the load event", async () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
       vi.spyOn(document, "readyState", "get").mockReturnValue("complete");
 
@@ -2273,7 +2282,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("logs what is ready when the page is hidden before the load event, and the rest after it", async () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       // The document is still downloading, so responseEnd is 0 as well.
       const nav = { ...entry, responseEnd: 0 };
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
@@ -2383,7 +2392,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("counts the milestones from the activation and marks the navigation as prerender", () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ ...entry } as never]);
 
       new WebVitalsCapture(c).install();
@@ -2406,7 +2415,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("reports nothing until the user opens a page that finished loading in the prerender", () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       // activationStart is 0 until the activation.
       const nav = { ...entry, activationStart: 0 };
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
@@ -2429,7 +2438,7 @@ describe("WebVitalsCapture", () => {
     });
 
     it("waits for the activation when the load event ends during the prerender", async () => {
-      const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+      const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
       const nav = { ...entry, activationStart: 0, domComplete: 0, loadEventEnd: 0 };
       vi.spyOn(performance, "getEntriesByType").mockReturnValue([nav as never]);
       vi.spyOn(document, "readyState", "get").mockReturnValue("interactive");
@@ -2460,7 +2469,7 @@ describe("WebVitalsCapture", () => {
   });
 
   it("returns quietly when there is no navigation entry at all", () => {
-    const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+    const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([]);
 
     new WebVitalsCapture(c).install();
@@ -2469,7 +2478,7 @@ describe("WebVitalsCapture", () => {
   });
 
   it("reads navigation timing once, however many times it is installed", () => {
-    const { ctx: c, logger } = ctx({ webVitals: true, webVitalsLoader: nullLoader });
+    const { ctx: c, logger } = ctx({ webVitals: { loader: nullLoader } });
     // happy-dom has no navigation entry. This test supplies one.
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([
       { domainLookupEnd: 10, domainLookupStart: 5, loadEventEnd: 60, type: "navigate" } as never,
@@ -2495,15 +2504,16 @@ describe("WebVitalsCapture", () => {
       subscriptions++;
     };
     const { ctx: c } = ctx({
-      webVitals: true,
-      webVitalsLoader: () =>
-        Promise.resolve({
-          onLCP: subscribe(),
-          onCLS: subscribe(),
-          onINP: subscribe(),
-          onFCP: subscribe(),
-          onTTFB: subscribe(),
-        }),
+      webVitals: {
+        loader: () =>
+          Promise.resolve({
+            onLCP: subscribe(),
+            onCLS: subscribe(),
+            onINP: subscribe(),
+            onFCP: subscribe(),
+            onTTFB: subscribe(),
+          }),
+      },
     });
 
     const first = new WebVitalsCapture(c);

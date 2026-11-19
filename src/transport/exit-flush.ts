@@ -365,14 +365,15 @@ export class ExitFlush {
   }
 
   /**
-   * Parks a batch in the localStorage emergency queue for the next page load. With storage
-   * "memory" or "none" the app wants nothing kept on the device, so the batch is lost.
+   * Parks a batch in the localStorage emergency queue for the next page load. With the storage
+   * backend "memory" or "none" the app wants nothing kept on the device, so the batch is lost.
    * @param batch Batch that the exit flush can't send.
    */
   private park(batch: LogBatch): void {
     const { config, diagnostics, onLoss } = this.deps;
 
-    if (config.storage === "memory" || config.storage === "none") {
+    const { backend } = config.storage;
+    if (backend === "memory" || backend === "none") {
       onLoss?.("not_stored", batch.records, [batch.id]);
       return;
     }

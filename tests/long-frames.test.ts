@@ -265,7 +265,7 @@ describe("LongFrameCapture", () => {
 
   it("uses a custom threshold", () => {
     support(["long-animation-frame"]);
-    const { sut, logMetric } = setup({ longFrameMs: 250 });
+    const { sut, logMetric } = setup({ longFrames: { thresholdMs: 250 } });
     sut.install();
 
     active()?.emit(frame(200), frame(260));
@@ -277,14 +277,14 @@ describe("LongFrameCapture", () => {
     support(["long-animation-frame"]);
     const { sut, ctx, logMetric, events } = setup();
     // resolveConfig rejects -1, so set it after the resolve to reach the capture's guard.
-    ctx.config.capture.longFrameMs = -1;
+    ctx.config.capture.longFrames = { thresholdMs: -1 };
     sut.install();
 
     active()?.emit(frame(99), frame(100));
 
     expect(logMetric).toHaveBeenCalledTimes(1);
     expect(events.map((event) => event.message)).toEqual([
-      expect.stringContaining("capture.longFrameMs must be a number of 0 or more"),
+      expect.stringContaining("capture.longFrames.thresholdMs must be a number of 0 or more"),
     ]);
   });
 
