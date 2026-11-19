@@ -57,6 +57,24 @@ An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The libr
 | `load_failed`        | The delivery code did not load, or `shutdown()` came first.                                      | None                                                                    |
 | `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage.backend: "none"`.    | `storage.backend`                                                       |
 | `security_context`   | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid routing settings |
+| `disabled`           | `enabled` is false, so the sender sends nothing. See the rules after this table.                 | `enabled`                                                               |
+
+`onDrop` reports `disabled` in three cases.
+
+- A child context forwards a record to a sender or a forwarder with `enabled: false`.
+- The first `configure()` call sets `enabled: false`. The records that log calls held before that call are lost. The library runs `processors` and `redact` on them before the report.
+- A `pagehide` or a `shutdown()` occurs during a pause. The pause has no exit flush, so the records in memory are lost. These are the records that wait for the delivery stack, and the records in its buffers, its queue and its requests. `onDrop` reports each record one time. A later `pagehide`, rotation or `shutdown()` does not report it again. A page that the browser restores from the back/forward cache still has these records. They then go out after `enabled: true`.
+
+A pause keeps the other records. The records in memory and the stored batches go out after `enabled: true`.
+
+- The pause first sends the open interval of the counters, histograms and probes. During the pause, they record nothing.
+- A pause stores no new record. Four cases still write to storage or delete from it.
+  - A request in flight at the pause fails. The library stores its batch.
+  - A delivery stack load ends during the pause. It moves the emergency queue into storage. It also stores the batches that a carry left.
+  - A rotation with `pending: "retain"` stores the waiting records under the old context.
+  - A rotation with `pending: "discard"` or `"flush"` removes the stored batches of the old context. This is also true before consent, when the first `configure()` call has `enabled: false`.
+- A rotation with `pending: "flush"` during a pause sends nothing. It acts as `discard`.
+- A rotation with `pending: "carry"` during a pause keeps the records in memory and the stored batches. The delivery stack of the new context takes them after `enabled: true`. A later rotation in the same pause applies its own rule to them. `discard` removes them. `retain` stores them under the context that the carry made.
 
 A hold buffer keeps the records that arrive before startup ends, or while the sender loads. `buffering.maxHeldRecords` sets its limit for the records that are not actions. The default is 500. The range is 200 to 10000. Actions have a separate limit of 2000. A full hold buffer keeps its first 100 records of each kind. It drops the oldest record after them. `onDrop` reports that record with `buffer_full`. Thus the first error of a failed startup stays in the buffer. The newest records also stay.
 
@@ -100,7 +118,7 @@ The exit flush is best effort.
 - With `headers`, the keepalive fetch to another origin needs a CORS preflight. It is possible that a browser cancels that request during page exit. No test in this repository checks this risk.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
-- `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage.
+- `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage. During a pause, `shutdown()` sends nothing.
 
 ## Rotation
 

@@ -737,6 +737,93 @@ describe("LogPipeline", () => {
   });
 });
 
+describe("LogPipeline hold", () => {
+  it("keeps every record and sends nothing while held, then sends them all when it starts", async () => {
+    const { pipeline, send } = setup();
+    pipeline.push(record({ body: "before" }));
+    pipeline.hold(true);
+
+    // A full batch and the flush timers would each claim a batch if the stream weren't held.
+    for (let i = 0; i < BATCH_SIZE; i++) {
+      pipeline.push(record({ body: "during" }));
+    }
+    await vi.advanceTimersByTimeAsync(PAST_METRIC_FLUSH_MS + PAST_LOG_FLUSH_MS);
+    await pipeline.flushPending();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(pipeline.records()).toHaveLength(BATCH_SIZE + 1);
+
+    pipeline.hold(false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send.mock.calls.flatMap(([batch]) => bodiesOf(batch))).toHaveLength(BATCH_SIZE + 1);
+    pipeline.destroy();
+  });
+
+  it("sends a batch that was queued before the hold once it starts again", async () => {
+    const { pipeline, send } = setup();
+    pipeline.push(record({ body: "queued" }));
+    // The flush queues the batch, and the hold comes before the pump's microtask runs.
+    const flushed = pipeline.flushPending();
+    pipeline.hold(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(pipeline.records().map((one) => one.body)).toEqual(["queued"]);
+
+    pipeline.hold(false);
+    await flushed;
+
+    expect(send.mock.calls.map(([batch]) => bodiesOf(batch))).toEqual([["queued"]]);
+    pipeline.destroy();
+  });
+
+  it("settles a flush that waits on a queued batch when the hold starts", async () => {
+    const { pipeline, send } = setup();
+    send.mockImplementation(() => new Promise<void>(() => undefined));
+    // Two batches fill the two dispatch slots, so the third one waits in the queue.
+    for (const body of ["first", "second", "third"]) {
+      pipeline.push(record({ body }));
+      void pipeline.flushPending();
+    }
+    let settled = false;
+    void pipeline.flushPending().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    pipeline.hold(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled).toBe(true);
+    pipeline.destroy();
+  });
+
+  it("keeps no waiter once a flush settles", async () => {
+    const { pipeline } = setup();
+    pipeline.push(record({ body: "sent" }));
+
+    await pipeline.flushPending();
+    await pipeline.flushPending();
+
+    // A waiter that outlives its flush would keep memory alive until the next hold.
+    expect(pipeline["waiters"].size).toBe(0);
+    pipeline.destroy();
+  });
+
+  it("lists the records in requests before the buffered ones", async () => {
+    const { pipeline, send } = setup();
+    send.mockImplementation(() => new Promise<void>(() => undefined));
+    pipeline.push(record({ body: "in flight" }));
+    await vi.advanceTimersByTimeAsync(PAST_LOG_FLUSH_MS);
+    pipeline.push(record({ body: "buffered" }));
+
+    expect(pipeline.records().map((one) => one.body)).toEqual(["in flight", "buffered"]);
+    pipeline.destroy();
+  });
+});
+
 describe("LogPipeline flushPending", () => {
   /**
    * Creates a send that only settles when the test releases it.

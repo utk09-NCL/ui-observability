@@ -187,12 +187,23 @@ export class JourneyEngine {
   }
 
   /**
-   * Finds and adopts the initial journey. Checks the URL query first, then sessionStorage,
-   * then OpenFin customData.
+   * Finds and adopts the initial journey. Keeps an active journey. Otherwise checks the URL
+   * query first, then sessionStorage, then OpenFin customData.
    * @returns Promise that resolves when journey initialization completes.
    */
   async bootstrap(): Promise<void> {
     const fromUrl = this.readUrlToken();
+    // A journey that the app started before configure() wins, and it moves to the stores that
+    // configure() chose. Otherwise a stored journey from an earlier page would replace it. The
+    // token still leaves the address bar, or a copied link would carry it to another session.
+    if (this.journey) {
+      if (fromUrl) {
+        this.removeUrlToken();
+      }
+      this.setJourney(this.journey);
+      return;
+    }
+
     if (fromUrl && this.adopt(fromUrl, "url")) {
       this.removeUrlToken();
       return;

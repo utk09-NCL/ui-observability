@@ -1017,7 +1017,11 @@ describe("configure() with input it can't read", () => {
     );
     expect(rt()["captures"]).toEqual([]);
     expect(getDiagnosticCounters()["record.dropped_by_redact"]).toBeGreaterThan(0);
-    expect(await getHealth()).toMatchObject({ status: "degraded", issues: ["records.refused"] });
+    // The runtime stays unconfigured until a call works, and it starts nothing.
+    expect(await getHealth()).toMatchObject({
+      status: "unconfigured",
+      issues: ["records.refused"],
+    });
 
     // A call that works but leaves redact out can't tell the library which redact the app
     // meant, so the refusal stays.

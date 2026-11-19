@@ -19,6 +19,7 @@ import { applyResolvedConfig, resolveConfig, resolveDestination, resolveEndpoint
 import type { Diagnostics } from "./diagnostics";
 import type { ObservabilityRuntime } from "./runtime";
 import type { Sender } from "./sender";
+import { clearStored, keepStored, type StoreAccess } from "../storage/stored-context";
 
 /** Longest wait for the old context's flush, in milliseconds. */
 const MAX_TIMEOUT_MS = 600_000;
@@ -57,7 +58,14 @@ export interface RotationHost {
    * Takes the old context's held records and its sender, so nothing new goes to them.
    * @returns The records, the sender, and true if a failed rotation had closed the context.
    */
-  takeOld(): { held: LogRecord[]; sender: Sender | undefined; closed: boolean };
+  /** Returns what opening the store needs, for a rotation with no old sender. */
+  storeAccess(): StoreAccess;
+  takeOld(): {
+    held: LogRecord[];
+    sender: Sender | undefined;
+    closed: boolean;
+    carried: LogBatch[];
+  };
   /**
    * Reports records that belong to neither context.
    * @param records The records.
@@ -272,7 +280,7 @@ export async function rotateContext(
   );
 
   host.closeContext();
-  const { held, sender: old, closed } = host.takeOld();
+  const { held, sender: old, closed, carried } = host.takeOld();
   // After a failed rotation, the parked sender holds the closed context's records. They must
   // never go out with the old settings, so "flush" removes them as "discard" does.
   const rule = closed && pending === "flush" ? "discard" : pending;
@@ -284,9 +292,32 @@ export async function rotateContext(
   }
 
   const live = [...held, ...retired.buffered];
+  // A carry during a pause left stored batches that no sender adopted. This rule covers them too.
+  const stored = [...carried, ...retired.stored];
 
   if (rule !== "retain" && rule !== "carry") {
-    host.drop([...live, ...retired.stored.flatMap((batch) => batch.records)]);
+    host.drop([...live, ...stored.flatMap((batch) => batch.records)]);
+  }
+
+  // With no old sender, nothing else removes the old context's stored batches, and a logout
+  // must. Deleting is the one storage access that a pause or a consent flow allows.
+  const { diagnostics } = runtime;
+  if (!old && (rule === "discard" || rule === "flush")) {
+    const ids = carried.map((batch) => batch.id);
+    await diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not remove the stored batches of the old context.",
+      () => clearStored(host.storeAccess(), "context", ids),
+    );
+  }
+
+  // Retain keeps what waited in memory under the old context, as a sender does with its own.
+  if (rule === "retain" && (held.length > 0 || carried.length > 0)) {
+    await diagnostics.guardAsync(
+      "storage.degraded",
+      "The library could not store the records of the old context.",
+      () => keepStored(host.storeAccess(), held, carried),
+    );
   }
 
   // Keep a lock change the app made during the rotation.
@@ -314,7 +345,7 @@ export async function rotateContext(
     }
 
     // The live buffer doesn't take the stored backlog, which would exceed the buffer budget.
-    await host.adopt(retired.stored);
+    await host.adopt(stored);
   }
 
   runtime.diagnostics.report("security.rotated", "The runtime rotated its security context.", {

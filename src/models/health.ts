@@ -13,11 +13,22 @@ export interface ObservabilityHealth extends DeliveryStats {
   sdkVersion: string;
   /** Version of a different SDK copy that owns the page runtime, or null. */
   owningSdkVersion: string | null;
-  /** Current runtime state. A configured console-only runtime can be ready. */
-  status: "starting" | "ready" | "rotating" | "degraded" | "stopped";
+  /**
+   * Current runtime state.
+   * - "unconfigured": no `configure()` call has worked yet. The runtime holds records in memory
+   *   and sends nothing. A failed first call also leaves this state, with the issue
+   *   "records.refused".
+   * - "disabled": `enabled` is false. Captures and delivery are paused.
+   * - "starting": the bus role and the delivery stack are loading.
+   * - "ready": the runtime runs. A configured console-only runtime can be ready.
+   * - "rotating": a security-context rotation is in progress.
+   * - "degraded": an entry in `issues` names a fault.
+   * - "stopped": `shutdown()` stopped the runtime.
+   */
+  status: "unconfigured" | "disabled" | "starting" | "ready" | "rotating" | "degraded" | "stopped";
   /** Delivery role of this context. */
   mode: "sender" | "forwarder" | "console-only";
-  /** True if the local sender is ready and the runtime has not stopped. */
+  /** True if the local sender is ready, `enabled` is true and the runtime has not stopped. */
   senderReady: boolean;
   /** True if configure() cannot change the current settings. */
   configurationLocked: boolean;

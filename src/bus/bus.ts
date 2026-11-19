@@ -56,6 +56,11 @@ export interface BusHandlers {
   onSecurityContext?: (id: string) => boolean;
   /** Processes records forwarded from child contexts. */
   onRecords: (records: LogRecord[]) => void;
+  /**
+   * Returns true while the runtime is paused. A paused forwarder hands a child's records to
+   * onRecords, which drops them, instead of relaying them upstream.
+   */
+  paused?: () => boolean;
   /** Applies journey updates received from the control bus. */
   onJourney: (journey: Journey | null) => void;
   /** Returns the active journey to a child context that requests it. */
@@ -706,7 +711,8 @@ export class Bus {
           this.diagnostics.count("security.context_mismatch");
           break;
         }
-        if (this.role === "sender") {
+        // A paused forwarder takes only the records it would relay, never its owner's traffic.
+        if (this.role === "sender" || (this.handlers.paused?.() && this.canRelay(source.link))) {
           this.handlers.onRecords(message.records);
         } else if (this.upstream && this.canRelay(source.link)) {
           // Relays records upstream in nested frame chains.

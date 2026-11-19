@@ -214,6 +214,32 @@ export class Sender {
   }
 
   /**
+   * Stops every send while `enabled` is false, or starts again. The records stay in memory and
+   * the stored batches stay in storage, so they go out after the pause.
+   * @param on True to stop.
+   */
+  hold(on: boolean): void {
+    this.pipeline.hold(on);
+
+    if (on) {
+      this.exitFlush.uninstall();
+      this.retry.stop();
+      return;
+    }
+
+    this.exitFlush.install();
+    this.retry.start();
+  }
+
+  /**
+   * Lists the records that only memory holds. Nothing sends them during a pause.
+   * @returns The pipeline's records.
+   */
+  records(): LogRecord[] {
+    return this.pipeline.records();
+  }
+
+  /**
    * Sends the records in the stream buffers, then waits for every batch in flight.
    * @returns Promise that resolves once the pipeline has sent or stored every batch.
    */
@@ -271,7 +297,10 @@ export class Sender {
       this.flush(),
     );
 
-    this.exitFlush.flush("shutdown");
+    // A held sender sends nothing, not even at shutdown.
+    if (!this.pipeline.isHeld()) {
+      this.exitFlush.flush("shutdown");
+    }
     this.exitFlush.uninstall();
     this.retry.stop();
     this.transport.stop();
@@ -330,7 +359,8 @@ export class Sender {
     this.retired = true;
     this.exitFlush.uninstall();
     this.retry.stop();
-    if (policy === "flush") {
+    // A held sender sends nothing, so "flush" acts as "discard" during a pause.
+    if (policy === "flush" && !this.pipeline.isHeld()) {
       try {
         await withDeadline(Promise.all([this.flush(), this.retry.flush()]), timeoutMs);
       } catch (error) {

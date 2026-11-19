@@ -83,6 +83,18 @@ export class BreadcrumbBuffer {
     }
   }
 
+  /**
+   * Keeps only the breadcrumbs that pass the test, in their order.
+   * @param keep Returns true for a breadcrumb to keep.
+   */
+  retain(keep: (crumb: Breadcrumb) => boolean): void {
+    const kept = this.snapshot().filter(keep);
+    this.clear();
+    for (const crumb of kept) {
+      this.push(crumb);
+    }
+  }
+
   /** Removes all breadcrumbs, so a new session never carries the previous user's trail. */
   clear(): void {
     this.buffer.fill(undefined);

@@ -64,7 +64,7 @@ import type { DebugBuffer } from "./debug-buffer";
 import type { Diagnostics } from "./diagnostics";
 import type { Journey, JourneyEngine } from "./journey";
 import type { RemoteSlot } from "./remote-sampling";
-import { levelFor, shouldSampleInput } from "./sampling";
+import { levelFor, shouldSample, shouldSampleInput } from "./sampling";
 
 /** Prefix of the error fields, which an oversized error record keeps. */
 const ERROR_ATTR_PREFIX = "error.";
@@ -313,11 +313,18 @@ export class RecordBuilder {
    * @returns True if the library builds a record of this level and type.
    */
   isEnabled(level: LogLevel, namespace: string, type?: LogType): boolean {
-    const { config } = this.deps;
-    if (!config.enabled) {
-      return false;
-    }
+    return this.deps.config.enabled && this.passesLevel(level, namespace, type);
+  }
 
+  /**
+   * Checks the level against the namespace's minimum level, whatever `enabled` says.
+   * @param level Target log severity level.
+   * @param namespace Logger namespace.
+   * @param type Record type. An action, a metric or a span passes.
+   * @returns True if the level is high enough.
+   */
+  private passesLevel(level: LogLevel, namespace: string, type?: LogType): boolean {
+    const { config } = this.deps;
     if (type !== undefined && LEVEL_BYPASS_TYPES.includes(type)) {
       return true;
     }
@@ -456,12 +463,7 @@ export class RecordBuilder {
       resource: this.resource(),
     };
 
-    // The processors run first. redact is the last privacy gate.
-    const stages = config.processors.map((hook): [RecordHook, HookStage] => [hook, "processor"]);
-    if (config.redact) {
-      stages.push([config.redact, "redact"]);
-    }
-
+    const stages = this.hookStages();
     if (stages.length > 0) {
       const outcome = this.applyHooks(record, stages, input.fixed);
       if (typeof outcome === "string") {
@@ -471,58 +473,12 @@ export class RecordBuilder {
       ({ record, bytes } = outcome);
     }
 
-    // Drop the caller attributes when they exceed maxRecordBytes, but keep the index keys:
-    // a search can't find a record without journey.id and trace_id. Keep the error fields,
-    // then the breadcrumbs if they fit, because they say why the record exists.
-    if (bytes > limits.maxRecordBytes) {
-      diagnostics.report(
-        "record.truncated",
-        "The attributes are larger than the size limit. The library dropped the caller attributes.",
-        { bytes, body: record.body },
-      );
-
-      const kept: Record<string, unknown> = {
-        [ATTR_LOG_TYPE]: input.type,
-        [ATTR_LOG_SEQ]: seq,
-        [ATTR_APP_NAMESPACE]: input.namespace,
-        [ATTR_ATTRIBUTES_DROPPED]: true,
-        [ATTR_ATTRIBUTES_BYTES]: bytes,
-      };
-
-      // Read these keys after redact, because the hook can remove a token from page.url.
-      for (const key of REDACTABLE_INDEX_KEYS) {
-        if (key in record.attributes) {
-          kept[key] = record.attributes[key];
-        }
-      }
-
-      for (const [key, value] of Object.entries(record.attributes)) {
-        if (key.startsWith(ERROR_ATTR_PREFIX)) {
-          kept[key] = value;
-        }
-      }
-
-      // error.data can be large, so drop it first, before the other error fields.
-      let keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
-      if (keptBytes > limits.maxRecordBytes && ATTR_ERROR_DATA in kept) {
-        Reflect.deleteProperty(kept, ATTR_ERROR_DATA);
-        keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
-      }
-
-      const breadcrumbs = record.attributes[ATTR_BREADCRUMBS];
-      if (breadcrumbs !== undefined) {
-        const crumbBytes = sanitizeWithSize(breadcrumbs, limits, diagnostics).bytes;
-        if (keptBytes + crumbBytes <= limits.maxRecordBytes) {
-          kept[ATTR_BREADCRUMBS] = breadcrumbs;
-        }
-      }
-
-      // A point without its metric fields is lost.
-      Object.assign(kept, input.fixed);
-      record.attributes = kept;
-    }
-
-    return { record };
+    const index = {
+      [ATTR_LOG_TYPE]: input.type,
+      [ATTR_LOG_SEQ]: seq,
+      [ATTR_APP_NAMESPACE]: input.namespace,
+    };
+    return { record: this.fit(record, bytes, index, input.fixed) };
   }
 
   /**
@@ -540,6 +496,146 @@ export class RecordBuilder {
     const stages: [RecordHook, HookStage][] = [[redact, "redact"]];
     const outcome = this.applyHooks(record, stages, fixedOf(record.attributes));
     return typeof outcome === "string" ? null : outcome.record;
+  }
+
+  /**
+   * Runs the hooks on a record that a log call built before the app's first configure(), and
+   * gives it the configured resource. That record never met the app's hooks, so the processors
+   * run as well as redact. The resource goes on first, so redact sees the record that leaves.
+   * @param record Held record.
+   * @returns The record to deliver, or null when a hook drops it.
+   */
+  rehook(record: LogRecord): LogRecord | null {
+    const { config, diagnostics, limits, remote, debug } = this.deps;
+    const { attributes } = record;
+    const namespace = String(attributes[ATTR_APP_NAMESPACE]);
+    // The app's levels and sampling decide now, as they would have at the call.
+    const leveled = this.passesLevel(
+      record.severityText,
+      namespace,
+      attributes[ATTR_LOG_TYPE] as LogType,
+    );
+    const sampled = leveled && shouldSample(record, config, remote.sampling?.current() ?? null);
+
+    // The stored page.url already lost its query to the default rule, so it can't come back.
+    const pageUrl = config.metadata.pageUrl
+      ? recordedUrl(
+          String(attributes[ATTR_PAGE_URL]),
+          config.capture.fullUrls,
+          config.capture.urlTransform,
+          diagnostics,
+        )
+      : "";
+    const body = truncate(record.body, limits.maxBodyChars);
+    if (body !== record.body) {
+      diagnostics.count("record.truncated");
+    }
+
+    const fixed = fixedOf(attributes);
+    const stamped = {
+      ...record,
+      body,
+      attributes: { ...attributes, [ATTR_PAGE_URL]: pageUrl },
+      resource: this.resource(),
+    };
+    const outcome = this.applyHooks(stamped, this.hookStages(), fixed);
+    const hooked =
+      typeof outcome === "string"
+        ? null
+        : this.fit(outcome.record, outcome.bytes, attributes, fixed);
+
+    // A refused record goes where build() sends one: a count, and the debug buffer if it's on.
+    if (!sampled) {
+      diagnostics.count(leveled ? "record.dropped_by_sampling" : "record.dropped_by_level");
+      if (hooked && debug && config.enabled && config.debugBuffer.enabled) {
+        debug.push(hooked);
+      }
+      return null;
+    }
+
+    return hooked;
+  }
+
+  /**
+   * Drops the caller attributes of a record over maxRecordBytes, but keeps the index keys: a
+   * search can't find a record without journey.id and trace_id. Keeps the error fields, then
+   * the breadcrumbs if they fit, because they say why the record exists.
+   * @param record Record after the hooks.
+   * @param bytes Size of its attributes.
+   * @param index The type, the sequence and the namespace the library set on the record.
+   * @param fixed Fields the library builds. A point without its metric fields is lost.
+   * @returns The record, cut down when it's over the limit.
+   */
+  private fit(
+    record: LogRecord,
+    bytes: number,
+    index: Record<string, unknown>,
+    fixed: Record<string, unknown> | undefined,
+  ): LogRecord {
+    const { diagnostics, limits } = this.deps;
+    if (bytes <= limits.maxRecordBytes) {
+      return record;
+    }
+
+    diagnostics.report(
+      "record.truncated",
+      "The attributes are larger than the size limit. The library dropped the caller attributes.",
+      { bytes, body: record.body },
+    );
+
+    const kept: Record<string, unknown> = {
+      [ATTR_LOG_TYPE]: index[ATTR_LOG_TYPE],
+      [ATTR_LOG_SEQ]: index[ATTR_LOG_SEQ],
+      [ATTR_APP_NAMESPACE]: index[ATTR_APP_NAMESPACE],
+      [ATTR_ATTRIBUTES_DROPPED]: true,
+      [ATTR_ATTRIBUTES_BYTES]: bytes,
+    };
+
+    // Read these keys after redact, because the hook can remove a token from page.url.
+    for (const key of REDACTABLE_INDEX_KEYS) {
+      if (key in record.attributes) {
+        kept[key] = record.attributes[key];
+      }
+    }
+
+    for (const [key, value] of Object.entries(record.attributes)) {
+      if (key.startsWith(ERROR_ATTR_PREFIX)) {
+        kept[key] = value;
+      }
+    }
+
+    // error.data can be large, so drop it first, before the other error fields.
+    let keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
+    if (keptBytes > limits.maxRecordBytes && ATTR_ERROR_DATA in kept) {
+      Reflect.deleteProperty(kept, ATTR_ERROR_DATA);
+      keptBytes = sanitizeWithSize(kept, limits, diagnostics).bytes;
+    }
+
+    const breadcrumbs = record.attributes[ATTR_BREADCRUMBS];
+    if (breadcrumbs !== undefined) {
+      const crumbBytes = sanitizeWithSize(breadcrumbs, limits, diagnostics).bytes;
+      if (keptBytes + crumbBytes <= limits.maxRecordBytes) {
+        kept[ATTR_BREADCRUMBS] = breadcrumbs;
+      }
+    }
+
+    Object.assign(kept, fixed);
+    record.attributes = kept;
+    return record;
+  }
+
+  /**
+   * Lists the app's hooks in the order they see a record.
+   * @returns The processors, then redact, which is the last privacy gate.
+   */
+  private hookStages(): [RecordHook, HookStage][] {
+    const { processors, redact } = this.deps.config;
+    const stages = processors.map((hook): [RecordHook, HookStage] => [hook, "processor"]);
+    if (redact) {
+      stages.push([redact, "redact"]);
+    }
+
+    return stages;
   }
 
   /**
