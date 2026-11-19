@@ -36,6 +36,14 @@ type Outcome = "next" | "stop" | number;
  */
 export type StoreOutcome = "stored" | "split" | "rejected" | "not_stored";
 
+/** What storeFailed() did with a batch, and how many of its records storage holds now. */
+export interface StoreReport {
+  /** What became of the batch. */
+  outcome: StoreOutcome;
+  /** Records that storage holds after the call. Only one half of a split can be in storage. */
+  stored: number;
+}
+
 /**
  * Resends persisted offline batches on a timer, with backoff, a cross-tab drain lock and
  * batch splitting.
@@ -105,21 +113,23 @@ export class RetryEngine {
    * payload the server already refused.
    * @param batch Rejected batch, with its attempt already counted.
    * @param error Failure thrown by the transport.
-   * @returns What became of the batch. A storage call that throws or runs past its deadline
-   * rejects instead, and the caller reports it.
+   * @returns What became of the batch, and the records in storage. A storage call that throws
+   * or runs past its deadline rejects instead, and the caller reports it.
    */
-  async storeFailed(batch: LogBatch, error: unknown): Promise<StoreOutcome> {
+  async storeFailed(batch: LogBatch, error: unknown): Promise<StoreReport> {
     const parts = this.toStorable(batch, error);
 
     if (parts.length === 0) {
-      return "rejected";
+      return { outcome: "rejected", stored: 0 };
     }
 
     let written = 0;
+    let stored = 0;
 
     for (const part of parts) {
       if (await this.bounded(this.storage.save(part))) {
         written++;
+        stored += part.records.length;
       }
     }
 
@@ -130,10 +140,10 @@ export class RetryEngine {
     }
 
     if (written < parts.length) {
-      return "not_stored";
+      return { outcome: "not_stored", stored };
     }
 
-    return parts.length > 1 ? "split" : "stored";
+    return { outcome: parts.length > 1 ? "split" : "stored", stored };
   }
 
   /** Stops the engine. Removes the listener and clears the pending timer. */

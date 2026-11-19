@@ -14,6 +14,9 @@ import {
   LIBRARY_LOG_PREFIX,
   REMOTE_CAPTURE_FLAGS,
   DIAGNOSTICS_NAMESPACE,
+  FLUSH_REQUEST_SHARE,
+  FLUSH_TIMEOUT_MAX_MS,
+  FLUSH_TIMEOUT_MS,
   GAP_REPORT_THROTTLE_MS,
   METRIC_NAMESPACE,
   ROUTING_KEYS,
@@ -42,7 +45,7 @@ import type { LossReporter } from "../models/drop";
 import type { InstrumentDef, Measure, MetricAttributes } from "../models/metric";
 import type { CapturePlugin, PluginContext } from "../models/plugin";
 import { isLogRecord, type LogRecord } from "../models/log-record";
-import type { DebugBundle, ObservabilityHealth } from "../models/health";
+import type { DebugBundle, FlushResult, FlushStatus, ObservabilityHealth } from "../models/health";
 import type { PruneResult, StorageAdapter, StoragePersistence } from "../models/storage";
 import type { StoreAccess } from "../storage/stored-context";
 import { ConsoleSink } from "../utils/console";
@@ -181,6 +184,9 @@ const FAILED_START =
 const SHUTDOWN_INVALID =
   'shutdown() got invalid options. The library discards the records in memory. An invalid clearStorage removes the "context" scope.';
 
+/** Text of the report for flush() options the library can't use. */
+const FLUSH_INVALID = "flush() got invalid options. The library waits the default 5000 ms.";
+
 /** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
   "bus.role_resolved",
@@ -271,6 +277,29 @@ function sends(input: Partial<ObservabilityConfig>): boolean {
     Boolean(input.transport) ||
     Boolean(input.transportWorker)
   );
+}
+
+/**
+ * Builds a flush result. The counts that aren't given are 0.
+ * @param status How the call ended.
+ * @param counts The counts to set.
+ * @returns The result.
+ */
+function flushResult(
+  status: FlushStatus,
+  counts: Partial<Omit<FlushResult, "status">>,
+): FlushResult {
+  return { status, accepted: 0, stored: 0, dropped: 0, forwarded: 0, pending: 0, ...counts };
+}
+
+/**
+ * Builds the result of a flush that ran. It's "timeout" while a record waits, so "timeout"
+ * always has pending records.
+ * @param counts The counts to set.
+ * @returns The result.
+ */
+function settled(counts: Partial<Omit<FlushResult, "status">> & { pending: number }): FlushResult {
+  return flushResult(counts.pending > 0 ? "timeout" : "complete", counts);
 }
 
 /**
@@ -483,6 +512,9 @@ export class ObservabilityRuntime {
    * succeeds retires it with its own rule, so the old records don't stay or move by accident.
    */
   private parkedSender: Sender | undefined;
+
+  /** The sender that a rotation retires. Its records wait for the rotation's rule. */
+  private retiring: Sender | undefined;
 
   /**
    * True after the first configure() call failed. The runtime stays unconfigured and refuses
@@ -1687,6 +1719,7 @@ export class ObservabilityRuntime {
           onTabConflict: () => {
             this.regenerateTabId();
           },
+          onFlush: (timeoutMs) => this.flushFor(timeoutMs, false),
           remote: this.remote,
         },
       );
@@ -2305,22 +2338,8 @@ export class ObservabilityRuntime {
    * @returns True to discard, and the storage scope to remove.
    */
   private shutdownRule(options: unknown): { discard: boolean; scope?: StorageScope } {
-    // A JavaScript caller can pass a string, or an object with a getter that throws.
-    const object = typeof options === "object" || options === undefined;
-    const read = object
-      ? this.diagnostics.guard(
-          "config.invalid",
-          SHUTDOWN_INVALID,
-          (): { pending?: unknown; clearStorage?: unknown } => ({
-            ...(options as ShutdownOptions | undefined),
-          }),
-        )
-      : undefined;
+    const read = this.readOptions(options, SHUTDOWN_INVALID);
     if (read === undefined) {
-      // The guard reported a getter that threw. A value of another type is reported here.
-      if (!object) {
-        this.diagnostics.report("config.invalid", SHUTDOWN_INVALID);
-      }
       return { discard: true };
     }
 
@@ -2540,13 +2559,20 @@ export class ObservabilityRuntime {
     });
   }
 
-  /** Hands the forward buffer's records to the bus. */
-  private sendForwarded(): void {
+  /**
+   * Hands the forward buffer's records to the bus.
+   * @returns How many records went upstream.
+   */
+  private sendForwarded(): number {
     const records = this.forwardBuffer;
     this.forwardBuffer = [];
-    if (records.length > 0) {
-      this.bus?.sendRecords(records);
+    // An empty buffer makes no message. A forwarder always has a bus.
+    const { bus } = this;
+    if (records.length === 0 || !bus) {
+      return 0;
     }
+
+    return bus.sendRecords(records);
   }
 
   /**
@@ -2740,6 +2766,7 @@ export class ObservabilityRuntime {
       if (this.rotation === run) {
         this.rotation = undefined;
         this.rotating = false;
+        this.retiring = undefined;
       }
     };
     run.then(settle, settle);
@@ -2824,6 +2851,8 @@ export class ObservabilityRuntime {
           ...this.forwardBuffer,
         ];
         const sender = this.sender ?? this.parkedSender;
+        // A flush during the retire still sees these records, so it doesn't call them lost.
+        this.retiring = sender;
         const carried = this.carried;
         this.forwardBuffer = [];
         this.carried = [];
@@ -2967,11 +2996,7 @@ export class ObservabilityRuntime {
       this.config.bus;
     return {
       delivery: {
-        pending:
-          (sent?.pending ?? 0) +
-          this.bootBuffer.length +
-          this.pendingRecords.length +
-          this.forwardBuffer.length,
+        pending: (sent?.pending ?? 0) + this.heldRecords(),
         inFlight: sent?.inFlight ?? 0,
         stored: await this.storedBatches(),
         lastSendAt: this.lastSendAt,
@@ -3034,27 +3059,179 @@ export class ObservabilityRuntime {
   }
 
   /**
-   * Flushes all pending records in the pipeline or forward buffer.
-   * @returns Promise that resolves once the queued records are sent or handed off.
+   * Sends the records in memory and waits until each one has a final state or the time limit
+   * passes. A forwarder hands its records to its sender, then asks the sender to flush.
+   * @param options How long to wait. A value it can't use reports config.invalid.
+   * @returns Promise that resolves to what became of the records in memory at the call. It
+   * never rejects.
    */
-  async flush(): Promise<void> {
+  flush(options?: unknown): Promise<FlushResult> {
+    return this.flushFor(this.flushTimeout(options), true);
+  }
+
+  /**
+   * Runs a flush with a time limit that is already in range.
+   * @param timeoutMs How long to wait, in milliseconds.
+   * @param collect True to send the open interval of the meter and the profiler first. A flush
+   * that a child asks for doesn't, otherwise each request would make this context build points.
+   * @returns Promise that resolves to the flush result.
+   */
+  private async flushFor(timeoutMs: number, collect: boolean): Promise<FlushResult> {
     drainDeferred(this);
-    this.collectPoints();
-
-    // A record logged during startup waits in the boot buffer, and flush() would miss it
-    // without this wait. After startup, don't wait, so the forward buffer handover stays
-    // synchronous.
-    if (!this.ready) {
-      await this.started;
+    if (collect) {
+      this.collectPoints();
     }
 
-    if (this.role() === "forwarder") {
-      this.sendForwarded();
-      return;
+    const idle = this.idle();
+    if (idle) {
+      return idle;
     }
 
-    await this.senderLoad;
-    await this.sender?.flush();
+    const ends = Date.now() + timeoutMs;
+    let stop!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      unrefTimer(timer);
+      stop = () => {
+        clearTimeout(timer);
+      };
+    });
+
+    try {
+      return await this.flushBefore(ends, expired);
+    } finally {
+      stop();
+    }
+  }
+
+  /**
+   * Waits for startup and the delivery stack, then flushes the sender or asks the upstream one.
+   * @param ends Epoch time in milliseconds of the deadline.
+   * @param expired Resolves at the deadline.
+   * @returns The flush result.
+   */
+  private async flushBefore(ends: number, expired: Promise<void>): Promise<FlushResult> {
+    // These records wait for startup or for the sender, and they're lost if no sender loads.
+    const held = this.heldRecords();
+
+    // A record waits in a hold buffer during startup, which loads the first sender, and while a
+    // later configure() loads one. The flush would miss it without this wait. Otherwise don't
+    // wait, so the snapshot and the forward buffer handover happen in the call itself.
+    const loading = this.ready ? this.senderLoad : this.started;
+    if (loading && (!this.ready || !this.sender)) {
+      const loaded = await Promise.race([loading.then(() => true), expired.then(() => false)]);
+      if (!loaded) {
+        return settled({ pending: this.waiting() });
+      }
+    }
+
+    const { bus } = this;
+    const forwarder = bus?.getRole() === "forwarder";
+
+    // A pause or a shutdown during the wait leaves nothing to send.
+    const idle = this.idle();
+    if (idle) {
+      return idle;
+    }
+
+    if (forwarder) {
+      // The records go before the request on the same link, so they're in the sender's snapshot.
+      // A record that the bus doesn't send, for its size or for no owner, is lost here.
+      const total = this.forwardBuffer.length;
+      const forwarded = this.sendForwarded();
+      const lost = total - forwarded;
+      // The sender gets a share of the time left, so its answer arrives before this call ends.
+      const share = Math.floor(Math.max(0, ends - Date.now()) * FLUSH_REQUEST_SHARE);
+      const answer = await bus.requestFlush(share, expired);
+      return answer
+        ? { ...answer, forwarded, dropped: answer.dropped + lost }
+        : settled({ forwarded, pending: forwarded, dropped: lost });
+    }
+
+    const { sender } = this;
+    if (!sender) {
+      // During a rotation the old records wait for its rule. Without a sender, they're lost.
+      return this.rotating
+        ? settled({ pending: held + this.waiting() })
+        : flushResult("complete", { dropped: held });
+    }
+
+    return settled(await sender.flushUntil(expired));
+  }
+
+  /**
+   * Returns the result for a runtime that sends nothing now: before the start, after a failed
+   * first configure(), during a pause and after shutdown().
+   * @returns The "inactive" result with the records that wait in memory, or null.
+   */
+  private idle(): FlushResult | null {
+    if (this.tunablesLocked && this.config.enabled && !this.destroyed) {
+      return null;
+    }
+
+    // A stopped runtime sends nothing more, so no record waits for it.
+    return flushResult("inactive", { pending: this.destroyed ? 0 : this.waiting() });
+  }
+
+  /**
+   * Counts the records in the hold buffers and the forward buffer.
+   * @returns The record count.
+   */
+  private heldRecords(): number {
+    return this.bootBuffer.length + this.pendingRecords.length + this.forwardBuffer.length;
+  }
+
+  /**
+   * Counts the records in memory: the hold buffers, the forward buffer, and the buffers, the
+   * queue and the requests of the sender and of a sender that a rotation retires.
+   * @returns The record count.
+   */
+  private waiting(): number {
+    let total = this.heldRecords();
+    for (const sender of [this.sender, this.retiring]) {
+      const sent = sender?.stats();
+      total += sent ? sent.pending + sent.inFlight : 0;
+    }
+    return total;
+  }
+
+  /**
+   * Copies a call's options. A value that isn't an object reports config.invalid with the text,
+   * and so does a getter that throws.
+   * @param options The app's options. undefined and null read as no options.
+   * @param text The text of the report.
+   * @returns The copy, or undefined after a report.
+   */
+  private readOptions(options: unknown, text: string): Record<string, unknown> | undefined {
+    // A JavaScript caller can pass a string, or an object with a getter that throws.
+    if (typeof options !== "object" && options !== undefined) {
+      this.diagnostics.report("config.invalid", text);
+      return undefined;
+    }
+
+    return this.diagnostics.guard("config.invalid", text, () => ({ ...options }));
+  }
+
+  /**
+   * Reads flush()'s time limit. A value it can't use reports config.invalid, and the default
+   * applies. null options and a null timeoutMs give the default, as in shutdown() and
+   * rotateSecurityContext().
+   * @param options The app's options.
+   * @returns The time limit in milliseconds.
+   */
+  private flushTimeout(options: unknown): number {
+    const read = this.readOptions(options, FLUSH_INVALID);
+    if (!read) {
+      return FLUSH_TIMEOUT_MS;
+    }
+
+    const ms = read.timeoutMs ?? FLUSH_TIMEOUT_MS;
+    if (typeof ms === "number" && ms >= 0 && ms <= FLUSH_TIMEOUT_MAX_MS) {
+      return ms;
+    }
+
+    this.diagnostics.report("config.invalid", FLUSH_INVALID);
+    return FLUSH_TIMEOUT_MS;
   }
 }
 

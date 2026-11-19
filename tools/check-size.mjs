@@ -28,8 +28,10 @@ import { gzipSync } from "node:zlib";
  *   the consent functions. The maintainer approved this rule on 2026-11-16.
  * - 0.12.0: 45,448 B plus 10 percent. The replay capture's own install key and the renamed
  *   options. Approved by the maintainer on 2026-11-16.
+ * - 1.0.0 (PR 5): 50,477 B plus 10 percent. The flush result and the flush bus messages.
+ *   Approved by the maintainer on 2026-11-18.
  */
-const SIZE_BUDGET_GZIP_BYTES = 49_993;
+const SIZE_BUDGET_GZIP_BYTES = 55_524;
 
 const DIST = new URL("../dist/", import.meta.url);
 const ENTRY = "index.js";

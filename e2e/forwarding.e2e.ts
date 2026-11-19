@@ -272,6 +272,44 @@ test("forwards a cross-origin child's record when the child trusts the parent's 
   expect(posters.every((frame) => frame === page.mainFrame())).toBe(true);
 });
 
+test("a cross-origin child's flush() hands its records over and gets the parent's counts", async ({
+  page,
+}) => {
+  await page.goto(PAGE_PATH);
+
+  await page.evaluate((endpoint) => {
+    window.e2e.uiobs.configure({ endpoint, serviceName: "e2e-parent" });
+  }, LOGS_ENDPOINT);
+
+  const child = await loadChild(page, CROSS_ORIGIN_CHILD);
+  await child.evaluate(
+    ({ endpoint, parentOrigin }) => {
+      window.e2e.uiobs.configure({
+        endpoint,
+        serviceName: "e2e-child",
+        bus: { trustedOrigins: [parentOrigin] },
+        onDiagnostic: window.e2e.onDiagnostic,
+      });
+    },
+    { endpoint: LOGS_ENDPOINT, parentOrigin: PAGE_ORIGIN },
+  );
+
+  await expect.poll(() => resolvedRoles(child)).toEqual(["forwarder"]);
+
+  // The child's flush asks the parent over postMessage, and the parent answers with the counts
+  // of its own flush, which covers the child's record.
+  const result = await child.evaluate(() => {
+    window.e2e.uiobs.getLogger("child.blotter").info("flushed through the parent");
+    return window.e2e.uiobs.flush();
+  });
+
+  expect(result.status).toBe("complete");
+  expect(result.forwarded).toBe(1);
+  expect(result.accepted).toBeGreaterThan(0);
+  expect(result.pending).toBe(0);
+  expect(await readLogs("flushed through the parent")).toHaveLength(1);
+});
+
 test("a cross-origin child that doesn't trust the parent's origin posts its own records", async ({
   page,
 }) => {

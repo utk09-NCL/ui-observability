@@ -89,7 +89,7 @@ describe("HttpTransport", () => {
   it("accepts a batch with a Date header when it has no clock callback", async () => {
     answer(204, null, { Date: "Sun, 01 Nov 2026 10:00:05 GMT" });
 
-    await expect(new HttpTransport(config(), diagnostics()).send(batch())).resolves.toBeUndefined();
+    await expect(new HttpTransport(config(), diagnostics()).send(batch())).resolves.toBe(0);
   });
 
   it("passes the sampling header from a 2xx answer to the sampling callback", async () => {
@@ -119,7 +119,7 @@ describe("HttpTransport", () => {
     answer(204, null, { "X-UiObs-Sampling": '{"v":1,"ttlMs":1000}' });
     const t = new HttpTransport(config({ sampling: { remote: true } }), diagnostics());
 
-    await expect(t.send(batch())).resolves.toBeUndefined();
+    await expect(t.send(batch())).resolves.toBe(0);
   });
 
   it("classifies a 400 as permanent so it is never retried forever", async () => {
@@ -223,7 +223,7 @@ describe("HttpTransport", () => {
 
   describe("a response body that doesn't arrive in time or breaks", () => {
     /** Resolves with "pending" when the send hasn't settled within a few event loop turns. */
-    const outcomeOf = (send: Promise<void>): Promise<unknown> =>
+    const outcomeOf = (send: Promise<number>): Promise<unknown> =>
       Promise.race([
         send.then(
           () => "sent",
@@ -869,9 +869,9 @@ describe("HttpTransport", () => {
     };
     const t = new HttpTransport(config({ serializer: broken }), new Diagnostics(handler, 0));
 
-    // The send resolves. The same records would fail the same way every time, the caller can't do
-    // anything about it, and a stored copy of the batch has no value.
-    await expect(t.send(batch())).resolves.toBeUndefined();
+    // The send resolves with both records lost. The same records would fail the same way every
+    // time, the caller can't do anything about it, and a stored copy of the batch has no value.
+    await expect(t.send(batch())).resolves.toBe(2);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "transport.serialize_failed" }),

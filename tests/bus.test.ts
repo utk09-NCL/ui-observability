@@ -28,6 +28,8 @@ import type { BusOptions } from "../src/models/config";
 import type { LogRecord } from "../src/models/log-record";
 import {
   BUS_CHANNEL_NAME,
+  BUS_FLUSH_GAP_MS,
+  BUS_MAX_FLUSH_REQUESTS,
   BUS_PROTOCOL,
   BUS_TYPE_DETAIL_MAX_CHARS,
   REMOTE_SAMPLING_POLL_MS,
@@ -3138,5 +3140,571 @@ describe("Bus remote sampling", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(stopped.upstream.post).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+});
+
+describe("Bus flush requests and answers", () => {
+  const REQUEST = "ui-observability.message.flush-request";
+  const RESULT = "ui-observability.message.flush-result";
+
+  /** A valid flush result. */
+  const counts = (over: Record<string, unknown> = {}) => ({
+    status: "complete",
+    accepted: 3,
+    stored: 0,
+    dropped: 0,
+    forwarded: 0,
+    pending: 0,
+    ...over,
+  });
+
+  /** A deadline that never ends. */
+  const never = (): Promise<void> => new Promise<void>(() => undefined);
+
+  /**
+   * Creates a forwarder bus with a fake upstream link and a known owner.
+   * @param kind Kind of the upstream link.
+   * @param ownerPeer The owner's transport identity, if the link gives one.
+   * @returns The bus, its diagnostics and the upstream link.
+   */
+  function forwarder(kind: LinkKind, ownerPeer?: string) {
+    const made = make();
+    const upstream = fakeLink(kind);
+    Object.assign(made.bus, { role: "forwarder", upstream, ownerId: "owner", ownerPeer });
+    return { ...made, upstream };
+  }
+
+  /**
+   * Reads the id of the flush request that a link posted.
+   * @param link The fake link.
+   * @returns The request's id.
+   */
+  const requestId = (link: ReturnType<typeof fakeLink>): string =>
+    (link.post.mock.calls[0][0] as { id: string }).id;
+
+  it.each(["parent", "direct", "owner", "openfin"] as const)(
+    "asks the upstream over a %s link and takes the owner's answer",
+    async (kind) => {
+      // On the shared OpenFin link the answer must come from the owner's transport identity.
+      const peer = kind === "openfin" ? "app-1:provider" : undefined;
+      const { bus, upstream } = forwarder(kind, peer);
+
+      const asked = bus.requestFlush(1200, never());
+      expect(upstream.post).toHaveBeenCalledWith({
+        t: REQUEST,
+        from: "ctx-1",
+        id: expect.any(String),
+        timeoutMs: 1200,
+      });
+      deliver(
+        bus,
+        { t: RESULT, from: "owner", id: requestId(upstream), result: counts() },
+        { link: kind, origin: "same-origin", peer },
+      );
+
+      expect(await asked).toEqual(counts());
+    },
+  );
+
+  it("gives null at the deadline, and a later answer changes nothing", async () => {
+    const { bus, upstream } = forwarder("parent");
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+
+    const asked = bus.requestFlush(10, expired);
+    end();
+    expect(await asked).toBeNull();
+    deliver(
+      bus,
+      { t: RESULT, from: "owner", id: requestId(upstream), result: counts() },
+      { link: "parent", origin: location.origin },
+    );
+
+    expect((bus as unknown as { flushAnswers: Map<string, unknown> }).flushAnswers.size).toBe(0);
+  });
+
+  it("gives null at once with no upstream", async () => {
+    const { bus } = make();
+
+    expect(await bus.requestFlush(100, never())).toBeNull();
+  });
+
+  it("takes an answer on a shared OpenFin link only from the owner's transport identity", async () => {
+    const { bus, upstream } = forwarder("openfin", "app-1:provider");
+    const asked = bus.requestFlush(100, never());
+    const id = requestId(upstream);
+    const answer = (from: string, peer: string, accepted: number): void => {
+      deliver(
+        bus,
+        { t: RESULT, from, id, result: counts({ accepted }) },
+        { link: "openfin", origin: "openfin", peer },
+      );
+    };
+
+    // A sibling view reads the request too, and can copy its id and the owner's context id.
+    answer("sibling", "app-1:view-2", 1);
+    answer("owner", "app-1:view-2", 2);
+    answer("owner", "app-1:provider", 3);
+
+    expect(await asked).toEqual(counts({ accepted: 3 }));
+  });
+
+  it("ignores an answer on another link or for an id it doesn't wait for", async () => {
+    const { bus, upstream } = forwarder("parent");
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    const asked = bus.requestFlush(100, expired);
+
+    deliver(
+      bus,
+      { t: RESULT, from: "owner", id: requestId(upstream), result: counts() },
+      { link: "broadcast", origin: "same-origin" },
+    );
+    deliver(
+      bus,
+      { t: RESULT, from: "owner", id: "another", result: counts() },
+      { link: "parent", origin: location.origin },
+    );
+    end();
+
+    expect(await asked).toBeNull();
+  });
+
+  it("refuses an invalid answer and counts it", async () => {
+    const { bus, upstream, diagnostics } = forwarder("parent");
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    const asked = bus.requestFlush(100, expired);
+
+    deliver(
+      bus,
+      { t: RESULT, from: "owner", id: requestId(upstream), result: counts({ pending: -1 }) },
+      { link: "parent", origin: location.origin },
+    );
+    end();
+
+    expect(await asked).toBeNull();
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+  });
+
+  it("refuses a flush answer from a child, which is never an owner", () => {
+    const { bus, diagnostics } = make();
+
+    deliver(
+      bus,
+      { t: RESULT, from: "child", id: "x", result: counts() },
+      { link: "children", origin: location.origin },
+    );
+
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+  });
+
+  it("refuses a message without an id or a numeric timeoutMs", () => {
+    const { bus, diagnostics, handlers: h } = make();
+    const onFlush = vi.fn(() => Promise.resolve(counts() as never));
+    Object.assign(h, { onFlush });
+    const source = { link: "children" as const, origin: location.origin };
+
+    deliver(bus, { t: REQUEST, from: "child", timeoutMs: 1 } as never, source);
+    deliver(bus, { t: REQUEST, from: "child", id: "x", timeoutMs: "1" } as never, source);
+    deliver(bus, { t: RESULT, from: "owner", result: counts() } as never, source);
+    deliver(bus, { t: RESULT, from: "owner", id: "x" } as never, source);
+
+    expect(onFlush).not.toHaveBeenCalled();
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(4);
+  });
+
+  it.each([
+    ["a negative time", -5, 0],
+    ["a time above the maximum", 1e9, 600_000],
+    ["a time in range", 1500, 1500],
+  ])(
+    "runs the flush for %s with the clamped time and answers on the link",
+    async (_n, ms, used) => {
+      const { bus, handlers: h } = make();
+      const onFlush = vi.fn((_timeoutMs: number) => Promise.resolve(counts() as never));
+      Object.assign(h, { onFlush });
+      const reply = vi.fn<(message: BusMessage) => void>();
+
+      deliver(
+        bus,
+        { t: REQUEST, from: "child", id: "c1", timeoutMs: ms },
+        { link: "children", origin: location.origin, reply },
+      );
+      await vi.waitFor(() => {
+        expect(reply).toHaveBeenCalled();
+      });
+
+      expect(onFlush.mock.calls[0][0]).toBeCloseTo(used, -2);
+      expect(reply).toHaveBeenCalledWith({ t: RESULT, from: "ctx-1", id: "c1", result: counts() });
+    },
+  );
+
+  it("answers its own children as a forwarder, and never a sibling on its upstream link", async () => {
+    const { bus, handlers: h } = forwarder("openfin");
+    const onFlush = vi.fn(() => Promise.resolve(counts() as never));
+    Object.assign(h, { onFlush });
+    const reply = vi.fn<(message: BusMessage) => void>();
+
+    deliver(
+      bus,
+      { t: REQUEST, from: "sibling", id: "s1", timeoutMs: 100 },
+      { link: "openfin", origin: "openfin", reply },
+    );
+    deliver(
+      bus,
+      { t: REQUEST, from: "child", id: "c1", timeoutMs: 100 },
+      { link: "worker", origin: "same-origin", reply },
+    );
+    await vi.waitFor(() => {
+      expect(reply).toHaveBeenCalled();
+    });
+
+    expect(onFlush).toHaveBeenCalledOnce();
+    expect(reply.mock.calls).toEqual([[{ t: RESULT, from: "ctx-1", id: "c1", result: counts() }]]);
+  });
+
+  it("answers no request without a flush handler", async () => {
+    const { bus } = make();
+    const reply = vi.fn<(message: BusMessage) => void>();
+
+    deliver(
+      bus,
+      { t: REQUEST, from: "child", id: "c1", timeoutMs: 100 },
+      { link: "children", origin: location.origin, reply },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("answers nothing when the flush fails, and serves the next request", async () => {
+    vi.useFakeTimers();
+    const { bus, handlers: h, diagnostics } = make();
+    const onFlush = vi
+      .fn<() => Promise<never>>()
+      .mockRejectedValueOnce(new Error("flush broke"))
+      .mockResolvedValueOnce(counts() as never);
+    Object.assign(h, { onFlush });
+    const reply = vi.fn<(message: BusMessage) => void>();
+    const ask = (id: string): void => {
+      deliver(
+        bus,
+        { t: REQUEST, from: "child", id, timeoutMs: 100 },
+        { link: "children", origin: location.origin, reply },
+      );
+    };
+
+    ask("first");
+    await vi.advanceTimersByTimeAsync(0);
+    ask("second");
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+
+    expect(diagnostics.snapshot()["pipeline.crashed"]).toBe(1);
+    expect(reply.mock.calls).toEqual([
+      [{ t: RESULT, from: "ctx-1", id: "second", result: counts() }],
+    ]);
+  });
+
+  it("answers nothing once destroyed during the flush", async () => {
+    const { bus, handlers: h } = make();
+    let finish!: (value: never) => void;
+    Object.assign(h, {
+      onFlush: () =>
+        new Promise<never>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const reply = vi.fn<(message: BusMessage) => void>();
+
+    deliver(
+      bus,
+      { t: REQUEST, from: "child", id: "c1", timeoutMs: 100 },
+      { link: "children", origin: location.origin, reply },
+    );
+    bus.destroy();
+    finish(counts() as never);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request from a registered source without the records permission", () => {
+    const { bus, diagnostics, handlers: h } = make({ sourcePolicy: "registered" });
+    const onFlush = vi.fn(() => Promise.resolve(counts() as never));
+    Object.assign(h, { onFlush });
+    const peer = { closed: false, postMessage: vi.fn() } as unknown as Window;
+    bus.registerFrame(peer, { origin: location.origin, permissions: ["journey:read"] });
+
+    deliver(
+      bus,
+      { t: REQUEST, from: "child", id: "c1", timeoutMs: 100 },
+      { link: "children", origin: location.origin, peer },
+    );
+
+    expect(onFlush).not.toHaveBeenCalled();
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+  });
+
+  it.each(["registered", "trusted-origin"] as const)(
+    "refuses a request over broadcast under the %s policy",
+    (sourcePolicy) => {
+      const { bus, diagnostics, handlers: h } = make({ sourcePolicy });
+      const onFlush = vi.fn(() => Promise.resolve(counts() as never));
+      Object.assign(h, { onFlush });
+
+      deliver(
+        bus,
+        { t: REQUEST, from: "tab-2", id: "b1", timeoutMs: 100 },
+        { link: "broadcast", origin: "same-origin" },
+      );
+
+      expect(onFlush).not.toHaveBeenCalled();
+      expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+    },
+  );
+
+  /**
+   * Builds a bus whose flushes end only when the test ends them.
+   * @returns The bus, its diagnostics, the flush handler, the end of each flush and a request
+   * function that names its source.
+   */
+  function heldFlushes() {
+    const made = make({ maxMessagesPerSecond: null });
+    const finishes: ((value: never) => void)[] = [];
+    const onFlush = vi.fn(
+      (_timeoutMs: number) =>
+        new Promise<never>((resolve) => {
+          finishes.push(resolve);
+        }),
+    );
+    Object.assign(made.handlers, { onFlush });
+    const reply = vi.fn<(message: BusMessage) => void>();
+    const ask = (id: string, timeoutMs: number, peer: object = {}): void => {
+      deliver(
+        made.bus,
+        { t: REQUEST, from: "child", id, timeoutMs },
+        { link: "children", origin: location.origin, peer, reply },
+      );
+    };
+    return { ...made, onFlush, finishes, reply, ask };
+  }
+
+  it("queues the requests during a flush up to the cap, and runs one flush for them at the latest end", async () => {
+    vi.useFakeTimers();
+    const { onFlush, finishes, reply, ask, diagnostics } = heldFlushes();
+
+    ask("running", 9000);
+    for (let index = 0; index < BUS_MAX_FLUSH_REQUESTS; index++) {
+      ask(`queued ${String(index)}`, index === 7 ? 0 : 8000);
+    }
+    ask("past the cap", 8000);
+    expect(onFlush).toHaveBeenCalledOnce();
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+
+    finishes[0](counts() as never);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+    expect(onFlush).toHaveBeenCalledTimes(2);
+    // A request of 0 ms doesn't cut the wait of the others. The round still ends with its work.
+    expect(onFlush.mock.calls[1][0]).toBeGreaterThan(6000);
+    expect(onFlush.mock.calls[1][0]).toBeLessThanOrEqual(8000);
+    finishes[1](counts({ accepted: 0 }) as never);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reply).toHaveBeenCalledTimes(BUS_MAX_FLUSH_REQUESTS + 1);
+    expect(onFlush).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues at most 4 requests of one source, and still queues the requests of another source", async () => {
+    vi.useFakeTimers();
+    const { finishes, reply, ask, diagnostics } = heldFlushes();
+    const frame = {};
+
+    ask("running", 1000, frame);
+    for (let index = 0; index < 5; index++) {
+      ask(`frame ${String(index)}`, 1000, frame);
+    }
+    ask("other frame", 1000);
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+
+    finishes[0](counts() as never);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+    finishes[1](counts() as never);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const ids = reply.mock.calls.map(([message]) => (message as { id: string }).id);
+    expect(ids).toEqual(["running", "frame 0", "frame 1", "frame 2", "frame 3", "other frame"]);
+  });
+
+  it("starts a round at most once each BUS_FLUSH_GAP_MS, so 100 requests a second for 10 s run about 10 rounds", async () => {
+    vi.useFakeTimers();
+    const { bus, handlers: h } = make({ maxMessagesPerSecond: null });
+    const onFlush = vi.fn(() => Promise.resolve(counts() as never));
+    Object.assign(h, { onFlush });
+    const frame = {};
+
+    for (let elapsed = 0; elapsed < 10_000; elapsed += 10) {
+      deliver(
+        bus,
+        { t: REQUEST, from: "frame", id: `r${String(elapsed)}`, timeoutMs: 0 },
+        { link: "children", origin: location.origin, peer: frame, reply: vi.fn() },
+      );
+      await vi.advanceTimersByTimeAsync(10);
+    }
+
+    expect(onFlush.mock.calls.length).toBeGreaterThanOrEqual(9);
+    expect(onFlush.mock.calls.length).toBeLessThanOrEqual(11);
+  });
+
+  it("answers the second child when the reply to the first one throws", async () => {
+    vi.useFakeTimers();
+    const { bus, handlers: h, diagnostics } = make({ maxMessagesPerSecond: null });
+    Object.assign(h, { onFlush: () => Promise.resolve(counts() as never) });
+    const broken = vi.fn<Receive>(() => {
+      throw new Error("the frame is gone");
+    });
+    const working = vi.fn<Receive>();
+    const request = (id: string) => ({ t: REQUEST, from: "child", id, timeoutMs: 100 }) as const;
+    const first = {} as Window;
+    const second = {} as Window;
+
+    // The first request runs alone, so the two others share the next round.
+    bus.acceptDirect(request("warm-up"), working, second);
+    bus.acceptDirect(request("broken"), broken, first);
+    bus.acceptDirect(request("works"), working, second);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+    bus.acceptDirect(request("after"), working, second);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+
+    const answered = working.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.t === RESULT)
+      .map((message) => (message as { id: string }).id);
+    expect(answered).toEqual(["warm-up", "works", "after"]);
+    expect(diagnostics.snapshot()["bus.send_failed"]).toBe(1);
+  });
+
+  it("counts an answer whose result throws on a second read, and gives null at the deadline", async () => {
+    const { bus, upstream, diagnostics } = forwarder("direct");
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    let reads = 0;
+    const result = {
+      ...counts(),
+      get status(): string {
+        reads++;
+        if (reads > 1) {
+          throw new Error("changed");
+        }
+        return "complete";
+      },
+    };
+    const asked = bus.requestFlush(100, expired);
+
+    expect(() => {
+      deliver(
+        bus,
+        { t: RESULT, from: "owner", id: requestId(upstream), result },
+        { link: "direct", origin: "same-origin" },
+      );
+    }).not.toThrow();
+    end();
+
+    expect(await asked).toBeNull();
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+  });
+
+  it("refuses an answer on the OpenFin link before it knows the owner's transport identity", async () => {
+    const { bus, upstream } = forwarder("openfin");
+    let end!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    const asked = bus.requestFlush(100, expired);
+
+    deliver(
+      bus,
+      { t: RESULT, from: "owner", id: requestId(upstream), result: counts() },
+      { link: "openfin", origin: "openfin", peer: "app-1:view-2" },
+    );
+    end();
+
+    expect(await asked).toBeNull();
+  });
+
+  it("drops the waiting requests at destroy, so no later round runs", async () => {
+    vi.useFakeTimers();
+    const { bus, onFlush, finishes, ask, reply } = heldFlushes();
+
+    ask("running", 1000);
+    ask("waits for the round", 1000);
+    bus.destroy();
+    finishes[0](counts() as never);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+
+    expect(onFlush).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("drops a request that waits in the gap at destroy", async () => {
+    vi.useFakeTimers();
+    const { bus, onFlush, finishes, ask, reply } = heldFlushes();
+
+    ask("first", 1000);
+    finishes[0](counts() as never);
+    await vi.advanceTimersByTimeAsync(0);
+    ask("in the gap", 1000);
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS / 2);
+    bus.destroy();
+    await vi.advanceTimersByTimeAsync(BUS_FLUSH_GAP_MS);
+
+    expect(onFlush).toHaveBeenCalledOnce();
+    expect(reply.mock.calls.map(([message]) => (message as { id: string }).id)).toEqual(["first"]);
+  });
+
+  it("answers an attached worker through its own link only", async () => {
+    const { bus, handlers: h } = make();
+    Object.assign(h, { onFlush: () => Promise.resolve(counts() as never) });
+    const attach = () => {
+      const addEventListener = vi.fn();
+      const worker = { postMessage: vi.fn(), addEventListener, removeEventListener: vi.fn() };
+      bus.attachWorker(worker);
+      const listener = addEventListener.mock.calls[0][1] as (event: MessageEvent) => void;
+      return { worker, listener };
+    };
+    const asking = attach();
+    const other = attach();
+
+    asking.listener(
+      new MessageEvent("message", {
+        data: envelope({ t: REQUEST, from: "worker-1", id: "w1", timeoutMs: 100 }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(asking.worker.postMessage).toHaveBeenCalled();
+    });
+
+    expect(asking.worker.postMessage).toHaveBeenCalledWith(
+      envelope({ t: RESULT, from: "ctx-1", id: "w1", result: counts() }),
+    );
+    expect(other.worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("counts the records that go upstream, without one above the size limit", () => {
+    const { bus } = make({ maxMessageBytes: 1024 });
+    const upstream = fakeLink("parent");
+    Object.assign(bus, { role: "forwarder", upstream });
+    const big = { ...oneRecord()[0], body: "x".repeat(2000) };
+
+    expect(bus.sendRecords([...oneRecord(), big, ...oneRecord()])).toBe(2);
+    expect(make().bus.sendRecords(oneRecord())).toBe(0);
   });
 });

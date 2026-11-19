@@ -4,10 +4,14 @@
 
 import {
   BUS_CHANNEL_NAME,
+  BUS_FLUSH_GAP_MS,
   BUS_HANDSHAKE_TIMEOUT_MS,
+  BUS_MAX_FLUSH_REQUESTS,
+  BUS_MAX_FLUSH_REQUESTS_PER_SOURCE,
   BUS_MAX_HANDSHAKE_ATTEMPTS,
   BUS_MAX_TRACKED_SOURCES,
   BUS_TYPE,
+  FLUSH_TIMEOUT_MAX_MS,
   REMOTE_SAMPLING_POLL_MS,
 } from "../constants";
 import type { Diagnostics } from "../core/diagnostics";
@@ -16,9 +20,11 @@ import { applyRemote, parseRemoteRules } from "../core/remote-rules";
 import type { RemoteSlot } from "../core/remote-sampling";
 import type { BusMessage, BusRole, LinkKind, MessageSource } from "../models/bus";
 import type { SourceOptions, FrameOptions } from "../models/bus";
-import { validMessage } from "./validation";
+import { readFlushResult, validMessage } from "./validation";
 import type { JourneyScope, ResolvedConfig } from "../models/config";
+import type { FlushResult } from "../models/health";
 import type { LogRecord } from "../models/log-record";
+import { newId } from "../utils/identity";
 import { getFin } from "../utils/openfin";
 import type { PlatformMetadata } from "../utils/platform";
 import { countInWindow, windowEnded } from "../utils/fixed-window";
@@ -67,6 +73,13 @@ export interface BusHandlers {
   onJourneyRequest: () => Journey | null;
   /** Runs when two windows use the same tab identifier. */
   onTabConflict: () => void;
+  /**
+   * Runs this context's own flush for a child that asked, with the child's time limit. Without
+   * it, the bus answers no flush request.
+   * @param timeoutMs How long the flush waits, in milliseconds, already in range.
+   * @returns The flush result.
+   */
+  onFlush?: (timeoutMs: number) => Promise<FlushResult>;
   /** The runtime's slot for the remote sampling rules. The bus both reads and fills it. */
   remote: RemoteSlot;
 }
@@ -76,6 +89,16 @@ const OWNED: readonly LinkKind[] = ["children", "direct", "worker"];
 
 /** Journey scope after the bus resolves "auto". */
 type ResolvedScope = Exclude<JourneyScope, "auto">;
+
+/** A child's flush request that waits for the next flush. */
+interface FlushWait {
+  /** The physical source, or its link when the link names none. Its cap counts on it. */
+  source: unknown;
+  /** Epoch time in milliseconds when the child stops waiting. */
+  ends: number;
+  /** Sends the result to the child that asked. */
+  answer: (result: FlushResult) => void;
+}
 
 /** Coordinates cross-realm communication, role resolution, and message dispatch. */
 export class Bus {
@@ -232,6 +255,14 @@ export class Bus {
     link: LinkKind;
     settle: (ok: boolean) => void;
   } | null = null;
+  /** This forwarder's flush requests that wait for an answer, by request id. */
+  private readonly flushAnswers = new Map<string, (result: FlushResult) => void>();
+  /** Children's flush requests that wait for the flush after the one that runs. */
+  private flushQueue: FlushWait[] = [];
+  /** True while a flush that a child asked for runs, or waits for its gap. */
+  private flushing = false;
+  /** Epoch time in milliseconds when the last flush for a child started. */
+  private flushedAt = 0;
 
   /**
    * @param config Active configuration instance.
@@ -353,8 +384,9 @@ export class Bus {
   /**
    * Forwards records to the upstream owner if configured.
    * @param records Batch of log records to send.
+   * @returns How many records went upstream. A record above the size limit doesn't go.
    */
-  sendRecords(records: LogRecord[]): void {
+  sendRecords(records: LogRecord[]): number {
     const { maxRecordsPerMessage, maxMessageBytes } = this.config.bus;
     const encoder = new TextEncoder();
     const size = (value: unknown): number =>
@@ -371,11 +403,13 @@ export class Bus {
     const envelope = size(message([]));
     let chunk: LogRecord[] = [];
     let bytes = envelope;
+    let rejected = 0;
 
     for (const record of records) {
       const recordBytes = size(record);
       if (maxMessageBytes !== null && envelope + recordBytes > maxMessageBytes) {
         this.diagnostics.count("bus.rejected_message");
+        rejected++;
         continue;
       }
 
@@ -395,6 +429,37 @@ export class Bus {
 
     if (chunk.length > 0) {
       this.upstream?.post(message(chunk));
+    }
+
+    return this.upstream ? records.length - rejected : 0;
+  }
+
+  /**
+   * Asks the upstream sender to flush, then waits for its answer. The records that went before
+   * the request on the same link are in the sender's snapshot, because a link keeps its order.
+   * @param timeoutMs The time this context has left, in milliseconds. The sender uses it as its
+   * own limit.
+   * @param expired Resolves when this context stops waiting.
+   * @returns The sender's result, or null when no valid answer came in time.
+   */
+  async requestFlush(timeoutMs: number, expired: Promise<void>): Promise<FlushResult | null> {
+    const { upstream } = this;
+    if (!upstream) {
+      return null;
+    }
+
+    const id = newId(this.diagnostics);
+    let settle!: (result: FlushResult) => void;
+    const answered = new Promise<FlushResult>((resolve) => {
+      settle = resolve;
+    });
+    this.flushAnswers.set(id, settle);
+    upstream.post({ t: BUS_TYPE.flushRequest, from: this.contextId, id, timeoutMs });
+
+    try {
+      return await Promise.race([answered, expired.then(() => null)]);
+    } finally {
+      this.flushAnswers.delete(id);
     }
   }
 
@@ -449,7 +514,16 @@ export class Bus {
   attachWorker(worker: WorkerLike, options: SourceOptions = {}): () => void {
     const registration = { ...options, permissions: [...(options.permissions ?? ["records"])] };
     this.sources.set(worker, registration);
-    const raw = createWorkerLink(worker, this.receive, this.diagnostics);
+    // An answer goes to this worker only. Over postOver() it would reach every attached worker.
+    const receive: Receive = (message, source) => {
+      this.receive(message, {
+        ...source,
+        reply: (answer) => {
+          link.post(answer);
+        },
+      });
+    };
+    const raw = createWorkerLink(worker, receive, this.diagnostics);
     const link: Link = {
       ...raw,
       post: (message) => {
@@ -477,6 +551,7 @@ export class Bus {
   destroy(): void {
     this.sources.clear();
     this.directReplies.clear();
+    this.flushQueue = [];
     this.destroyed = true;
     clearInterval(this.rulesPoll);
     this.rulesPoll = undefined;
@@ -621,8 +696,9 @@ export class Bus {
     }
 
     if (registration) {
+      // A flush request asks for the delivery of records, so it needs the same permission.
       const permission =
-        message.t === BUS_TYPE.records
+        message.t === BUS_TYPE.records || message.t === BUS_TYPE.flushRequest
           ? "records"
           : message.t === BUS_TYPE.journey
             ? "journey:write"
@@ -637,7 +713,17 @@ export class Bus {
     }
 
     // Only an upstream owner can publish these control messages.
-    if (child && (message.t === BUS_TYPE.sampling || message.t === BUS_TYPE.securityContext)) {
+    if (
+      child &&
+      (message.t === BUS_TYPE.sampling ||
+        message.t === BUS_TYPE.securityContext ||
+        message.t === BUS_TYPE.flushResult)
+    ) {
+      return false;
+    }
+
+    // Broadcast reaches each tab on the origin, so no tab may ask the others to flush.
+    if (source.link === "broadcast" && message.t === BUS_TYPE.flushRequest) {
       return false;
     }
 
@@ -767,6 +853,18 @@ export class Bus {
         }
         break;
 
+      case BUS_TYPE.flushRequest:
+        // The links that may send records: a sender takes each one, and a forwarder its own
+        // children, never a sibling on its upstream link.
+        if (this.role === "sender" || this.canRelay(source.link)) {
+          this.queueFlush(message, source);
+        }
+        break;
+
+      case BUS_TYPE.flushResult:
+        this.settleFlush(message, source);
+        break;
+
       case BUS_TYPE.tab:
         // Only two different contexts on the broadcast channel can collide. The id comparison
         // picks one of the pair, otherwise both would report the conflict and rename.
@@ -779,6 +877,131 @@ export class Bus {
         }
         break;
     }
+  }
+
+  /**
+   * Queues a child's flush request. The first request runs its flush alone, and the requests
+   * that arrive meanwhile share one flush after it, so a flood has one flush running at most.
+   * @param message The request.
+   * @param source Link and identity of the child, which gets the answer.
+   */
+  private queueFlush(
+    message: Extract<BusMessage, { t: typeof BUS_TYPE.flushRequest }>,
+    source: MessageSource,
+  ): void {
+    const from = source.peer ?? source.link;
+    const own = this.flushQueue.filter((wait) => wait.source === from).length;
+    if (
+      this.flushQueue.length >= BUS_MAX_FLUSH_REQUESTS ||
+      own >= BUS_MAX_FLUSH_REQUESTS_PER_SOURCE
+    ) {
+      this.diagnostics.count("bus.rejected_message");
+      return;
+    }
+
+    const timeoutMs = Math.min(Math.max(message.timeoutMs, 0), FLUSH_TIMEOUT_MAX_MS);
+    this.flushQueue.push({
+      source: from,
+      ends: Date.now() + timeoutMs,
+      answer: (result) => {
+        this.answer(source, {
+          t: BUS_TYPE.flushResult,
+          from: this.contextId,
+          id: message.id,
+          result,
+        });
+      },
+    });
+
+    if (!this.flushing) {
+      void this.runFlushes();
+    }
+  }
+
+  /**
+   * Runs one flush for the waiting requests, and one more while new requests wait. Two flushes
+   * start at least BUS_FLUSH_GAP_MS apart, and a request in the gap joins the next one.
+   */
+  private async runFlushes(): Promise<void> {
+    this.flushing = true;
+
+    try {
+      while (this.flushQueue.length > 0) {
+        const gap = this.flushedAt + BUS_FLUSH_GAP_MS - Date.now();
+        // Wait only when the gap isn't over, so the first request's flush starts at once.
+        if (gap > 0) {
+          await new Promise<void>((resolve) => {
+            unrefTimer(setTimeout(resolve, gap));
+          });
+        }
+
+        // Only destroy() empties the queue during the gap, and then no child waits for an answer.
+        if (this.flushQueue.length === 0) {
+          return;
+        }
+
+        this.flushedAt = Date.now();
+        const waiting = this.flushQueue;
+        this.flushQueue = [];
+        // The latest end, so a short request doesn't cut the others' wait. The flush still ends
+        // once its batches end.
+        const ends = Math.max(...waiting.map((wait) => wait.ends));
+        const result = await this.diagnostics.guardAsync(
+          "pipeline.crashed",
+          "The flush that a child context asked for failed. The child gets no answer.",
+          async () => this.handlers.onFlush?.(Math.max(0, ends - Date.now())),
+        );
+
+        if (result && !this.destroyed) {
+          for (const wait of waiting) {
+            // A child whose reply throws must not cost the next child its answer.
+            this.diagnostics.guard(
+              "bus.send_failed",
+              "The answer to a flush request failed.",
+              () => {
+                wait.answer(result);
+              },
+            );
+          }
+        }
+      }
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  /**
+   * Hands a flush answer to the request that waits for it. Only the upstream owner can answer,
+   * because a sibling on a shared link can read the request's id.
+   * @param message The answer.
+   * @param source Link and identity of the sender of the answer.
+   */
+  private settleFlush(
+    message: Extract<BusMessage, { t: typeof BUS_TYPE.flushResult }>,
+    source: MessageSource,
+  ): void {
+    const settle = this.flushAnswers.get(message.id);
+    // Each view on the OpenFin link reads each answer, so there the owner's identity must be known.
+    const peer =
+      this.ownerPeer === undefined ? source.link !== "openfin" : this.ownerPeer === source.peer;
+    if (!settle || !peer || !this.fromOwner(message.from, source.link)) {
+      return;
+    }
+
+    let result: FlushResult | null;
+    try {
+      result = readFlushResult(message.result);
+    } catch {
+      // A getter on a same-origin parent's object can throw on this second read.
+      result = null;
+    }
+
+    if (!result) {
+      this.diagnostics.count("bus.rejected_message");
+      return;
+    }
+
+    settle(result);
   }
 
   /**

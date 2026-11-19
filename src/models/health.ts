@@ -47,6 +47,51 @@ export interface DeliveryHealth {
   dropped: Partial<Record<LossReason, number>>;
 }
 
+/**
+ * How a `flush()` call ended.
+ * - "complete": every record of the call's snapshot has a final state. `pending` is 0.
+ * - "timeout": `pending` is above 0. The time limit passed, a storage write passed its own
+ *   time limit, or a pause, a shutdown or a rotation ended the wait. A forwarder whose sender
+ *   didn't answer in time also gets it.
+ * - "inactive": the runtime sends nothing now. That is before the first `configure()` call that
+ *   works, after a failed first call, while `enabled` is false and after `shutdown()`. The call
+ *   sends nothing and waits for nothing.
+ */
+export type FlushStatus = "complete" | "timeout" | "inactive";
+
+/**
+ * What a `flush()` call did with the records in memory when it started. Each count is a number
+ * of records, not batches. The counts hold their values at the end of the wait. Work that
+ * continues after it doesn't change them.
+ */
+export interface FlushResult {
+  /** How the call ended. */
+  status: FlushStatus;
+  /**
+   * Records that the transport confirmed. HTTP: a `2xx` answer. Custom transport: a `2xx`
+   * status. Transport worker: the worker confirmed the send. A forwarder gets it from its
+   * sender, and it covers the whole snapshot of the sender.
+   */
+  accepted: number;
+  /** Records that storage holds after a failed or throttled send. The retry engine sends them. */
+  stored: number;
+  /**
+   * Records that the library lost during the call. `onDrop` reports each one, except a record
+   * with no destination, which only counts `record.dropped_no_destination`.
+   */
+  dropped: number;
+  /**
+   * Records that this forwarder handed to its sender in this call. 0 in a sender. The other
+   * counts of a forwarder come from the sender's answer.
+   */
+  forwarded: number;
+  /**
+   * Records with no final state at the end of the wait. A storage write whose result is
+   * unknown counts here. With "inactive", it is the records that wait in memory.
+   */
+  pending: number;
+}
+
 /** State of this SDK copy. A configured console-only runtime can report the status "ready". */
 export interface ObservabilityHealth {
   /** Delivery counts, times and losses of this context. */

@@ -301,6 +301,7 @@ it("logs the order submit", async () => {
 - `records()` returns the records of each accepted batch. `batches()` returns each request, accepted or refused.
 - `respondWith(status, retryAfterMs?)` sets the answer for each later batch. Use it to test a `413`, `429` or `500` answer. The default answer is `200`.
 - `flush()` waits for startup. A record that you log directly after `configure()` is in the flushed batch.
+- `flush()` waits 5000 ms at most. Assert on its result to find a record that did not go out, for example `expect(await flush()).toMatchObject({ status: "complete" })`.
 - After `shutdown()`, each call does nothing until the next `configure()`.
 - Set `storage: { backend: "none" }` in tests. Without it, `shutdown()` stores the unsent records, and the next test can receive them.
 
@@ -535,7 +536,7 @@ See [runtime policies, operational budgets and migration](docs/runtime-policies.
 
 | Function                  | Description                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `flush()`                 | Sends the records held in the pipeline or the forward buffer, and waits for the batches in flight.                                                                                                                                                                                                                                                                                                     |
+| `flush(options?)`         | Sends the records in memory. Then it waits until each record has a final state, or until `timeoutMs` passes. The default is 5000 ms. It returns a `FlushResult` and never rejects. See [Flush result](#flush-result).                                                                                                                                                                                  |
 | `getDiagnosticCounters()` | Returns the count of each diagnostic code.                                                                                                                                                                                                                                                                                                                                                             |
 | `getHealth()`             | Returns the state of this SDK copy. It has the SDK version, the status, the delivery role, the lock and cache state, the issue codes and the policies. The status is `unconfigured`, `disabled`, `starting`, `ready`, `rotating`, `degraded` or `stopped`. The `delivery` block has the delivery state. See [Delivery health](#delivery-health).                                                       |
 | `collectDebugBundle()`    | Returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary. The summary has no headers and no URL query. A plugin or a custom serializer shows only its name. The privacy hooks process the breadcrumbs. A debug buffer record keeps its context attributes. Your app decides where to send it. |
@@ -559,6 +560,43 @@ See [runtime policies, operational budgets and migration](docs/runtime-policies.
 - A security context rotation resets `lastFailureAt`, `consecutiveFailures` and `throttledUntil`. It keeps `lastSendAt` and `dropped`.
 - `getHealth()` does not wait for startup or for the delivery stack to load.
 - The next `configure()` after `shutdown()` starts a new runtime. Each field then starts at zero or null.
+
+### Flush result
+
+`flush(options?)` sends the records in memory and returns a `FlushResult`. Each count is a number of records, not batches.
+
+```ts
+const result = await flush({ timeoutMs: 2000 });
+if (result.status !== "complete") {
+  // Some records have no final state yet. The library still sends or stores them later.
+}
+```
+
+| Field       | Description                                                                                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`    | `"complete"`, `"timeout"` or `"inactive"`.                                                                                                                                                                                                              |
+| `accepted`  | The records that the transport accepted. For HTTP, the server answered `2xx`. For a custom transport, it returned a `2xx` status. For the transport worker, the worker confirmed the send.                                                              |
+| `stored`    | The records that storage keeps after a failed send or a throttle. The retry engine sends them later.                                                                                                                                                    |
+| `dropped`   | The records that the library lost. `onDrop` reports them. A record with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup. |
+| `forwarded` | In a forwarder, the records that the call gave to the sender. In a sender, 0.                                                                                                                                                                           |
+| `pending`   | The records that have no final state at the end of the wait. A store with an unknown result counts here.                                                                                                                                                |
+
+- `timeoutMs` is from 0 to 600000 ms. The default is 5000 ms. The wait includes startup and the load of the delivery stack.
+- A `timeoutMs` that is not a number in the range reports `config.invalid`. Options that are not an object also report it. The call then uses 5000 ms. `null` gives 5000 ms with no report.
+- The snapshot is the records in memory at the call. These are the records in the buffers, the queued batches and the batches in flight. A record that you log after the call is not in the snapshot.
+- Before startup ends, the call waits for startup first. The snapshot then also has the records that you log during that wait.
+- Two calls at the same time each have a snapshot and a time limit. A batch that is in flight at both calls counts in both results.
+- `status` is `"complete"` when `pending` is 0.
+- `status` is `"timeout"` when `pending` is more than 0. The time limit passed, or a store passed its own time limit. A pause, a `shutdown()` or a rotation that ends the wait also gives `"timeout"`.
+- During a rotation, the records of the old context wait for the `pending` rule of the rotation. The result counts them as `pending`.
+- At the time limit, the call returns. The library does not cancel the work. A batch that ends later goes to the server or to storage as usual. The result does not change.
+- `status` is `"inactive"` before the first `configure()` call that works, after a failed first call, while `enabled` is false and after `shutdown()`. The call sends nothing and waits for nothing. `pending` is the count of the records that wait in memory. The other counts are 0.
+- A forwarder gives its records to its sender and asks the sender to flush. The sender gets 90 percent of the time that is left. The rest is for the answer. `status`, `accepted`, `stored`, `dropped` and `pending` come from the answer of the sender. They count all records in the snapshot of the sender. That includes the records of other contexts.
+- A forwarder that gets no valid answer in time counts its forwarded records as `pending`. A sender on an older version does not answer.
+- A forwarder with no owner sends nothing. It counts its records as `dropped` and returns `"complete"` at once.
+- A flush that a frame or a worker asks for does not send the open interval of the metrics and the profiler of its sender.
+- The batches in storage from earlier failures are not in the snapshot. `getHealth().delivery.stored` counts them. The call starts no drain.
+- Replay segments and the exit flush are not in the snapshot.
 
 ### Shutdown options
 

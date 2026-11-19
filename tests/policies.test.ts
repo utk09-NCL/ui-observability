@@ -548,7 +548,7 @@ describe("delivery cancellation and owner adoption", () => {
     let fail!: (reason: Error) => void;
     const send = vi.fn(
       () =>
-        new Promise<void>((_resolve, reject) => {
+        new Promise<number>((_resolve, reject) => {
           fail = reject;
         }),
     );

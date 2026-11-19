@@ -63,13 +63,16 @@ More facts about the path.
 - A throttled transport does not get the batch. `dispatch()` stores the batch and does not change `attempts`.
 - `store()` returns `stored`, `not_stored` or `unknown`. `dispatch()` selects the text of `transport.throttled` from that result.
 - A failed send gives the batch to `RetryEngine.storeFailed()` with `attempts + 1`.
-- `RetryEngine.storeFailed()` returns the result, which is `stored`, `split`, `rejected` or `not_stored`. `dispatch()` reports that result with `transport.http_error`.
+- `RetryEngine.storeFailed()` returns the result, which is `stored`, `split`, `rejected` or `not_stored`, and the count of records that storage holds. `dispatch()` reports that result with `transport.http_error`.
 - The result is `unknown` when a storage call throws or does not settle in `STORAGE_DEADLINE_MS`. The report then says that the library could not confirm the store. A late save can still complete. The retry engine then sends the batch in a later drain.
 - `StorageAdapter.save()` returns `true` only when the batch is in storage at the end of the save. A save prunes after its write, and the prune can remove the new batch. After a quota error, `LocalStorageStorage` and `IndexedDbStorage` evict old batches and write again. That second write runs no prune.
 - `store()`, `storeFailed()` and the `persist` rule call `nudge()` only when storage kept a batch.
 - The retry engine has one timer. Each schedule path calls `schedule()`, which clears the timer first.
 - A `hidden` document gets a normal flush through `LogPipeline.flushPending()`. The other exit reasons call `LogPipeline.drainForExit()`.
 - An exit batch above `BEACON_LIMIT_BYTES` goes to the emergency queue. The next page load moves it to storage in `Sender.importEmergency()`.
+- The public `flush()` calls `ObservabilityRuntime.flush()`. In a sender, it calls `Sender.flushUntil()` and then `LogPipeline.flushUntil()`. That claims the stream buffers and keeps the open batches as the snapshot. `run()` writes the end of each batch to its `Pending` entry, and the call adds the ends up when its wait ends.
+- In a forwarder, `flush()` gives the forward buffer to `Bus.sendRecords()`. Then `Bus.requestFlush()` posts `ui-observability.message.flush-request` on the upstream link. The sender's bus calls the runtime's `flush()` and answers with `ui-observability.message.flush-result`.
+- `shutdown()`, `Sender.retire()` and the hidden-page flush still call `LogPipeline.flushPending()`. It has no deadline of its own and returns no counts.
 
 The delivery promises are in [Delivery Guarantees](delivery-guarantees.md). Change that page with each change to this path.
 
@@ -331,6 +334,20 @@ Apply the rule to each new wait across a context boundary.
 A rotation also has a deadline. `Sender.retire()` puts `timeoutMs` on the old flush with `withDeadline()`. After the deadline it reports `transport.timeout` and calls `transport.stop()`.
 
 The exit flush has no cancellation. It never awaits, so it has nothing to cancel.
+
+### Flush deadline
+
+This section comes from the code after commit `a60b4e5`.
+
+- `ObservabilityRuntime.flush()` checks the options and calls `flushFor()`. `flushFor()` starts one timer of `timeoutMs`. The wait for startup, the wait for a sender load, the wait in `LogPipeline.flushUntil()` and `Bus.requestFlush()` share it. The call clears the timer when it returns.
+- The app's `flush()` sends the open interval of the meter and the profiler first. A flush that the bus starts for a child does not.
+- At the deadline the call returns. Nothing is cancelled. A batch that ends later still writes its end to its `Pending` entry, but the call does not read it again.
+- A forwarder asks its sender for `FLUSH_REQUEST_SHARE` of the time that is left, 90 percent, rounded down. It keeps the rest for the answer. The bus of the sender clamps the time to 0 to `FLUSH_TIMEOUT_MAX_MS` and runs `flushFor()` with it. Each hop of a chain thus keeps a margin, and the rule of the previous section applies.
+- The bus keeps `flushAnswers`, the requests of this forwarder that wait for an answer. It removes each entry when its wait ends.
+- The bus keeps `flushQueue`, the requests of children that wait for the next flush. `BUS_MAX_FLUSH_REQUESTS` limits all of them. `BUS_MAX_FLUSH_REQUESTS_PER_SOURCE` limits the requests of one source. `destroy()` empties the queue.
+- `runFlushes()` runs one flush for the first request. Then it runs one flush for all requests that wait, with the latest end. Two flushes start at least `BUS_FLUSH_GAP_MS` apart. A request in the gap joins the next flush.
+- During a rotation, `retiring` holds the sender that `Sender.retire()` stops. Its records count as `pending` in a flush.
+- `RetryEngine.storeFailed()` gives the count of records that storage holds. A split that storage keeps only in part thus counts one half as `stored` and the other half as `dropped`.
 
 ## Modules and tests for common changes
 

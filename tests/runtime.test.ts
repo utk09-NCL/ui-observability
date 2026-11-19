@@ -1687,7 +1687,7 @@ describe("runtime routing as a forwarder", () => {
     configure(base);
     await ready();
     vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => 0);
 
     const log = getLogger("test");
     log.info("one");
@@ -1704,7 +1704,7 @@ describe("runtime routing as a forwarder", () => {
     configure(base);
     await ready();
     vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => 0);
 
     getLogger("test").info("bye");
     await shutdown();
@@ -1716,7 +1716,7 @@ describe("runtime routing as a forwarder", () => {
     configure(base);
     await ready();
     vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => 0);
 
     getLogger("test").info("buffered");
     await flush();
@@ -1728,7 +1728,7 @@ describe("runtime routing as a forwarder", () => {
     configure(base);
     await ready();
     vi.spyOn(bus(), "getRole").mockReturnValue("forwarder");
-    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => undefined);
+    const send = vi.spyOn(bus(), "sendRecords").mockImplementation(() => 0);
 
     await flush();
 
@@ -1777,7 +1777,15 @@ describe("runtime flush as a sender", () => {
     vi.spyOn(storage, "save").mockRejectedValue(new Error("quota exceeded"));
     getLogger("test").info("pending");
 
-    await expect(flush()).resolves.toBeUndefined();
+    // A late save can still keep the batch, so the record has no final state.
+    await expect(flush()).resolves.toEqual({
+      status: "timeout",
+      accepted: 0,
+      stored: 0,
+      dropped: 0,
+      forwarded: 0,
+      pending: 1,
+    });
 
     expect(getDiagnosticCounters()["storage.degraded"]).toBe(1);
   });

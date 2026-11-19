@@ -565,6 +565,20 @@ export interface ShutdownOptions {
 }
 
 /**
+ * How long `flush()` waits. Options that aren't an object report `config.invalid` and use the
+ * default. null or undefined options use the default with no report.
+ */
+export interface FlushOptions {
+  /**
+   * How long to wait, in milliseconds. 0 to 600000. The wait also covers startup and the load
+   * of the delivery stack. A value that isn't a number in the range reports `config.invalid`
+   * and uses the default. null uses the default with no report.
+   * @default 5000
+   */
+  timeoutMs?: number;
+}
+
+/**
  * What the library instruments automatically. By default, only `errors` and `rejections`
  * are on. A capture that takes an options object also takes true for its defaults.
  */

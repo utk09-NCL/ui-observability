@@ -28,7 +28,7 @@ import { HttpTransport } from "../transport/http-transport";
 import { RetryEngine } from "../transport/retry-engine";
 import type { BatchTransport, StatusTransport } from "../transport/status-transport";
 import type { Diagnostics } from "./diagnostics";
-import { LogPipeline } from "./pipeline";
+import { type FlushCounts, LogPipeline } from "./pipeline";
 import { applyRemote, parseRemoteRules } from "./remote-rules";
 import type { RemoteSlot } from "./remote-sampling";
 
@@ -88,12 +88,14 @@ class SendOutcomes implements BatchTransport {
    * Sends one batch and counts the result.
    * @param batch Batch to send.
    * @param onKeepalive Runs when one of the batch's requests starts with keepalive.
+   * @returns Promise that resolves to the records lost in a send that ends without an error.
    * @throws TransportError when the batch isn't accepted.
    */
-  async send(batch: LogBatch, onKeepalive?: () => void): Promise<void> {
+  async send(batch: LogBatch, onKeepalive?: () => void): Promise<number> {
     const before = this.transport.lastSendAt();
+    let lost: number;
     try {
-      await this.transport.send(batch, onKeepalive);
+      lost = await this.transport.send(batch, onKeepalive);
     } catch (error) {
       this.failures++;
       this.failedAt = Date.now();
@@ -107,6 +109,8 @@ class SendOutcomes implements BatchTransport {
       this.failures = 0;
       this.onSent(at);
     }
+
+    return lost;
   }
 
   /**
@@ -330,6 +334,16 @@ export class Sender {
    */
   async flush(): Promise<void> {
     await this.pipeline.flushPending();
+  }
+
+  /**
+   * Sends the records in the stream buffers, then waits for this call's batches until each one
+   * ends or the deadline passes.
+   * @param expired Resolves at the caller's deadline.
+   * @returns The records of the call's batches by their state when the wait ends.
+   */
+  flushUntil(expired: Promise<void>): Promise<FlushCounts> {
+    return this.pipeline.flushUntil(expired);
   }
 
   /**

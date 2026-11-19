@@ -20,11 +20,12 @@ export type {
   ReplaySegment,
 } from "./models/replay";
 import type {
+  FlushOptions,
   SecurityContextUpdate,
   SecurityContextRotationOptions,
   ShutdownOptions,
 } from "./models/config";
-import type { DebugBundle, ObservabilityHealth } from "./models/health";
+import type { DebugBundle, FlushResult, ObservabilityHealth } from "./models/health";
 import type { FrameOptions, SourceOptions } from "./models/bus";
 export type { FrameOptions, SourceOptions, BusPermission } from "./models/bus";
 import type {
@@ -54,6 +55,7 @@ export type {
   DebugBufferOptions,
   DeliveryOptions,
   DiagnosticsOptions,
+  FlushOptions,
   InteractionOptions,
   JourneyOptions,
   LimitsOptions,
@@ -81,7 +83,13 @@ export type {
   TransportRequest,
   TransportResponse,
 } from "./models/config";
-export type { DebugBundle, DeliveryHealth, ObservabilityHealth } from "./models/health";
+export type {
+  DebugBundle,
+  DeliveryHealth,
+  FlushResult,
+  FlushStatus,
+  ObservabilityHealth,
+} from "./models/health";
 export type { WorkerLike } from "./bus/links";
 export type { DiagnosticCode, DiagnosticEvent } from "./core/diagnostics";
 export type { DropSummary, LossReason } from "./models/drop";
@@ -574,11 +582,20 @@ export function getTraceHeaders(): Record<string, string> {
 }
 
 /**
- * Builds any deferred calls and flushes the pending batches of every pipeline stream.
- * @returns Promise that resolves once the pipeline has processed the queued batches.
+ * Builds any deferred calls and the open metric interval, sends the records in memory, and
+ * waits until each one has a final state or the time limit passes. The snapshot is the records
+ * in memory at the call. A record logged later isn't in it. Before startup ends, the call waits
+ * for startup and the delivery stack first, and the snapshot then also holds the records logged
+ * during that wait. A forwarder hands its records to its sender and asks the sender to flush.
+ * At the limit the call returns, and the work goes on in the background. The stored batches
+ * from earlier failures and the replay segments are outside the snapshot. Before the first
+ * `configure()` call that works, during a pause and after `shutdown()`, it sends nothing and
+ * returns the status "inactive" at once.
+ * @param options How long to wait. `timeoutMs` is 0 to 600000 ms, and the default is 5000.
+ * @returns Promise that resolves to the counts of the snapshot's records. It never rejects.
  */
-export function flush(): Promise<void> {
-  return requireRuntime().flush();
+export function flush(options?: FlushOptions): Promise<FlushResult> {
+  return requireRuntime().flush(options);
 }
 
 /**

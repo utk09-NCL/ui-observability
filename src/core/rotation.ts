@@ -3,7 +3,7 @@
 // Changes the security context. The runtime loads this module on the first
 // rotateSecurityContext(), because an app rotates rarely and the main graph shouldn't carry it.
 
-import { ROUTING_KEYS, ROUTING_RESET } from "../constants";
+import { FLUSH_TIMEOUT_MAX_MS, FLUSH_TIMEOUT_MS, ROUTING_KEYS, ROUTING_RESET } from "../constants";
 import type { LogBatch } from "../models/batch";
 import type {
   ObservabilityConfig,
@@ -20,9 +20,6 @@ import type { Diagnostics } from "./diagnostics";
 import type { ObservabilityRuntime } from "./runtime";
 import type { Sender } from "./sender";
 import { clearStored, keepStored, type StoreAccess } from "../storage/stored-context";
-
-/** Longest wait for the old context's flush, in milliseconds. */
-const MAX_TIMEOUT_MS = 600_000;
 
 /** What to do with the old context's records. */
 type PendingRule = NonNullable<SecurityContextRotationOptions["pending"]>;
@@ -186,10 +183,9 @@ function validOptions(update: SecurityContextUpdate, pending: string, timeoutMs:
     // A string would give one attribute for each character.
     isObject(update.context ?? {}) &&
     PENDING_RULES.includes(pending) &&
-    // A browser timer fires at once for a delay above 2^31 - 1 ms, so the wait has a ceiling.
     Number.isFinite(timeoutMs) &&
     timeoutMs >= 0 &&
-    timeoutMs <= MAX_TIMEOUT_MS &&
+    timeoutMs <= FLUSH_TIMEOUT_MAX_MS &&
     (update.id === undefined || (typeof update.id === "string" && update.id.length > 0))
   );
 }
@@ -211,7 +207,7 @@ async function planRotation(
   // built, and no late sender can drain the old batches afterwards.
   await host.senderLoaded();
   const pending = options.pending ?? "discard";
-  const timeoutMs = options.timeoutMs ?? 5000;
+  const timeoutMs = options.timeoutMs ?? FLUSH_TIMEOUT_MS;
 
   if (!validOptions(update, pending, timeoutMs)) {
     throw new Error("Invalid security-context rotation options.");

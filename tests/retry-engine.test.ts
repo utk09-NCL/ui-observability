@@ -554,7 +554,7 @@ describe("RetryEngine splitting", () => {
 
     const outcome = await engine.storeFailed(batch("big", { records: 4 }), refused);
 
-    expect(outcome).toBe("split");
+    expect(outcome).toEqual({ outcome: "split", stored: 4 });
     const stored = await storage.take(10);
     expect(stored).toHaveLength(2);
     expect(stored.every((one) => one.records.length === 2)).toBe(true);
@@ -569,7 +569,10 @@ describe("RetryEngine splitting", () => {
 
     const refused = new TransportError("permanent", "400", 400);
 
-    expect(await engine.storeFailed(batch("gone"), refused)).toBe("rejected");
+    expect(await engine.storeFailed(batch("gone"), refused)).toEqual({
+      outcome: "rejected",
+      stored: 0,
+    });
     expect(await storage.count()).toBe(0);
     engine.stop();
   });
@@ -579,7 +582,7 @@ describe("RetryEngine splitting", () => {
 
     const outcome = await engine.storeFailed(batch("kept"), new Error("network"));
 
-    expect(outcome).toBe("stored");
+    expect(outcome).toEqual({ outcome: "stored", stored: 1 });
     expect((await storage.take(10)).map((one) => one.id)).toEqual(["kept"]);
     // The nudge is the only thing that arms a timer on an engine that never started.
     expect(vi.getTimerCount()).toBe(1);
@@ -590,7 +593,10 @@ describe("RetryEngine splitting", () => {
     const { engine, storage, handler } = makeEngine();
     const refused = new TransportError("too_large", "413", 413);
 
-    expect(await engine.storeFailed(batch("one"), refused)).toBe("rejected");
+    expect(await engine.storeFailed(batch("one"), refused)).toEqual({
+      outcome: "rejected",
+      stored: 0,
+    });
     expect(await storage.count()).toBe(0);
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ code: "transport.dropped_permanent" }),
@@ -606,7 +612,7 @@ describe("RetryEngine splitting", () => {
 
     const outcome = await engine.storeFailed(lost, new Error("network"));
 
-    expect(outcome).toBe("not_stored");
+    expect(outcome).toEqual({ outcome: "not_stored", stored: 0 });
     expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "not_stored" }, [lost]);
     // Storage holds nothing, so an earlier drain would find nothing to send.
     expect(vi.getTimerCount()).toBe(0);
@@ -628,21 +634,21 @@ describe("RetryEngine splitting", () => {
 
     // The store is full of actions, so the eviction removes the new batch. A "stored" answer
     // would promise a resend while onDrop reports the same batch as lost.
-    expect(outcome).toBe("not_stored");
+    expect(outcome).toEqual({ outcome: "not_stored", stored: 0 });
     expect(onGap).toHaveBeenCalledWith({ batches: 1, records: 1, reason: "over_capacity" }, [lost]);
     expect((await storage.take(10)).map((one) => one.id)).toEqual(["audit"]);
     expect(vi.getTimerCount()).toBe(0);
     engine.stop();
   });
 
-  it("says the batch isn't stored when storage keeps only one half of a split", async () => {
+  it("says the batch isn't stored when storage keeps only one half of a split, and counts the half it keeps", async () => {
     const { engine, storage } = makeEngine();
     const refused = new TransportError("too_large", "413", 413);
     vi.spyOn(storage, "save").mockResolvedValueOnce(false);
 
     const outcome = await engine.storeFailed(batch("big", { records: 4 }), refused);
 
-    expect(outcome).toBe("not_stored");
+    expect(outcome).toEqual({ outcome: "not_stored", stored: 2 });
     expect(await storage.count()).toBe(1);
     // The half that storage kept still needs a drain.
     expect(vi.getTimerCount()).toBe(1);

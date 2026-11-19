@@ -90,7 +90,17 @@ export type BusMessage =
    * of the forwarder that asked. The receiver validates `rules` again. Null rules end the
    * forwarder's copy.
    */
-  | { t: typeof BUS_TYPE.sampling; from: string; to: string; rules: unknown };
+  | { t: typeof BUS_TYPE.sampling; from: string; to: string; rules: unknown }
+  /**
+   * A forwarder's request to flush. `id` names the request, and `timeoutMs` is the time the
+   * forwarder has left. The receiver clamps it to its own range.
+   */
+  | { t: typeof BUS_TYPE.flushRequest; from: string; id: string; timeoutMs: number }
+  /**
+   * The answer to a flush request, with the request's id. The result comes from another realm,
+   * so the receiver checks each field before it uses one.
+   */
+  | { t: typeof BUS_TYPE.flushResult; from: string; id: string; result: unknown };
 
 /** Transport envelope wrapping bus messages with a protocol version tag. */
 export interface BusEnvelope {
