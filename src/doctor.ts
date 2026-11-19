@@ -39,13 +39,19 @@ const EXIT_USAGE = 2;
 
 /** Printed for a wrong command. */
 const USAGE =
-  'Usage: uiobs doctor <url> --origin <origin> [--replay] [--header "Name: value"]. An origin has no path and no trailing slash. With --replay, the URL is a replay endpoint.';
+  'Usage: uiobs doctor <url> --origin <origin> [--replay] [--credentials include] [--header "Name: value"]. An origin has no path and no trailing slash. With --replay, the URL is a replay endpoint. With --credentials include, a * in a CORS header fails.';
 
 /** Adds a request header, e.g. an Authorization header. */
 const HEADER_FLAG = "--header";
 
 /** Says that the URL is a replay endpoint, so the tool sends segments instead of batches. */
 const REPLAY_FLAG = "--replay";
+
+/** Says that the app sets `credentials: "include"`, so a browser refuses a * in a CORS header. */
+const CREDENTIALS_FLAG = "--credentials";
+
+/** The only value of CREDENTIALS_FLAG. */
+const CREDENTIALS_INCLUDE = "include";
 
 /**
  * Size of the event in the large test segment, in characters. The first segment of a real
@@ -68,6 +74,27 @@ const HIDDEN = "<hidden>";
 /** Response header that lists the headers a page can read. */
 const EXPOSE_HEADERS = "Access-Control-Expose-Headers";
 
+/** Response header that names the origin that may read the answer. */
+const ALLOW_ORIGIN = "Access-Control-Allow-Origin";
+
+/** Response header of a preflight that lists the request headers the server accepts. */
+const ALLOW_HEADERS = "Access-Control-Allow-Headers";
+
+/** Response header that lets a browser send and read an answer with credentials. */
+const ALLOW_CREDENTIALS = "Access-Control-Allow-Credentials";
+
+/** Why a * in Access-Control-Allow-Origin fails with credentials. */
+const STAR_REFUSED = 'A browser refuses * with credentials: "include".';
+
+/** Why a * in a list of header names fails with credentials. */
+const STAR_PLAIN = 'A browser does not read * as a wildcard with credentials: "include".';
+
+/** Why a * in Access-Control-Allow-Headers fails for Authorization, with or without credentials. */
+const STAR_AUTHORIZATION = "A browser never lets * cover authorization.";
+
+/** Ends the note of a PASS line that only a * earned, so the run without credentials says so. */
+const STAR_HINT = "Add --credentials include to check that case.";
+
 /** The library's request headers. The server must allow every one of them. */
 const REQUEST_HEADERS = [
   HEADER_CONTENT_TYPE,
@@ -81,6 +108,15 @@ const RESERVED_HEADERS = [...REQUEST_HEADERS, "origin"];
 
 /** Response headers that only an optional feature reads. */
 const OPTIONAL_EXPOSED = [HEADER_SAMPLING, HEADER_DATE].map((name) => name.toLowerCase());
+
+/** The one request header that a * in Access-Control-Allow-Headers never covers. */
+const NON_WILDCARD_HEADER = "authorization";
+
+/** The response header that the library can't work without when it is hidden. */
+const REQUIRED_EXPOSED = [HEADER_RETRY_AFTER.toLowerCase()];
+
+/** Every response header that the library reads. */
+const WANTED_EXPOSED = [...REQUIRED_EXPOSED, ...OPTIONAL_EXPOSED];
 
 /** The result of one ingest contract rule. */
 export interface DoctorResult {
@@ -137,14 +173,31 @@ async function request(
   }
 }
 
-/** Returns the wanted values a comma-separated header leaves out. A wildcard covers them all. */
-function absent(response: Response, name: string, wanted: readonly string[]): string[] {
-  const values = (response.headers.get(name) ?? "")
+/** Returns the lowercase values of a comma-separated response header. */
+function valuesOf(response: Response, name: string): string[] {
+  return (response.headers.get(name) ?? "")
     .toLowerCase()
     .split(",")
     .map((value) => value.trim());
+}
 
-  return values.includes("*") ? [] : wanted.filter((value) => !values.includes(value));
+/**
+ * Returns the wanted values a comma-separated header leaves out. With wildcard, a * covers them
+ * all but Authorization, which the Fetch standard never lets a * cover. A run with credentials
+ * passes false, because a browser reads * as a plain name then.
+ */
+function absent(
+  response: Response,
+  name: string,
+  wanted: readonly string[],
+  wildcard: boolean,
+): string[] {
+  const values = valuesOf(response, name);
+  const star = wildcard && values.includes("*");
+
+  return wanted.filter(
+    (value) => !values.includes(value) && !(star && value !== NON_WILDCARD_HEADER),
+  );
 }
 
 /** Checks an answer's status. */
@@ -180,6 +233,8 @@ interface Target {
   custom: Readonly<Record<string, string>>;
   /** Lowercase names of every header a POST carries. The preflight asks for them. */
   requestHeaders: string[];
+  /** True with `--credentials include`. A browser then refuses a * in a CORS header. */
+  credentials: boolean;
 }
 
 /** Sends one POST the way the library does. Extra headers go on top. */
@@ -191,21 +246,76 @@ type Post = (
 ) => Promise<Answer>;
 
 /** Builds the target for one run. */
-function targetOf(url: string, origin: string, custom: Readonly<Record<string, string>>): Target {
+function targetOf(
+  url: string,
+  origin: string,
+  custom: Readonly<Record<string, string>>,
+  credentials: boolean,
+): Target {
   const customNames = Object.keys(custom).map((name) => name.toLowerCase());
 
-  return { url, origin, custom, requestHeaders: [...REQUEST_HEADERS, ...customNames] };
+  return {
+    url,
+    origin,
+    custom,
+    requestHeaders: [...REQUEST_HEADERS, ...customNames],
+    credentials,
+  };
 }
 
 /** Builds the test that an answer lets the app's origin read it. */
-function originTest(origin: string): AnswerTest {
+function originTest({ origin, credentials }: Target): AnswerTest {
   return (response) => {
-    const allowed = response.headers.get("Access-Control-Allow-Origin");
+    const allowed = response.headers.get(ALLOW_ORIGIN);
 
-    return allowed === origin || allowed === "*"
-      ? undefined
-      : `Access-Control-Allow-Origin is ${String(allowed)}. It must allow ${origin}.`;
+    if (allowed === "*" && credentials) {
+      return `${ALLOW_ORIGIN} is *. ${STAR_REFUSED} It must be ${origin}.`;
+    }
+
+    if (allowed !== origin && allowed !== "*") {
+      return `${ALLOW_ORIGIN} is ${String(allowed)}. It must allow ${origin}.`;
+    }
+
+    // A browser rejects a credentialed answer without this header. The library then sees a
+    // network error and sends the batch again.
+    return credentials ? allowsCredentials(response) : undefined;
   };
+}
+
+/** Checks that an answer lets the browser send and read credentials. */
+const allowsCredentials: AnswerTest = (response) => {
+  const allowed = response.headers.get(ALLOW_CREDENTIALS);
+
+  return allowed === "true"
+    ? undefined
+    : `${ALLOW_CREDENTIALS} is ${String(allowed)}. It must be true with credentials: "include".`;
+};
+
+/** Returns the origin an answer allows, or null for a failed request or a missing header. */
+function allowedOrigin(answer: Answer): string | null {
+  return typeof answer === "string" ? null : answer.headers.get(ALLOW_ORIGIN);
+}
+
+/**
+ * Returns the note for a PASS that only a * earned. With credentials the rule fails on that *,
+ * so the note is for the run without them.
+ */
+function starNote(earnedByStar: boolean, { credentials }: Target, reason = STAR_REFUSED): string {
+  return earnedByStar && !credentials ? ` ${reason} ${STAR_HINT}` : "";
+}
+
+/** Returns the reason that a * doesn't help a list of header names with credentials, or "". */
+function starWhy(response: Response, name: string, { credentials }: Target): string {
+  return credentials && valuesOf(response, name).includes("*") ? ` ${STAR_PLAIN}` : "";
+}
+
+/** True when a list of header names passes only because of its *: it has one and misses a name. */
+function coveredByStar(answer: Answer, name: string, wanted: readonly string[]): boolean {
+  return (
+    typeof answer !== "string" &&
+    valuesOf(answer, name).includes("*") &&
+    absent(answer, name, wanted, false).length > 0
+  );
 }
 
 /** Sends the preflight a browser sends before the library's POST. */
@@ -222,24 +332,35 @@ function sendPreflight({ url, origin, requestHeaders }: Target): Promise<Answer>
 
 /** Builds the two results every preflight gives. */
 function preflightResults(preflight: Answer, target: Target): DoctorResult[] {
+  const originNote = starNote(allowedOrigin(preflight) === "*", target);
+  const headersByStar = coveredByStar(preflight, ALLOW_HEADERS, target.requestHeaders);
+  const headersNote = starNote(headersByStar, target, STAR_PLAIN);
+
   return [
     judge(
       "preflight",
       preflight,
-      "The server permits POST from this origin.",
+      `The server permits POST from this origin.${originNote}`,
       statusProblem,
-      originTest(target.origin),
+      originTest(target),
     ),
     judge(
       "allowed headers",
       preflight,
-      "The server allows each request header of the library.",
+      `The server allows each request header of the library.${headersNote}`,
       (response) => {
-        const missing = absent(response, "Access-Control-Allow-Headers", target.requestHeaders);
+        const missing = absent(response, ALLOW_HEADERS, target.requestHeaders, !target.credentials);
+        if (missing.length === 0) {
+          return undefined;
+        }
 
-        return missing.length > 0
-          ? `Access-Control-Allow-Headers must include ${missing.join(", ")}.`
-          : undefined;
+        const why = starWhy(response, ALLOW_HEADERS, target);
+        const authorization =
+          missing.includes(NON_WILDCARD_HEADER) && valuesOf(response, ALLOW_HEADERS).includes("*")
+            ? ` ${STAR_AUTHORIZATION}`
+            : "";
+
+        return `${ALLOW_HEADERS} must include ${missing.join(", ")}.${why}${authorization}`;
       },
     ),
   ];
@@ -280,15 +401,18 @@ async function postZipped(post: Post, id: string, body: string): Promise<Answer>
  * @param url Ingest URL.
  * @param origin The app's origin.
  * @param custom The app's headers for each batch, e.g. an Authorization header.
+ * @param credentials True when the app sets `credentials: "include"`. A * in a CORS header then
+ * fails, and the preflight must allow credentials.
  * @returns One result per rule.
  */
 export async function runDoctor(
   url: string,
   origin: string,
   custom: Readonly<Record<string, string>> = {},
+  credentials = false,
 ): Promise<DoctorResult[]> {
-  const target = targetOf(url, origin, custom);
-  const originProblem = originTest(origin);
+  const target = targetOf(url, origin, custom, credentials);
+  const originProblem = originTest(target);
   const preflight = await sendPreflight(target);
 
   const { body, contentType } = otlpSerializer.serialize([testRecord()]);
@@ -314,16 +438,40 @@ export async function runDoctor(
           body,
         });
 
-  const hidden = typeof first === "string" ? [] : absent(first, EXPOSE_HEADERS, OPTIONAL_EXPOSED);
-  const note = hidden.length > 0 ? ` Optional headers stay hidden: ${hidden.join(", ")}.` : "";
+  const hidden =
+    typeof first === "string"
+      ? []
+      : absent(first, EXPOSE_HEADERS, OPTIONAL_EXPOSED, !target.credentials);
+  const hiddenNote =
+    hidden.length > 0 ? ` Optional headers stay hidden: ${hidden.join(", ")}.` : "";
+  const exposedNote = starNote(
+    coveredByStar(first, EXPOSE_HEADERS, WANTED_EXPOSED),
+    target,
+    STAR_PLAIN,
+  );
 
   return [
     ...preflightResults(preflight, target),
-    judge("test batch", first, "The server accepted a test batch.", statusProblem, originProblem),
-    judge("exposed headers", first, `The server exposes Retry-After.${note}`, (response) =>
-      absent(response, EXPOSE_HEADERS, [HEADER_RETRY_AFTER.toLowerCase()]).length > 0
-        ? `${EXPOSE_HEADERS} must include retry-after.`
-        : undefined,
+    judge(
+      "test batch",
+      first,
+      `The server accepted a test batch.${starNote(allowedOrigin(first) === "*", target)}`,
+      statusProblem,
+      originProblem,
+    ),
+    judge(
+      "exposed headers",
+      first,
+      `The server exposes Retry-After.${hiddenNote}${exposedNote}`,
+      (response) => {
+        if (absent(response, EXPOSE_HEADERS, REQUIRED_EXPOSED, !target.credentials).length === 0) {
+          return undefined;
+        }
+
+        const why = starWhy(response, EXPOSE_HEADERS, target);
+
+        return `${EXPOSE_HEADERS} must include retry-after.${why}`;
+      },
     ),
     judge("gzip", zipped, "The server accepted a gzip batch.", statusProblem),
     judge(
@@ -354,15 +502,17 @@ export async function runDoctor(
  * @param url Replay endpoint URL, the value of replay.endpoint.
  * @param origin The app's origin.
  * @param custom The app's replay.headers, e.g. an Authorization header.
+ * @param credentials True when the app sets `credentials: "include"`. See runDoctor().
  * @returns One result per rule.
  */
 export async function runReplayDoctor(
   url: string,
   origin: string,
   custom: Readonly<Record<string, string>> = {},
+  credentials = false,
 ): Promise<DoctorResult[]> {
-  const target = targetOf(url, origin, custom);
-  const originProblem = originTest(origin);
+  const target = targetOf(url, origin, custom, credentials);
+  const originProblem = originTest(target);
   const preflight = await sendPreflight(target);
 
   const replayId = crypto.randomUUID();
@@ -403,7 +553,7 @@ export async function runReplayDoctor(
     judge(
       "test segment",
       first,
-      "The server accepted a test segment.",
+      `The server accepted a test segment.${starNote(allowedOrigin(first) === "*", target)}`,
       statusProblem,
       originProblem,
     ),
@@ -427,15 +577,30 @@ export async function runReplayDoctor(
   ];
 }
 
+/** The options after the origin and the replay flag. */
+interface Options {
+  /** The headers of the --header options. */
+  headers: Record<string, string>;
+  /** True with `--credentials include`. */
+  credentials: boolean;
+}
+
 /**
- * Parses the header options. Each one is the flag followed by a "Name: value" argument.
+ * Parses the options. Each one is a flag and its value: a "Name: value" argument for a header,
+ * or `include` for the credentials.
  * @param args The arguments after the origin.
- * @returns The headers, or undefined if an option is malformed.
+ * @returns The options, or undefined if an option is malformed.
  */
-function customHeaders(args: readonly string[]): Record<string, string> | undefined {
+function parseOptions(args: readonly string[]): Options | undefined {
   const pairs: [string, string][] = [];
+  let credentials = false;
 
   for (let index = 0; index < args.length; index += 2) {
+    if (args[index] === CREDENTIALS_FLAG && args[index + 1] === CREDENTIALS_INCLUDE) {
+      credentials = true;
+      continue;
+    }
+
     // A flag without a value leaves undefined here, which exec() treats as text with no colon.
     const match = args[index] === HEADER_FLAG ? HEADER_PATTERN.exec(args[index + 1]) : null;
 
@@ -446,7 +611,7 @@ function customHeaders(args: readonly string[]): Record<string, string> | undefi
     pairs.push([match[1], match[2]]);
   }
 
-  return Object.fromEntries(pairs);
+  return { headers: Object.fromEntries(pairs), credentials };
 }
 
 /** True for an HTTP URL without a user name or password. Result lines print the URL. */
@@ -460,7 +625,14 @@ function isHttpUrl(value: string): boolean {
 }
 
 /** Command line words that are safe to print. */
-const SHOWN_WORDS = ["doctor", "--origin", REPLAY_FLAG, HEADER_FLAG];
+const SHOWN_WORDS = [
+  "doctor",
+  "--origin",
+  REPLAY_FLAG,
+  HEADER_FLAG,
+  CREDENTIALS_FLAG,
+  CREDENTIALS_INCLUDE,
+];
 
 /**
  * Turns an argument into something safe to print in the usage message. An argument can be a
@@ -497,23 +669,24 @@ export async function main(
   print: (line: string) => void,
 ): Promise<number> {
   const [command, url, flag, origin, ...rest] = args;
-  // The replay flag comes right after the origin, before any header option.
+  // The replay flag comes right after the origin, before any other option.
   const replay = rest[0] === REPLAY_FLAG;
-  const headers = customHeaders(replay ? rest.slice(1) : rest);
+  const options = parseOptions(replay ? rest.slice(1) : rest);
 
   if (
     command !== "doctor" ||
     flag !== "--origin" ||
     !isHttpUrl(url) ||
     !isOrigin(origin) ||
-    !headers
+    !options
   ) {
     print(USAGE);
     print(`Received: ${JSON.stringify(args.map(shownArgument))}`);
     return EXIT_USAGE;
   }
 
-  const results = await (replay ? runReplayDoctor : runDoctor)(url, origin, headers);
+  const { headers, credentials } = options;
+  const results = await (replay ? runReplayDoctor : runDoctor)(url, origin, headers, credentials);
 
   for (const { rule, pass, detail } of results) {
     print(`${pass ? "PASS" : "FAIL"} ${rule}: ${detail}`);

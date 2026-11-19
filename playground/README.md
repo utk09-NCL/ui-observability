@@ -95,16 +95,16 @@ A record line has these fields, from left to right:
 
 The [Attribute reference](../docs/attributes.md) describes each attribute.
 
-| Line                                                                  | Meaning                                                                                                                          |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `[batch] batch=<id> records=<n>`                                      | One request to `/v1/logs`. The next lines are its records.                                                                       |
-| `[metrics] batch=<id> points=<n>`                                     | One request to `/v1/metrics`. Each next line is one point with its type, value, unit and attributes.                             |
-| `[traces] batch=<id> spans=<n>`                                       | One request to `/v1/traces`. `[client]` is an HTTP request. `[internal]` is another span. `parent=-` is a root span.             |
-| `[replay] replay=<id> sequence=<n> events=<n> bytes=<n> session=<id>` | One segment of a session replay.                                                                                                 |
-| `[exit pagehide] batch=<id>`                                          | The exit flush sent this batch while the page closed. See [Page Exit](../docs/delivery-guarantees.md#page-exit).                 |
-| `[forced 503] batch=<id> attempt=<n>`                                 | The server refused the batch on purpose. `attempt` counts the earlier sends of this batch.                                       |
-| `[duplicate] batch=<id> ignored`                                      | The server received a batch id a second time and ignored the batch. See [Duplicates](../docs/delivery-guarantees.md#duplicates). |
-| `[control] ...`                                                       | A control request changed the state of the server.                                                                               |
+| Line                                                                  | Meaning                                                                                                                                                                           |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[batch] batch=<id> records=<n>`                                      | One request to `/v1/logs`. The next lines are its records. With `serializer: "ecs"`, each line is one document of the NDJSON body.                                                |
+| `[metrics] batch=<id> points=<n>`                                     | One request to `/v1/metrics`. Each next line is one point with its type, value, unit and attributes.                                                                              |
+| `[traces] batch=<id> spans=<n>`                                       | One request to `/v1/traces`. `[client]` is an HTTP request. `[internal]` is another span. `parent=-` is a root span.                                                              |
+| `[replay] replay=<id> sequence=<n> events=<n> bytes=<n> session=<id>` | One segment of a session replay.                                                                                                                                                  |
+| `[exit pagehide] batch=<id>`                                          | The exit flush sent this batch while the page closed. See [Page Exit](../docs/delivery-guarantees.md#page-exit).                                                                  |
+| `[forced 503] batch=<id> attempt=<n>`                                 | The server refused the batch on purpose. `attempt` counts the earlier sends of this batch.                                                                                        |
+| `[duplicate] batch=<id> ignored`                                      | The server received a batch id a second time and ignored the batch. A request with no batch id is never a duplicate. See [Duplicates](../docs/delivery-guarantees.md#duplicates). |
+| `[control] ...`                                                       | A control request changed the state of the server.                                                                                                                                |
 
 ## Change the server behavior
 

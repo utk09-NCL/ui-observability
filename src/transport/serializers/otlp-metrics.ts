@@ -5,6 +5,7 @@
 
 import {
   CONTENT_TYPE_JSON,
+  METRIC_FIELD_KEYS,
   METRIC_KEYS,
   SERIALIZER_NAME_OTLP,
   TELEMETRY_SDK_NAME,
@@ -74,8 +75,9 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
 
   for (const key of keys as unknown[]) {
     // A key from the app's call can have the same name as a metric field, and that field
-    // holds the library's value.
-    const named = typeof key === "string" && !key.startsWith("metric.");
+    // holds the library's value. Any other metric. key, such as the web-vitals rating, is the
+    // caller's own.
+    const named = typeof key === "string" && !METRIC_FIELD_KEYS.includes(key);
     const value: unknown = named ? record.attributes[key] : undefined;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       out[key as string] = value;

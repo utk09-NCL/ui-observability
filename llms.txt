@@ -34,7 +34,7 @@ npm install --save-exact @utk09/ui-observability
 | -------------------- | ------------------ | ------------------------------------- | -------------------------- |
 | `@opentelemetry/api` | `^1`               | Records on your OpenTelemetry traces. | `otelLoader`               |
 | `@rrweb/record`      | `^2`               | Session replay.                       | `replay.loader`            |
-| `web-vitals`         | `^4`, `^5` or `^6` | LCP, CLS and INP.                     | `capture.webVitals.loader` |
+| `web-vitals`         | `^4`, `^5` or `^6` | LCP, CLS, INP, FCP and TTFB.          | `capture.webVitals.loader` |
 
 Each peer is optional. Give each peer as a loader function with a dynamic `import()`. The library never imports a peer by name, so a missing peer cannot break the bundler.
 

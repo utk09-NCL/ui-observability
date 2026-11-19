@@ -2039,10 +2039,14 @@ describe("WebVitalsCapture", () => {
 
     reporters.lcp({ value: 1234.5678, id: "v1", rating: "good" });
 
-    expect(logger.logMetric).toHaveBeenCalledWith("web_vitals.lcp", 1234.568, "ms", "gauge", {
-      "metric.rating": "good",
-      "metric.id": "v1",
-    });
+    expect(logger.logMetric).toHaveBeenCalledWith(
+      "web_vitals.lcp",
+      1234.568,
+      "ms",
+      "gauge",
+      { "metric.rating": "good" },
+      { "metric.id": "v1" },
+    );
     capture.uninstall();
   });
 

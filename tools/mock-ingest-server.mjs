@@ -199,6 +199,95 @@ function printTraces(payload, batchId) {
   }
 }
 
+// Prints one line per document in an ECS NDJSON batch, with the fields of an OTLP record line.
+// The labels hold the attributes, which ECS flattens into one map with dotted keys.
+function printEcs(documents, batchId) {
+  console.log(`[batch] batch=${batchId} records=${documents.length}`);
+  for (const doc of documents) {
+    const labels = doc?.labels ?? {};
+    console.log(
+      [
+        doc?.["@timestamp"] ?? "-",
+        String(doc?.log?.level).toUpperCase().padEnd(5),
+        `[${doc?.service?.name}]`,
+        `[${labels["log.type"]}]`,
+        doc?.message,
+        `journey=${labels["journey.id"] ?? "-"}`,
+        `tab=${String(labels["tab.id"] ?? "-").slice(0, 8)}`,
+        `trace=${String(doc?.trace?.id ?? "-").slice(0, 8)}`,
+      ].join("  "),
+    );
+  }
+}
+
+// Top-level keys of an OTLP request. An ECS document has none of them.
+const OTLP_KEYS = ["resourceLogs", "resourceMetrics", "resourceSpans"];
+
+// Parses text as JSON. Returns undefined when the text isn't JSON.
+function tryJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+// Parses the lines of an NDJSON body. Returns undefined when a line isn't JSON.
+function parseNdjson(text) {
+  const documents = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+
+    const document = tryJson(line);
+    if (document === undefined) {
+      return undefined;
+    }
+    documents.push(document);
+  }
+
+  return documents;
+}
+
+// An ECS document is a JSON object with the one field that ECS requires.
+function isEcsDocument(document) {
+  return typeof document === "object" && document !== null && "@timestamp" in document;
+}
+
+// Parses a text/plain body as ECS NDJSON. The body is a guess, so a body with no document, or with
+// a document that isn't ECS, is a wrong body and not an empty batch. Returns undefined for it.
+function parseEcs(text) {
+  const documents = parseNdjson(text);
+
+  return documents !== undefined && documents.length > 0 && documents.every(isEcsDocument)
+    ? documents
+    : undefined;
+}
+
+// Picks the parser for a body. The exit flush sends text/plain with the body of the serializer,
+// so OTLP JSON and ECS NDJSON both arrive that way. A one-record ECS body is also one JSON
+// object, so only an OTLP key makes the body OTLP. A replay segment has no ECS form.
+// Returns { documents } for NDJSON or { payload } for JSON. A body that fails has neither.
+function parseBody(contentType, isReplay, text) {
+  const mediaType = String(contentType ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType === "application/x-ndjson") {
+    return { documents: isReplay ? undefined : parseNdjson(text) };
+  }
+
+  const payload = tryJson(text);
+  const isOtlp =
+    typeof payload === "object" && payload !== null && OTLP_KEYS.some((key) => key in payload);
+  if (mediaType === "text/plain" && !isReplay && !isOtlp) {
+    return { documents: parseEcs(text) };
+  }
+
+  return { payload };
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -285,8 +374,10 @@ async function handle(req, res) {
   // The exit flush cannot set headers, so the batch id also arrives as a query
   // parameter. A real server has to read both, or it cannot deduplicate the one
   // delivery that is most likely to arrive twice.
-  const batchId =
-    req.headers["x-uiobs-batch-id"] || url.searchParams.get("uiobs_batch_id") || "(none)";
+  const givenId = req.headers["x-uiobs-batch-id"] || url.searchParams.get("uiobs_batch_id");
+  // A request with no id has nothing to deduplicate on. "(none)" is for the log lines only, or
+  // every id-less request after the first would look like a duplicate.
+  const batchId = givenId || "(none)";
   const attempt = req.headers["x-uiobs-attempt"] || "0";
   const exitReason = url.searchParams.get("uiobs_exit");
   if (exitReason) {
@@ -315,11 +406,16 @@ async function handle(req, res) {
     }
   }
 
-  let payload;
-  try {
-    payload = JSON.parse(raw.toString("utf8"));
-  } catch {
-    console.error("[error] body is not JSON:", raw.toString("utf8").slice(0, 200));
+  const { documents, payload } = parseBody(
+    req.headers["content-type"],
+    isReplay,
+    raw.toString("utf8"),
+  );
+  if (documents === undefined && payload === undefined) {
+    console.error(
+      "[error] body is not JSON, or it has no OTLP or ECS shape:",
+      raw.toString("utf8").slice(0, 200),
+    );
     res.writeHead(400).end();
     return;
   }
@@ -329,7 +425,7 @@ async function handle(req, res) {
     res.setHeader("X-UiObs-Sampling", samplingRules);
   }
 
-  const duplicate = seenBatchIds.has(batchId);
+  const duplicate = Boolean(givenId) && seenBatchIds.has(batchId);
   // A second send is kept with its flag, or a test that counts arrivals couldn't see it.
   remember(url.pathname, {
     batchId,
@@ -340,7 +436,8 @@ async function handle(req, res) {
     // Only whether a cookie came, never its value, so a test can prove an exit send leaked none.
     hasCookie: req.headers.cookie !== undefined,
     duplicate,
-    payload,
+    // An NDJSON body has no single JSON value, so its parsed lines are kept as a list.
+    payload: documents ?? payload,
   });
 
   if (duplicate) {
@@ -348,7 +445,16 @@ async function handle(req, res) {
     res.writeHead(204).end();
     return;
   }
-  seenBatchIds.set(batchId, Date.now());
+  if (givenId) {
+    seenBatchIds.set(batchId, Date.now());
+  }
+
+  // An ECS batch comes as NDJSON, one document for each record.
+  if (documents) {
+    printEcs(documents, batchId);
+    res.writeHead(204).end();
+    return;
+  }
 
   if (isReplay) {
     const events = Array.isArray(payload.events) ? payload.events.length : 0;
