@@ -60,4 +60,4 @@ Keep these rules from the example:
 - Load each remote in its own `try` block. A remote that fails to load then leaves only its own panel empty, and the shell logs the error.
 - `shared: { "@utk09/ui-observability": { singleton: true } }` saves bytes. The runtime lives on a global symbol. Two copies of one library version still find one runtime.
 
-See [Core Architecture](../../README.md#core-architecture) and [Configuration ownership and logger cache](../../docs/runtime-policies.md#configuration-ownership-and-logger-cache).
+See [Core Architecture](../../docs/architecture.md#core-architecture) and [Configuration ownership and logger cache](../../docs/runtime-policies.md#configuration-ownership-and-logger-cache).

@@ -195,8 +195,9 @@ export function clearEmergencyContext(
     () => {
       for (const key of keysWithPrefix(prefix, diagnostics)) {
         const raw = localStorage.getItem(key);
-        if (raw && (all || readBatch(raw, diagnostics)?.routingContextId === id))
+        if (raw && (all || readBatch(raw, diagnostics)?.routingContextId === id)) {
           localStorage.removeItem(key);
+        }
       }
     },
   );

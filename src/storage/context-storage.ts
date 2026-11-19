@@ -136,7 +136,9 @@ export class ContextStorage implements StorageAdapter {
    * @returns A promise that resolves once they are removed.
    */
   async clear(): Promise<void> {
-    for (const batch of await this.take(Number.MAX_SAFE_INTEGER)) await this.store.remove(batch.id);
+    for (const batch of await this.take(Number.MAX_SAFE_INTEGER)) {
+      await this.store.remove(batch.id);
+    }
   }
 
   /**
@@ -148,9 +150,13 @@ export class ContextStorage implements StorageAdapter {
   async retire(discard: boolean): Promise<void> {
     this.active = false;
     this.discard = discard;
-    if (discard) await this.clear();
+    if (discard) {
+      await this.clear();
+    }
     // Keep the memory store around for later context changes. It may hold other contexts' records.
-    if (this.name !== "memory") await this.close();
+    if (this.name !== "memory") {
+      await this.close();
+    }
   }
 
   /**

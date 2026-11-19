@@ -439,7 +439,9 @@ export function createChildrenLink(
       return;
     }
 
-    if (authorize && !authorize(event.source, event.origin)) return;
+    if (authorize && !authorize(event.source, event.origin)) {
+      return;
+    }
     const { source, origin } = event;
     if (source) {
       sources.set(source, origin);

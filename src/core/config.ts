@@ -1794,8 +1794,12 @@ function resolveInteractions(
   let ignoreSelector = ignore === undefined ? previous.ignoreSelector : ignore;
   if (ignoreSelector !== undefined && ignoreSelector !== null) {
     try {
-      if (typeof ignoreSelector !== "string") throw new Error("Invalid selector");
-      if (typeof document !== "undefined") document.createElement("div").matches(ignoreSelector);
+      if (typeof ignoreSelector !== "string") {
+        throw new Error("Invalid selector");
+      }
+      if (typeof document !== "undefined") {
+        document.createElement("div").matches(ignoreSelector);
+      }
     } catch {
       diagnostics.report(
         "config.invalid",

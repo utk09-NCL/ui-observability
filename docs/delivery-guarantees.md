@@ -24,18 +24,18 @@ The server can get a record more than one time in these cases:
 | A browser without Web Locks lets two tabs send the same stored batch.               | Same ID  |
 | The exit flush sends the records of a request that has no answer yet.               | New ID   |
 
-The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep each ID for at least 24 hours. To find a duplicate record with a new batch ID, use `context.id` and `log.seq` together. Each record has a different pair.
+The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep each ID for at least 24 hours. With a longer `retention.maxAgeMs`, keep each ID for that time. To find a duplicate record with a new batch ID, use `context.id` and `log.seq` together. Each record has a different pair.
 
 A `413` answer makes the library split the batch. Each half gets a new batch ID. The server did not accept the first batch. No duplicate occurs.
 
 The request deadline also covers the read of a response body. A body that does not arrive in time, or that fails, does not change the result of the status code. After a `413`, the library then splits the batch with no size hint. After a `2xx`, it accepts the batch with no `partialSuccess`. It reports `transport.http_error`. A stop or a rotation during the read ends the send.
 
-An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The library then gives the rejected count to `onDrop` with the reason `partially_rejected`. The server gives only a count, so `journeyIds` and `actions` are empty. The library reports `transport.partial_success`. It does not send the batch again, because the server kept the other records. A `partialSuccess` with no rejected records gives only the diagnostic.
+An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The library then gives the rejected count to `onDrop` with the reason `partially_rejected`. The server gives only a count, so `journeyIds` and `actions` are empty. The library reports `transport.partial_success`. It does not send the batch again, because the server kept the other records. A `partialSuccess` with no rejected records and an `errorMessage` gives only the diagnostic.
 
 ## Order
 
 - In one batch, the records of one resource and one logger namespace keep their order.
-- Batches can arrive in any order. Up to `delivery.maxConcurrentRequests` requests run at the same time. A stored batch goes later than newer live batches.
+- Batches can arrive in any order. Up to `delivery.maxConcurrentRequests` live requests run at the same time. The retry drain sends one stored batch at a time, outside that limit. A stored batch goes later than newer live batches.
 - Logs, metrics and spans go in separate batches. They can go to separate endpoints.
 - Use `timeUnixNano` to order records. In one context, `log.seq` gives the order of the records. `uiobs.clock_offset_ms` gives the difference between the clock of the device and the clock of the server.
 
@@ -85,23 +85,26 @@ Some records never reach delivery by design. `onDrop` does not report them. The 
 
 - A record below `minLevel`, or outside the sample. With `debugBuffer`, the next error of the context sends the recent ones.
 - A record that a processor or `redact` drops.
-- A log record above the error ceiling, `sampling.errorCeiling`. Metric points and spans do not count.
+- A log record above the error ceiling, `sampling.errorCeiling`. Metric points and spans do not count. `record.dropped_by_ceiling` counts the record.
 - A capture event above its rate limit.
 - A logger call during a rotation. The library does not build the record. A record that the library built during a rotation goes to `onDrop` with `security_context`.
 - A `startMeasure()` measure that ends after `shutdown()`. With isolation, also one that ends after a new delivery identity.
 - A bus message that a budget refuses, and the records of a forwarder that has no owner.
+- A record that a forwarder sends with another security context. The owner counts `security.context_mismatch`.
+- A record with no destination, for example in console-only mode. `record.dropped_no_destination` counts the record.
 
 ## Retention
 
 A batch that did not send goes to storage. The default store is IndexedDB. Without it, the library uses `localStorage`, then memory.
 
 - By default, a stored batch stays for 24 hours or 5 attempts. Storage keeps at most 500 batches.
-- An offline failure and a throttle answer use no attempt. A network failure while the browser reports online uses one. A long server outage can then reach `max_attempts`.
+- The first send of a batch always counts as one attempt. After that, an offline failure and a throttle answer use no attempt. A network failure while the browser reports online uses one. A long server outage can then reach `max_attempts`.
 - With `retention.maxAgeMs: null` and `retention.maxAttempts: null`, a stored batch has no age limit and no attempt limit. `retention.maxBatches` still applies.
 - A full store evicts the oldest batch without an action record first. The library keeps action records longest. An action record is not an authoritative audit record.
 - The store can evict the new batch. This occurs when each older batch has an action record. `onDrop` then reports the new batch with `over_capacity`.
 - With `storage.backend: "memory"`, stored batches stay only until the page closes. With `storage.backend: "none"`, a batch that did not send is lost.
 - After a failed send, the `transport.http_error` diagnostic tells the result for the batch. The library stores the batch, stores it in two parts, or drops it.
+- A store call can throw or pass `STORAGE_DEADLINE_MS`. The library then reports `storage.degraded`. A late save can still keep the batch. Thus `onDrop` reports nothing.
 - While the server throttles, the library stores a new batch and does not send it. The `transport.throttled` diagnostic tells if storage kept the batch.
 - Under storage pressure, a browser can delete the store. `storage.requestPersistent` asks the browser to keep it.
 
@@ -115,7 +118,7 @@ The exit flush is best effort.
 - With `credentials: "include"`, that request is a beacon. `sendBeacon` always sends the cookies, whatever `credentials` is. Thus the library uses it only when the app asks for cookies.
 - The answer to the `text/plain` keepalive fetch must permit the origin. If it does not, the fetch fails. A page that is still open then puts the batch in the emergency queue. The server gets that batch again at the next page load.
 - It is possible that a keepalive fetch is less reliable than a beacon at page exit in some browsers. This is a hypothesis. `e2e/exit-flush.e2e.ts` shows that the `text/plain` keepalive fetch arrives after a navigation in Chromium, Firefox and WebKit. No test checks a tab close, a browser close or a slow network.
-- With `headers`, it uses a keepalive fetch. It also uses a keepalive fetch for an endpoint on the origin of the page. That request has the content type of the serializer. For OTLP, that is `application/json`. The endpoint origin must be the same as `location.origin` and the `origin` global of the page. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame send the `text/plain` request.
+- With `headers`, it uses a keepalive fetch. Before the first call of a `headers` function, the exit flush has no header values. It then puts the batch in the emergency queue. It also uses a keepalive fetch for an endpoint on the origin of the page. That request has the content type of the serializer. For OTLP, that is `application/json`. The endpoint origin must be the same as `location.origin` and the `origin` global of the page. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame send the `text/plain` request.
 - A stock OpenTelemetry Collector on another origin refuses the `text/plain` batch with `415`. The exit flush does not read that answer. `onDrop` does not report that loss.
 - To prevent that loss, set `headers` or put a same-origin proxy in front of the collector.
 - With `headers`, the keepalive fetch to another origin needs a CORS preflight. It is possible that a browser cancels that request during page exit. No test in this repository checks this risk.
@@ -161,7 +164,7 @@ A rotation that the shutdown meets in its storage step rejects too. It does not 
 
 ## Flush
 
-`flush()` sends the records in memory and reports what became of them. The README section "Flush result" describes each field.
+`flush()` sends the records in memory and reports what became of them. [Flush result](api.md#flush-result) describes each field.
 
 - The snapshot is the records in the buffers, the queued batches and the batches in flight at the call.
 - Before startup ends, the call waits for startup first. The snapshot then also has the records that the app logs during that wait.
@@ -170,7 +173,7 @@ A rotation that the shutdown meets in its storage step rejects too. It does not 
 - At the time limit, the call returns. The library does not cancel the work. A batch that ends later goes to the server or to storage, as this page tells. The result does not change.
 - `accepted` counts the records of a batch that the transport accepted. A `partialSuccess` answer moves its rejected count to `dropped`.
 - `stored` counts the records that storage keeps after a failed send or a throttle. The retry engine sends them later.
-- `dropped` counts the records that the call lost. `onDrop` reports each one, with two exceptions. A batch with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup.
+- `dropped` counts the records that the call lost. `onDrop` reports each one, with three exceptions. A batch with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup. A forwarder drops a record that is larger than `bus.maxMessageBytes`. It only counts `bus.rejected_message`.
 - `pending` counts the records that have no final state at the end of the wait. A store that throws or passes `STORAGE_DEADLINE_MS` counts here, because a late save can still complete.
 - When storage keeps only one half of a split batch, `stored` counts that half and `dropped` counts the other half.
 - During a rotation, the records of the old context wait for the `pending` rule of the rotation. They count as `pending`.

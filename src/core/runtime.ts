@@ -360,7 +360,9 @@ export class ObservabilityRuntime {
    * @param locked True to refuse changes through configure().
    */
   setConfigurationLocked(locked: boolean): void {
-    if (typeof locked === "boolean") this.config.lockConfiguration = locked;
+    if (typeof locked === "boolean") {
+      this.config.lockConfiguration = locked;
+    }
   }
   /**
    * This copy's runtime when another version of the library owns the page runtime.
@@ -763,7 +765,9 @@ export class ObservabilityRuntime {
    * @param data Optional metadata.
    */
   addBreadcrumb(message: unknown, data?: Record<string, unknown>): void {
-    if (this.rotating || this.destroyed) return;
+    if (this.rotating || this.destroyed) {
+      return;
+    }
     // A message whose toString() throws, or a data getter that throws, must not throw into
     // the app's call.
     this.diagnostics.guard(
@@ -1193,11 +1197,12 @@ export class ObservabilityRuntime {
     }
     if (this.config.lockConfiguration) {
       const next = resolveConfig(input, this.diagnostics, this.config);
-      if (!sameConfig(this.config, next))
+      if (!sameConfig(this.config, next)) {
         this.diagnostics.report(
           "config.locked",
           "Runtime configuration is locked. Use setConfigurationLocked(false) to unlock it explicitly.",
         );
+      }
       return;
     }
     drainDeferred(this);
@@ -1792,7 +1797,9 @@ export class ObservabilityRuntime {
         : await Sender.create({
             storage: this.memoryStorage,
             onStorage: (storage) => {
-              if (storage.name === "memory") this.memoryStorage = storage;
+              if (storage.name === "memory") {
+                this.memoryStorage = storage;
+              }
             },
             onPersistence: (state) => {
               this.storagePersistence = state;
@@ -2239,7 +2246,9 @@ export class ObservabilityRuntime {
     let cancelled = false;
     let detach: (() => void) | undefined;
     void this.constructBus().then((bus) => {
-      if (!bus || this.destroyed || cancelled) return;
+      if (!bus || this.destroyed || cancelled) {
+        return;
+      }
       detach = this.diagnostics.guard("bus.send_failed", "The frame could not be registered.", () =>
         bus.registerFrame(frame, options),
       );
@@ -2582,7 +2591,9 @@ export class ObservabilityRuntime {
    * @param records Inbound payload from bus.
    */
   private ingestForwarded(records: unknown): void {
-    if (this.destroyed) return;
+    if (this.destroyed) {
+      return;
+    }
     if (!Array.isArray(records)) {
       this.diagnostics.count("record.dropped_malformed");
       return;
@@ -2743,7 +2754,9 @@ export class ObservabilityRuntime {
     update: SecurityContextUpdate,
     options: SecurityContextRotationOptions = {},
   ): Promise<void> {
-    if (this.destroyed) return Promise.reject(new Error("The runtime has stopped."));
+    if (this.destroyed) {
+      return Promise.reject(new Error("The runtime has stopped."));
+    }
     // Before a configure() call works, there's no context to leave and no routing to replace.
     if (!this.tunablesLocked) {
       return Promise.reject(
@@ -2974,8 +2987,12 @@ export class ObservabilityRuntime {
   async health(): Promise<Omit<ObservabilityHealth, "loggerCache">> {
     const sent = this.sender?.stats();
     const issues: ObservabilityHealth["issues"] = [];
-    if (this.mismatchVersion) issues.push("runtime.version_mismatch");
-    if (this.contextMismatch) issues.push("security.context_mismatch");
+    if (this.mismatchVersion) {
+      issues.push("runtime.version_mismatch");
+    }
+    if (this.contextMismatch) {
+      issues.push("security.context_mismatch");
+    }
     const { redact, processors } = this.config;
     if (redact === REFUSE_RECORDS || processors.includes(REFUSE_RECORDS)) {
       issues.push("records.refused");
@@ -3244,10 +3261,18 @@ export class ObservabilityRuntime {
  * @returns True if the values are equal.
  */
 function sameConfig(a: unknown, b: unknown, seen = new WeakMap<object, object>()): boolean {
-  if (Object.is(a, b)) return true;
-  if (a instanceof RegExp && b instanceof RegExp) return String(a) === String(b);
-  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
-  if (seen.has(a)) return seen.get(a) === b;
+  if (Object.is(a, b)) {
+    return true;
+  }
+  if (a instanceof RegExp && b instanceof RegExp) {
+    return String(a) === String(b);
+  }
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) {
+    return false;
+  }
+  if (seen.has(a)) {
+    return seen.get(a) === b;
+  }
   seen.set(a, b);
   const ak = Object.keys(a);
   const bk = Object.keys(b);

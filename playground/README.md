@@ -64,7 +64,7 @@ Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a differe
 | Devtools **Application** tab | The keys in `localStorage` and `sessionStorage`, and IndexedDB  | Open the **Storage** group in the side bar.                          |
 | The page                     | Diagnostics, tables and JSON results of some examples           | The README of each example names them.                               |
 
-- Each console line has the form `[namespace][LEVEL] message payload`. See [Console Output](../README.md#console-output).
+- Each console line has the form `[namespace][LEVEL] message payload`. See [Console Output](../docs/guides.md#console-output).
 - Chrome hides `console.debug` output by default. The library prints a `DEBUG` record with `console.debug`. Select **Verbose** in the levels menu of the console.
 - A record from an automatic capture has the namespace `uiobs.capture`.
 - The terminal does not show the namespace. Use the devtools console to find the namespace of a record.
@@ -142,8 +142,8 @@ Each example imports the library by its package name, `@utk09/ui-observability`.
 
 The mock server keeps no record. Use it only on your computer.
 
-- `tools/reference-collector.mjs` implements each rule of [Ingest Server Requirements](../README.md#ingest-server-requirements). Its default port is 4320. Set `ALLOWED_ORIGINS` to the origin of the example. Then change the `endpoint` of the example to the collector URL.
-- The command line tool tests an ingest server. Run `pnpm run build` first. Then run `node bin/uiobs.mjs doctor http://localhost:8787/v1/logs --origin http://localhost:5173`. See [Check an ingest server](../README.md#check-an-ingest-server).
+- `tools/reference-collector.mjs` implements each rule of [Ingest Server Requirements](../docs/ingest-server.md). Its default port is 4320. Set `ALLOWED_ORIGINS` to the origin of the example. Then change the `endpoint` of the example to the collector URL.
+- The command line tool tests an ingest server. Run `pnpm run build` first. Then run `node bin/uiobs.mjs doctor http://localhost:8787/v1/logs --origin http://localhost:5173`. See [Check an ingest server](../docs/ingest-server.md#check-an-ingest-server).
 
 ## Troubleshooting
 
@@ -155,11 +155,11 @@ The mock server keeps no record. Use it only on your computer.
 | The example does not start because a port is in use.   | Stop the other process. The mock server accepts only the fixed port of each example.                                                              |
 | Another program answers on port 8787.                  | Run `lsof -nP -iTCP:8787 -sTCP:LISTEN` to find the process. Stop it.                                                                              |
 | A metric point arrives late.                           | The library sums metric values and sends one point for each interval. The default interval is 10 seconds.                                         |
-| The console shows a record that the terminal does not. | Sampling dropped the record. The console prints a record that sampling drops. See [Console Only](../README.md#console-only-no-network).           |
+| The console shows a record that the terminal does not. | Sampling dropped the record. The console prints a record that sampling drops. See [Console Only](../docs/guides.md#console-only-no-network).      |
 
 ## Reference documents
 
-- [Root README](../README.md). Installation, the API and each configuration option.
+- [Root README](../README.md). Installation, the quick start and the links to the reference documents.
 - [Attribute reference](../docs/attributes.md). Each attribute that the library writes.
 - [Delivery guarantees](../docs/delivery-guarantees.md). Retries, duplicates, losses and the exit flush.
 - [Runtime policies](../docs/runtime-policies.md). Defaults, the bus sources and the configuration owner.

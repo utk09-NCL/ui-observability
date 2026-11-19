@@ -1,10 +1,26 @@
 # Architecture and Lifecycle
 
-This page is for a person who maintains the library. It tells how a record moves from a logger call to the network. It names the module that owns each step, each buffer and each state change.
+This page tells how a record moves from a logger call to the network. It names the module that owns each step, each buffer and each state change.
 
-An application developer does not need this page. The README and the playground guides are for the application developer.
+The section [Core Architecture](#core-architecture) is a summary for an application developer. The other sections are for a person who maintains the library. The README and the playground guides are for the application developer.
 
-Each fact on this page comes from the code at commit `2e1dfaa`. Search by symbol name. Line numbers move.
+Each fact on this page describes the code of version 1.0.0. Search by symbol name. Line numbers move.
+
+## Core Architecture
+
+`README.md` links to this section. Before version 1.0.0, this section was in `README.md`.
+
+- **Code splitting:** The main chunk holds the logger, the record builder and the console sink. The delivery stack loads only when you set an endpoint or a transport. The bus loads only when the context needs it. Each capture module loads only when you enable it. The rotation code loads on the first `rotateSecurityContext()` call.
+- **Document singleton:** The library keeps the runtime at `globalThis[Symbol.for("ui-observability.runtime")]`. Federated microfrontends and separate bundles share one buffer, one sequence and one transport.
+- **One sender:** Iframes, workers and OpenFin views find the nearest long-lived context. They forward their records to it over the bus. That context batches, stores and sends for all of them. By default, a parent accepts only the frames and workers that it registers with `registerFrame()` and `registerWorker()`. A frame that knows its owner relays the records of its own children.
+- **One sender for each tab:** Each top-level tab or window has its own sender. Two tabs of one origin send their records separately. They have the same `session.id` and a different `tab.id`. A retry of stored batches runs in one tab at a time, under a Web Lock for each storage namespace.
+- **Five correlation ids:** Each record carries `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
+- **Durability and exit flush:** The library stores a batch that fails to send, in IndexedDB or localStorage. It sends the batch again with exponential backoff and jitter. [Retention](delivery-guarantees.md#retention), [Page Exit](delivery-guarantees.md#page-exit) and [Losses](delivery-guarantees.md#losses) give the rules of storage, of the exit flush and of the hold buffers. `onDrop` tells the app about each loss.
+- **Server (Node):** On Node, for example during server-side rendering, the library runs console-only. It installs no capture, keeps the ids in memory, uses no storage and has no exit flush. If you set `endpoint`, `metricsEndpoint`, `tracesEndpoint`, `transport` or `transportWorker`, it reports `config.invalid` one time.
+- **One library version on a page:** If a copy of another version owns the page runtime, this copy runs console-only. It installs no capture and reports `runtime.version_mismatch`. Load one version of the library on the page.
+- **Emergency queue:** The emergency queue is best effort. With `storage.backend` `"memory"` or `"none"`, the exit flush does not use it. A batch that it cannot send is then lost, and `onDrop` reports `not_stored`. It writes to `localStorage` synchronously, because no other storage works while the page unloads. If the browser refuses the write, the library reports `storage.quota_exceeded`. The library then loses the batch.
+- **Configuration after startup:** A second `configure()` call merges accepted options into an unlocked live runtime. [Settings that are fixed after startup](production-recipes.md#settings-that-are-fixed-after-startup) gives each setting that it refuses, and the isolation rule. [`configure()` on a live runtime](#configure-on-a-live-runtime) names the function that keeps each one.
+- **Deterministic sampling:** FNV-1a hashing applies one keep rate to a whole journey. Sampling always keeps an explicit action and each record at or above `sampling.alwaysSampleFrom`, default `"ERROR"`.
 
 ## Record path
 
@@ -71,7 +87,7 @@ More facts about the path.
 - A `hidden` document gets a normal flush through `LogPipeline.flushPending()`. The other exit reasons call `LogPipeline.drainForExit()`.
 - An exit batch above `BEACON_LIMIT_BYTES` goes to the emergency queue. The next page load moves it to storage in `Sender.importEmergency()`.
 - The public `flush()` calls `ObservabilityRuntime.flush()`. In a sender, it calls `Sender.flushUntil()` and then `LogPipeline.flushUntil()`. That claims the stream buffers and keeps the open batches as the snapshot. `run()` writes the end of each batch to its `Pending` entry, and the call adds the ends up when its wait ends.
-- In a forwarder, `flush()` gives the forward buffer to `Bus.sendRecords()`. Then `Bus.requestFlush()` posts `ui-observability.message.flush-request` on the upstream link. The sender's bus calls the runtime's `flush()` and answers with `ui-observability.message.flush-result`.
+- In a forwarder, `flush()` gives the forward buffer to `Bus.sendRecords()`. Then `Bus.requestFlush()` posts `ui-observability.message.flush-request` on the upstream link. The sender's bus calls the runtime's `flushFor()` and answers with `ui-observability.message.flush-result`.
 - `shutdown()`, `Sender.retire()` and the hidden-page flush still call `LogPipeline.flushPending()`. It has no deadline of its own and returns no counts.
 
 The delivery promises are in [Delivery Guarantees](delivery-guarantees.md). Change that page with each change to this path.
@@ -140,7 +156,7 @@ Rules for the pipeline budget.
 - `admit()` encodes each record one time to count its bytes. A record that JSON cannot encode reports `unserializable`.
 - `buffering.overflow` selects the rule for a full buffer. `drop-oldest` calls `evict()`. `persist` stores the new record as a batch of one record.
 - `evict()` cannot remove a request that the transport has. Only records before the transport can go.
-- The error ceiling in `route()` drops a log record and counts `record.dropped_by_ceiling`. It does not call `onDrop`.
+- The error ceiling in `LogPipeline.route()` drops a log record and counts `record.dropped_by_ceiling`. It does not call `onDrop`.
 
 ### Stored batches
 
@@ -198,7 +214,7 @@ The runtime keeps its state in flags of `ObservabilityRuntime` in `src/core/runt
 ### Unconfigured runtime
 
 - A logger call, `getHealth()`, `flush()` and most other functions call `requireRuntime()`. Each one can make the unconfigured runtime.
-- `shutdown()` does not make a runtime. It reads `ObservabilityRuntime.current()` only.
+- `shutdown()` does not make a runtime. It reads `ObservabilityRuntime.current()`, then `ObservabilityRuntime.stopped()`.
 - The unconfigured runtime keeps its ids in `memoryStores()`. `start()` changes `backing` to `BROWSER_STORES` for `identity: "storage"`, and reads the ids again.
 - `emit()` holds each record in the boot buffer, because `ready` is false.
 - `installCaptures()` and `syncSender()` do nothing before `running`. `buildBus()` waits for `startGate`, so `registerFrame()` and `registerWorker()` attach at the start.
@@ -336,8 +352,6 @@ A rotation also has a deadline. `Sender.retire()` puts `timeoutMs` on the old fl
 The exit flush has no cancellation. It never awaits, so it has nothing to cancel.
 
 ### Flush deadline
-
-This section comes from the code after commit `a60b4e5`.
 
 - `ObservabilityRuntime.flush()` checks the options and calls `flushFor()`. `flushFor()` starts one timer of `timeoutMs`. The wait for startup, the wait for a sender load, the wait in `LogPipeline.flushUntil()` and `Bus.requestFlush()` share it. The call clears the timer when it returns.
 - The app's `flush()` sends the open interval of the meter and the profiler first. A flush that the bus starts for a child does not.

@@ -12,40 +12,45 @@ See [runtime policies](runtime-policies.md) for each default and each range. See
 4. Call `startReplay()` after the user agrees, when `replay.requireConsent` is `true`.
 5. Use `rotateSecurityContext()` for each later change of identity or routing settings.
 
-A log call before `configure()` does not throw. The runtime is unconfigured until the first `configure()` call that works.
+A log call before `configure()` does not throw. The runtime is unconfigured until the first `configure()` call that works. `getHealth().status` is `"unconfigured"`.
 
 - The call prints to the console with the default `consoleOutput` settings. The default console is off.
-- The record waits in memory, in the hold buffer.
+- The record waits in memory, in the hold buffer. `buffering.maxHeldRecords` limits that buffer.
 - The library installs no capture. It starts no bus and no sender. It sends nothing.
 - The ids stay in memory. The library writes nothing to `localStorage` or `sessionStorage`.
 - Context attributes, breadcrumbs, journeys and trace calls work in memory.
+- A frame or a worker that you register joins the bus when the runtime starts.
 - `rotateSecurityContext()` rejects. Call `configure()` first.
+- A `newSession()` call starts a new session. The runtime keeps that session when it starts.
 - A `setConfigurationLocked(true)` call refuses each `configure()` call, so the runtime does not start. Lock the configuration after `configure()`.
 
-The first `configure()` call that works is the startup. It can set each setting in the table below. The held records then get its `processors`, its `redact` hook and its identity. Its `minLevel`, `minLevels`, sampling, `limits` and `page.url` rules also apply to them. Then they go out. The library removes the breadcrumbs of log calls from before the startup. The breadcrumbs of `addBreadcrumb()` stay. An application that never calls `configure()` gets console output only.
+The first `configure()` call that works is the startup. It can set each setting in the table below. The held records then get its `processors`, its `redact` hook and its identity. Its `minLevel`, `minLevels`, sampling, `limits` and `page.url` rules also apply to them. A query that the default rule removed from `page.url` does not come back. Then they go out. The console does not print a held record a second time. The library removes the breadcrumbs of log calls from before the startup, because no hook saw them. The breadcrumbs of `addBreadcrumb()` stay. An application that never calls `configure()` sends nothing. The console output is off by default, so it prints nothing.
+
+With `enabled: false` in that call, the runtime starts at the first `enabled: true`. `onDrop` reports the held records with `disabled`. Until then, the library writes nothing to storage and starts no bus and no sender.
 
 Call `configure()` in the parent before child frames load. A child frame or a worker that starts before the parent runtime starts gets no owner. After the handshake timeout, the child becomes its own sender. It then uses only its own config and its own `redact`. The timeout is 1,500 ms in a same-origin frame or in a worker. A cross-origin frame tries 3 times, so its timeout is 4,500 ms. The same applies while the first `configure()` call of the parent has `enabled: false`.
 
-A first `configure()` call that cannot read its options leaves the runtime unconfigured. The library drops each held record and each new record. It writes a console warning and reports `config.invalid`. A later call without `redact` adds its settings. The library continues to drop each record. The first later call that sets `redact` to a function or `null` is the startup.
+A first `configure()` call that cannot read its options leaves the runtime unconfigured. The library drops each held record and each new record. It writes no id to storage. It writes a console warning and reports `config.invalid`. A later call without `redact` adds its settings. The library continues to drop each record. The first later call that sets `redact` to a function or `null` is the startup.
 
-`shutdown()` followed by `configure()` builds a new runtime from the new config only. This is the method to change a setting that is fixed after startup.
+After `shutdown()`, logging does nothing until the next `configure()`. `getHealth()` still reads the stopped runtime. `shutdown()` followed by `configure()` builds a new runtime from the new config only. This is the method to change a setting that is fixed after startup. Without `securityContext.id` in that call, the new runtime makes a new ID. With isolation on, it does not send the stored batches of the old runtime. They stay parked until `retention.maxAgeMs` or `retention.maxBatches` removes them.
 
 ### Settings that are fixed after startup
 
-A later `configure()` call reports `config.invalid` for these settings and keeps the current values. The other settings in the same call apply.
+A later `configure()` call reports `config.invalid` for these settings and keeps the current values. The `otelLoader` row is the exception. The other settings in the same call apply.
 
-| Setting                            | Fixed from                                                              |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| `identity`                         | The first `configure()` call that works.                                |
-| `correlation` (each key)           | The first `configure()` call that works.                                |
-| `limits` (each key)                | The first `configure()` call that works.                                |
-| `journey.maxAgeMs`                 | The first `configure()` call that works.                                |
-| `profiler.maxProbes`               | The first `configure()` call that works.                                |
-| `storage` (each key)               | The first `configure()` call that works.                                |
-| `bus.mode`, `bus.openFinRole`      | The first `configure()` call that works.                                |
-| `batching`, `retention` (each key) | The load of the delivery stack.                                         |
-| `transport`, `transportWorker`     | The load of the delivery stack. `configure()` cannot add or remove one. |
-| `endpoint` (removal only)          | The load of the delivery stack. `configure()` cannot remove it.         |
+| Setting                            | Fixed from                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `identity`                         | The first `configure()` call that works.                                                   |
+| `correlation` (each key)           | The first `configure()` call that works.                                                   |
+| `limits` (each key)                | The first `configure()` call that works.                                                   |
+| `journey.maxAgeMs`                 | The first `configure()` call that works.                                                   |
+| `profiler.maxProbes`               | The first `configure()` call that works.                                                   |
+| `storage` (each key)               | The first `configure()` call that works.                                                   |
+| `bus.mode`, `bus.openFinRole`      | The first `configure()` call that works.                                                   |
+| `otelLoader`                       | The first `configure()` call that works. A later change has no effect and reports nothing. |
+| `batching`, `retention` (each key) | The load of the delivery stack.                                                            |
+| `transport`, `transportWorker`     | The load of the delivery stack. `configure()` cannot add or remove one.                    |
+| `endpoint` (removal only)          | The load of the delivery stack. `configure()` cannot remove it.                            |
 
 An early log call does not change this rule. With `enabled: false` in the first call, these settings are fixed from that call. The runtime starts with them at the first `enabled: true`.
 
@@ -229,6 +234,8 @@ function onTokenRefresh(next: string): void {
 
 The function can return a promise. After a 401 or a 403 answer, the library calls the function again and sends the batch one more time. A second 401 or 403 drops the batch.
 
+The library calls the function before each request. The exit flush cannot wait for a promise. It uses the result of the last call. A 401, a 403 and a rotation clear that result. Without a result, the exit flush puts the batch in the emergency queue.
+
 With isolation on, a new `headers` function in `configure()` is a refused change. The session replay uses `replay.headers`, not `headers`.
 
 ## Consent withdrawal
@@ -293,10 +300,3 @@ Set `serviceVersion` to the identifier of the build, for example the version or 
 An error record has `error.stack_trace` with the stack that the browser gives. In a minified build, the stack has minified names and positions.
 
 Backend symbolication is out of scope. The library does not upload a source map, does not write a source-map identifier and does not change a stack. The team that owns the backend must keep the source maps of each `service.version` and apply them there.
-
-## Open items
-
-These facts are not verified against the code.
-
-- The lifetime of the cached result of a `headers` function between two sends.
-- The behavior of `shutdown()` followed by `configure()` with no `securityContext.id` for the batches that the old runtime stored. [Runtime policies](runtime-policies.md) states the rule only for a page reload.

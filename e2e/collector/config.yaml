@@ -13,7 +13,7 @@ receivers:
           # The origin of the fixture page that the check serves.
           allowed_origins:
             - http://127.0.0.1:5196
-          # The request headers of the library, as in "Ingest Server Requirements" in the README.
+          # The request headers of the library, as in docs/ingest-server.md.
           allowed_headers:
             - Content-Type
             - Content-Encoding

@@ -38,7 +38,7 @@ Copy `src/logger.ts`. Import it before each other module that logs.
 | `bus: { mode: "off" }`         | The library starts no bus.                                                |
 | `consoleOutput`                | `DEBUG` and above in development. `WARN` and above in a production build. |
 
-See [Console Only (No Network)](../../README.md#console-only-no-network) and [Console Output](../../README.md#console-output).
+See [Console Only (No Network)](../../docs/guides.md#console-only-no-network) and [Console Output](../../docs/guides.md#console-output).
 
 ## Peer check
 

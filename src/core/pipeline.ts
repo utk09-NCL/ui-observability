@@ -290,7 +290,9 @@ export class LogPipeline {
    * @returns True if the record can enter the live buffer.
    */
   private admit(record: LogRecord): boolean {
-    if (!this.policy) return true;
+    if (!this.policy) {
+      return true;
+    }
     const { maxPendingRecords, maxPendingBytes, overflow } = this.policy.buffering;
     // Encode every record, even without a byte budget. A record JSON can't encode is dropped
     // here on its own. Otherwise the transport would drop its whole batch.
@@ -327,7 +329,9 @@ export class LogPipeline {
             }
           },
         );
-      } else this.onLoss("buffer_full", [record]);
+      } else {
+        this.onLoss("buffer_full", [record]);
+      }
       return false;
     }
     this.held.set(record, bytes);
@@ -379,7 +383,9 @@ export class LogPipeline {
 
     record.observedTimeUnixNano = nowUnixNano();
     const queued = { ...record };
-    if (!this.admit(queued)) return;
+    if (!this.admit(queued)) {
+      return;
+    }
     this.route(queued);
   }
 
@@ -685,7 +691,9 @@ export class LogPipeline {
 
   /** Starts queued dispatches up to the concurrency limit. */
   private pump(): void {
-    if (this.stopped || this.paused) return;
+    if (this.stopped || this.paused) {
+      return;
+    }
     while (this.inFlight < (this.policy?.delivery.maxConcurrentRequests ?? 2)) {
       const pending = this.queue.shift();
       if (!pending) {

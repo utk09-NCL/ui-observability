@@ -167,7 +167,7 @@ For Module Federation, configure the dependency as a singleton in the shell and 
 shared: {
   '@utk09/ui-observability': {
     singleton: true,
-    requiredVersion: '0.12.0',
+    requiredVersion: '1.0.0',
   },
 }
 ```
@@ -234,17 +234,19 @@ Health does not start a second runtime. It does not wait for initialization to c
 
 ## Upgrade checklist
 
+To upgrade from 0.12.x to 1.0.0, do the steps in [Migration to 1.0.0](migration-v1.md). The steps below are from earlier upgrades.
+
 1. If you used the old automatic click details, turn on `text` or `selector`. Read selectors from `breadcrumb.data.selector`. If your markup already names its controls, for example with `data-testid`, set `capture.interactions.actionAttribute`.
 2. Replace `newSession()` at logout with awaited rotation. Also replace `configure()` calls that change delivery. Or disable isolation explicitly.
 3. Supply a stable security-context ID if you need offline replay after a page reload. The default isolation policy parks legacy untagged batches. Disable isolation only if you intend to send them with the current credentials.
 4. Register child frames before they start. Grant journey and sampling permissions where necessary. Or select origin-based discovery explicitly.
 5. Examine redactors and processors for console-only calls. Upgrade all frames and federated copies together. The bus envelope tag is now `ui-observability/2`. A frame before 0.9.5 and an owner on 0.9.5 or later ignore each other. A same-origin child frame calls the parent runtime directly, with no envelope. A same-origin `srcdoc` frame and an `about:blank` frame also use the direct call. Their `location.origin` is `"null"`. They give the parent runtime the value of their `origin` global instead. A `srcdoc` or `about:blank` frame on 0.12 or older gives `"null"`. The parent runtime refuses its direct call. That frame becomes a sender, and only its own `redact` applies. Before a direct call, a frame compares the bus protocol tag of the parent runtime with its own tag. A parent runtime from 0.9.5 to 0.12 has no tag field. Those versions use the tag `ui-observability/2`. Their child frame uses the direct call. With a different tag, the frame reports `bus.protocol_mismatch` and tries a message link. A parent runtime before 0.9.5 has an older tag. Its child frame also reports `bus.protocol_mismatch`. A message link connects the two contexts only when their envelope tags are the same. If it does not connect them, the frame becomes a sender. Only its own `redact` then applies to its records.
 6. Set cache and bus budgets for the workload of the application. Then lock configuration if the shell owns it.
-7. Update each backend query that filters by OTLP scope name. Logs and spans now use the logger namespace as the scope name. Metrics keep the library scope.
+7. Update each backend query that filters by OTLP scope name. Logs and spans now use the logger namespace as the scope name. Each span record has the namespace `uiobs.traces`. Metrics keep the library scope.
 
 ## Operational budgets
 
-These controls are application policy, not fixed SDK constants. A partial update keeps the current values. An invalid value reports `config.invalid`. The previous valid value stays. Numeric values must be safe nonnegative integers. Durations are in milliseconds. They cannot be more than the platform timer limit (2,147,483,647). Concurrency and request timeouts must be at least 1. `delivery.priority` is `"low"`, `"auto"` or `"high"`. It sets the fetch priority of each batch request. With `"low"`, the requests of the app go first. The exit flush and a send from a hidden page use the browser default. Breadcrumb capacity is at most 1,000,000. A larger value gives an invalid array allocation.
+These controls are application policy, not fixed SDK constants. A partial update keeps the current values. An invalid value reports `config.invalid`. The previous valid value stays. Numeric values must be safe nonnegative integers. Durations are in milliseconds. They cannot be more than the platform timer limit (2,147,483,647). Concurrency and request timeouts must be at least 1. `delivery.priority` is `"low"`, `"auto"` or `"high"`. It sets the fetch priority of each batch request. With `"low"`, the requests of the app go first. The exit flush and a keepalive send from a hidden page use the browser default. Breadcrumb capacity is at most 1,000,000. A larger value gives an invalid array allocation.
 
 ```ts
 configure({
@@ -324,32 +326,32 @@ The SDK builds each kept record at the time of the log call. The record has the 
 
 `replay.enabled: true` loads the session replay chunk and starts the recorder of `replay.loader`. It needs `replay.endpoint` or `replay.onSegment`. Without them, the SDK reports `config.invalid` and records nothing.
 
-| Key                | Default     | Range or values                       | Use                                                                                                   |
-| ------------------ | ----------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `enabled`          | `false`     | boolean                               | Turns the replay on.                                                                                  |
-| `mode`             | `"onError"` | `"onError"`                           | An ERROR or FATAL record starts an upload.                                                            |
-| `endpoint`         | `null`      | URL string or `null`                  | URL of the replay endpoint. `null` turns it off. `""` also turns it off and reports `config.invalid`. |
-| `requireConsent`   | `false`     | boolean                               | Nothing records before `startReplay()`.                                                               |
-| `bufferMs`         | `60000`     | 5000 to 600000                        | Time before an error that the buffer keeps.                                                           |
-| `maxBufferBytes`   | `10000000`  | 100000 to 200000000                   | Size limit of the buffer, as the JSON length of its events.                                           |
-| `afterErrorMs`     | `5000`      | 0 to 600000                           | Time after an error that the SDK continues to send events.                                            |
-| `uploadsPerWindow` | `3`         | 0 or more, or `null`                  | Uploads in each window of `uploadWindowMs`. `0` sends none. `null` sets no limit.                     |
-| `uploadWindowMs`   | `10000`     | 1 or more                             | Length of the upload window, in milliseconds.                                                         |
-| `maxSegmentEvents` | `200`       | 1 to 10000                            | Events in one segment.                                                                                |
-| `maxSegmentBytes`  | `512000`    | 10000 to 10000000                     | Size of one segment, as the JSON length of its events.                                                |
-| `flushIntervalMs`  | `2000`      | 100 to 60000                          | Wait of a partial segment.                                                                            |
-| `maxQueueBytes`    | `20000000`  | 100000 to 200000000                   | Size limit of the segments that wait for a send.                                                      |
-| `maxAttempts`      | `3`         | 1 to 10                               | Send attempts of one segment.                                                                         |
-| `maskText`         | `true`      | boolean                               | Masks each text, except in an element with `data-observability-unmask`.                               |
-| `maskInputs`       | `true`      | boolean                               | Masks each input value. A password input is always masked.                                            |
-| `recordCanvas`     | `false`     | boolean                               | Records canvas elements.                                                                              |
-| `maskSelectors`    | `[]`        | list of CSS selectors                 | Text that is always masked.                                                                           |
-| `blockSelectors`   | `[]`        | list of CSS selectors                 | Elements that the recorder does not record. It also always blocks `[data-observability-ignore]`.      |
-| `loader`           | `null`      | function or `null`                    | Loads `@rrweb/record`.                                                                                |
-| `onSegment`        | `null`      | function or `null`                    | Gets each segment in place of the request.                                                            |
-| `headers`          | `null`      | object of strings, function or `null` | Request headers for `endpoint`. The `headers` of the log endpoint do not go to it.                    |
-| `plugins`          | `[]`        | list of functions                     | Makes the record plugins of the recorder.                                                             |
-| `recordOptions`    | `{}`        | object                                | Other options of the recorder. Only the keys in the README list go to the recorder.                   |
+| Key                | Default     | Range or values                       | Use                                                                                                                                            |
+| ------------------ | ----------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`          | `false`     | boolean                               | Turns the replay on.                                                                                                                           |
+| `mode`             | `"onError"` | `"onError"`                           | An ERROR or FATAL record starts an upload.                                                                                                     |
+| `endpoint`         | `null`      | URL string or `null`                  | URL of the replay endpoint. `null` turns it off. `""` also turns it off and reports `config.invalid`.                                          |
+| `requireConsent`   | `false`     | boolean                               | Nothing records before `startReplay()`.                                                                                                        |
+| `bufferMs`         | `60000`     | 5000 to 600000                        | Time before an error that the buffer keeps.                                                                                                    |
+| `maxBufferBytes`   | `10000000`  | 100000 to 200000000                   | Size limit of the buffer, as the JSON length of its events.                                                                                    |
+| `afterErrorMs`     | `5000`      | 0 to 600000                           | Time after an error that the SDK continues to send events.                                                                                     |
+| `uploadsPerWindow` | `3`         | 0 or more, or `null`                  | Uploads in each window of `uploadWindowMs`. `0` sends none. `null` sets no limit.                                                              |
+| `uploadWindowMs`   | `10000`     | 1 or more                             | Length of the upload window, in milliseconds.                                                                                                  |
+| `maxSegmentEvents` | `200`       | 1 to 10000                            | Events in one segment.                                                                                                                         |
+| `maxSegmentBytes`  | `512000`    | 10000 to 10000000                     | Size of one segment, as the JSON length of its events.                                                                                         |
+| `flushIntervalMs`  | `2000`      | 100 to 60000                          | Wait of a partial segment.                                                                                                                     |
+| `maxQueueBytes`    | `20000000`  | 100000 to 200000000                   | Size limit of the segments that wait for a send.                                                                                               |
+| `maxAttempts`      | `3`         | 1 to 10                               | Send attempts of one segment.                                                                                                                  |
+| `maskText`         | `true`      | boolean                               | Masks each text, except in an element with `data-observability-unmask`.                                                                        |
+| `maskInputs`       | `true`      | boolean                               | Masks each input value. A password input is always masked.                                                                                     |
+| `recordCanvas`     | `false`     | boolean                               | Records canvas elements.                                                                                                                       |
+| `maskSelectors`    | `[]`        | list of CSS selectors                 | Text that is always masked.                                                                                                                    |
+| `blockSelectors`   | `[]`        | list of CSS selectors                 | Elements that the recorder does not record. It also always blocks `[data-observability-ignore]`.                                               |
+| `loader`           | `null`      | function or `null`                    | Loads `@rrweb/record`.                                                                                                                         |
+| `onSegment`        | `null`      | function or `null`                    | Gets each segment in place of the request.                                                                                                     |
+| `headers`          | `null`      | object of strings, function or `null` | Request headers for `endpoint`. The `headers` of the log endpoint do not go to it.                                                             |
+| `plugins`          | `[]`        | list of functions                     | Makes the record plugins of the recorder.                                                                                                      |
+| `recordOptions`    | `{}`        | object                                | Other options of the recorder. Only the keys in the `replay.recordOptions` list of [Session replay](api.md#session-replay) go to the recorder. |
 
 An invalid value reports `config.invalid`. The current value stays. The replay capture has its own install key. A change of another capture setting in `configure()`, or a remote capture switch, keeps the recorder, the buffer and the `replay.id`. A change of one of these values stops the recorder and starts it again with a new `replay.id`: `endpoint`, `requireConsent`, `mode`, `maskText`, `maskInputs`, `maskSelectors`, `blockSelectors`, `recordCanvas`, `bufferMs`, `capture.fullUrls` and `capture.ignoreUrls`. A new `loader` function, a new `onSegment` function, a new `recordOptions` object or a new function in `plugins` also does this. Keep these references stable. The buffer and the segments that wait are then dropped. Thus an event that was recorded with an old mask does not stay, and no event goes to an endpoint that it was not recorded for. A change of the log `endpoint` changes `capture.ignoreUrls`. These `replay` values apply to the recorder that runs: `maxBufferBytes`, `afterErrorMs`, `uploadsPerWindow`, `uploadWindowMs`, `maxSegmentEvents`, `maxSegmentBytes`, `flushIntervalMs`, `maxQueueBytes`, `maxAttempts` and `headers`. A change of only `headers` keeps the buffer and the segments that wait, so a new token does not drop them. A replay that could not start for a missing `loader`, `endpoint` or `onSegment` starts when a later `configure()` adds the missing value. While the replay is off, a change of a `replay` value starts no new install of the captures. `newSession()` and `rotateSecurityContext()` drop the buffer and start a new recording. `stopReplay()` stays in force until `startReplay()`. `shutdown()` stops the recorder. `enabled: false` stops the recorder and drops the buffer. `enabled: true` then starts a new recording. The replay runs in each document that turns it on. It does not use the bus. The SDK keeps no segment in storage, and the exit flush sends no segment.
 

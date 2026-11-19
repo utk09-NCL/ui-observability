@@ -84,7 +84,7 @@ describe("createMemoryTransport", () => {
 
 describe("createMemoryTransport through the public API", () => {
   it("receives a record that a test logs and flushes, with no endpoint and no fetch", async () => {
-    // The pattern from the README, using only the public API.
+    // The pattern from docs/guides.md, using only the public API.
     vi.stubGlobal("fetch", vi.fn());
     const memory = createMemoryTransport();
     configure({

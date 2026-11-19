@@ -37,7 +37,8 @@
   "files": [
     "dist",
     "bin",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "llms.txt"
   ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

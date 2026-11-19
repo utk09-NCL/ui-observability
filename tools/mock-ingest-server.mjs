@@ -99,7 +99,40 @@ function cors(req, res) {
 
 const unwrap = (v) => (v ? Object.values(v)[0] : undefined);
 const kv = (list) => Object.fromEntries((list ?? []).map((a) => [a.key, unwrap(a.value)]));
-const iso = (nanos) => new Date(Number(BigInt(nanos) / 1000000n)).toISOString();
+// OTLP JSON gives an int64 as a decimal string, or as a number. Anything else reads as unknown,
+// because BigInt() throws on it and one odd record would stop the whole server.
+function nanos(value) {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value);
+  }
+
+  return typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : null;
+}
+
+// Returns the first time that parses, as ISO text. OTLP makes timeUnixNano optional and 0 means
+// unknown, so a log record passes observedTimeUnixNano as the stand-in.
+function iso(...times) {
+  for (const time of times) {
+    const value = nanos(time);
+    const date = value ? new Date(Number(value / 1000000n)) : null;
+    if (date && !Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+
+  return "-";
+}
+
+// Returns a span's length, or "-" when either end is unknown.
+function spanMs(span) {
+  const start = nanos(span.startTimeUnixNano);
+  const end = nanos(span.endTimeUnixNano);
+  if (start === null || end === null) {
+    return "-";
+  }
+
+  return `${Number((end - start) / 1000n) / 1000}ms`;
+}
 
 // Prints one line per data point in an ExportMetricsServiceRequest. Sums and gauges show their
 // value, histograms show their count and sum.
@@ -144,15 +177,13 @@ function printTraces(payload, batchId) {
     const resAttrs = kv(rs.resource?.attributes);
     for (const ss of rs.scopeSpans ?? []) {
       for (const span of ss.spans ?? []) {
-        const ms =
-          Number((BigInt(span.endTimeUnixNano) - BigInt(span.startTimeUnixNano)) / 1000n) / 1000;
         lines.push(
           [
             iso(span.startTimeUnixNano),
             `[${resAttrs["service.name"]}]`,
             span.kind === 3 ? "[client]" : "[internal]",
             span.name,
-            `${ms}ms`,
+            spanMs(span),
             `trace=${String(span.traceId).slice(0, 8)}`,
             `span=${String(span.spanId).slice(0, 8)}`,
             `parent=${String(span.parentSpanId ?? "-").slice(0, 8)}`,
@@ -177,7 +208,7 @@ function readBody(req) {
   });
 }
 
-const server = createServer(async (req, res) => {
+async function handle(req, res) {
   cors(req, res);
 
   if (req.method === "OPTIONS") {
@@ -357,7 +388,7 @@ const server = createServer(async (req, res) => {
         const attrs = kv(rec.attributes);
         console.log(
           [
-            iso(rec.timeUnixNano),
+            iso(rec.timeUnixNano, rec.observedTimeUnixNano),
             String(rec.severityText).padEnd(5),
             `[${resAttrs["service.name"]}]`,
             `[${attrs["log.type"]}]`,
@@ -372,6 +403,18 @@ const server = createServer(async (req, res) => {
   }
 
   res.writeHead(204).end();
+}
+
+// A body that is JSON but not the OTLP shape throws in the printers. Answer 400, as for a body
+// that isn't JSON, or the throw stops the whole server.
+const server = createServer((req, res) => {
+  handle(req, res).catch((error) => {
+    console.error("[error] the body does not have the expected shape", error);
+    if (!res.headersSent) {
+      res.writeHead(400);
+    }
+    res.end();
+  });
 });
 
 server.listen(PORT, () => {

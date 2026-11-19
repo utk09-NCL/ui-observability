@@ -1,0 +1,397 @@
+# @utk09/ui-observability
+
+> Framework-neutral structured logging and UI observability for browsers, embedded webviews and OpenFin containers. The library batches records and sends them over HTTP as OTLP/JSON. It stores a batch that fails to send and sends it again later. It sends the last records when the page closes. It has one entry point, no runtime dependency and three optional peers. A log call never throws.
+
+This file is for a large language model that writes code with this package. The package does not include the `docs/` folder, so this file has the rules for the common tasks. Each function name, config key and default here comes from `src/index.ts`, `src/models/config.ts` and `src/constants.ts` of version 1.0.0. The links at the end go to the full reference.
+
+## What the library does
+
+- Writes log records with a namespace, a level, a message and a payload.
+- Records user actions, domain events, metrics (counter, gauge, histogram), timed operations (measures) and profiler probes.
+- Captures browser signals when you turn them on. Uncaught errors and unhandled rejections are on by default. Fetch, XHR, clicks, navigation, web vitals, long frames, console calls and WebSockets are off by default.
+- Puts five correlation ids on each record: `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
+- Sends OTLP/JSON by default, or ECS NDJSON. It gzips a body of 1 KiB or more. Metrics and spans can go to their own OTLP endpoints.
+- Stores a failed batch in IndexedDB or `localStorage` and sends it again with backoff.
+- Connects iframes, workers and OpenFin views to one sender in each tab, through a bus.
+- Records the DOM for a session replay after an error, with the `@rrweb/record` package of the app. The replay is off by default.
+
+## What the library does not do
+
+- It imports no framework. It has no React, Angular or Vue adapter. The app writes that code. See the React recipe below.
+- It does not remove personal data by default. Write a `redact` hook for that. Without hooks, the library only makes values safe to serialize.
+- On Node, for example in server-side rendering, it sends nothing. It prints to the console only.
+- It does not authenticate. The app gives `headers`, `credentials` or a custom `transport`.
+- It is not an audit trail. A record can be lost. `onDrop` reports each loss of a built record.
+- OpenFin support is not validated on a real OpenFin runtime.
+
+## Install
+
+```bash
+npm install --save-exact @utk09/ui-observability
+```
+
+| Peer                 | Version            | Install it for                        | Set this key               |
+| -------------------- | ------------------ | ------------------------------------- | -------------------------- |
+| `@opentelemetry/api` | `^1`               | Records on your OpenTelemetry traces. | `otelLoader`               |
+| `@rrweb/record`      | `^2`               | Session replay.                       | `replay.loader`            |
+| `web-vitals`         | `^4`, `^5` or `^6` | LCP, CLS and INP.                     | `capture.webVitals.loader` |
+
+Each peer is optional. Give each peer as a loader function with a dynamic `import()`. The library never imports a peer by name, so a missing peer cannot break the bundler.
+
+```ts
+configure({
+  endpoint: "https://ingest.example/v1/logs",
+  serviceName: "orders",
+  otelLoader: () => import("@opentelemetry/api"),
+  capture: { webVitals: { loader: () => import("web-vitals") } },
+  replay: {
+    enabled: true,
+    endpoint: "https://ingest.example/v1/replay",
+    loader: () => import("@rrweb/record"),
+  },
+});
+```
+
+- Without `capture.webVitals.loader`, the library reports `config.invalid`. Only the navigation timing then runs.
+- Without `otelLoader`, OpenTelemetry is off. The library then makes its own `trace_id`.
+- Browsers: Chrome 85, Edge 85, Firefox 79, Safari 14.1 and later. Node 22.22.3 or later, console only.
+- The package has an ES module entry and a CommonJS entry. They are separate copies with separate state. Use one format in one app.
+
+## The start rule
+
+- Nothing starts before the first `configure()` call that works. Call it one time, at module top level of the app entry, before the first render.
+- Before that call, a log call does not throw. The record waits in memory, in the hold buffer. The library installs no capture, starts no bus, sends nothing and writes nothing to storage. `getHealth().status` is `"unconfigured"`. `flush()` returns the status `"inactive"`. `rotateSecurityContext()` rejects.
+- The first call that works starts the runtime. The held records then get its `processors`, its `redact` and its identity. Then they go out.
+- An app that never calls `configure()` sends nothing. The console output is off by default, so it also prints nothing.
+- `getLogger()` at module top level is safe before `configure()`. The logger finds the runtime on its first write.
+- `configure()` never throws. A value of the wrong type or outside its range reports `config.invalid`, and the current value stays. An unknown key also reports `config.invalid`.
+- Set `endpoint` and `serviceName` in the first call. Set `endpoint: null` for console-only mode.
+- A later call merges into the current settings. An omitted key or `undefined` keeps the current value. `null` removes a hook or turns off an endpoint. On a limit key, `null` means no limit and `0` means zero.
+- These keys are fixed by the first call that works: `identity`, `correlation`, `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `storage`, `bus.mode` and `bus.openFinRole`. `batching` and `retention` are fixed when the delivery stack loads. A later change reports `config.invalid`.
+- `otelLoader` is also fixed by the first call that works. A later change has no effect and reports nothing.
+- With `securityContext.isolation: true` (the default), `configure()` refuses a change of `endpoint`, `metricsEndpoint`, `tracesEndpoint`, `headers`, `credentials`, `transport`, `transportOnExit`, `transportWorker` and `securityContext.id`. Use `rotateSecurityContext()` for these changes.
+- `enabled: false` is a pause, not a stop. Log calls do nothing. The captures, the replay and the sender stop. The records in memory and in storage stay, and they go out after `enabled: true`. `getHealth().status` is `"disabled"`.
+- `shutdown()` stops the runtime. After it, each call does nothing until the next `configure()`, which builds a new runtime. `rotateSecurityContext()` rejects until then.
+- Call `configure()` in one context of each document. In a page with microfrontends, the shell calls it. Each microfrontend calls only `getLogger()` with its own namespace.
+
+## Public functions
+
+Import each function and type from `"@utk09/ui-observability"`. A call never throws.
+
+Setup and lifecycle:
+
+- `configure(config: Partial<ObservabilityConfig>): void`. Starts the runtime, or updates it.
+- `setConfigurationLocked(locked: boolean): void`. Refuses later `configure()` changes. Call it after `configure()`.
+- `rotateSecurityContext(update: SecurityContextUpdate, options?: SecurityContextRotationOptions): Promise<void>`. Changes the delivery identity and the routing settings together, at login, logout or a tenant change. `update` is `{ id?, routing, context? }`. A routing field that you omit resets to its default. An omitted `id` gives a new id. An omitted `context` removes the old context attributes. `options` is `{ pending?: "discard" | "flush" | "retain" | "carry", timeoutMs? }`, defaults `"discard"` and `5000`.
+- `newSession(): void`. Starts a new `session.id` in this tab. It does not isolate the stored batches or the credentials.
+- `shutdown(options?: ShutdownOptions): Promise<void>`. Stops each subsystem. `options` is `{ pending?: "flush" | "discard", clearStorage?: "context" | "namespace" | null }`. The default `"flush"` sends the records in memory, then runs the exit flush.
+
+Logging:
+
+- `getLogger(namespace: string, options?: { scopedContext?: Record<string, unknown> }): Logger`. Returns the cached logger of the namespace. With `options`, it returns a new logger that is not cached.
+- `Logger` methods: `trace`, `debug`, `info`, `warn` take `(message: string, payload?: Record<string, unknown>)`. `error` and `fatal` take `(message: string, err?: unknown, payload?: Record<string, unknown>)` and add the breadcrumb trail. `logAction(name, payload?)` logs a user action. `logEvent(name, payload?)` logs a domain or lifecycle event. `child(namespace, options?)` returns a logger for `<namespace>.<child>`.
+- `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `logAction`, `logEvent`. The same functions on the `"app"` logger.
+- `addBreadcrumb(message: string, data?: Record<string, unknown>): void`. Adds a breadcrumb. The next error record carries the trail.
+
+Metrics and timing:
+
+- `counter(name: string, options?: { unit?: string }): Counter`. `add(value, attributes?)` sums values of 0 or more.
+- `gauge(name: string, options?: { unit?: string }): Gauge`. `set(value, attributes?)` keeps the last value.
+- `histogram(name: string, options?: { unit?: string; boundaries?: readonly number[] }): Histogram`. `record(value, attributes?)` counts values in buckets.
+- `startMeasure(name: string, attributes?: MetricAttributes): Measure`. `phase(name)` starts a named phase. `end(outcome?)` records the total. The default outcome is `"ok"`.
+- `measure<T>(name: string, fn: () => T, attributes?: MetricAttributes): T`. Times one call. A throw or a rejection gives the outcome `"error"` and goes to the caller. `measure()` does not log the error. The app logs it.
+- `profiler.probe(name: string, options?: { sampleEvery?, slowMs?, async? }): Probe`. A low-cost timer for code that runs very often. `begin()` returns a token for `end(token)`. Needs `profiler.enabled: true`.
+- `profiler.time<T>(name: string, fn: () => T): T`. Times one call with the probe of the name.
+- Metric attribute values are strings, finite numbers or booleans. Each instrument sends one point for each attribute set at each `metrics.intervalMs`. Sampling and `minLevel` do not drop a point.
+
+Context, journeys and traces:
+
+- `setContext(values: Record<string, unknown>): void`. Merges attributes into each later record. A `null` value removes its key.
+- `removeContext(key: string): void`. Removes one context attribute.
+- `startJourney(name: string, options?: { parent?: boolean; id?: string }): Journey`. Starts a workflow id that spans windows. `Journey` has `id`, `name`, `startedAt`, `parentId?` and `ownerContextId`.
+- `endJourney(): void`. Ends the active journey.
+- `currentJourney(): Journey | null`. Returns the active journey.
+- `getJourneyToken(): string | null`. Returns a URL token for the active journey, or `null`.
+- `adoptJourney(token: string): boolean`. Adopts a journey token. Returns `true` when the token is valid.
+- `newTrace(): void`. Starts a new trace. Later records and requests have the new `trace_id`.
+- `getTraceHeaders(): Record<string, string>`. Returns the W3C `traceparent` header for an outgoing request.
+
+Frames, workers and transports:
+
+- `registerFrame(frame: HTMLIFrameElement | Window, options: { origin: string; permissions?: BusPermission[] }): () => void`. Lets a child frame on that exact origin forward its records. Returns a function that removes the registration.
+- `registerWorker(worker: WorkerLike, options?: { permissions?: BusPermission[] }): () => void`. The same for a Web Worker or a `MessagePort`.
+- `BusPermission` is `"records"`, `"journey:read"`, `"journey:write"` or `"sampling:read"`. Without a list, the source can only send records.
+- `serveTransportWorker(options?: { onDiagnostic? }): () => void`. Call it in the worker script of `transportWorker`. Returns a function that stops the service.
+- `createMemoryTransport(): MemoryTransport`. A transport for tests. It has `transport`, `records()`, `batches()`, `clear()` and `respondWith(status, retryAfterMs?)`.
+
+Delivery and health:
+
+- `flush(options?: { timeoutMs?: number }): Promise<FlushResult>`. Sends the records in memory and waits until each one has a final state, or until `timeoutMs` (default 5000, range 0 to 600000). It never rejects. `FlushResult` is `{ status: "complete" | "timeout" | "inactive", accepted, stored, dropped, forwarded, pending }`. Each count is a number of records.
+- `getHealth(): Promise<ObservabilityHealth>`. Returns `status` (`"unconfigured"`, `"disabled"`, `"starting"`, `"ready"`, `"rotating"`, `"degraded"` or `"stopped"`), `mode`, `issues`, `sdkVersion` and the `delivery` block `{ pending, inFlight, stored, lastSendAt, lastFailureAt, consecutiveFailures, throttledUntil, dropped }`.
+- `getDiagnosticCounters(): Record<string, number>`. Returns the count of each diagnostic code.
+- `collectDebugBundle(): Promise<DebugBundle>`. Returns a JSON-safe bundle for a support ticket. It has no headers and no URL query.
+
+Session replay:
+
+- `startReplay(): void`. Starts the recorder. With `replay.requireConsent: true`, nothing records before this call.
+- `stopReplay(): void`. Stops the recorder and drops each replay event that is not sent.
+
+## Configuration
+
+Top-level keys of `ObservabilityConfig`, with their defaults:
+
+| Key                 | Default     | Use                                                                                         |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `endpoint`          | not set     | URL for the log batches. Required in the first call. `null` selects console-only mode.      |
+| `serviceName`       | `""`        | `service.name` on each record.                                                              |
+| `serviceVersion`    | `""`        | `service.version` on each record.                                                           |
+| `environment`       | `""`        | `deployment.environment` on each record.                                                    |
+| `enabled`           | `true`      | `false` pauses the library.                                                                 |
+| `minLevel`          | `"INFO"`    | Lowest level that the library sends: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.    |
+| `minLevels`         | `{}`        | Lowest level for each namespace prefix, for example `{ "trading.ticks": "DEBUG" }`.         |
+| `consoleOutput`     | `false`     | `true` prints from `DEBUG` up. A level name prints from that level. Or `{ level, styles }`. |
+| `metricsEndpoint`   | `null`      | OTLP metrics URL. Without it, a metric point is a log record on `endpoint`.                 |
+| `tracesEndpoint`    | `null`      | OTLP traces URL. Without it, the library sends no span.                                     |
+| `serializer`        | `"otlp"`    | `"otlp"`, `"ecs"` or a custom `LogSerializer`.                                              |
+| `compression`       | `"gzip"`    | `"gzip"` or `"none"`.                                                                       |
+| `credentials`       | `"omit"`    | Fetch credentials mode. `"include"` for cookie authentication.                              |
+| `headers`           | not set     | An object, or a function that returns one or a promise of one.                              |
+| `identity`          | `"storage"` | Where the ids live. `"memory"` writes no key to `localStorage` or `sessionStorage`.         |
+| `payloadMode`       | `"copy"`    | `"defer"` keeps the payload reference until idle time.                                      |
+| `redact`            | not set     | `(record: LogRecord) => LogRecord \| null`. The last privacy gate.                          |
+| `processors`        | `[]`        | Functions with the contract of `redact`. They run before `redact`.                          |
+| `contextProvider`   | not set     | Returns attributes for each record. Keep it fast and synchronous.                           |
+| `onDrop`            | not set     | `(summary: DropSummary) => void`. Gets each loss of built records.                          |
+| `onDiagnostic`      | not set     | `(event: DiagnosticEvent) => void`. Gets each fault of the library.                         |
+| `transport`         | not set     | Sends a batch through a channel of the app. `endpoint` is then optional.                    |
+| `transportOnExit`   | not set     | Sends the last batch while the page closes. Needs `transport`. Must not wait.               |
+| `transportWorker`   | not set     | `() => Worker`. Sends from a dedicated worker that calls `serveTransportWorker()`.          |
+| `otelLoader`        | not set     | `() => import("@opentelemetry/api")`.                                                       |
+| `lockConfiguration` | `false`     | Refuses changes through `configure()`.                                                      |
+
+Sections and their keys. Each key is optional in `configure()`. A section takes an object only. For example, `storage: "memory"` reports `config.invalid`.
+
+- `capture`: `errors: true`, `rejections: true`, `httpMetrics: true`. Each other switch is `false`: `resourceErrors`, `fetch`, `xhr`, `interactions`, `navigation`, `webVitals`, `longFrames`, `console`, `webSocket`, `uncleanExit`, `userTiming`, `serverTiming`, `reports`, `resourceTiming`, `lifecycle`. URL rules: `fullUrls: false`, `urlTransform` not set, `ignoreUrls: []`, `propagateTraceHeaderTo: []`. Also `remoteToggles: []` and `plugins: []`.
+- Capture options objects. An object turns the capture on. `interactions: { text, selector, ignoreSelector, maxTextChars, actionAttribute, rageClicks, rageClickCount, rageClickWindowMs, deadClicks, deadClickMs }`. `webVitals: { loader }`. `longFrames: { thresholdMs }` (default 100). `console: { levels }` (default `["error", "warn"]`). `userTiming: { include }` (default `[]`, each name). `resourceTiming: { slowMs }` (default 1000).
+- `sampling`: `defaultRate: 1`, `rates: {}`, `alwaysSampleTypes: ["action"]`, `alwaysSampleFrom: "ERROR"`, `errorCeiling: 500`, `errorCeilingWindowMs: 10000`, `remote: false`, `remoteMaxRate: 1`.
+- `storage`: `backend: "auto"` (`"auto"`, `"indexeddb"`, `"localstorage"`, `"memory"` or `"none"`), `namespace: ""`, `requestPersistent: false`.
+- `bus`: `mode: "auto"` (`"auto"`, `"sender"`, `"forwarder"` or `"off"`), `trustedOrigins: []`, `sourcePolicy: "registered"` (or `"trusted-origin"`), `openFinRole: "auto"`, `maxMessageBytes: 262144`, `maxRecordsPerMessage: 100`, `maxMessagesPerSecond: 100`.
+- `batching`: `logFlushIntervalMs: 2000`, `logBatchSize: 100`, `metricBatchSize: 500`.
+- `retention`: `maxBatches: 500`, `maxAgeMs: 86400000`, `maxAttempts: 5`.
+- `delivery`: `requestTimeoutMs: 15000`, `maxConcurrentRequests: 2`, `retryBaseDelayMs: 2000`, `retryMaxDelayMs: 60000`, `priority: "low"`.
+- `buffering`: `maxPendingRecords: 10000`, `maxPendingBytes: 16777216`, `maxHeldRecords: 500`, `overflow: "drop-oldest"`.
+- `limits`: `maxBodyChars: 4096`, `maxAttributeChars: 8192`, `maxAttributeCount: 128`, `maxStackChars: 8192`, `maxDepth: 6`, `maxArrayLength: 100`, `maxNodes: 10000`, `maxRecordBytes: 32768`.
+- `metrics`: `intervalMs: 10000`, `maxSeries: 100`, `maxInstruments: 1000`, `maxHistogramBoundaries: 50`.
+- `correlation`: `sessionIdleMs: 1800000`, `traceMaxAgeMs: 300000`.
+- `journey`: `scope: "auto"`, `maxAgeMs: 1800000`.
+- `securityContext`: `id` (generated when not set), `isolation: true`.
+- `captureLimits`: `breadcrumbs: 50`, `errorDedupeMs: 5000`, `errorsPerWindow: 20`, `consolePerWindow: 20`, `longFramesPerWindow: 20`, `webSocketPerWindow: 20`, `reportsPerWindow: 20`, `resourcesPerWindow: 100`, `lifecyclePerWindow: 20`, `windowMs: 10000`.
+- `metadata`: `pageUrl: true`, `userAgent: true`, `openfin: true`, `clockOffset: true`.
+- `diagnostics`: `throttleMs: 1000`, `consoleFallback: false`, `records: false`.
+- `debugBuffer`: `enabled: false`, `maxRecords: 200`, `maxAgeMs: 60000`.
+- `profiler`: `enabled: false`, `maxProbes: 64`, `framePhases: false`, `framePacing: false`.
+- `replay`: `enabled: false`, `mode: "onError"`, `endpoint: null`, `loader: null`, `requireConsent: false`, `bufferMs: 60000`, `maxBufferBytes: 10000000`, `afterErrorMs: 5000`, `uploadsPerWindow: 3`, `uploadWindowMs: 10000`, `maxSegmentEvents: 200`, `maxSegmentBytes: 512000`, `flushIntervalMs: 2000`, `maxQueueBytes: 20000000`, `maxAttempts: 3`, `maskText: true`, `maskInputs: true`, `recordCanvas: false`, `maskSelectors: []`, `blockSelectors: []`, `headers: null`, `onSegment: null`, `plugins: []`, `recordOptions: {}`. The replay needs `loader`, and `endpoint` or `onSegment`.
+- `loggerCache`: `maxEntries: 256`.
+
+## Recipes
+
+Console only, with no network:
+
+```ts
+configure({
+  endpoint: null,
+  serviceName: "orders",
+  identity: "memory",
+  storage: { backend: "none" },
+  bus: { mode: "off" },
+  consoleOutput: "DEBUG",
+});
+```
+
+Redact a field. `redact` runs on each record before the console, a callback or the network sees it. The sender also runs its `redact` on each record from a frame or a worker, so a second run must give the same result.
+
+```ts
+configure({
+  endpoint: "https://ingest.example/v1/logs",
+  serviceName: "orders",
+  redact: (record) =>
+    "card" in record.attributes
+      ? { ...record, attributes: { ...record.attributes, card: "[redacted]" } }
+      : record,
+});
+```
+
+React error boundary. A render error that a React error boundary catches does not reach `window.onerror`, so the error capture does not see it. Log it in `componentDidCatch`. The library has no React code. The example app in `playground/react/src/observability.tsx` on GitHub has a boundary, a provider and hooks. Call `configure()` at module top level, not in a component.
+
+```ts
+componentDidCatch(error: Error, info: React.ErrorInfo): void {
+  getLogger("react").error("render failed", error, {
+    "react.component_stack": info.componentStack,
+  });
+}
+```
+
+Frames. Register the frame in the parent before the frame loads its page. The frame also calls `configure()`. A cross-origin frame needs the parent origin in `bus.trustedOrigins`. The parent batches and sends the records of the frame, and the parent `redact` runs on them.
+
+```ts
+// Parent page, after configure(). The iframe is in the document and has no src yet.
+registerFrame(frame, { origin: "https://ticket.example", permissions: ["records"] });
+await flush(); // Waits for the startup, so the registration is active.
+frame.src = "https://ticket.example/";
+
+// Frame on https://ticket.example.
+configure({
+  endpoint: "https://ingest.example/v1/logs",
+  serviceName: "ticket",
+  bus: { trustedOrigins: ["https://app.example"] },
+});
+```
+
+A frame that starts before the parent runtime gets no owner. After 1,500 ms (4,500 ms for a cross-origin frame) it sends its own records with its own `redact`.
+
+Workers. Register the worker in the page. The worker script calls `configure()` and logs as usual.
+
+```ts
+const worker = new Worker(new URL("./pricing.worker.ts", import.meta.url), { type: "module" });
+registerWorker(worker);
+```
+
+Logout on a shared device. Send nothing more, and remove the stored batches, the session id, the tab id and the journey. Then start a new runtime for the next user.
+
+```ts
+await shutdown({ pending: "discard", clearStorage: "context" });
+configure(anonymousConfig);
+```
+
+Logout that sends the old records with the old token first, then changes the routing:
+
+```ts
+await rotateSecurityContext(
+  { routing: { endpoint: "https://ingest.example/v1/logs" } },
+  { pending: "flush", timeoutMs: 3000 },
+);
+```
+
+Flush with a time limit, for example before a navigation that the app controls. `status: "complete"` means only that no record waits. A dropped record and a stored record also count as complete. To confirm delivery, check `accepted`, `dropped` and `stored`.
+
+```ts
+const result = await flush({ timeoutMs: 2000 });
+if (result.pending > 0) {
+  // These records have no final state yet. The library still sends or stores them.
+}
+if (result.dropped > 0 || result.stored > 0) {
+  // These records did not reach the server. A stored record goes out at a later retry.
+}
+```
+
+Custom transport. The status code has the meaning of the ingest contract. Put the transport URL in `capture.ignoreUrls`, or the network capture records each send, and the sends do not stop.
+
+```ts
+configure({
+  serviceName: "orders",
+  transport: async (request) => {
+    const response = await apiClient.post("/telemetry", request.body, {
+      headers: { "Content-Type": request.contentType, "X-UiObs-Batch-Id": request.batchId },
+    });
+    return { status: response.status };
+  },
+  capture: { ignoreUrls: ["/telemetry"] },
+});
+```
+
+Tests. Use the memory transport, and run the test in a DOM environment. In Node, the library is console-only, so the memory transport gets no batch. In Vitest, install `happy-dom` or `jsdom` and set the test environment.
+
+```ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: { environment: "happy-dom" },
+});
+```
+
+Set `storage: { backend: "none" }`, or `shutdown()` stores the unsent records for the next test. `memory.clear()` keeps the answer of `respondWith()`, so call `memory.respondWith(200)` in `afterEach` when a test changes the answer.
+
+```ts
+const memory = createMemoryTransport();
+configure({
+  serviceName: "orders",
+  transport: memory.transport,
+  storage: { backend: "none" },
+  bus: { mode: "off" },
+  identity: "memory",
+});
+getLogger("orders.ticket").logAction("ORDER_SUBMIT", { orderId: "ORD-1" });
+expect(await flush()).toMatchObject({ status: "complete", dropped: 0, stored: 0 });
+expect(memory.records()).toContainEqual(expect.objectContaining({ body: "ORDER_SUBMIT" }));
+memory.clear();
+memory.respondWith(200);
+await shutdown();
+```
+
+Metrics and measures:
+
+```ts
+counter("orders.submitted").add(1, { tier: "gold" });
+gauge("queue.depth").set(queue.length);
+histogram("price.latency", { unit: "ms" }).record(elapsedMs);
+// measure() records the outcome "error" but writes no error record. Log the error yourself.
+const rows = await measure("rows.fetch", () => fetchRows()).catch((err: unknown) => {
+  getLogger("app").error("rows.fetch failed", err);
+  throw err;
+});
+```
+
+## Privacy rules
+
+- `redact` is the last privacy gate. `processors` run first, then `redact`. Then the console, a callback or the network sees the record.
+- A hook that throws, or returns a value that is not a record, drops the record.
+- A `redact` value that is not a function keeps the current hook. With no current hook, the library drops each record until `redact` is a function or `null`.
+- A server can never change a privacy setting. A remote rule in `X-UiObs-Sampling` changes only the sampling rates, the levels that the library sends and the capture switches in `capture.remoteToggles`. Each rule has a time limit.
+- A recorded URL has no query and no fragment, unless `capture.fullUrls` is `true` or `urlTransform` is set.
+- Click capture records no element text and no selector, unless `interactions.text` or `interactions.selector` is `true`.
+- Set `redact` before you turn on `capture.console`, because a console argument can hold a header or a token.
+- The replay masks text and input values by default. `redact` and `processors` do not apply to a replay event.
+- `identity: "memory"` writes no id to the device.
+
+## Ingest contract
+
+- The server accepts `POST` with `Content-Type: application/json` (OTLP), `application/x-ndjson` (ECS, with `serializer: "ecs"`) or `text/plain;charset=UTF-8`. The exit batch to another origin uses `text/plain;charset=UTF-8`.
+- Each batch has the headers `X-UiObs-Batch-Id` and `X-UiObs-Attempt`. A body of 1 KiB or more has `Content-Encoding: gzip`. The CORS preflight must allow `content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt`, and the name of each header in `headers`.
+- The exit batch has its batch id in the query `uiobs_batch_id` and the reason in `uiobs_exit`.
+- The server deduplicates on the batch id for at least 24 hours. The library can send a batch more than one time.
+- `200`, `202` and `204` accept the batch. `413` splits it, and a JSON body `{"maxBytes": n}` gives the limit. `429` and `503` throttle, with `Retry-After`. `408` and `5xx` retry. With a `headers` function, `401` and `403` get one more send with new headers. Each other `4xx` drops the batch.
+- Expose `Retry-After`, `X-UiObs-Sampling` and `Date` with `Access-Control-Expose-Headers`.
+- The replay endpoint is a separate URL. It gets one JSON `POST` for each segment, with the batch id `<replay.id>-<sequence>` and only the `replay.headers`.
+- Check a server with `pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example`.
+
+## Common mistakes
+
+- Do not import a peer by name to give it to the library. Give a loader: `() => import("web-vitals")`.
+- Do not import a subpath, for example `@utk09/ui-observability/react` or a file in `dist/`. The package exports `.` only.
+- Do not use `enabled: false` to stop the library or to withdraw consent. It is a pause, and the records go out after `enabled: true`. At a consent withdrawal, call `shutdown({ pending: "discard", clearStorage: "context" })`. Call `configure()` again only after the user agrees.
+- Do not call `configure()` in a component body or an effect. Call it one time at module top level.
+- Do not use `configure({ headers: null })` or `headers: undefined` at logout. With isolation on, the first is refused, and the second keeps the token. Use `rotateSecurityContext()` or `shutdown()` with `clearStorage`.
+- Do not use `0` for "no limit". Use `null`. Do not use `""` to turn off an endpoint. Use `null`.
+- Do not load child frames before the parent calls `configure()` and registers them.
+- Do not log through the library in `onDrop`.
+- Do not put a user id or a full URL in a metric attribute. Each value makes a new series.
+- Do not expect `flush()` to reject. Check the counts of its result.
+- Do not load two versions of the library on one page. A copy of another version runs console-only and reports `runtime.version_mismatch`. Use one module format in one app.
+- Do not use the names that 1.0.0 removed. `logMetric` is `gauge`, `counter` or `histogram`. `timeSync` and `timeAsync` are `measure`, but `measure()` does not log the error. Catch the error and log it to keep the old ERROR record. `getStats()` is `(await getHealth()).delivery`. `getQueueDepth()` is `(await getHealth()).delivery.stored`. `clearPersistedLogs(scope)` is `shutdown({ pending: "discard", clearStorage: scope })`. Then call `configure()` again. `setContextMap(values)` is `setContext(values)`. `startTrace()` is `newTrace()`. The type `OneLogger` is `Logger`. The key `console` is `consoleOutput`. `capturePolicy` is `captureLimits`. `persistence` goes into `storage`.
+
+## Reference documents
+
+- [README](https://github.com/utk09-NCL/ui-observability/blob/main/README.md): install, quick start and the common recipes.
+- [API Reference](https://github.com/utk09-NCL/ui-observability/blob/main/docs/api.md): each function, the delivery health, the flush result and the shutdown options.
+- [Configuration Options](https://github.com/utk09-NCL/ui-observability/blob/main/docs/configuration.md): each key, its default and its rules.
+- [Guides](https://github.com/utk09-NCL/ui-observability/blob/main/docs/guides.md): console output, custom transport, worker transport, testing and remote sampling.
+- [Production recipes](https://github.com/utk09-NCL/ui-observability/blob/main/docs/production-recipes.md): login, logout, tenant rotation, token refresh and consent withdrawal.
+- [Ingest Server Requirements](https://github.com/utk09-NCL/ui-observability/blob/main/docs/ingest-server.md): the full ingest contract and the `doctor` tool.
+- [Migration to 1.0.0](https://github.com/utk09-NCL/ui-observability/blob/main/docs/migration-v1.md): each change from 0.12.x.
+- [Delivery guarantees](https://github.com/utk09-NCL/ui-observability/blob/main/docs/delivery-guarantees.md): duplicates, order and each loss reason.
+- [Attribute reference](https://github.com/utk09-NCL/ui-observability/blob/main/docs/attributes.md): each attribute that the library writes.
+- [Browser support](https://github.com/utk09-NCL/ui-observability/blob/main/docs/browser-support.md): the browser APIs and the fallback for each.
+- [Threat model](https://github.com/utk09-NCL/ui-observability/blob/main/docs/threat-model.md): the trust boundaries and the controls.
+- [Release and support](https://github.com/utk09-NCL/ui-observability/blob/main/docs/release-and-support.md): the stable API contract.
+- [React example](https://github.com/utk09-NCL/ui-observability/blob/main/playground/react/src/observability.tsx): an error boundary, a provider and hooks.

@@ -831,7 +831,8 @@ export interface DeliveryOptions {
    */
   requestTimeoutMs: number;
   /**
-   * Maximum requests in flight at once. Must be at least 1.
+   * Maximum live requests in flight at once. Must be at least 1. The retry drain sends one
+   * stored batch at a time on top of this limit.
    * @default 2
    */
   maxConcurrentRequests: number;

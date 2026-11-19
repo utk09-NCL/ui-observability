@@ -1,8 +1,8 @@
 // tools/reference-collector.mjs
 //
 // Reference ingest server for the library. It implements every rule of the ingest contract in
-// the README, has no dependencies, and is not part of the package. Use it as a model for your
-// own server, or run it in front of an OpenTelemetry collector.
+// docs/ingest-server.md, has no dependencies, and is not part of the package. Use it as a model
+// for your own server, or run it in front of an OpenTelemetry collector.
 //
 // Run: node tools/reference-collector.mjs
 //

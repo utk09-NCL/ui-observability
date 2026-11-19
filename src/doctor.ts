@@ -1,7 +1,7 @@
 // src/doctor.ts
 //
-// Checks an ingest server, or a replay endpoint, against its contract in the README. The
-// `uiobs doctor` command calls main(). Only web APIs are used here, and the browser build
+// Checks an ingest server, or a replay endpoint, against its contract in docs/ingest-server.md.
+// The `uiobs doctor` command calls main(). Only web APIs are used here, and the browser build
 // replaces every "node:" import.
 
 import {

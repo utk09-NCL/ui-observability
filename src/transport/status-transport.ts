@@ -101,8 +101,9 @@ export abstract class StatusTransport implements BatchTransport {
    * @throws TransportError if this context stops first.
    */
   protected async untilCancelled<T>(work: Promise<T>): Promise<T> {
-    if (this.cancellation.signal.aborted)
+    if (this.cancellation.signal.aborted) {
       throw new TransportError("permanent", "The delivery context retired.");
+    }
     let cancel!: () => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       cancel = () => {

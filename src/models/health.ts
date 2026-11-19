@@ -51,11 +51,12 @@ export interface DeliveryHealth {
  * How a `flush()` call ended.
  * - "complete": every record of the call's snapshot has a final state. `pending` is 0.
  * - "timeout": `pending` is above 0. The time limit passed, a storage write passed its own
- *   time limit, or a pause, a shutdown or a rotation ended the wait. A forwarder whose sender
+ *   time limit, or a pause, a shutdown or a rotation ended the flush. A forwarder whose sender
  *   didn't answer in time also gets it.
  * - "inactive": the runtime sends nothing now. That is before the first `configure()` call that
  *   works, after a failed first call, while `enabled` is false and after `shutdown()`. The call
- *   sends nothing and waits for nothing.
+ *   sends nothing and waits for nothing. A pause or a shutdown while the call waits for startup
+ *   or for the delivery stack also gives "inactive".
  */
 export type FlushStatus = "complete" | "timeout" | "inactive";
 

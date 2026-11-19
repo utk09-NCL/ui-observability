@@ -87,4 +87,4 @@ Open `http://localhost:5180/replay-viewer.html`. The table lists each recording 
 - Click **Delete** or **Delete each recording** to remove recordings.
 - The replay plugins print the recorded warnings and errors in the devtools console of the viewer.
 
-IndexedDB stands in for a replay service in this example. The library never writes a segment to IndexedDB. In your app, set `replay.endpoint`. See [Session replay](../../README.md#session-replay) and the [threat model](../../docs/threat-model.md#session-replay).
+IndexedDB stands in for a replay service in this example. The library never writes a segment to IndexedDB. In your app, set `replay.endpoint`. See [Session replay](../../docs/api.md#session-replay) and the [threat model](../../docs/threat-model.md#session-replay).
