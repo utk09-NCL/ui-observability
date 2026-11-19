@@ -2,8 +2,6 @@
 
 This document states what a release of `@utk09/ui-observability` promises and what a release must show.
 
-Some sections are proposals. Each proposal has the label **Proposal**. The maintainer must approve a proposal before it is a promise.
-
 ## Stable API and Configuration
 
 ### Public surface
@@ -25,7 +23,7 @@ The public API is each export of `src/index.ts`. A module that the entry point d
 | Session replay      | `startReplay`, `stopReplay`                                                                                                            |
 | Types               | Each type that `src/index.ts` exports, for example `ObservabilityConfig`, `Logger`, `LogRecord`, `DiagnosticCode` and `StorageAdapter` |
 
-The configuration contract is the type `ObservabilityConfig`. The README section [Configuration Options](../README.md#configuration-options) gives each key and its default.
+The configuration contract is the type `ObservabilityConfig`. [Configuration Options](configuration.md) gives each key and its default.
 
 These are the top-level keys of `ObservabilityConfig`.
 
@@ -36,25 +34,34 @@ These are the top-level keys of `ObservabilityConfig`.
 - Capture: `capture`, `captureLimits`, `metadata`, `metrics`, `profiler`, `replay`, `otelLoader`.
 - Control and feedback: `lockConfiguration`, `loggerCache`, `debugBuffer`, `diagnostics`, `onDiagnostic`, `onDrop`.
 
-### Experimental features
+### Stability
 
-The code and the documents mark no feature as experimental. This document adds no such mark.
+Each item of the public surface above is stable from the first stable release. A stable item gets a breaking change only in a major release. No feature is experimental.
 
-### Needs a maintainer decision
+These features are also stable.
 
-The maintainer must decide the status of each item before the first stable release.
+- Session replay (`replay`, `startReplay`, `stopReplay`).
+- The profiler (`profiler` export and `profiler` configuration).
+- The transport worker (`transportWorker`, `serveTransportWorker`).
+- Remote sampling and the remote capture switches.
+- The capture plugin types (`CapturePlugin`, `PluginContext`).
 
-1. Session replay (`replay`, `startReplay`, `stopReplay`). Decide between stable and experimental.
-2. The profiler (`profiler` export and `profiler` configuration). Decide between stable and experimental.
-3. The transport worker (`transportWorker`, `serveTransportWorker`). Decide between stable and experimental.
-4. Remote sampling and the remote capture switches. Decide between stable and experimental.
-5. The capture plugin types (`CapturePlugin`, `PluginContext`). Decide between stable and experimental.
-6. The `uiobs` command line tool. Decide if its arguments and its output are a part of the contract.
-7. The diagnostic codes and the diagnostic message texts. Decide if a change to one is a breaking change.
-8. The attribute names in [attributes](attributes.md). Decide if a change to one is a breaking change.
-9. The ingest contract in the README section [Ingest Server Requirements](../README.md#ingest-server-requirements). Decide if a change to it is a breaking change.
-10. The browser storage keys in the README section [Browser Storage Keys](../README.md#browser-storage-keys). Decide if a change to one is a breaking change.
-11. The default value of each configuration key. Decide if a change of a default is a breaking change.
+### Breaking changes
+
+Each change in this list is a breaking change. It needs a major release.
+
+- A change to a diagnostic code.
+- A change to an attribute name in [attributes](attributes.md).
+- A change to the ingest contract in [Ingest Server Requirements](ingest-server.md).
+- A change to a browser storage key in [Browser Storage Keys](configuration.md#browser-storage-keys).
+- A change to the bus envelope tag.
+- A change to the arguments of the `uiobs` command line tool.
+
+Each change in this list is not a breaking change. The `CHANGELOG.md` lines of the release name each one.
+
+- A change to the text of a diagnostic message.
+- A change to the output text of the `uiobs` tool.
+- A change to the default value of a configuration key.
 
 ## Supported Environments
 
@@ -62,36 +69,34 @@ The maintainer must decide the status of each item before the first stable relea
 
 `engines` in `package.json` sets Node 22.22.3 or later. In Node, the library is console only.
 
+OpenFin support is not validated. No check runs on a real OpenFin runtime.
+
 ### Validation gaps
 
 - No document gives a supported OpenFin version. No reproducible check on a real OpenFin runtime exists. Treat OpenFin support as not validated.
-- [Browser support](browser-support.md) says "current versions" of Chrome, Edge, Firefox and Safari. No document gives a minimum version for a browser.
-- The Vitest suite does not run in a real browser. The manual checks below are the only browser evidence.
+- [Browser support](browser-support.md) gives the minimum browser versions and the browser builds that a test covers.
+- The Vitest suite does not run in a real browser. `pnpm run test:e2e` runs the browser tests in one version of Chromium, Firefox and WebKit. The manual checks below cover the gaps of those tests.
 
 ## Migration and Deprecation Policy
 
-**Proposal. The maintainer has not approved this section.**
-
-Current practice is the base of the proposal. `CHANGELOG.md` holds the released versions and their breaking changes. The [upgrade checklist](runtime-policies.md#upgrade-checklist) holds the migration steps.
+`CHANGELOG.md` holds the released versions and their breaking changes. The [upgrade checklist](runtime-policies.md#upgrade-checklist) holds the migration steps. [Migration to 1.0.0](migration-v1.md) gives the steps from 0.12.x to 1.0.0.
 
 1. Use semantic versioning for the public surface in this document.
 2. Make a breaking change only in a major release.
 3. Mark an export or a configuration key with `@deprecated` in its JSDoc before its removal.
 4. Name the replacement in the `@deprecated` text and in the `CHANGELOG.md` lines of that release.
-5. Keep a deprecated item for a minimum period. The maintainer must set that period.
+5. Keep a deprecated item until the next major release.
 6. Write the migration steps for each breaking change in the upgrade checklist.
 7. Treat a change of the bus envelope tag as a breaking change, because contexts on the two sides ignore each other.
 8. Name each change of a default value in the `CHANGELOG.md` lines of that release.
 
 ## Security Reporting
 
-The repository states one reporting route. It is the public issue tracker in `bugs.url` of `package.json`.
+[SECURITY.md](../SECURITY.md) gives the private route for a security report.
 
-<https://github.com/utk09-NCL/ui-observability/issues>
-
-- A public issue shows its content to each reader. It is not a private route.
-- The repository has no `SECURITY.md` file and states no private contact.
-- The maintainer must set a private reporting route before the first stable release.
+- Report a vulnerability through the **Security** tab of the GitHub repository. Select **Report a vulnerability**.
+- Do not open a public issue for a vulnerability. A public issue shows its content to each reader.
+- Use the public issue tracker in `bugs.url` of `package.json` for other bugs.
 - This document states no response time and no support commitment. The maintainer has not set one.
 
 [Threat model](threat-model.md) gives the trust boundaries and the controls.
@@ -107,10 +112,11 @@ A release needs each item of evidence in this section. Record the command and it
 3. Run `pnpm run test:collector`. It sends logs, metrics and spans to a pinned OpenTelemetry Collector and checks the OTLP fields that the collector wrote. [Collector check](../e2e/collector/README.md) gives the pinned version and the limits.
 4. Run `pnpm run bench:release`. It compares latency, throughput, heap growth, outage recovery and replay cost with `bench/budgets.json`. [Performance](performance.md) gives the method and the approved budgets.
 5. Run `pnpm --filter './playground/**' --if-present run build`. It builds each consumer playground that has a build script.
-6. Do the manual browser checks that the README names.
+6. Do these manual browser checks.
    - Check the vanilla frames, the React example and the Angular example in a browser.
    - Check the worker path and the main-thread path of the vanilla playground in a real browser.
    - Check worker startup, fallback, page exit and rotation in a real browser. [Browser support](browser-support.md) gives this check.
+7. Turn on GitHub private vulnerability reporting in the settings of the repository. [SECURITY.md](../SECURITY.md) names this route for a report. Check that the **Security** tab shows **Report a vulnerability**.
 
 `check:consumers` packs the package and installs it with no optional peer. It type-checks a NodeNext ESM consumer, a NodeNext CommonJS consumer and a Bundler consumer. It then loads the package with `import` and with `require`.
 
@@ -125,11 +131,12 @@ These rules apply to each release.
 
 These checks are missing or partial. A release cannot show this evidence yet.
 
-- No browser test covers session replay with the real recorder, masking or stop.
-- The browser tests do not cover offline recovery, an IndexedDB reload, the exit flush, rotation, or metrics and spans. [Browser tests](../e2e/README.md) lists each gap.
+- No browser test covers session replay with `stopReplay()`, `newSession()` or a full buffer.
+- The browser tests do not cover offline recovery, an IndexedDB reload, or metrics and spans. They cover a rotation only when the rotation code fails to load. [Browser tests](../e2e/README.md) lists each gap.
+- The browser tests send the exit flush on a navigation only. They do not cover the exit flush on a tab close, a browser close or `freeze`.
 - The collector check runs on macOS arm64 only. It does not send an exit flush.
 - The benchmark runs in Chromium only.
-- No smoke check runs on a real OpenFin runtime.
+- No smoke check runs on a real OpenFin runtime. OpenFin support is not validated.
 
 Record each gap in the release notes. Do not record it as a pass.
 
@@ -196,7 +203,7 @@ Do a separate privacy review before you turn on session replay. An approval for 
 
 The existing documents state the limitations. This document does not change them.
 
-- README, [Session replay](../README.md#session-replay): the configuration, the mask rules and the content that stays in clear text.
+- [Session replay](api.md#session-replay): the configuration, the mask rules and the content that stays in clear text.
 - [Threat model, Session Replay](threat-model.md#session-replay): the controls and the limits of the mask.
 - [Delivery guarantees, Session replay segments](delivery-guarantees.md#session-replay-segments): the losses of a segment.
 
@@ -215,11 +222,6 @@ The review must include these facts at a minimum.
 
 This document could not verify these items. Each one needs a decision or a check.
 
-1. The supported OpenFin versions. No document and no code gives them.
-2. The minimum supported version of each browser.
-3. A private route for a security report.
-4. The length of the deprecation period, and the approval of the policy proposal.
-5. The stable or experimental status of each item in "Needs a maintainer decision".
-6. Compatibility between two library versions that share the envelope tag. No document states it.
-7. The behavior of a same-origin child frame whose library version differs from its parent. The code has no version check there.
-8. The version number and the date of the first stable release.
+1. OpenFin support is not validated. No document and no code gives a supported OpenFin version.
+2. Compatibility between two library versions that share the envelope tag. No document states it.
+3. The date of the 1.0.0 release.

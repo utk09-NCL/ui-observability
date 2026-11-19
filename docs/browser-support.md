@@ -1,6 +1,6 @@
 # Browser Support
 
-The build targets ES2021. The library runs in Chrome 85, Edge 85, Firefox 79 and Safari 14.1, and in each later version. OpenFin runs it as Chromium.
+The build targets ES2021. The library runs in Chrome 85, Edge 85, Firefox 79 and Safari 14.1, and in each later version. OpenFin runs it as Chromium. OpenFin support is not validated on a real OpenFin runtime.
 
 - A smoke test passed in builds of Chromium 86, Firefox 80 and WebKit 14.2 on 2026-11-17. It loads the library, sends, stores, retries and sends the exit flush.
 - No test runs in Chrome 85, Edge or a real Safari 14.1. A WebKit build is not Safari.
@@ -54,7 +54,7 @@ The library tests each optional browser API before it uses it. Without the API, 
 | Sandboxed iframe      | Storage throws. The library keeps the ids and the batches in memory.                                                                                                                                                                                                                                                                                                                                             |
 | Private browsing      | IndexedDB can be off. The library uses `localStorage` or memory.                                                                                                                                                                                                                                                                                                                                                 |
 | OpenFin               | A view forwards its records to the provider over `InterApplicationBus`. It flushes on `close-requested`.                                                                                                                                                                                                                                                                                                         |
-| Node 22.22.3 or later | Console only. See the README.                                                                                                                                                                                                                                                                                                                                                                                    |
+| Node 22.22.3 or later | Console only. See [Core Architecture](architecture.md#core-architecture).                                                                                                                                                                                                                                                                                                                                        |
 
 See [runtime policies](runtime-policies.md) for origin-based discovery overrides, source permissions and security-context coordination.
 

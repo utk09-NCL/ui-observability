@@ -161,7 +161,7 @@ A rotation that the shutdown meets in its storage step rejects too. It does not 
 
 ## Flush
 
-`flush()` sends the records in memory and reports what became of them. The README section "Flush result" describes each field.
+`flush()` sends the records in memory and reports what became of them. [Flush result](api.md#flush-result) describes each field.
 
 - The snapshot is the records in the buffers, the queued batches and the batches in flight at the call.
 - Before startup ends, the call waits for startup first. The snapshot then also has the records that the app logs during that wait.

@@ -2,7 +2,7 @@
 
 This page lists each attribute that the library writes. Your own attributes come from `setContext()`, `contextProvider`, the logger scope and the call payload. They are not on this page.
 
-The OTLP serializer writes the resource attributes on the resource and the record attributes on the record. The ECS serializer moves some of them to ECS fields. See the `serializer` row in the README.
+The OTLP serializer writes the resource attributes on the resource and the record attributes on the record. The ECS serializer moves some of them to ECS fields. See the `serializer` row in [Configuration Options](configuration.md).
 
 In OTLP logs and spans, the instrumentation scope name is the logger namespace, for example `blotter.grid`. The scope has no version. A record without a namespace uses the scope `@utk09/ui-observability`. Metrics use the scope `@utk09/ui-observability` with the SDK version. The record keeps its `app.namespace` attribute.
 
@@ -104,9 +104,9 @@ A `click` breadcrumb has the action name as its message. The name comes from the
 
 ## Replay Attribute
 
-| Attribute   | Type   | Value                                                                                                                                          |
-| ----------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `replay.id` | string | Id of the session replay recording. Each record has it while the recorder runs. Each segment of the recording has the same id. See the README. |
+| Attribute   | Type   | Value                                                                                                                                                                       |
+| ----------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replay.id` | string | Id of the session replay recording. Each record has it while the recorder runs. Each segment of the recording has the same id. See [Session replay](api.md#session-replay). |
 
 ## Profile Attributes
 

@@ -41,7 +41,7 @@ Open the devtools console. Then load the main page.
 - Each child frame shows `role: forwarder`. A child gives its records to the main page, and the main page sends them.
 - The **Application** tab shows `ui-observability.session` in `localStorage`. It shows `ui-observability.tab` and `ui-observability.alive` in `sessionStorage`. IndexedDB has the database `UiObservability`.
 
-[Browser Storage Keys](../../README.md#browser-storage-keys) explains each key.
+[Browser Storage Keys](../../docs/configuration.md#browser-storage-keys) explains each key.
 
 ## Main page
 
@@ -56,7 +56,7 @@ A record reaches the terminal about two seconds after the click. Each click also
 | **gauge**                                                        | `[metric] grid.render`. The click sets the gauge and flushes, so the point does not wait for the metric interval.                                                    |
 | **startMeasure**                                                 | `[metric] ui.measure.duration` and two `ui.measure.phase.duration` records. A `[traces]` batch has the span `checkout` with the child spans `validate` and `submit`. |
 | **logger.error**                                                 | `ERROR [playground] [log] something went wrong`                                                                                                                      |
-| **Defer payload builds**, then **log a payload, then change it** | `[log] Payload mode sample`. [Deferred payloads](../../README.md#deferred-payloads) explains the difference between the two modes.                                   |
+| **Defer payload builds**, then **log a payload, then change it** | `[log] Payload mode sample`. [Deferred payloads](../../docs/configuration.md#deferred-payloads) explains the difference between the two modes.                       |
 
 ### Journeys
 
@@ -66,7 +66,7 @@ A record reaches the terminal about two seconds after the click. Each click also
 | **endJourney**                                      | Each later record shows `journey=-`.                                                                        |
 | **open a second window carrying the journey token** | A new tab opens with the URL parameter `__uiobs_journey`. The records of the new tab show the same journey. |
 
-[Context & Correlation](../../README.md#context--correlation) lists the journey functions.
+[Context & Correlation](../../docs/api.md#context--correlation) lists the journey functions.
 
 ### Auto-capture
 
@@ -84,7 +84,7 @@ A record reaches the terminal about two seconds after the click. Each click also
 | **Browser reports**, **Resource timing**, **Lifecycle events**                 | Each box turns one capture on or off with `configure()`. The **Diagnostics** panel shows `config.reconfigured`.                       |
 | **Permit remote capture switches**, then **send capture rules for 10 seconds** | The server turns on `serverTiming` and `lifecycle` for 10 seconds. The page permits only these two switches.                          |
 
-[Auto-Capture Options](../../README.md#auto-capture-options) and [Remote capture switches](../../README.md#remote-capture-switches) describe each capture.
+[Auto-Capture Options](../../docs/configuration.md#auto-capture-options) and [Remote capture switches](../../docs/configuration.md#remote-capture-switches) describe each capture.
 
 ### Profiler
 
@@ -92,7 +92,7 @@ A record reaches the terminal about two seconds after the click. Each click also
 2. Click **Run 10,000 sorts**.
 3. Look for `[metric] ui.profile.duration` in the terminal.
 
-The record summarizes the probe `grid.sort`. Expand it in the devtools console to read `profile.p50`, `profile.p90` and `profile.p99`. With the box clear, the probe records nothing. See [Profiler](../../README.md#profiler).
+The record summarizes the probe `grid.sort`. Expand it in the devtools console to read `profile.p50`, `profile.p90` and `profile.p99`. With the box clear, the probe records nothing. See [Profiler](../../docs/api.md#profiler).
 
 ### Session replay
 
@@ -100,7 +100,7 @@ The record summarizes the probe `grid.sort`. Expand it in the devtools console t
 2. Click **logger.error**.
 3. Look for one `[replay]` line for each segment. The first segment has a full snapshot of the page. More segments can follow for 5 seconds after the error.
 
-The recorder masks each text on the page except the paragraph with `data-observability-unmask`. See [Session replay](../../README.md#session-replay).
+The recorder masks each text on the page except the paragraph with `data-observability-unmask`. See [Session replay](../../docs/api.md#session-replay).
 
 ### Durability
 
@@ -131,7 +131,7 @@ See [Registered bus sources](../../docs/runtime-policies.md#registered-bus-sourc
 
 ## Worker transport
 
-Click **Use worker transport**, or open `index.html?worker=1`. The page and the terminal lines stay the same. A dedicated worker from `transport-worker.ts` now encodes and sends each batch. See [Worker transport](../../README.md#worker-transport).
+Click **Use worker transport**, or open `index.html?worker=1`. The page and the terminal lines stay the same. A dedicated worker from `transport-worker.ts` now encodes and sends each batch. See [Worker transport](../../docs/guides.md#worker-transport).
 
 ## Profiler pages
 

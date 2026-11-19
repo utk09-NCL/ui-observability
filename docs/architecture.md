@@ -1,10 +1,26 @@
 # Architecture and Lifecycle
 
-This page is for a person who maintains the library. It tells how a record moves from a logger call to the network. It names the module that owns each step, each buffer and each state change.
+This page tells how a record moves from a logger call to the network. It names the module that owns each step, each buffer and each state change.
 
-An application developer does not need this page. The README and the playground guides are for the application developer.
+The section [Core Architecture](#core-architecture) is a summary for an application developer. The other sections are for a person who maintains the library. The README and the playground guides are for the application developer.
 
-Each fact on this page comes from the code at commit `2e1dfaa`. Search by symbol name. Line numbers move.
+Each fact on this page comes from the code at commit `2e1dfaa`, except where a section names another commit. Search by symbol name. Line numbers move.
+
+## Core Architecture
+
+This section comes from the README at commit `57c9172`.
+
+- **Code splitting:** The main chunk holds the logger, the record builder and the console sink. The delivery stack loads only when you set an endpoint. The bus loads only when the context needs it. Each capture module loads only when you enable it. The rotation code loads on the first `rotateSecurityContext()` call.
+- **Document singleton:** The library keeps the runtime at `globalThis[Symbol.for("ui-observability.runtime")]`. Federated microfrontends and separate bundles share one buffer, one sequence and one transport.
+- **One sender:** Iframes, workers and OpenFin views find the nearest long-lived context. They forward their records to it over the bus. That context batches, stores and sends for all of them. By default, a parent accepts only the frames and workers that it registers with `registerFrame()` and `registerWorker()`. A frame that knows its owner relays the records of its own children.
+- **One sender for each tab:** Each top-level tab or window has its own sender. Two tabs of one origin send their records separately. They have the same `session.id` and a different `tab.id`. A retry of stored batches runs in one tab at a time, under a Web Lock for each storage namespace.
+- **Five correlation ids:** Each record carries `session.id`, `tab.id`, `context.id`, `journey.id` and `trace_id`.
+- **Durability and exit flush:** The library stores a batch that fails to send, in IndexedDB or localStorage. It sends the batch again with exponential backoff and jitter. [Retention](delivery-guarantees.md#retention), [Page Exit](delivery-guarantees.md#page-exit) and [Losses](delivery-guarantees.md#losses) give the rules of storage, of the exit flush and of the hold buffers. `onDrop` tells the app about each loss.
+- **Server (Node):** On Node, for example during server-side rendering, the library runs console-only. It installs no capture, keeps the ids in memory, uses no storage and has no exit flush. If you set `endpoint`, `metricsEndpoint`, `tracesEndpoint` or `transport`, it reports `config.invalid` one time.
+- **One library version on a page:** If a copy of another version owns the page runtime, this copy runs console-only. It installs no capture and reports `runtime.version_mismatch`. Load one version of the library on the page.
+- **Emergency queue:** The emergency queue is best effort. With `storage.backend` `"memory"` or `"none"`, the exit flush does not use it. A batch that it cannot send is then lost, and `onDrop` reports `not_stored`. It writes to `localStorage` synchronously, because no other storage works while the page unloads. If the browser refuses the write, the library reports `storage.quota_exceeded`. The library then loses the batch.
+- **Configuration after startup:** A second `configure()` call merges accepted options into an unlocked live runtime. [Settings that are fixed after startup](production-recipes.md#settings-that-are-fixed-after-startup) gives each setting that it refuses, and the isolation rule. [`configure()` on a live runtime](#configure-on-a-live-runtime) names the function that keeps each one.
+- **Deterministic sampling:** FNV-1a hashing applies one keep rate to a whole journey. Sampling always keeps an explicit action and each record at or above `sampling.alwaysSampleFrom`, default `"ERROR"`.
 
 ## Record path
 
