@@ -1042,6 +1042,18 @@ describe("HttpTransport with an OTLP partialSuccess answer", () => {
     ["log records", "rejectedLogRecords", "log", {}],
     ["data points", "rejectedDataPoints", "metric", { metricsEndpoint: "https://x/v1/metrics" }],
     ["spans", "rejectedSpans", "span", { tracesEndpoint: "https://x/v1/traces" }],
+    [
+      "data points (ECS logs)",
+      "rejectedDataPoints",
+      "metric",
+      { serializer: "ecs", metricsEndpoint: "https://x/v1/metrics" },
+    ],
+    [
+      "spans (ECS logs)",
+      "rejectedSpans",
+      "span",
+      { serializer: "ecs", tracesEndpoint: "https://x/v1/traces" },
+    ],
   ] as const)(
     "reports the %s the server rejected and doesn't send the batch again",
     async (_signal, field, type, over) => {

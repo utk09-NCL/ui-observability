@@ -67,7 +67,9 @@ Each change in this list is not a breaking change. The `CHANGELOG.md` lines of t
 
 [Browser support](browser-support.md) is the source for browsers, browser APIs, fallbacks and contexts. This document does not repeat it.
 
-`engines` in `package.json` sets Node 22.22.3 or later. In Node, the library is console only.
+The package has no `engines` field. Thus an install with `engine-strict` works on each Node version. Use Node 22 or later. The tests run on Node 22.22.3. In Node, the library is console only.
+
+`devEngines` in `package.json` sets Node 22.22.3 or later for the development of this repository. A consumer install ignores it.
 
 OpenFin support is not validated. No check runs on a real OpenFin runtime.
 

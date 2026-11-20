@@ -125,7 +125,9 @@ The exit flush is best effort.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
 - `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage. During a pause, `shutdown()` sends nothing.
-- `shutdown()` before the end of startup sends nothing. `onDrop` reports the records that wait for the bus role or the delivery stack with `load_failed`.
+- `shutdown()` before the delivery stack loads sends nothing. `onDrop` reports the records that wait for the bus role or the delivery stack with `load_failed`.
+- `shutdown()` after the delivery stack loads, but before the end of startup, sends the startup records with the last flush.
+- `shutdown()` during the sender load of a `carry` rotation rejects the rotation. `onDrop` reports the carried records in memory with `security_context`. A `clearStorage` shutdown at that point also removes the stored batches of the old context.
 
 ## Shutdown With Discard
 

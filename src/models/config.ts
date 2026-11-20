@@ -1273,8 +1273,9 @@ export interface ObservabilityConfig {
   /**
    * Ingest endpoint URL. Set `null` for console-only mode, where the library sends nothing
    * and writes records to the console only if you set `consoleOutput`. If the key is missing or
-   * `""`, the library reports `config.invalid`. A relative URL resolves against the page, and a
-   * URL with a user name or a password is refused.
+   * `""`, the library reports `config.invalid`. A relative URL resolves against the page and
+   * works, but it still reports `config.invalid` with the origin it sends to, so you can check
+   * where the records go. A URL with a user name or a password is refused.
    */
   endpoint?: string | null;
 
@@ -1282,8 +1283,8 @@ export interface ObservabilityConfig {
    * OTLP metrics endpoint URL, for example `"https://ingest.example/v1/metrics"`. When set,
    * the library sends every batch of metric records there as an OTLP
    * `ExportMetricsServiceRequest`. Without it, metric records are log records on `endpoint`.
-   * Needs `serializer: "otlp"`. Set null to turn it off. A blank string also turns it off, and
-   * reports `config.invalid`.
+   * Works with any `serializer`, because these batches always go out as OTLP. Set null to turn it
+   * off. A blank string also turns it off, and reports `config.invalid`.
    * @default null
    */
   metricsEndpoint?: string | null;
@@ -1292,9 +1293,9 @@ export interface ObservabilityConfig {
    * OTLP traces endpoint URL, for example `"https://ingest.example/v1/traces"`. When set, the
    * library records one root span for every trace it creates and one CLIENT span for every
    * request that gets `traceparent`, and sends them there as an OTLP
-   * `ExportTraceServiceRequest`. Without it, the library sends no spans. Needs
-   * `serializer: "otlp"`. Set null to turn it off. A blank string also turns it off, and reports
-   * `config.invalid`.
+   * `ExportTraceServiceRequest`. Without it, the library sends no spans. Works with any
+   * `serializer`, because span batches always go out as OTLP. Set null to turn it off. A blank
+   * string also turns it off, and reports `config.invalid`.
    * @default null
    */
   tracesEndpoint?: string | null;
@@ -1357,7 +1358,10 @@ export interface ObservabilityConfig {
    */
   compression?: "gzip" | "none";
   /**
-   * Payload format, either a name or a custom implementation.
+   * Payload format of the log batches, either a name or a custom implementation. Batches for
+   * `metricsEndpoint` and `tracesEndpoint` always go out as OTLP. The library drops a batch
+   * that the server refuses with a 400, so a custom serializer must keep every record within
+   * the server's limits, or one bad record loses the whole batch.
    * @default "otlp"
    */
   serializer?: SerializerChoice;

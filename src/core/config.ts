@@ -1883,42 +1883,6 @@ function resolveInteractions(
   };
 }
 
-/** What happens for each key when its signal endpoint is off. */
-const SIGNAL_OFF = {
-  metricsEndpoint: "The library sends metric records as log records.",
-  tracesEndpoint: "The library sends no span.",
-} as const;
-
-/**
- * Validates the metrics or traces endpoint. Only the OTLP serializer has these formats.
- * @param key Config key.
- * @param value The value the consumer passed.
- * @param fallback The current value.
- * @param serializer Resolved serializer option.
- * @param diagnostics Diagnostics reporter.
- * @returns A valid absolute URL, or null to turn the endpoint off.
- */
-function resolveSignalEndpoint(
-  key: keyof typeof SIGNAL_OFF,
-  value: unknown,
-  fallback: string | null,
-  serializer: SerializerChoice,
-  diagnostics: Diagnostics,
-): string | null {
-  const url = resolveDestination(key, value, fallback, diagnostics) as string | null;
-
-  // A custom or ECS serializer can't encode a metrics or traces request.
-  if (url !== null && serializer !== SERIALIZER_NAME_OTLP) {
-    diagnostics.report(
-      "config.invalid",
-      `${key} needs serializer "${SERIALIZER_NAME_OTLP}". ${SIGNAL_OFF[key]}`,
-    );
-    return null;
-  }
-
-  return url;
-}
-
 /** The rules in the form resolvePolicy() reads. POLICY_RULES holds the typed form. */
 interface PolicyLookup {
   /** Accepted range for each number key. */
@@ -2202,8 +2166,10 @@ export function resolveConfig(
     onDrop: resolveHook("onDrop", given.onDrop, base.onDrop, diagnostics),
   };
 
+  // Metric and span batches always go out as OTLP, whatever the log serializer is, so a
+  // custom or ECS log format doesn't turn these endpoints off.
   for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
-    merged[key] = resolveSignalEndpoint(key, given[key], base[key], merged.serializer, diagnostics);
+    merged[key] = resolveDestination(key, given[key], base[key], diagnostics) as string | null;
   }
 
   // null selects console-only mode. "" is the default when no call has set an endpoint.

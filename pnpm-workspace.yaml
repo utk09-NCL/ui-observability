@@ -17,6 +17,25 @@ allowBuilds:
   lmdb: true
   msgpackr-extract: true
 
+# These rrweb plugins import @rrweb/types in their .d.ts but don't declare it, so their types
+# resolved only through pnpm's hidden hoisting, and a stale hoist folder broke lint.
+packageExtensions:
+  "@rrweb/rrweb-plugin-console-record":
+    peerDependencies:
+      # A peer takes the app's own catalog version, so no second version string can drift. The
+      # range is the one the sibling network-record plugin declares.
+      "@rrweb/types": "^2.1.1"
+  "@rrweb/rrweb-plugin-sequential-id-record":
+    peerDependencies:
+      "@rrweb/types": "^2.1.1"
+
+# oxc-parser's wasm binding (via @angular/build) pins @emnapi 2.0.0-alpha.6 next to a
+# @napi-rs/wasm-runtime whose peer range skips it. Upstream still pairs them in 0.159.0.
+peerDependencyRules:
+  allowedVersions:
+    "@napi-rs/wasm-runtime@1.2.7>@emnapi/core": "2.0.0-alpha.6"
+    "@napi-rs/wasm-runtime@1.2.7>@emnapi/runtime": "2.0.0-alpha.6"
+
 catalogs:
   library:
     "@eslint/js": "10.0.1"

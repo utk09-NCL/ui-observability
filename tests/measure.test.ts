@@ -198,6 +198,32 @@ describe("startMeasure in the runtime", () => {
     expect(metric).toHaveBeenCalledTimes(2);
   });
 
+  it("sends the spans as OTLP to tracesEndpoint when the logs use a custom serializer", async () => {
+    const sent = vi.fn((_url: string, _init: RequestInit) =>
+      Promise.resolve(new Response(null, { status: 204 })),
+    );
+    vi.stubGlobal("fetch", sent);
+    const serialize = vi.fn((records: LogRecord[]) => ({
+      body: JSON.stringify({ logs: records.map((record) => record.body) }),
+      contentType: "application/json",
+    }));
+    await setup({ serializer: { name: "uilogs", serialize } });
+
+    startMeasure("checkout").end();
+    await flush();
+
+    const call = sent.mock.calls.find(([url]) => url === "https://x.example/v1/traces");
+    const body = JSON.parse(call?.[1].body as string) as {
+      resourceSpans: { scopeSpans: { spans: { name: string }[] }[] }[];
+    };
+    const names = body.resourceSpans.flatMap((resource) =>
+      resource.scopeSpans.flatMap((scope) => scope.spans.map((span) => span.name)),
+    );
+    expect(names).toContain("checkout");
+    const seen = serialize.mock.calls.flatMap(([records]) => records);
+    expect(seen.some((record) => record.attributes["log.type"] === "span")).toBe(false);
+  });
+
   it.each([
     ["no tracesEndpoint", { tracesEndpoint: "" }],
     ["a dropped trace", { sampling: { defaultRate: 0 } }],
@@ -397,39 +423,43 @@ describe("measure() and gauge() in the runtime", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
-  it("sends the last value of a gauge as an OTLP gauge point to metricsEndpoint", async () => {
-    const sent = vi.fn((_url: string, _init: RequestInit) =>
-      Promise.resolve(new Response(null, { status: 204 })),
-    );
-    vi.stubGlobal("fetch", sent);
-    configure({
-      endpoint: "https://x.example/v1/logs",
-      metricsEndpoint: "https://x.example/v1/metrics",
-      serviceName: "svc",
-      bus: { mode: "off" },
-      storage: { backend: "memory" },
-      identity: "memory",
-      compression: "none",
-      capture: { errors: false, rejections: false },
-    });
-    await flush();
-    const depth = gauge("queue.depth", { unit: "1" });
+  it.each(["otlp", "ecs"] as const)(
+    "sends a gauge's last value as an OTLP point to metricsEndpoint with %s logs",
+    async (serializer) => {
+      const sent = vi.fn((_url: string, _init: RequestInit) =>
+        Promise.resolve(new Response(null, { status: 204 })),
+      );
+      vi.stubGlobal("fetch", sent);
+      configure({
+        endpoint: "https://x.example/v1/logs",
+        metricsEndpoint: "https://x.example/v1/metrics",
+        serializer,
+        serviceName: "svc",
+        bus: { mode: "off" },
+        storage: { backend: "memory" },
+        identity: "memory",
+        compression: "none",
+        capture: { errors: false, rejections: false },
+      });
+      await flush();
+      const depth = gauge("queue.depth", { unit: "1" });
 
-    depth.set(4, { desk: "fx" });
-    depth.set(9, { desk: "fx" });
-    await flush();
+      depth.set(4, { desk: "fx" });
+      depth.set(9, { desk: "fx" });
+      await flush();
 
-    const call = sent.mock.calls.find(([url]) => url === "https://x.example/v1/metrics");
-    const body = JSON.parse(call?.[1].body as string) as {
-      resourceMetrics: { scopeMetrics: { metrics: Record<string, unknown>[] }[] }[];
-    };
-    const [metric] = body.resourceMetrics[0].scopeMetrics[0].metrics;
-    expect(metric).toMatchObject({
-      name: "queue.depth",
-      unit: "1",
-      gauge: { dataPoints: [expect.objectContaining({ asDouble: 9 })] },
-    });
-  });
+      const call = sent.mock.calls.find(([url]) => url === "https://x.example/v1/metrics");
+      const body = JSON.parse(call?.[1].body as string) as {
+        resourceMetrics: { scopeMetrics: { metrics: Record<string, unknown>[] }[] }[];
+      };
+      const [metric] = body.resourceMetrics[0].scopeMetrics[0].metrics;
+      expect(metric).toMatchObject({
+        name: "queue.depth",
+        unit: "1",
+        gauge: { dataPoints: [expect.objectContaining({ asDouble: 9 })] },
+      });
+    },
+  );
 
   it("sets a gauge's value and reports options it can't read", async () => {
     const { metric } = await setup();

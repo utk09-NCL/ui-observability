@@ -421,7 +421,7 @@ Delivery stats and byte budgets count built records. The deferred queue has a se
 
 ### Transport workers
 
-`transportWorker` is a delivery setting. The app supplies a factory for a fresh dedicated worker. That worker calls `serveTransportWorker()`. The library terminates the worker when its sender stops. A custom transport takes precedence. A custom serializer uses the main HTTP path.
+`transportWorker` is a delivery setting. The app supplies a factory for a fresh dedicated worker. That worker calls `serveTransportWorker()`. The library terminates the worker when its sender stops. A custom transport takes precedence. With a custom serializer, the log batches use the main HTTP path. The metric and span batches still use the worker.
 
 Record construction, processors, redaction, queue accounting, retry and storage stay on the main thread. Header functions also stay there. Built-in OTLP and ECS encoding, gzip and HTTP delivery run in the worker. Hidden-page keepalive sends and exit sends stay on the main thread. Both paths share the header cache.
 

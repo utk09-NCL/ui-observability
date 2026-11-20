@@ -104,7 +104,7 @@ The worker encodes OTLP or ECS, compresses the payload and sends HTTP requests. 
 - One request deadline covers header resolution, transfer, encoding, compression and delivery. The main thread handles status codes, sampling rules and clock offset.
 - A startup failure or a channel failure during a send switches that sender to HTTP. A worker that does not connect before the request deadline is a startup failure. A new factory or a rotation permits another worker. A timeout or network failure follows the normal retry policy.
 - Hidden-page sends use the main HTTP keepalive path. The exit flush also stays on the main thread. It uses the same cached headers.
-- `transport` takes precedence over `transportWorker`. A custom serializer runs on the main thread. Functions do not cross the worker channel.
+- `transport` takes precedence over `transportWorker`. Functions do not cross the worker channel. Thus a custom serializer sends the log batches on the main thread. The metric and span batches still use the worker, because they always use OTLP.
 - With isolation on, change the factory through `rotateSecurityContext()`. After the stack loads, `configure()` cannot add or remove `transportWorker`.
 - The helper does not join the context bus. Node remains console-only.
 
@@ -148,9 +148,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await shutdown();
   memory.clear();
   memory.respondWith(200);
-  await shutdown();
 });
 
 it("logs the order submit", async () => {
@@ -169,6 +169,69 @@ it("logs the order submit", async () => {
 - `flush()` waits 5000 ms at most. `status: "complete"` means only that no record waits. A dropped record and a stored record also count as complete. To confirm delivery, check `accepted`, `dropped` and `stored` in the result, or check `memory.records()`.
 - After `shutdown()`, each call does nothing until the next `configure()`.
 - Set `storage: { backend: "none" }` in tests. Without it, `shutdown()` stores the unsent records, and the next test can receive them.
+- Call `memory.clear()` after `await shutdown()`. `shutdown()` sends the pending records to the memory transport. A clear before it leaves them for the next test.
+
+### One Setup for All Specs
+
+A spec does not need a mock of the library. Configure the library one time in a Vitest setup file. Put the memory transport in a separate module. The setup file and each spec then use the same transport.
+
+```ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: { environment: "happy-dom", setupFiles: ["./vitest.setup.ts"] },
+});
+```
+
+```ts
+// test/observability.ts
+import { createMemoryTransport } from "@utk09/ui-observability";
+
+export const memory = createMemoryTransport();
+```
+
+```ts
+// vitest.setup.ts
+import { afterEach, beforeEach } from "vitest";
+import { configure, shutdown } from "@utk09/ui-observability";
+import { memory } from "./test/observability";
+
+beforeEach(() => {
+  configure({
+    serviceName: "orders",
+    transport: memory.transport,
+    storage: { backend: "none" },
+    bus: { mode: "off" },
+    identity: "memory",
+  });
+});
+
+afterEach(async () => {
+  await shutdown();
+  memory.clear();
+  memory.respondWith(200);
+});
+```
+
+```ts
+// src/orders/ticket.test.ts
+import { expect, it } from "vitest";
+import { flush } from "@utk09/ui-observability";
+import { memory } from "../../test/observability";
+import { submitOrder } from "./ticket";
+
+it("logs the order submit", async () => {
+  submitOrder({ orderId: "ORD-1" });
+  await flush();
+
+  expect(memory.records()).toContainEqual(expect.objectContaining({ body: "ORDER_SUBMIT" }));
+});
+```
+
+- A spec that does not check the records needs no import from the library.
+- With the default `isolate: true`, Vitest runs the setup file again for each spec file. Each spec file gets a new memory transport.
+- Remove each `vi.mock` of the library. The memory transport replaces it.
 
 ## Remote Sampling
 
