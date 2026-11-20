@@ -214,6 +214,176 @@ describe("shutdown() during startup", () => {
     expect(memory.batches()).toEqual([]);
     expect(drops).toEqual([expect.objectContaining({ reason: "load_failed", records: 1 })]);
   });
+
+  it("reports a held record when shutdown() stops a sender load that startup began", async () => {
+    const drops: DropSummary[] = [];
+    const memory = createMemoryTransport();
+    configure({
+      serviceName: "orders",
+      transport: memory.transport,
+      storage: { backend: "none" },
+      bus: { mode: "off" },
+      identity: "memory",
+      onDrop: (summary) => {
+        drops.push(summary);
+      },
+    });
+    info("logged before shutdown");
+    // With the bus off, startup has already begun the sender load, unlike the case above.
+    expect(ObservabilityRuntime.current()?.["senderLoad"]).toBeDefined();
+
+    await shutdown();
+    await settle();
+
+    expect(memory.batches()).toEqual([]);
+    expect(drops).toEqual([expect.objectContaining({ reason: "load_failed", records: 1 })]);
+  });
+});
+
+describe("shutdown() after the sender loads but before startup ends", () => {
+  it("sends the startup records with the sender's last flush instead of reporting them", async () => {
+    // An OpenFin journey read that hasn't answered keeps startup open after the sender loads.
+    let answer: (options: unknown) => void = () => undefined;
+    vi.stubGlobal("fin", {
+      me: {
+        getOptions: () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          }),
+      },
+    });
+    const { drops, hooks } = reports();
+    const memory = createMemoryTransport();
+    configure({
+      ...quiet,
+      storage: { backend: "none" },
+      identity: "memory",
+      transport: memory.transport,
+      ...hooks,
+    });
+    info("logged during startup");
+    const runtime = ObservabilityRuntime.current();
+    await vi.waitFor(() => {
+      expect(runtime?.["sender"]).toBeDefined();
+    });
+    expect(runtime?.["ready"]).toBe(false);
+
+    await shutdown();
+    answer({});
+    await settle();
+
+    expect(memory.records().map((record) => record.body)).toEqual(["logged during startup"]);
+    expect(drops).toEqual([]);
+  });
+});
+
+describe("shutdown() during a rotation", () => {
+  it.each([
+    ["carry", [expect.objectContaining({ reason: "security_context", records: 1 })], []],
+    ["flush", [], ["held in A"]],
+  ] as const)(
+    "rejects a %s rotation whose new sender's load shutdown() stops, and reports only what is lost",
+    async (pending, lost, sentToA) => {
+      const { drops, hooks } = reports();
+      const first = createMemoryTransport();
+      const second = createMemoryTransport();
+      configure({
+        ...quiet,
+        storage: { backend: "none" },
+        identity: "memory",
+        transport: first.transport,
+        securityContext: { id: "A" },
+        batching: { logFlushIntervalMs: 60_000 },
+        ...hooks,
+      });
+      await flush();
+      info("held in A");
+
+      // Holds the new context's sender load, so shutdown() lands inside openDelivery().
+      let open: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const create = Sender.create.bind(Sender);
+      let loading = false;
+      vi.spyOn(Sender, "create").mockImplementation(async (options) => {
+        loading = true;
+        await gate;
+        return create(options);
+      });
+      const outcome = rotateSecurityContext(
+        { id: "B", routing: { transport: second.transport } },
+        { pending },
+      ).then(
+        () => "resolved",
+        (error: unknown) => String(error),
+      );
+      await vi.waitFor(() => {
+        expect(loading).toBe(true);
+      });
+
+      const stopping = shutdown();
+      open();
+      await stopping;
+      await settle();
+
+      expect(await outcome).toBe("Error: The runtime has stopped.");
+      expect(second.batches()).toEqual([]);
+      expect(first.records().map((record) => record.body)).toEqual(sentToA);
+      expect(drops).toEqual(lost);
+    },
+  );
+
+  it("removes the old context's stored batches when a clearStorage shutdown stops a carry", async () => {
+    await storedInA();
+    expect(storedKeys()).toHaveLength(1);
+
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const create = Sender.create.bind(Sender);
+    let loading = false;
+    vi.spyOn(Sender, "create").mockImplementation(async (options) => {
+      loading = true;
+      await gate;
+      return create(options);
+    });
+    const outcome = rotateSecurityContext(
+      { id: "B", routing: { transport: createMemoryTransport().transport } },
+      { pending: "carry" },
+    ).then(
+      () => "resolved",
+      (error: unknown) => String(error),
+    );
+    await vi.waitFor(() => {
+      expect(loading).toBe(true);
+    });
+
+    // The rotation already moved the active id to B, so only the carried ids point at A's batch.
+    const stopping = shutdown({ clearStorage: "context" });
+    open();
+    await stopping;
+
+    expect(await outcome).toBe("Error: The runtime has stopped.");
+    expect(storedKeys()).toEqual([]);
+  });
+
+  it("keeps the parked batches for clearStorage when the next sender load fails", async () => {
+    await storedInA();
+    configure({ enabled: false });
+    const routing = { transport: createMemoryTransport().transport };
+    await rotateSecurityContext({ id: "B", routing }, { pending: "carry" });
+    expect(storedKeys()).toHaveLength(1);
+
+    // The resume loads a sender for the parked batches, and that load fails.
+    vi.spyOn(Sender, "create").mockRejectedValue(new Error("chunk failed"));
+    configure({ enabled: true });
+    await settle();
+    await shutdown({ clearStorage: "context" });
+
+    expect(storedKeys()).toEqual([]);
+  });
 });
 
 describe("late async work after a discard", () => {

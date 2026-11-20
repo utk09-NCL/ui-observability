@@ -60,13 +60,14 @@ class WorkerTransport extends StatusTransport {
 
     const client = this.workerClient();
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-    if (!client || typeof this.config.serializer !== "string" || hidden) {
+    const serializer = this.workerSerializer(kind);
+    if (!client || !serializer || hidden) {
       return this.http.send(batch, onKeepalive);
     }
 
     let result: WorkerResult;
     try {
-      result = await this.attempt(client, batch, kind, endpoint, this.config.serializer);
+      result = await this.attempt(client, batch, kind, endpoint, serializer);
       this.assertContext(batch);
       if (
         "status" in result &&
@@ -74,7 +75,7 @@ class WorkerTransport extends StatusTransport {
         typeof this.config.headers === "function"
       ) {
         resetHeaders(this.http);
-        result = await this.attempt(client, batch, kind, endpoint, this.config.serializer);
+        result = await this.attempt(client, batch, kind, endpoint, serializer);
         this.assertContext(batch);
       }
       if ("failure" in result && result.failure === "protocol") {
@@ -186,6 +187,22 @@ class WorkerTransport extends StatusTransport {
     }
     this.client ??= createWorkerClient(factory, this.diagnostics);
     return this.client;
+  }
+
+  /**
+   * Returns the serializer name the worker gets for a batch kind, or undefined when only the
+   * main thread can encode the batch. Functions don't cross the channel, so the app's own
+   * serializer keeps log batches here, but metric and span batches always go as OTLP.
+   * @param kind Kind of the batch.
+   * @returns The name for the worker job, or undefined for the main thread.
+   */
+  private workerSerializer(kind: BatchKind): "otlp" | "ecs" | undefined {
+    const { serializer } = this.config;
+    if (typeof serializer === "string") {
+      return serializer;
+    }
+
+    return kind === "logs" ? undefined : "otlp";
   }
 
   /** One deadline covers the main headers function and the worker operation. */

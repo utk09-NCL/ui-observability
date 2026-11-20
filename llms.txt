@@ -54,7 +54,7 @@ configure({
 
 - Without `capture.webVitals.loader`, the library reports `config.invalid`. Only the navigation timing then runs.
 - Without `otelLoader`, OpenTelemetry is off. The library then makes its own `trace_id`.
-- Browsers: Chrome 85, Edge 85, Firefox 79, Safari 14.1 and later. Node 22.22.3 or later, console only.
+- Browsers: Chrome 85, Edge 85, Firefox 79, Safari 14.1 and later. Node 22 or later, console only. The package has no `engines` field.
 - The package has an ES module entry and a CommonJS entry. They are separate copies with separate state. Use one format in one app.
 
 ## The start rule
@@ -150,9 +150,9 @@ Top-level keys of `ObservabilityConfig`, with their defaults:
 | `minLevel`          | `"INFO"`    | Lowest level that the library sends: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.    |
 | `minLevels`         | `{}`        | Lowest level for each namespace prefix, for example `{ "trading.ticks": "DEBUG" }`.         |
 | `consoleOutput`     | `false`     | `true` prints from `DEBUG` up. A level name prints from that level. Or `{ level, styles }`. |
-| `metricsEndpoint`   | `null`      | OTLP metrics URL. Without it, a metric point is a log record on `endpoint`.                 |
-| `tracesEndpoint`    | `null`      | OTLP traces URL. Without it, the library sends no span.                                     |
-| `serializer`        | `"otlp"`    | `"otlp"`, `"ecs"` or a custom `LogSerializer`.                                              |
+| `metricsEndpoint`   | `null`      | OTLP metrics URL. Works with each `serializer`. Without it, a metric point is a log record on `endpoint`. |
+| `tracesEndpoint`    | `null`      | OTLP traces URL. Works with each `serializer`. Without it, the library sends no span. No OpenTelemetry SDK is necessary. |
+| `serializer`        | `"otlp"`    | `"otlp"`, `"ecs"` or a custom `LogSerializer`. Formats the batches for `endpoint` only. A `400` answer drops the whole batch. |
 | `compression`       | `"gzip"`    | `"gzip"` or `"none"`.                                                                       |
 | `credentials`       | `"omit"`    | Fetch credentials mode. `"include"` for cookie authentication.                              |
 | `headers`           | not set     | An object, or a function that returns one or a promise of one.                              |
@@ -310,7 +310,9 @@ export default defineConfig({
 });
 ```
 
-Set `storage: { backend: "none" }`, or `shutdown()` stores the unsent records for the next test. `memory.clear()` keeps the answer of `respondWith()`, so call `memory.respondWith(200)` in `afterEach` when a test changes the answer.
+Do not mock the library in each spec. Configure it one time in a Vitest setup file. Export the memory transport from a separate module. Import that module in the setup file and in each spec. See the Testing guide.
+
+Set `storage: { backend: "none" }`, or `shutdown()` stores the unsent records for the next test. `memory.clear()` keeps the answer of `respondWith()`, so call `memory.respondWith(200)` in `afterEach` when a test changes the answer. Call `memory.clear()` after `await shutdown()`, because `shutdown()` sends the pending records.
 
 ```ts
 const memory = createMemoryTransport();
@@ -324,9 +326,9 @@ configure({
 getLogger("orders.ticket").logAction("ORDER_SUBMIT", { orderId: "ORD-1" });
 expect(await flush()).toMatchObject({ status: "complete", dropped: 0, stored: 0 });
 expect(memory.records()).toContainEqual(expect.objectContaining({ body: "ORDER_SUBMIT" }));
+await shutdown();
 memory.clear();
 memory.respondWith(200);
-await shutdown();
 ```
 
 Metrics and measures:

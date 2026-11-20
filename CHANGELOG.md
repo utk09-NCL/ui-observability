@@ -2,215 +2,36 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-11-20
+## [1.0.1] - 2026-11-21
 
-The first stable release. It has breaking changes from 0.12.0. Read `docs/migration-v1.md` before you upgrade. Each feature of 1.0.0 is stable. `docs/release-and-support.md` gives the stability rules and the deprecation policy.
+A patch release. It closes gaps in the loss reports of `shutdown()`, and it removes a limit on the signal endpoints. It has no breaking change.
 
-### Added - v1.0.0
+### Added - v1.0.1
 
-- `gauge(name, options)` returns a gauge. `set(value, attributes?)` keeps the last value for each attribute set. Each interval sends that value as one point. With `metricsEndpoint`, the point is an OTLP gauge.
-- `measure(name, fn, attributes?)` times one function call. A promise result ends the measure when it settles. A throw or a rejection gives the outcome `"error"`. The histogram is `ui.measure.duration` with the attributes `measure.name` and `measure.outcome`.
-  `shutdown(options?)` takes options. The default `pending: "flush"` sends the open interval of the meters and the profiler, and each record in memory. It waits for those requests, then runs the exit flush and stops each request that is still open. The stored batches stay in storage.
-- `shutdown({ pending: "discard" })` sends nothing and runs no exit flush. `onDrop` reports each record in memory with `discarded`.
-- `shutdown({ clearStorage: "context" | "namespace" })` discards. It removes the stored batches, the emergency queue entries, the stored session id, the tab id and the journey. It also works after an earlier `shutdown()`. `clearStorage: null` removes nothing.
-- `flush({ timeoutMs })` and the flush result. The result has `status`, `accepted`, `stored`, `dropped`, `forwarded` and `pending`. Each count is a number of records. `status` is `"complete"`, `"timeout"` or `"inactive"`. `"complete"` means that no record waits. It does not prove delivery.
-- `getHealth().delivery` has `lastFailureAt`, `consecutiveFailures`, `throttledUntil` and `dropped`. A rotation resets the first three. It keeps `dropped` and `lastSendAt`.
-- The `LossReason` `"partially_rejected"`. An OTLP `2xx` answer with `partialSuccess` gives the rejected count to `onDrop`. The library does not send the batch again.
-- The `LossReason` `"disabled"`. It reports a record that a child context forwards during a pause. It also reports the held records when the first `configure()` call sets `enabled: false`. It also reports the records in memory at a `pagehide` or a `shutdown()` during a pause. Each record is reported one time.
-- The `LossReason` `"discarded"`.
-- `buffering.maxHeldRecords` limits each hold buffer. The default is 500, and the range is 200 to 10000.
-- The diagnostic codes `transport.partial_success`, `capture.trace_header_kept`, `bus.protocol_mismatch` and `security.rotation_failed`.
-- The `getHealth()` issues `security.rotation_failed` and `records.refused`.
-- The bus messages `ui-observability.message.flush-request` and `ui-observability.message.flush-result`.
-- New exported types: `DeliveryHealth`, `FlushOptions`, `FlushResult`, `FlushStatus`, `Gauge`, `Logger`, `RoutingOptions`, `ShutdownOptions` and `StorageScope`. The package exports the options type of each config section.
-- `llms.txt` in the package. It describes the library for a large language model, with the public functions, the main config keys, the recipes and the common mistakes.
-- `docs/migration-v1.md`. It gives the steps from 0.12.x to 1.0.0.
-- `docs/api.md`, `docs/configuration.md`, `docs/guides.md`, `docs/ingest-server.md` and `docs/development.md`. They hold the reference text from the README.
-- `docs/release-and-support.md`, the release contract. It has a release step that turns on GitHub private vulnerability reporting.
-- `docs/production-recipes.md`. It gives login, logout, tenant rotation, token refresh, consent withdrawal and the initialization order. It also tells how to change the context after a failed load of the rotation code.
-- `docs/architecture.md`. It gives the record path, the buffers and the state changes of the runtime.
-- `SECURITY.md`. It gives the private route for a vulnerability report.
-- `pnpm run check:consumers`. It packs the package and type-checks three consumers. `verify` runs it.
-- `pnpm run test:e2e`. It runs the browser tests in Chromium, Firefox and WebKit. The tests include the session replay with the real `@rrweb/record` recorder, a `srcdoc` frame on the message link and a failed load of the rotation code.
-- `pnpm run test:collector`. It sends records to a pinned OpenTelemetry Collector and checks what the collector wrote.
-- `pnpm run bench:release`. It runs the release benchmark against `bench/budgets.json`.
-- The mock ingest server has `GET /__received`, `GET /__echo` and `POST /__reset` for tests. `UIOBS_MOCK_PORT` sets its port. `UIOBS_MOCK_RECORD=1` keeps the requests.
-- `uiobs doctor` names the `415` of a stock OpenTelemetry Collector in the result of the `beacon` rule.
+- `docs/guides.md` has the section "One Setup for All Specs". It configures the library one time in a Vitest setup file. No spec then needs a mock of the library.
+- The `serializer` reference and the `LogSerializer` JSDoc tell that the library drops a batch that the server refuses with `400`. A custom serializer must keep each record within the limits of the server.
+- `docs/configuration.md` tells that the spans of the library need no OpenTelemetry SDK.
 
-### Changed - v1.0.0
+### Changed - v1.0.1
 
-#### Start and pause
+- `metricsEndpoint` and `tracesEndpoint` work with each `serializer`. Metric batches and span batches always use OTLP. Before, the `ecs` serializer or a custom serializer turned these endpoints off and reported `config.invalid`.
+- With a custom serializer, the transport worker sends the metric batches and the span batches. The log batches still use the main thread.
+- The package has no `engines` field. An install with `engine-strict` no longer fails on an older Node version. Use Node 22 or later. The tests run on Node 22.22.3.
+- **Development:** `devEngines` in `package.json` sets Node 22.22.3 or later for this repository.
+- **Development:** the workspace declares the `@rrweb/types` peer that two rrweb record plugins do not declare. Before, a stale pnpm hoist folder made the lint step fail.
+- **Development:** the workspace accepts the `@emnapi` versions that `oxc-parser` pins for `@napi-rs/wasm-runtime@1.2.7`. `pnpm peers check` passes.
 
-- **Breaking:** The library starts at the first `configure()` call that works. Before that call, it installs no capture. It starts no bus and no sender. It sends nothing.
-- A log call before `configure()` waits in the hold buffer. With the default `consoleOutput` settings, it prints nothing.
-- At the start, a held record gets the `processors`, the `redact` hook, the identity, the levels, the sampling, the `limits` and the `page.url` rule of the startup call.
-- At the start, the library removes the breadcrumbs of log calls from before the start. The breadcrumbs of `addBreadcrumb()` stay.
-- Before the first `configure()` call that works, the ids stay in memory. The library writes nothing to `localStorage` or `sessionStorage`.
-- The first `configure()` call that works sets each setting that is fixed at startup, also after an early log call. This includes `identity`, `correlation`, `storage`, `bus.mode`, `bus.openFinRole` and `otelLoader`.
-- **Breaking:** `enabled: false` pauses the library at any time. The library first sends the open interval of the counters, gauges, histograms and probes. It then removes its captures, the replay recorder and its network patches. The sender sends nothing. The records from before the pause go out after `enabled: true`.
-- A pause stores no new record. A failed request in flight, a sender load that ends, a `retain` rotation and a logout deletion still change storage.
-- A first `configure()` call with `enabled: false` fixes the startup settings. It starts no bus and no sender, and it writes nothing to storage. The runtime starts at the first `enabled: true`.
-- A paused forwarder drops the records of its child contexts.
-- `shutdown()` during a pause sends nothing. A rotation with `pending: "flush"` during a pause acts as `discard`.
-- **Breaking:** `rotateSecurityContext()` rejects before the first `configure()` call that works.
-- **Breaking:** `getHealth().status` has two new values, `"unconfigured"` and `"disabled"`. A failed first `configure()` call reports `"unconfigured"`.
+### Fixed - v1.0.1
 
-#### Config rules
-
-- **Breaking:** In each `configure()` call, an omitted key or a key with the value `undefined` keeps its current value. This applies at each depth.
-- **Breaking, security:** `headers: undefined` now keeps the headers and the token in them. With isolation on, which is the default, use `rotateSecurityContext()` at logout. With isolation off, use `headers: null`.
-- **Breaking:** `null` removes a hook. This applies to `redact`, `onDrop`, `onDiagnostic`, `contextProvider`, `otelLoader`, `transport`, `transportOnExit`, `transportWorker`, `capture.urlTransform` and the `loader` of `capture.webVitals`.
-- **Breaking, security:** A `redact` value that is not a function keeps the current hook. Without a current hook, the library drops each record until `redact` is a function or `null`.
-- **Breaking, security:** A `processors` list with an entry that is not a function keeps the current list. Without a current list, the library drops each record until `processors` is a list of functions or `[]`.
-- **Breaking, security:** If the first `configure()` call cannot read its options, the library writes a console warning. It installs no capture and drops each record until a call sets `redact` to a function or `null`.
-- **Breaking:** On a limit key, `null` sets no limit and `0` sets a limit of zero. Before, `0` set no limit.
-- **Breaking:** These keys do not accept `0`: `buffering.maxPendingRecords`, `buffering.maxPendingBytes`, `correlation.sessionIdleMs`, `correlation.traceMaxAgeMs`, `debugBuffer.maxAgeMs`, `bus.maxMessageBytes`, `bus.maxRecordsPerMessage` and `bus.maxMessagesPerSecond`. `captureLimits.windowMs` must be 1 or more.
-- **Breaking:** `null` turns off `metricsEndpoint`, `tracesEndpoint` and `replay.endpoint`. Their default is `null`. An empty or blank string also turns them off, and it reports `config.invalid`.
-- **Breaking, security:** A relative endpoint URL resolves against `document.baseURI`. The library reports the origin that gets the records. It refuses an endpoint URL with a user name or a password, and it refuses a blank `endpoint`.
-- **Breaking:** A new `sampling.rates` map replaces the current map. A rate outside 0 to 1 removes its entry.
-- **Breaking:** `sampling.alwaysSampleTypes` has the type `LogType[]`. An unknown type reports `config.invalid`.
-- **Breaking:** A `consoleOutput` object without `level` keeps the current level.
-- **Breaking:** `metrics.maxHistogramBoundaries` applies only to the boundaries that the app gives to `histogram()`.
-- **Breaking:** You cannot change `bus.mode` and `bus.openFinRole` after startup. A later change reports `config.invalid` and keeps the value.
-- An invalid `sampling.defaultRate`, `sampling.remoteMaxRate` or `serializer` keeps the current value.
-- A message for a hook, a URL key or a choice key does not print the text of the value.
-- A config section that is not an object reports `config.invalid`.
-- These pairs report `config.invalid`, and the values stay: `transport` with `transportWorker`, `transportOnExit` without `transport`, `capture.remoteToggles` without `sampling.remote`, and `capture.propagateTraceHeaderTo` without `capture.fetch` or `capture.xhr`.
-- The resolved config no longer copies an unknown key.
-
-#### Config shape
-
-- **Breaking:** The section `capturePolicy` is now `captureLimits`. `captureLimits.windowMs` sets only the capture rate limits.
-- **Breaking:** `sampling.errorCeiling` replaces `capturePolicy.errorCeiling`. `sampling.errorCeilingWindowMs` sets its window.
-- **Breaking:** `metrics.intervalMs` replaces `batching.metricFlushIntervalMs` and `profiler.flushIntervalMs`. Counters, gauges, histograms and probes use this interval.
-- **Breaking:** A capture with options takes `true` or an options object. `longFrames: { thresholdMs }`, `userTiming: { include }`, `webVitals: { loader }` and `console: { levels }` replace `longFrameMs`, `userTimingInclude`, `webVitalsLoader` and the console list. An unknown key inside an options object reports `config.invalid`.
-- **Breaking:** The `storage` section replaces the `storage` string and the `persistence` section: `storage: { backend, namespace, requestPersistent }`. You cannot change the section after startup.
-- **Breaking:** `consoleOutput` replaces the top-level `console` key. `ConsoleOutputOptions` replaces `ConsoleOptions`.
-- **Breaking:** Each section type has the name of its key plus `Options`, for example `SamplingOptions`. The `...Policy` type names are gone.
-- **Breaking:** `replay.maxSegmentEvents` and `replay.maxSegmentBytes` replace `replay.batchSize` and `replay.batchBytes`.
-- **Breaking:** `replay.uploadWindowMs` sets the window of `replay.uploadsPerWindow`. Before, `capturePolicy.windowMs` set it.
-
-#### Security context rotation
-
-- **Breaking:** `rotateSecurityContext()` takes the routing settings in `routing`. The type `DeliveryOptions` is now `RoutingOptions`. Each key that is not a routing setting reports `config.invalid`, and the rotation ignores it.
-- **Breaking:** Rotation `timeoutMs` accepts 0 to 600000. A value outside this range rejects the rotation.
-- **Breaking, security:** A rejected rotation stops the delivery of the old context. The library drops each new record with the `onDrop` reason `security_context` until a rotation succeeds. `getHealth()` shows `security.rotation_failed` and `senderReady: false`.
-- **Breaking, security:** After a rejected rotation, the next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the closed context. With `flush`, it removes them, as `discard` does.
-- **Breaking:** `rotateSecurityContext()` calls run in call order. A call during another rotation waits, and then it runs.
-- **Breaking:** A rotation rejects only for a routing value that it cannot apply. A warning does not reject it.
-- **Breaking:** A rotation in a forwarder rejects, and the forwarder's delivery stays open.
-- **Breaking:** A record that the library builds during a rotation goes to `onDrop` at once with `security_context`.
-- A rotation with `pending: "discard"` or `"flush"` removes the stored batches of the old context also when no sender runs, for example during a pause or before consent.
-- A rotation with `pending: "retain"` stores the records that wait in memory under the old context.
-- `rotateSecurityContext()` rejects an `update.context` that is not an object. A `null` context counts as no context. A `null` or `undefined` value in `update.context` sets no key.
-- The rotation code loads in its own chunk on the first `rotateSecurityContext()`.
-
-#### Public API
-
-- **Breaking:** `flush()` now returns `Promise<FlushResult>`, not `Promise<void>`.
-- **Breaking:** `flush()` now waits at most 5000 ms by default. `timeoutMs` sets the wait, from 0 to 600000 ms.
-- **Breaking:** In a frame, a worker or an OpenFin view, `flush()` now waits for the answer of the sender. The sender gets 90 percent of the time that is left.
-- **Breaking:** `getHealth()` puts the delivery state in a `delivery` block. `pending`, `inFlight`, `stored` and `lastSendAt` are no longer top-level fields.
-- **Breaking:** `setContext(values)` takes an attribute map and merges it. A `null` value removes its key. An `undefined` value keeps the current value. A value that is not an object reports `config.invalid` and changes nothing.
-- **Breaking:** `getJourneyToken()` returns `null` when no journey is active.
-- **Breaking:** The package exports the logger class only as the type `Logger`. `getLogger()` and `PluginContext.logger` use `Logger`.
-- **Breaking:** `startTrace()` is now `newTrace()`.
-- `getHealth().delivery.consecutiveFailures` resets only when the server accepts a batch.
-
-#### Delivery
-
-- **Breaking:** Without `headers`, the exit batch to another origin is a keepalive `fetch` with `text/plain;charset=UTF-8`. It obeys `credentials`, so by default it sends no cookie. Only `credentials: "include"` uses `sendBeacon`. The CORS answer of the ingest server must permit the origin of the page.
-- **Breaking:** The exit batch to an endpoint on the origin of the page is a keepalive `fetch` with the content type of the serializer. Before, it was a `text/plain` beacon.
-- **Breaking:** A `fetch` request that already has a `traceparent` header keeps it. The library records no client span for it and reports `capture.trace_header_kept`. Before, the library replaced the header.
-- **Breaking:** On a metric point from a frame or a worker, the `redact` of the sender can change `metric.name`, `metric.unit` and `metric.attribute_keys`.
-- A forwarded record gets its metric and span fields back only when its `log.type` and namespace are those of the library, and each field has the shape that the library writes.
-- The library reads at most 16 KiB of the body of a `413` or of an OTLP `2xx` answer. `delivery.requestTimeoutMs` also limits that read.
-- The main thread waits 1000 ms more for an answer from a transport worker that is ready.
-- A full hold buffer keeps its first 100 records of each kind. It drops the oldest record after them.
-- `StorageAdapter.save()` returns `Promise<boolean>`. The value is true only when the batch is in storage when the save ends.
-- The `transport.http_error` and `transport.throttled` texts tell whether storage kept the batch.
-- The exit flush counts the keepalive bytes that are still in flight from the flush of the hidden page.
-
-#### Bus
-
-- **Breaking:** A same-origin child frame compares the bus protocol tag of its parent with its own tag before a direct call. With a different tag, it reports `bus.protocol_mismatch` and tries a message link.
-- The bus starts a flush for other contexts at most one time each second. It keeps at most 4 waiting flush requests for each source and 100 in total.
-- The bus does not take a flush request on the broadcast link.
-- A flush that a frame or a worker asks for does not send the open interval of the metrics and the profiler of its sender.
-- The bus sends each answer for a worker to that worker only.
-
-#### Session replay
-
-- **Breaking:** Session replay always blocks each element in `[data-observability-ignore]`.
-- The `capture.rate_limited` text for a full replay buffer says that the replay of an error in that time starts at the error, with no events from before it.
-
-#### Build, browsers and docs
-
-- The build targets ES2021. The library supports Chrome 85, Edge 85, Firefox 79 and Safari 14.1 and later.
-- The README and `docs/browser-support.md` state that OpenFin support is not validated on a real OpenFin runtime.
-- The gzip budget of the main graph is 55,524 B. The measured main graph is 50,478 B.
-- The README is short. It has the installation, the quick start, three recipes and a table of the reference documents.
-- The ingest contract is in `docs/ingest-server.md`. Its rules do not change.
-- Lint enforces braces on each conditional again. `eslint-config-prettier` had turned the `curly` rule off.
-
-### Removed - v1.0.0
-
-- **Breaking:** `logMetric()` and the logger method `logMetric()`. Use `counter()`, `gauge()` or `histogram()`.
-- **Breaking:** `timeSync()`, `timeAsync()` and the logger methods of the same names. Use `measure()`. `measure()` logs no ERROR record on a failure.
-- **Breaking:** `getStats()` and `getQueueDepth()`. Use `getHealth().delivery`.
-- **Breaking:** `clearPersistedLogs()`. Use `shutdown({ pending: "discard", clearStorage: scope })`.
-- **Breaking:** `setContextMap()`. Use `setContext(values)`.
-- **Breaking:** The type `DeliveryStats` and the value export `OneLogger`.
-- **Breaking:** `retention.mode`. Set `retention.maxAgeMs` and `retention.maxAttempts` to `null` in place of `"until-delivered"`.
-- **Breaking:** `delivery.retryIdleDelayMs`, `delivery.batchesPerDrain`, `correlation.sessionTouchMs`, `bus.maxTrackedSources` and `capturePolicy.maxErrorSignatures`. A config with one of these keys reports `config.invalid`.
-- **Breaking:** `bus.validation`. The bus always checks each message. `getHealth().bus` no longer has `validation` and `maxTrackedSources`.
-
-### Fixed - v1.0.0
-
-- A log call no longer throws in Chrome 92, Firefox 91 and Safari 15.3 or older. Before, with console output or with `processors`, each log call threw. A second `configure()` also threw.
-- Session replay sets `replay.id` when the browser has no `crypto.randomUUID`. This also applies to a page on plain `http`.
-- `TransportError` keeps its `cause` in browsers without the ES2022 `cause` option.
-- The type declarations work for a strict consumer with `moduleResolution` `"NodeNext"` (ES module or CommonJS) or `"Bundler"`, also with `skipLibCheck: false`. `exports` gives `import` and `require` each its own declarations, `index.d.ts` and `index.d.cts`.
-- `configure({ redact: undefined })` no longer removes `redact`. The other hooks and the transports have the same fix.
-- `redact`, `onDiagnostic`, `otelLoader` and the `loader` of `capture.webVitals` report `config.invalid` for a value that is not a function.
-- `configure()` no longer throws when a getter in its input throws.
-- `configure()` no longer writes into the app's object.
-- A key that is fixed at startup no longer reports "cannot change after startup" for the value `undefined`.
-- A histogram without custom boundaries no longer reports `config.invalid` when the boundary limit is low.
-- `sampling: { defaultRate: undefined }` no longer sets the rate to `1`.
-- `serviceName`, `serviceVersion`, `environment` and `securityContext.id` report `config.invalid` for a value that is not a string.
-- An `undefined` style no longer reports `config.invalid`. `consoleOutput.styles: null` now reports `config.invalid`.
-- A failed first `configure()` call after an early log call no longer lets records go out without `redact`.
-- A failed first `configure()` call writes no id to `localStorage` or `sessionStorage`. It reports `config.invalid` to diagnostics, and it writes the console warning.
-- A frame that logs before `configure()` uses the `bus.mode` of its first `configure()` call.
-- A journey that starts before `configure()` stays active after the call. The journey token leaves the URL.
-- A `newSession()` call before `configure()` keeps its session after the start.
-- `onDrop` reports each lost record one time, also when a `pagehide` comes before a later rotation or `shutdown()`.
-- A `shutdown()` before the end of startup reports the held records to `onDrop` with `load_failed`.
-- A rotation that waits for the delivery stack load at `shutdown()` stops and rejects. Before, it could remove the stored batches of the old context.
-- A rotation that a shutdown stops after it took the old records reports those records to `onDrop` with `security_context`.
-- A rotation that a shutdown meets in its storage step rejects, and does not apply the new context.
-- A delivery stack load that ends after a rejected rotation no longer sends the stored batches of the old context.
-- After `shutdown()`, `startJourney()` and `adoptJourney()` write nothing to `sessionStorage`.
-- `flush()` no longer waits without end for a request or a storage call that does not settle.
-- A response body that stalls no longer holds a send past the request deadline or after a stop.
-- `fetch(request, init)` with trace propagation builds the request one time with the whole init of the caller. With an empty init, it keeps the referrer of the request.
-- A refused beacon marks the keepalive budget as used, so a later exit batch goes to the emergency queue.
-- A diagnostic no longer says that the library stored a batch that storage did not keep.
-- A `srcdoc` or `about:blank` frame forwards its records through its same-origin parent. Before, the parent refused its `"null"` origin, and the frame sent its own records past the `redact` of the parent.
-- In Firefox, a `srcdoc` frame without a direct link finds its same-origin parent through the `origin` global of the parent. A `srcdoc` frame inside a `srcdoc` frame also finds it.
-- A `srcdoc` or `about:blank` parent sends a new security context to its direct children. Before, the next batch of such a child was dropped with only a `security.context_mismatch` count.
-- A `srcdoc` parent under `bus.sourcePolicy: "trusted-origin"` accepts its same-origin children. It also does not report them as untrusted.
-- A `srcdoc` forwarder accepts the sampling rules of its parent on the message link.
-- A replay snapshot that fails at an error no longer keeps the upload open. Before, each later event went to the replay endpoint with no end. Now the library sends no replay for that error and reports `capture.record_failed`.
-- A replay snapshot that fails halfway sends no part of itself. The buffer then waits for the next full snapshot, so an upload always starts with one.
-- A failed replay snapshot does not use an upload of `replay.uploadsPerWindow`.
-- The library reports a full replay buffer one time for each recording, also when the first snapshot is too large.
-- A new replay recording does not report the dropped events of an earlier recording.
-- The replay uploader sends no segment after a later call removes both `replay.endpoint` and `replay.onSegment`.
-- The mock ingest server no longer stops on a log record, a span or a metric point with no time. It prints `observedTimeUnixNano` for a log record, or `-` when the record has no time.
-- The mock ingest server answers `400` to a JSON body that does not have the expected shape. Before, that body stopped the server.
-- `docs/ingest-server.md` names `application/x-ndjson` for `serializer: "ecs"`. It says that `408` and each `5xx` make the library send the batch again.
+- A `shutdown()` before the end of startup reports each held record to `onDrop` with `load_failed`. Before, with `bus: { mode: "off" }`, the library lost these records with no report.
+- A `shutdown()` after the delivery stack loads, but before the end of startup, sends the startup records. Before, the library lost them with no report.
+- A `shutdown()` during the sender load of a `carry` rotation rejects the rotation. `onDrop` reports the carried records in memory with `security_context`. Before, the rotation resolved, and the library lost the records with no report.
+- A `shutdown({ clearStorage: "context" })` during that load removes the stored batches of the old context. Before, these batches stayed on the device.
+- After a failed load of the delivery stack, `shutdown({ clearStorage })` still removes the stored batches that a `carry` rotation during a pause left.
+- The testing examples in `docs/guides.md` and `llms.txt` call `memory.clear()` after `await shutdown()`. Before, the records that `shutdown()` sent reached the next test.
+- `docs/configuration.md` and the `endpoint` JSDoc tell that a relative `endpoint` works. The library also reports `config.invalid` with the origin that gets the records.
+- `docs/ingest-server.md` tells that the batches for `metricsEndpoint` and `tracesEndpoint` use OTLP with each `serializer`. This includes a `text/plain` exit batch.
+- `CHANGELOG.md` has the 1.0.0 section one time. Before, it had that section two times.
 
 ## [1.0.0] - 2026-11-20
 

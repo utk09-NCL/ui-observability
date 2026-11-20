@@ -126,8 +126,7 @@ function unapplied(
       return false;
     }
 
-    // A refused URL gives back the marker, and an accepted one its stored form. The serializer
-    // check can still turn an accepted signal endpoint off, and that doesn't match either.
+    // A refused URL gives back the marker, and an accepted one its stored form.
     if (key === "endpoint") {
       return resolveEndpoint(given, REFUSED, quiet) !== applied;
     }
@@ -377,6 +376,18 @@ export async function rotateContext(
   runtime.newSession();
   runtime.builder.invalidateResource();
   await host.openDelivery();
+
+  // shutdown() ran during the new sender's load, and that load stopped itself. Carry's live
+  // records aren't routed yet, so they're lost. The other rules reported or stored theirs above.
+  if (runtime.isDestroyed()) {
+    if (rule === "carry") {
+      host.drop(live);
+      // The id is already the new one, so only these ids let a clearStorage find the old batches.
+      await host.adopt(stored);
+    }
+    throw new Error("The runtime has stopped.");
+  }
+
   // New calls go to the new sender from here, so a long carry drops no logger call and the
   // report below can produce a record.
   host.endRotation(seq);

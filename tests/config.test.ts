@@ -571,18 +571,25 @@ describe("resolveConfig", () => {
       expect(second.capture.ignoreUrls).toEqual([ENDPOINT]);
     });
 
-    it("turns off with a serializer that has no traces format, and says so", () => {
+    it("keeps the URL with the ECS or a custom serializer, because spans always go as OTLP", () => {
       const { events, diagnostics } = collect();
+      const custom = {
+        name: "uilogs",
+        serialize: () => ({ body: "", contentType: "application/json" }),
+      };
 
-      const resolved = resolveConfig(
+      const ecs = resolveConfig(
         { ...valid(), serializer: "ecs", tracesEndpoint: TRACES },
         diagnostics,
       );
+      const own = resolveConfig(
+        { ...valid(), serializer: custom, tracesEndpoint: TRACES },
+        diagnostics,
+      );
 
-      expect(resolved.tracesEndpoint).toBeNull();
-      expect(messages(events)).toEqual([
-        'tracesEndpoint needs serializer "otlp". The library sends no span.',
-      ]);
+      expect(ecs.tracesEndpoint).toBe(TRACES);
+      expect(own.tracesEndpoint).toBe(TRACES);
+      expect(events).toEqual([]);
     });
 
     it("reports a tracesEndpoint with no endpoint and no transport", () => {
@@ -645,14 +652,14 @@ describe("resolveConfig", () => {
       expect(events).toEqual([]);
     });
 
-    it("turns off with a serializer that has no metrics format, and says so", () => {
+    it("keeps the URL when the serializer changes to ECS, because metric batches go as OTLP", () => {
       const { events, diagnostics } = collect();
       const first = resolveConfig({ ...valid(), metricsEndpoint: METRICS }, diagnostics);
 
       const second = resolveConfig({ serializer: "ecs" }, diagnostics, first);
 
-      expect(second.metricsEndpoint).toBeNull();
-      expect(messages(events)[0]).toContain('metricsEndpoint needs serializer "otlp"');
+      expect(second.metricsEndpoint).toBe(METRICS);
+      expect(events).toEqual([]);
     });
 
     it("joins ignoreUrls and leaves it on a change", () => {

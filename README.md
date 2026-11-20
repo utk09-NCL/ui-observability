@@ -186,7 +186,7 @@ configure({
 
 ## Development
 
-Use Node 22.22.3 or later and pnpm 12.21.0.
+To work on this repository, use Node 22.22.3 or later and pnpm 12.21.0. An app that uses the package can use Node 22 or later.
 
 ```bash
 pnpm install

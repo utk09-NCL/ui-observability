@@ -269,7 +269,7 @@ describe("Worker transport", () => {
     },
   );
 
-  it("keeps custom serializers and hidden-page keepalive sends on the main thread", async () => {
+  it("keeps log batches of a custom serializer and hidden-page sends on the main thread", async () => {
     const serialize = vi.fn(() => ({ body: "custom", contentType: "text/plain" }));
     const { transport, factory, config } = setup({ serializer: { name: "custom", serialize } });
     await transport.send(workerJob().batch);
@@ -282,6 +282,30 @@ describe("Worker transport", () => {
     expect(keepalive).toHaveBeenCalledOnce();
     expect(factory).not.toHaveBeenCalled();
     expect(transport.lastSendAt()).not.toBeNull();
+  });
+
+  it("sends metric and span batches through the worker with a custom log serializer", async () => {
+    const serialize = vi.fn(() => ({ body: "custom", contentType: "text/plain" }));
+    const { transport, factory } = setup({
+      serializer: { name: "custom", serialize },
+      metricsEndpoint: "https://ingest.example/metrics",
+      tracesEndpoint: "https://ingest.example/traces",
+    });
+
+    for (const type of ["metric", "span"]) {
+      const { batch } = workerJob();
+      batch.records[0].attributes["log.type"] = type;
+      await transport.send(batch);
+    }
+
+    const jobs = (FakeChannel.created[0]?.port1.sent ?? []) as { job?: Record<string, unknown> }[];
+    const sent = jobs.flatMap(({ job }) => (job ? [[job.kind, job.endpoint, job.serializer]] : []));
+    expect(sent).toEqual([
+      ["metrics", "https://ingest.example/metrics", "otlp"],
+      ["traces", "https://ingest.example/traces", "otlp"],
+    ]);
+    expect(factory).toHaveBeenCalledOnce();
+    expect(serialize).not.toHaveBeenCalled();
   });
 
   it("gives the exit flush the bytes of a hidden-page keepalive send still in flight", async () => {

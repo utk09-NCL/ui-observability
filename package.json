@@ -28,8 +28,12 @@
   },
   "type": "module",
   "sideEffects": false,
-  "engines": {
-    "node": ">=22.22.3"
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.22.3",
+      "onFail": "error"
+    }
   },
   "bin": {
     "uiobs": "bin/uiobs.mjs"

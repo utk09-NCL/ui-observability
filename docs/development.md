@@ -3,6 +3,7 @@
 This document tells how to work on the library in this repository.
 
 Use Node 22.22.3 or later and pnpm 12.21.0. `.nvmrc` selects the minimum Node version.
+`devEngines` in `package.json` stops `pnpm install` on an older Node version.
 The `packageManager` field pins pnpm. See the [pnpm installation instructions](https://pnpm.io/installation).
 Angular supports Node `^22.22.3 || ^24.15.0 || >=26.0.0`.
 Use one of these Node versions for the complete workspace.

@@ -1854,10 +1854,11 @@ export class ObservabilityRuntime {
       this.sender?.push(record);
     }
 
-    // A carry during a pause left its stored batches for this sender.
-    const carried = this.carried;
-    this.carried = [];
-    if (this.sender && carried.length > 0) {
+    // A carry during a pause left its stored batches for this sender. After a failed load they
+    // stay parked, otherwise a later clearStorage can't find their ids under the old context.
+    if (this.sender && this.carried.length > 0) {
+      const carried = this.carried;
+      this.carried = [];
       await this.adoptStored(this.sender, carried);
     }
   }
@@ -2373,6 +2374,12 @@ export class ObservabilityRuntime {
 
   /** Flushes the sender's records and runs the exit flush. Reports what can't go out. */
   private async flushHeld(): Promise<void> {
+    // The sender can load before startup ends, for example while OpenFin's getOptions() waits,
+    // so its last flush takes the startup records. Before dropPaused(), so a pause counts them.
+    if (this.sender) {
+      this.releaseBootBuffer();
+    }
+
     // A paused sender sends nothing at shutdown either.
     this.dropPaused();
     // Sender.destroy awaits a normal flush, then runs the exit flush. The records already hold
@@ -2380,9 +2387,10 @@ export class ObservabilityRuntime {
     const closing = this.sender?.destroy();
     // A record in the forward buffer waits for its microtask, so the bus takes it before it stops.
     this.sendForwarded();
-    // The delivery stack didn't load before shutdown(), so the held records are lost. A pause
-    // already reported its own.
-    this.drops.add("load_failed", this.unreported(this.pendingRecords.take()));
+    // A stopped runtime loads no sender, so the records that wait for startup or for the load are
+    // lost. Startup releases its records later, where nothing reports them. A pause reported its own.
+    const held = [...this.bootBuffer.take(), ...this.pendingRecords.take()];
+    this.drops.add("load_failed", this.unreported(held));
     await closing;
   }
 
@@ -2895,8 +2903,9 @@ export class ObservabilityRuntime {
       },
       adopt: async (stored) => {
         // A pause loads no sender, so the next sender adopts them. With no destination, they
-        // stay parked under the old id, so none is lost.
-        if (!this.config.enabled) {
+        // stay parked under the old id, so none is lost. A stopped runtime has no sender, and a
+        // clearStorage shutdown removes the parked ids.
+        if (!this.config.enabled || this.destroyed) {
           this.carried = [...stored];
           return;
         }
