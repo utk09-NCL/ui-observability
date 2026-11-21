@@ -157,6 +157,181 @@ describe("restoreLayout", () => {
     expect(report).not.toHaveBeenCalled();
   });
 
+  describe("a saved popout group", () => {
+    // dockview opens each saved popout window again. A frame panel there loads again in a new
+    // browsing context, and its runtime finds no owner. So the restore removes frame panels from
+    // each popout group first.
+    function panel(id: string): unknown {
+      return { id, contentComponent: id, title: id };
+    }
+
+    function popoutLayout(popoutGroups: unknown[], panelIds: string[]): SerializedDockview {
+      return {
+        ...LAYOUT,
+        panels: Object.fromEntries(panelIds.map((id) => [id, panel(id)])),
+        popoutGroups,
+      } as unknown as SerializedDockview;
+    }
+
+    function restored(layout: SerializedDockview): SerializedDockview {
+      const given: SerializedDockview[] = [];
+      restoreLayout(
+        fakeApi((data) => {
+          given.push(data);
+        }),
+        { status: "ok", layout },
+        vi.fn(),
+        vi.fn(),
+      );
+
+      return given[0];
+    }
+
+    it("loses its frame panels and keeps the other panels of the group", () => {
+      const layout = popoutLayout(
+        [
+          {
+            data: { id: "g1", views: ["research", "prices"], activeView: "research" },
+            position: null,
+          },
+        ],
+        ["research", "prices"],
+      );
+
+      const given = restored(layout);
+
+      expect(given.popoutGroups).toEqual([
+        { data: { id: "g1", views: ["prices"], activeView: "prices" }, position: null },
+      ]);
+      expect(Object.keys(given.panels)).toEqual(["prices"]);
+    });
+
+    it("keeps the active tab when it is not a frame panel", () => {
+      const layout = popoutLayout(
+        [
+          {
+            data: { id: "g1", views: ["prices", "partner", "blotter"], activeView: "blotter" },
+            position: null,
+          },
+        ],
+        ["prices", "partner", "blotter"],
+      );
+
+      const given = restored(layout);
+
+      expect(given.popoutGroups?.[0].data).toEqual({
+        id: "g1",
+        views: ["prices", "blotter"],
+        activeView: "blotter",
+      });
+    });
+
+    it("drops a group that holds only frame panels", () => {
+      const layout = popoutLayout(
+        [{ data: { id: "g1", views: ["untrusted"], activeView: "untrusted" }, position: null }],
+        ["untrusted"],
+      );
+
+      const given = restored(layout);
+
+      expect(given.popoutGroups).toBeUndefined();
+      expect(given.panels).toEqual({});
+    });
+
+    it("drops a popout window with several groups when one of them holds a frame panel", () => {
+      const layout = popoutLayout(
+        [
+          {
+            grid: {
+              root: {
+                type: "branch",
+                data: [
+                  { type: "leaf", data: { id: "g1", views: ["prices"] } },
+                  { type: "leaf", data: { id: "g2", views: ["research"] } },
+                ],
+              },
+              height: 400,
+              width: 600,
+              orientation: "HORIZONTAL",
+            },
+            position: null,
+          },
+        ],
+        ["prices", "research"],
+      );
+
+      const given = restored(layout);
+
+      expect(given.popoutGroups).toBeUndefined();
+      expect(given.panels).toEqual({});
+    });
+
+    it("keeps a popout window with several groups and no frame panel", () => {
+      const popout = {
+        grid: {
+          root: { type: "leaf", data: { id: "g1", views: ["prices"] } },
+          height: 400,
+          width: 600,
+          orientation: "HORIZONTAL",
+        },
+        position: null,
+      };
+      const layout = popoutLayout([popout], ["prices"]);
+
+      expect(restored(layout).popoutGroups).toEqual([popout]);
+    });
+
+    it("keeps the other popout groups in their order", () => {
+      const keep = { data: { id: "g1", views: ["prices"], activeView: "prices" }, position: null };
+      const drop = { data: { id: "g2", views: ["research"] }, position: null };
+      const layout = popoutLayout([keep, drop], ["prices", "research"]);
+
+      expect(restored(layout).popoutGroups).toEqual([keep]);
+    });
+
+    it("gives dockview the same layout when no popout group holds a frame panel", () => {
+      const layout = popoutLayout(
+        [{ data: { id: "g1", views: ["prices"], activeView: "prices" }, position: null }],
+        ["prices"],
+      );
+
+      expect(restored(layout)).toBe(layout);
+    });
+
+    it("gives dockview the same layout when there is no popout group", () => {
+      expect(restored(LAYOUT)).toBe(LAYOUT);
+    });
+
+    it("doesn't change the saved object", () => {
+      const layout = popoutLayout(
+        [
+          {
+            data: { id: "g1", views: ["research", "prices"], activeView: "research" },
+            position: null,
+          },
+        ],
+        ["research", "prices"],
+      );
+      const before = JSON.stringify(layout);
+
+      restored(layout);
+
+      expect(JSON.stringify(layout)).toBe(before);
+    });
+
+    it("leaves a frame panel in the grid and in a floating group", () => {
+      const layout = {
+        ...popoutLayout([], ["research"]),
+        floatingGroups: [{ data: { id: "f1", views: ["research"] }, position: {} }],
+      } as unknown as SerializedDockview;
+
+      const given = restored(layout);
+
+      expect(Object.keys(given.panels)).toEqual(["research"]);
+      expect(given.floatingGroups).toHaveLength(1);
+    });
+  });
+
   it("opens the default layout for a user who has none, and reports nothing", () => {
     const api = fakeApi();
     const addDefaults = vi.fn();

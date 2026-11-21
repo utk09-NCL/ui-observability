@@ -108,8 +108,8 @@ export function resumeReplay(): void {
 /**
  * Stops the library for the next user of a shared device. The discard sends nothing, and
  * clearStorage removes the stored batches, the session id, the tab id and the journey of each
- * context in the storage namespace. The privacy choices go too, because the next user decides for himself. The
- * caller then revokes the token and calls startAnonymous().
+ * context in the storage namespace. The privacy choices go too, because the next user decides
+ * for himself. The caller then revokes the token and calls startAnonymous().
  */
 export async function stopForSharedDevice(): Promise<void> {
   activeTenant = undefined;
@@ -154,16 +154,15 @@ export async function restartObservability(settings: Settings): Promise<void> {
 }
 
 /**
- * Stores the telemetry choice and applies it. A withdrawal pauses the library, drops what is
- * not sent and leaves the runtime with no endpoint. A grant resumes it with the routing of
- * the current context, and starts the replay for a user who agreed to it. The stored choice also
- * decides the next page load, see buildConfig().
+ * Applies the telemetry choice to the library of this document, and stores nothing. A withdrawal
+ * pauses the library, drops what is not sent and leaves the runtime with no endpoint. A grant
+ * resumes it with the routing of the current context, and starts the replay for a user who
+ * agreed to it. A window that follows a choice of another window calls this one, because the
+ * other window stored the choice already. A write here could put an older choice over a newer one.
  * @param allowed True when the user agrees to telemetry.
  * @param settings The settings in force.
  */
-export async function setTelemetryConsent(allowed: boolean, settings: Settings): Promise<void> {
-  saveConsent({ ...loadConsent(), telemetry: allowed });
-
+export async function applyTelemetryConsent(allowed: boolean, settings: Settings): Promise<void> {
   if (!allowed) {
     configure({ enabled: false });
     stopReplay();
@@ -186,16 +185,35 @@ export async function setTelemetryConsent(allowed: boolean, settings: Settings):
 }
 
 /**
- * Stores the replay choice and applies it. The recorder starts only for a user who also allows
- * telemetry. stopReplay() drops each event that was not sent.
+ * Stores the telemetry choice and applies it. The stored choice also decides the next page load,
+ * see buildConfig().
+ * @param allowed True when the user agrees to telemetry.
+ * @param settings The settings in force.
+ */
+export async function setTelemetryConsent(allowed: boolean, settings: Settings): Promise<void> {
+  saveConsent({ ...loadConsent(), telemetry: allowed });
+  await applyTelemetryConsent(allowed, settings);
+}
+
+/**
+ * Applies the replay choice to the library of this document, and stores nothing. The recorder
+ * starts only for a user who also allows telemetry. stopReplay() drops each event that was not
+ * sent. See applyTelemetryConsent() for why a following window must not store.
  * @param allowed True when the user agrees to the session replay.
  */
-export function setReplayConsent(allowed: boolean): void {
-  saveConsent({ ...loadConsent(), replay: allowed });
-
+export function applyReplayConsent(allowed: boolean): void {
   if (allowed) {
     resumeReplay();
   } else {
     stopReplay();
   }
+}
+
+/**
+ * Stores the replay choice and applies it.
+ * @param allowed True when the user agrees to the session replay.
+ */
+export function setReplayConsent(allowed: boolean): void {
+  saveConsent({ ...loadConsent(), replay: allowed });
+  applyReplayConsent(allowed);
 }

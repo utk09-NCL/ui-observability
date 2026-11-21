@@ -25,6 +25,7 @@ import { getToken } from "../session/token";
 import { WorkspaceContext } from "../workspace/context";
 import { PANELS } from "../workspace/default-layout";
 import { useTokenRefresh, useWorkspaceData } from "../workspace/use-workspace-data";
+import { watchPageRestore } from "./page-lifecycle";
 import {
   comesFrom,
   isSessionMessage,
@@ -33,6 +34,7 @@ import {
   parsePanelRequest,
   READY_TYPE,
 } from "./protocol";
+import { startWindow } from "./start";
 
 const ANSWER_TIMEOUT_MS = 10_000;
 
@@ -77,34 +79,25 @@ function askOpener(opener: Window): Promise<PanelSession> {
   });
 }
 
-/**
- * Starts the window: asks the opener, logs in, and adopts the journey. The login rotates the
- * security context, and a rotation ends the active journey. So the adoption comes after it.
- * @param request The panel and the journey token of the address.
- * @param opener The window that opened this one.
- * @returns The session of this window.
- */
-async function start(request: PanelRequest, opener: Window): Promise<Session> {
-  const who = await askOpener(opener);
-  // The window has what it needs from the opener. It drops the reference, so a page that this
-  // window navigates to can't reach the workspace through window.opener.
-  window.opener = null;
-  const session = await login(api, who.user, who.tenant);
-  // The window revokes its own server session when it closes. Without it, the token would stay
-  // valid on the server until it expires, because only the workspace's token is revoked at logout.
-  addEventListener("pagehide", () => {
-    api.logoutOnExit();
-  });
-  if (request.journeyToken !== null && !adoptJourney(request.journeyToken)) {
-    log.warn("The window could not adopt the journey of its opener.");
-  }
-
-  return session;
-}
-
 const request = parsePanelRequest(location.search, location.hash);
 const opener = window.opener as Window | null;
-const started: Promise<Session> | null = request && opener ? start(request, opener) : null;
+const started: Promise<Session> | null =
+  request && opener
+    ? startWindow(request.journeyToken, {
+        ask: () => askOpener(opener),
+        dropOpener: () => {
+          window.opener = null;
+        },
+        login: (who) => login(api, who.user, who.tenant),
+        revoke: () => {
+          api.logoutOnExit();
+        },
+        adopt: adoptJourney,
+        warn: (message) => {
+          log.warn(message);
+        },
+      })
+    : null;
 
 /** The panel, with the data hooks that every page with panels needs. */
 function Shown({
@@ -167,8 +160,27 @@ function PanelWindow(): ReactElement {
     };
   }, []);
 
+  // A page that comes back from the back/forward cache holds a token that pagehide revoked. The
+  // error state unmounts the panel, which stops its refresh timer and its requests.
+  useEffect(
+    () =>
+      watchPageRestore(() => {
+        setError(
+          "This window came back from the browser cache, and its session has ended. " +
+            "Open it again from the workspace.",
+        );
+      }),
+    [],
+  );
+
   if (!request || !opener) {
-    return <p role="alert">Open this window with the button of a panel in the workspace.</p>;
+    // A reload lands here too. The window dropped its link to the workspace after the handshake.
+    return (
+      <p role="alert">
+        Open this window with the button of a panel in the workspace. A reload ends the link to the
+        workspace, so open the window again from there.
+      </p>
+    );
   }
   if (error) {
     return <p role="alert">{error}</p>;

@@ -78,7 +78,8 @@ const REPLAY_LIMITS = {
 // The library makes a recording id with crypto.randomUUID(). The route accepts this shape only,
 // so an id from a URL can't be anything else than a key of the store.
 const REPLAY_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
-// id -> { id, service, sessionId, tabId, startedAt, bytes, segments: Map(sequence -> { events, text, bytes }) }
+// id -> { id, service, sessionId, tabId, startedAt, bytes, segments }. Each segment is
+// { events, text, bytes } and the map key is its sequence number.
 const replayRecordings = new Map();
 let replayBytes = 0;
 
@@ -220,7 +221,8 @@ function hasLoopbackHost(req) {
 }
 
 const HOST_REFUSED =
-  "The Host header is not a loopback name. This mock server answers localhost, 127.0.0.1 and [::1].\n";
+  "The Host header is not a loopback name. " +
+  "This mock server answers localhost and 127.0.0.1.\n";
 
 function sendJson(res, value) {
   res.setHeader("Content-Type", "application/json");

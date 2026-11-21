@@ -3,27 +3,33 @@
 // Keeps the windows of the app in line on the privacy choices. The workspace writes the choices to
 // localStorage, and the browser tells each other window of the same origin with a storage event.
 // A window with a panel has its own runtime. Without this, it would keep sending after the user
-// withdrew the consent in the workspace, because it read the choice one time, at its start.
+// withdrew the consent in the workspace, because it read the choice one time, at its start. A
+// window only applies a choice. It never stores one, because the window that made the choice
+// stored it, and a late write from here could put an older choice over a newer one.
 
+import { getLogger } from "@utk09/ui-observability";
 import type { Settings } from "../observability-settings/settings";
-import { type Consent, CONSENT_STORAGE_KEY, parseConsent } from "./consent";
-import { setReplayConsent, setTelemetryConsent } from "./user-context";
+import { type Consent, CONSENT_STORAGE_KEY, loadConsent, parseConsent } from "./consent";
+import { applyReplayConsent, applyTelemetryConsent } from "./user-context";
+
+const log = getLogger("consent.sync");
 
 /**
  * Reads the choices from a storage event.
  * @param event The key and the new value of the event.
- * @returns The new choices, or null when the event is about another key. A cleared storage
- * sends the key null, and the choices are the defaults then.
+ * @returns The new choices, or null when the event doesn't carry a choice. That is another key,
+ * a removed key and a cleared storage. A shared-device logout removes the key, and a removed key
+ * is no grant.
  */
 export function consentFromStorageEvent(event: {
   key: string | null;
   newValue: string | null;
 }): Consent | null {
-  if (event.key !== null && event.key !== CONSENT_STORAGE_KEY) {
+  if (event.key !== CONSENT_STORAGE_KEY || event.newValue === null) {
     return null;
   }
 
-  return parseConsent(event.key === null ? null : event.newValue);
+  return parseConsent(event.newValue);
 }
 
 /**
@@ -39,10 +45,10 @@ export async function applyConsentChange(
   settings: Settings,
 ): Promise<void> {
   if (previous.telemetry !== next.telemetry) {
-    await setTelemetryConsent(next.telemetry, settings);
+    await applyTelemetryConsent(next.telemetry, settings);
   }
   if (previous.replay !== next.replay) {
-    setReplayConsent(next.replay);
+    applyReplayConsent(next.replay);
   }
 }
 
@@ -59,17 +65,30 @@ export interface ConsentWatch {
  * @returns Function that stops the listener.
  */
 export function watchConsent(watch: ConsentWatch): () => void {
-  let applied = parseConsent(localStorage.getItem(CONSENT_STORAGE_KEY));
+  // The choices that this window applied last. Only a task that ran in the queue changes it.
+  let applied = loadConsent();
 
   const onStorage = (event: StorageEvent): void => {
     const next = consentFromStorageEvent(event);
-    if (next === null || (next.telemetry === applied.telemetry && next.replay === applied.replay)) {
+    if (next === null) {
       return;
     }
 
-    const previous = applied;
-    applied = next;
-    void watch.run(() => applyConsentChange(previous, next, watch.settings()));
+    // The comparison runs in the queue and not here. Two events can arrive while the queue is
+    // busy, and a withdrawal that a grant follows needs both runs.
+    watch
+      .run(async () => {
+        if (next.telemetry === applied.telemetry && next.replay === applied.replay) {
+          return;
+        }
+
+        await applyConsentChange(applied, next, watch.settings());
+        applied = next;
+      })
+      .catch((error: unknown) => {
+        // The choice stays unapplied, so the same choice at the next event runs again.
+        log.error("The window could not apply the privacy choice of the workspace.", error);
+      });
   };
   addEventListener("storage", onStorage);
 

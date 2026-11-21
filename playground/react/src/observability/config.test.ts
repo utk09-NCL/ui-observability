@@ -24,7 +24,7 @@ describe("routing", () => {
     );
   });
 
-  it("builds absolute endpoints on the origin of the page, so the library reports no relative URL", () => {
+  it("builds absolute endpoints on the page origin, so the library reports no relative URL", () => {
     expect(routing(DEFAULT_SETTINGS, "user")).toMatchObject({
       endpoint: `${location.origin}/telemetry/v1/logs`,
       metricsEndpoint: `${location.origin}/telemetry/v1/metrics`,
@@ -79,7 +79,7 @@ describe("replay config", () => {
     });
   });
 
-  it("gives the same loader and headers function each time, because configure() compares references", () => {
+  it("gives the same loader and headers function each time, so configure() sees no change", () => {
     const first = buildConfig(DEFAULT_SETTINGS, "anonymous").replay;
     const second = buildConfig(DEFAULT_SETTINGS, "user").replay;
 

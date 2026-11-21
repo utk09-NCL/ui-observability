@@ -47,7 +47,7 @@ describe("logoutOnExit", () => {
 });
 
 describe("listOrders", () => {
-  it("asks again for each call, so a slow answer of an earlier session can't fill a later one", async () => {
+  it("asks again for each call, so an old slow answer can't fill a later session", async () => {
     const answers = [
       Promise.resolve(new Response("[]", { status: 200 })),
       Promise.resolve(new Response("[]", { status: 200 })),

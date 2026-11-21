@@ -44,18 +44,20 @@ export const PANELS: readonly PanelInfo[] = [
   { id: "settings", title: "Observability settings", description: "Change the config" },
 ];
 
+export type PanelPosition =
+  | { referencePanel: string; direction: "right" | "below" | "within" }
+  | { direction: "right" | "below" };
+
 /**
  * Adds one panel, or shows it when it already exists. The id of the panel is its component name,
  * so the workspace has at most one panel of each kind.
  * @param api The dockview API.
  * @param id The panel to open.
- * @param position Where a new panel goes. Without it, the panel joins the active group.
+ * @param position Where a new panel goes. Without it, the panel joins the active group. A frame
+ * panel goes to the edge of the grid instead when the active group is a popout window, because a
+ * frame in a popout window leaves the bus. See frame-panels.ts.
  */
-export function openPanel(
-  api: DockviewApi,
-  id: PanelId,
-  position?: { referencePanel: string; direction: "right" | "below" | "within" },
-): void {
+export function openPanel(api: DockviewApi, id: PanelId, position?: PanelPosition): void {
   const existing = api.getPanel(id);
   if (existing) {
     existing.api.setActive();
@@ -63,6 +65,14 @@ export function openPanel(
     return;
   }
 
+  const isFrame = FRAME_PANELS.includes(id);
+  // A popout group is the active group while its window has focus. A floating group is a part of
+  // the same document, so it is fine for a frame.
+  const target =
+    position ??
+    (isFrame && api.activeGroup?.api.location.type === "popout"
+      ? ({ direction: "right" } as const)
+      : undefined);
   const info = PANELS.find((panel) => panel.id === id);
   api.addPanel({
     id,
@@ -73,8 +83,8 @@ export function openPanel(
     // change or a move inside the page does not reload the frame. A move into a popout window
     // does, in a new browsing context, so these panels stay out of popout windows. See
     // frame-panels.ts.
-    ...(FRAME_PANELS.includes(id) ? { renderer: "always" as const } : {}),
-    ...(position ? { position } : {}),
+    ...(isFrame ? { renderer: "always" as const } : {}),
+    ...(target ? { position: target } : {}),
   });
 }
 

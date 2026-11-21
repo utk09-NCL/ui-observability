@@ -230,7 +230,7 @@ test("shows a change of the lowest level in the Activity log at once", async ({ 
     .not.toBe(stopped);
 });
 
-test("keeps the layout after a reload, and opens the default layout when the saved one is damaged", async ({
+test("keeps the layout after a reload, and opens the default one for a damaged layout", async ({
   page,
 }) => {
   await logIn(page, "smoke-user");
@@ -408,7 +408,7 @@ test("uploads a replay after a refused order, and the Support panel plays it", a
   await expect(dialog.getByText("The replay records.")).toBeVisible();
   await dialog.getByRole("button", { name: "Close" }).click();
 
-  // The radio button is controlled. It turns on after the answer of the API, so check() is too fast.
+  // The radio button is controlled. It turns on after the API answers, so check() is too fast.
   await page.getByLabel("Reject, 422").click();
   await expect(page.getByLabel("Reject, 422")).toBeChecked();
   await page.getByRole("button", { name: "Place order" }).click();
@@ -445,7 +445,7 @@ test("uploads a replay after a refused order, and the Support panel plays it", a
   );
 });
 
-test("refreshes the token without a call to the library, and opens a panel in a window with the journey", async ({
+test("refreshes the token with no library call, and opens a panel window with the journey", async ({
   page,
 }) => {
   const tokens: string[] = [];
@@ -506,4 +506,50 @@ test("refreshes the token without a call to the library, and opens a panel in a 
     new Set([`${REACT_ORIGIN}/`, `${REACT_ORIGIN}/panel.html`]),
   );
   expect(froze.every((record) => record.attributes["journey.name"] === "panel-window")).toBe(true);
+});
+
+test("a panel window follows the withdrawal and the grant of consent in the workspace", async ({
+  page,
+}) => {
+  await logIn(page, "smoke-user");
+  const popup = page.waitForEvent("popup");
+  await page
+    .getByRole("region", { name: "Blotter" })
+    .first()
+    .getByRole("button", { name: "Open panel in new window" })
+    .click();
+  const child = await popup;
+  await expect(child.getByTestId("journey-id")).not.toHaveText("none", { timeout: 15_000 });
+
+  const windowFroze = async (): Promise<number> =>
+    (await receivedRecords()).filter(
+      (record) =>
+        record.body === "The page froze on purpose." &&
+        record.attributes["page.url"] === `${REACT_ORIGIN}/panel.html`,
+    ).length;
+  const setTelemetry = async (on: boolean): Promise<void> => {
+    await page.getByRole("button", { name: /^smoke-user, / }).click();
+    await page.getByRole("menuitem", { name: "Privacy choices" }).click();
+    const dialog = page.getByRole("dialog", { name: "Privacy choices" });
+    await dialog.getByLabel("Send telemetry about this session").setChecked(on);
+    await dialog.getByRole("button", { name: "Close" }).click();
+  };
+
+  await child.getByRole("button", { name: "Freeze 300 ms" }).click();
+  await expect.poll(windowFroze, { timeout: 15_000 }).toBe(1);
+
+  // The window never reads the consent again by itself. The storage event of the workspace's
+  // choice is the only way that it learns of the withdrawal.
+  await setTelemetry(false);
+  await expect
+    .poll(() => child.evaluate(() => localStorage.getItem("react-workspace.consent")))
+    .toContain('"telemetry":false');
+  await child.getByRole("button", { name: "Freeze 300 ms" }).click();
+  // A batch leaves within seconds. A wait that is long enough shows that none leaves.
+  await child.waitForTimeout(6000);
+  expect(await windowFroze()).toBe(1);
+
+  await setTelemetry(true);
+  await child.getByRole("button", { name: "Freeze 300 ms" }).click();
+  await expect.poll(windowFroze, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
 });

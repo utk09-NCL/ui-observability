@@ -38,7 +38,7 @@ Each example that sends records sends them to `tools/mock-ingest-server.mjs` on 
 pnpm run dev:ingest
 ```
 
-The server accepts requests only from the origins of the examples and of the browser tests. `ALLOWED_ORIGINS` in `tools/mock-ingest-server.mjs` lists them. A request from another origin fails the CORS preflight. The server listens on `127.0.0.1`. It answers a request only when the `Host` header is `localhost`, `127.0.0.1` or `[::1]`. Another name gets `403`. This stops a web page that points its own name to this machine, which is called DNS rebinding.
+The server accepts requests only from the origins of the examples and of the browser tests. `ALLOWED_ORIGINS` in `tools/mock-ingest-server.mjs` lists them. A request from another origin fails the CORS preflight. The server listens on `127.0.0.1` only. It answers a request only when the `Host` header names `localhost` or `127.0.0.1`. Another name gets `403`. This stops a web page that points its own name to this machine, which is called DNS rebinding.
 
 Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a different port. It does not change the port of the examples. Set it only for a client that posts to that port.
 
@@ -48,7 +48,7 @@ Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a differe
 | `/v1/metrics` | Metric points in the OTLP metrics format. The React and react-custom-backend examples set `metricsEndpoint`. |
 | `/v1/traces` | Spans in the OTLP traces format. The vanilla playground, react and react-custom-backend set `tracesEndpoint`. |
 | `/uilogs` | The example custom backend of react-custom-backend. It takes the JSON of the custom serializer and answers `400` for a record over its limits. |
-| `/v1/replay` | Session replay segments. The vanilla playground and the react example set `replay.endpoint`. The server keeps the segments in a bounded memory store. A segment that would take one recording past 64 MB gets `400` and a reason. |
+| `/v1/replay` | Session replay segments. The vanilla playground and the react example set `replay.endpoint`. The server keeps the segments in a bounded memory store. A segment that would take one recording past 64 MiB gets `400` and a reason. |
 | `GET /v1/replay/recordings` | The stored replay recordings, newest first, without events. The replay player of the react example reads it. |
 | `GET /v1/replay/recordings/<id>` | One recording with its segments in order. The id has 8 to 64 letters, digits and hyphens. |
 | `/__control` | Sets the status that the server returns for each batch. The vanilla playground has a button for it. |
@@ -62,7 +62,7 @@ Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a differe
 
 The react and react-custom-backend examples get their business data from `tools/mock-app-api.mjs` on port 8790. `pnpm run example:react` and `pnpm run example:react-custom-backend` start it. To start it alone, run `pnpm run dev:app-api`.
 
-The server keeps its state in memory. The Vite dev server of the example proxies `/api` to it. `UIOBS_APP_API_PORT` moves the server to a different port. The server listens on `127.0.0.1`. It answers a request only when the `Host` header is `localhost`, `127.0.0.1` or `[::1]`. It prints a line for each login and logout.
+The server keeps its state in memory. The Vite dev server of the example proxies `/api` to it. `UIOBS_APP_API_PORT` moves the server to a different port. The server listens on `127.0.0.1` only. It answers a request only when the `Host` header names `localhost` or `127.0.0.1`. It prints a line for each login and logout.
 
 | Request | Use |
 | --- | --- |

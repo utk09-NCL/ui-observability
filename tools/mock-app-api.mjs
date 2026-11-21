@@ -94,7 +94,8 @@ function hasLoopbackHost(req) {
 }
 
 const HOST_REFUSED =
-  "The Host header is not a loopback name. This mock server answers localhost, 127.0.0.1 and [::1].\n";
+  "The Host header is not a loopback name. " +
+  "This mock server answers localhost and 127.0.0.1.\n";
 
 function sendJson(res, status, value) {
   res.setHeader("Content-Type", "application/json");
@@ -545,9 +546,9 @@ streams.on("connection", (socket) => {
 server.on("upgrade", (req, socket, head) => {
   if (!hasLoopbackHost(req)) {
     // The socket has no ServerResponse yet, so the refusal is written by hand.
-    socket.end(
-      `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${HOST_REFUSED}`,
-    );
+    const refusal =
+      "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
+    socket.end(refusal + HOST_REFUSED);
     return;
   }
 

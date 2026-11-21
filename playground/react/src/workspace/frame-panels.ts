@@ -4,7 +4,14 @@
 // moves the DOM of a group into the popout window, and the browser then loads the iframe again in
 // a new browsing context. The frame there has a parent that has no runtime, so its records can't
 // reach the bus of the workspace. The workspace therefore does not offer "Pop out" for a group
-// with a frame panel, and it blocks the drop of a frame panel into a popout window.
+// with a frame panel, and it blocks the drop of a frame panel into a popout window. Add panel and
+// a saved layout keep the frame panels out of popout windows too, see default-layout.ts and
+// layout-store.ts.
+
+import type { DockviewWillDropEvent } from "dockview-react";
+import { getLogger } from "@utk09/ui-observability";
+
+const log = getLogger("workspace.layout");
 
 /** The panels that hold an iframe. Their renderer is "always", see default-layout.ts. */
 export const FRAME_PANELS: readonly string[] = ["research", "partner", "untrusted"];
@@ -46,4 +53,27 @@ export function movesFrameIntoPopout(facts: DropFacts): boolean {
   const intoPopout = facts.targetGroup?.api.location.type === "popout" || facts.overPopoutDocument;
 
   return intoPopout && holdsFramePanel(facts.dragged);
+}
+
+/**
+ * Blocks the drop of a frame panel into a popout window. dockview lets a user drag a tab from the
+ * page into an open popout window, and the drop moves the panel there. The browser then loads
+ * the iframe again, and its runtime finds no owner.
+ * @param event The drop event of dockview, before it moves anything.
+ */
+export function blockFrameDrop(event: DockviewWillDropEvent): void {
+  const data = event.getData();
+  const dragged = data?.panelId
+    ? [event.api.getPanel(data.panelId)]
+    : (event.api.getGroup(data?.groupId ?? "")?.panels ?? []);
+  const target = event.nativeEvent.target;
+  const blocked = movesFrameIntoPopout({
+    targetGroup: event.group,
+    overPopoutDocument: target instanceof Node && target.ownerDocument !== document,
+    dragged: dragged.filter((panel) => panel !== undefined),
+  });
+  if (blocked) {
+    event.preventDefault();
+    log.warn("A panel with a frame can't move into a popout window.");
+  }
 }

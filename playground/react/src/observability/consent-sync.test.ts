@@ -3,6 +3,7 @@ import * as library from "@utk09/ui-observability";
 import type * as LibraryTypes from "@utk09/ui-observability";
 import { DEFAULT_SETTINGS } from "../observability-settings/settings";
 import { CONSENT_STORAGE_KEY, loadConsent, saveConsent, type Consent } from "./consent";
+import { memory } from "../../test/observability";
 import { applyConsentChange, consentFromStorageEvent, watchConsent } from "./consent-sync";
 
 // The replay needs a real recorder, and the specs only ask who calls startReplay() and
@@ -42,15 +43,19 @@ describe("consentFromStorageEvent", () => {
     expect(consentFromStorageEvent({ key: "other", newValue: "{}" })).toBeNull();
   });
 
-  it.each([[null], ["{not json"], ["7"]])(
+  it.each([["{not json"], ["7"]])(
     "gives the defaults for the value %j of the consent key, as loadConsent() does",
     (newValue) => {
       expect(consentFromStorageEvent({ key: CONSENT_STORAGE_KEY, newValue })).toEqual(ON);
     },
   );
 
-  it("gives the defaults when the whole storage was cleared, which sends the key null", () => {
-    expect(consentFromStorageEvent({ key: null, newValue: null })).toEqual(ON);
+  it("ignores a removed consent key, which a shared-device logout makes and is no grant", () => {
+    expect(consentFromStorageEvent({ key: CONSENT_STORAGE_KEY, newValue: null })).toBeNull();
+  });
+
+  it("ignores a cleared storage, which sends the key null", () => {
+    expect(consentFromStorageEvent({ key: null, newValue: null })).toBeNull();
   });
 });
 
@@ -77,6 +82,22 @@ describe("applyConsentChange", () => {
     expect(library.stopReplay).toHaveBeenCalledTimes(1);
   });
 
+  it("writes nothing to storage, because the window that made the change stored it", async () => {
+    // A task can run long after its event, and a newer choice may be stored by then. A write
+    // here would put the older choice over the newer one.
+    saveConsent({ telemetry: true, replay: false });
+    const stored = localStorage.getItem(CONSENT_STORAGE_KEY);
+
+    await applyConsentChange(ON, { telemetry: false, replay: false }, DEFAULT_SETTINGS);
+    await applyConsentChange(
+      { telemetry: false, replay: false },
+      { telemetry: false, replay: true },
+      DEFAULT_SETTINGS,
+    );
+
+    expect(localStorage.getItem(CONSENT_STORAGE_KEY)).toBe(stored);
+  });
+
   it("does nothing for a change that touches neither choice", async () => {
     await applyConsentChange(ON, ON, DEFAULT_SETTINGS);
 
@@ -99,20 +120,34 @@ describe("applyConsentChange", () => {
 });
 
 describe("watchConsent", () => {
+  /** Stores the value, as the other window did, and then sends the event that the browser sends. */
   function storageEvent(newValue: string | null, key: string | null = CONSENT_STORAGE_KEY): void {
+    if (newValue !== null && key === CONSENT_STORAGE_KEY) {
+      localStorage.setItem(key, newValue);
+    }
     dispatchEvent(new StorageEvent("storage", { key, newValue }));
   }
 
-  it("applies a change that another window stored, in the queue", async () => {
+  /** A queue that collects the tasks, so a spec decides when each one runs. */
+  function collector(): {
+    queued: (() => Promise<void>)[];
+    run: (task: () => Promise<void>) => Promise<void>;
+  } {
     const queued: (() => Promise<void>)[] = [];
-    const stop = watchConsent({
-      settings: () => DEFAULT_SETTINGS,
+
+    return {
+      queued,
       run: (task) => {
         queued.push(task);
 
         return Promise.resolve();
       },
-    });
+    };
+  }
+
+  it("applies a change that another window stored, in the queue", async () => {
+    const { queued, run } = collector();
+    const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 
     storageEvent(JSON.stringify({ telemetry: false, replay: false }));
     expect(queued).toHaveLength(1);
@@ -122,16 +157,26 @@ describe("watchConsent", () => {
     stop();
   });
 
-  it("compares a change with the last one that it applied, so each change runs once", async () => {
-    const queued: (() => Promise<void>)[] = [];
-    const stop = watchConsent({
-      settings: () => DEFAULT_SETTINGS,
-      run: (task) => {
-        queued.push(task);
+  it("compares a change with the last one that ran, so each change runs once", async () => {
+    const { queued, run } = collector();
+    const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 
-        return Promise.resolve();
-      },
-    });
+    storageEvent(JSON.stringify({ telemetry: true, replay: true }));
+    await queued[0]();
+    storageEvent(JSON.stringify({ telemetry: true, replay: true }));
+    await queued[1]();
+    storageEvent(JSON.stringify({ telemetry: true, replay: false }));
+    await queued[2]();
+
+    expect(library.startReplay).toHaveBeenCalledTimes(1);
+    expect(library.stopReplay).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("starts no replay for a grant that a later withdrawal replaced in storage", async () => {
+    // The task of the grant runs late. It reads the stored choice, which is the withdrawal.
+    const { queued, run } = collector();
+    const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 
     storageEvent(JSON.stringify({ telemetry: true, replay: true }));
     storageEvent(JSON.stringify({ telemetry: true, replay: false }));
@@ -139,31 +184,93 @@ describe("watchConsent", () => {
       await task();
     }
 
-    expect(library.startReplay).toHaveBeenCalledTimes(1);
-    expect(library.stopReplay).toHaveBeenCalledTimes(1);
+    expect(library.startReplay).not.toHaveBeenCalled();
     stop();
   });
 
-  it("starts from the consent in storage, so an event with the same value runs nothing", () => {
+  it("applies a choice that comes back before the first change ran", async () => {
+    // Two events in a row, withdraw and grant, while the queue is busy. The first task runs
+    // later. A comparison at event time would see "no change" for the second event.
+    const { queued, run } = collector();
+    const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
+
+    storageEvent(JSON.stringify({ telemetry: false, replay: false }));
+    storageEvent(JSON.stringify({ telemetry: true, replay: false }));
+    for (const task of queued) {
+      await task();
+    }
+
+    expect((await library.getHealth()).status).not.toBe("disabled");
+    stop();
+  });
+
+  it("starts from the stored consent, so an event with the same value runs nothing", async () => {
     saveConsent({ telemetry: true, replay: true });
-    const run = vi.fn(() => Promise.resolve());
+    const { queued, run } = collector();
     const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 
     storageEvent(JSON.stringify({ telemetry: true, replay: true }));
+    for (const task of queued) {
+      await task();
+    }
 
-    expect(run).not.toHaveBeenCalled();
+    expect(library.startReplay).not.toHaveBeenCalled();
     expect(loadConsent()).toEqual({ telemetry: true, replay: true });
     stop();
   });
 
-  it("ignores the other keys, and listens no more after stop", () => {
-    const run = vi.fn(() => Promise.resolve());
+  it("starts with the defaults when the browser blocks the storage", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+    });
+
+    expect(() => {
+      watchConsent({ settings: () => DEFAULT_SETTINGS, run: () => Promise.resolve() })();
+    }).not.toThrow();
+  });
+
+  it("reports a task that fails, and tries the same choice again at the next event", async () => {
+    let fail = true;
+    const stop = watchConsent({
+      settings: () => {
+        if (fail) {
+          throw new Error("rotation failed");
+        }
+
+        return DEFAULT_SETTINGS;
+      },
+      run: (task) => task(),
+    });
+
+    storageEvent(JSON.stringify({ telemetry: false, replay: false }));
+    await vi.waitFor(async () => {
+      await library.flush();
+      expect(
+        memory
+          .records()
+          .some((record) => record.body.includes("could not apply the privacy choice")),
+      ).toBe(true);
+    });
+
+    fail = false;
+    storageEvent(JSON.stringify({ telemetry: false, replay: false }));
+    await vi.waitFor(async () => {
+      expect((await library.getHealth()).status).toBe("disabled");
+    });
+    stop();
+  });
+
+  it("ignores a removed key and the other keys, and listens no more after stop", () => {
+    const { queued, run } = collector();
     const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 
+    storageEvent(null);
     storageEvent("{}", "react-workspace.theme");
     stop();
     storageEvent(JSON.stringify({ telemetry: false, replay: false }));
 
-    expect(run).not.toHaveBeenCalled();
+    expect(queued).toHaveLength(0);
   });
 });

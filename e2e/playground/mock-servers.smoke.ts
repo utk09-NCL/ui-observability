@@ -91,7 +91,7 @@ for (const [name, port, path] of [
   });
 }
 
-test("the mock app API refuses a WebSocket upgrade with a Host that is not a loopback name", async () => {
+test("the mock app API refuses a WebSocket upgrade for a Host that is not loopback", async () => {
   const answer = await send(
     APP_API_PORT,
     `rebind.attacker.example:${String(APP_API_PORT)}`,
@@ -147,7 +147,7 @@ test.describe("replay store of the mock ingest server", () => {
   });
 
   test("counts bytes and not characters", async () => {
-    // By characters the five segments are 37.5 million, under the limit. By bytes they are over it.
+    // The segment has 7.5 million characters and 15 MB. A count of characters gives half the bytes.
     const first = await post(segment("limit-recording-2", 0));
     expect(first.status).toBe(204);
 

@@ -7,8 +7,8 @@ This folder holds the library hookup of the app. Copy it into your app and repla
 | `config.ts` | `buildConfig()` builds the whole config. `routing()` builds the routing settings for the anonymous context or the user context. The config has the replay settings, `replay.requireConsent` and the `onDrop` hook. | `SERVICE_NAME`, `LOGS_PATH`, `METRICS_PATH`, `REPLAY_PATH`, `loadRecorder` and `redact()`. |
 | `auth-headers.ts` | The `headers` function. It reads the token on each request. | The import of `getToken`. |
 | `consent.ts` | The privacy choices, telemetry and replay, in `localStorage`. | The storage key. |
-| `user-context.ts` | `beginUserContext()`, `switchTenantContext()`, `endUserContext()`, `stopForSharedDevice()`, `startAnonymous()`, `restartObservability()`, `setTelemetryConsent()`, `setReplayConsent()` and `resumeReplay()`. | Nothing. |
-| `consent-sync.ts` | `watchConsent()` listens for the `storage` event of the consent key. It applies a change of the telemetry and the replay choices in a window that did not make the change. | The storage key. |
+| `user-context.ts` | `beginUserContext()`, `switchTenantContext()`, `endUserContext()`, `stopForSharedDevice()`, `startAnonymous()`, `restartObservability()`, `setTelemetryConsent()`, `setReplayConsent()`, `applyTelemetryConsent()`, `applyReplayConsent()` and `resumeReplay()`. The `set` functions store the choice and apply it. The `apply` functions only apply it. | Nothing. |
+| `consent-sync.ts` | `watchConsent()` listens for the `storage` event of the consent key. It applies a change of the telemetry and the replay choices in a window that did not make the change. It stores nothing. | The storage key. |
 | `runtime-generation.ts` | A number that rises when a new runtime starts, and `useRuntimeGeneration()`. An effect that registers a frame or a worker lists it, so it registers again after a restart. | Nothing. |
 | `react.tsx` | `LoggerProvider`, `useLogger()`, `useJourney()` and `ObservabilityErrorBoundary`. | Nothing. |
 
@@ -23,7 +23,7 @@ Each import that leaves the folder is in this table. If you copy only this folde
 | `config.ts` | `../observability-settings/settings` | The `Settings` type. |
 | `config.ts` | `../observability-settings/tap` | `tapProcessor`, `tapDiagnostic` and `tapDrop`, for the settings section and the Support panel. |
 | `user-context.ts` | `../observability-settings/settings` | The `Settings` type. |
-| `consent-sync.ts` | `./user-context` | `setTelemetryConsent()` and `setReplayConsent()`. |
+| `consent-sync.ts` | `./user-context` | `applyTelemetryConsent()` and `applyReplayConsent()`. |
 | `auth-headers.ts` | `../session/token` | `getToken()`. Replace it with your token source. |
 
 The caller runs each function of `user-context.ts` through `runExclusive()` of `../observability-settings/operation-queue`. In this app, `../session/session.ts`, `applyStaged()` and the privacy dialog do it.

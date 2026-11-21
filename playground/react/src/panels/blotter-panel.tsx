@@ -17,6 +17,8 @@ type PairFilter = (typeof PAIRS)[number] | "all";
 
 const STATUS_FILTERS: StatusFilter[] = ["all", "working", "filled", "cancelled"];
 const FREEZE_MS = 300;
+const EXPORT_HINT =
+  "Does nothing on purpose. One click is a dead click. Three quick clicks are a rage click.";
 
 const log = getLogger("orders.blotter");
 
@@ -148,7 +150,7 @@ export function BlotterPanel(): ReactElement {
         <button
           type="button"
           data-observability-action="export-orders"
-          title="Does nothing on purpose. One click is a dead click. Three quick clicks are a rage click."
+          title={EXPORT_HINT}
           onClick={() => {
             // No state change and no request, so the page shows no response.
           }}

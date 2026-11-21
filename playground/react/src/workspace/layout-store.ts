@@ -5,6 +5,7 @@
 // restore has a fallback. The page must open with the default layout and never crash.
 
 import type { SerializedDockview } from "dockview-react";
+import { isFramePanel } from "./frame-panels";
 
 const KEY_PREFIX = "react-workspace.layout";
 // A new number makes every older saved layout read as "corrupt", so the default layout opens.
@@ -136,6 +137,89 @@ export function removeUserLayouts(user: string): void {
   }
 }
 
+/** Collects the panel ids of each group in a node of the grid of a popout window. */
+function gridViews(node: unknown): string[] {
+  if (!isRecord(node)) {
+    return [];
+  }
+  if (Array.isArray(node.data)) {
+    return node.data.flatMap(gridViews);
+  }
+
+  return isRecord(node.data) && Array.isArray(node.data.views)
+    ? node.data.views.filter((view): view is string => typeof view === "string")
+    : [];
+}
+
+/**
+ * Removes the frame panels from the saved popout groups. dockview opens each saved popout window
+ * again, and a frame panel there loads in a new browsing context, where its runtime finds no
+ * owner. A group that holds only frame panels goes away. A popout window with a nested grid and a
+ * frame panel goes away as a whole, because pruning the grid would need new sizes. The input is
+ * not changed. A layout without such a group comes back as it is.
+ * @param layout The saved layout.
+ * @returns A layout that opens no frame panel in a popout window.
+ */
+export function withoutFramePopouts(layout: SerializedDockview): SerializedDockview {
+  if (!layout.popoutGroups?.length) {
+    return layout;
+  }
+
+  // A view can name a panel that the map lacks, because the saved text may be old or edited.
+  const states: Partial<Record<string, { contentComponent?: string }>> = layout.panels;
+  const isFrame = (id: string): boolean =>
+    isFramePanel(id) || isFramePanel(states[id]?.contentComponent);
+  const removed = new Set<string>();
+  const kept: NonNullable<SerializedDockview["popoutGroups"]> = [];
+
+  for (const popout of layout.popoutGroups) {
+    const ids = popout.data ? popout.data.views : gridViews(popout.grid?.root);
+    if (!ids.some(isFrame)) {
+      kept.push(popout);
+
+      continue;
+    }
+
+    for (const id of ids.filter(isFrame)) {
+      removed.add(id);
+    }
+    if (popout.data) {
+      const views = popout.data.views.filter((id) => !isFrame(id));
+      if (views.length > 0) {
+        const active = popout.data.activeView;
+        kept.push({
+          ...popout,
+          data: {
+            ...popout.data,
+            views,
+            activeView: active !== undefined && views.includes(active) ? active : views[0],
+          },
+        });
+      }
+    } else {
+      // The other panels of a nested popout window go too, so the panels map keeps no orphan.
+      for (const id of ids) {
+        removed.add(id);
+      }
+    }
+  }
+
+  if (removed.size === 0) {
+    return layout;
+  }
+
+  const result: SerializedDockview = {
+    ...layout,
+    panels: Object.fromEntries(Object.entries(layout.panels).filter(([id]) => !removed.has(id))),
+    popoutGroups: kept,
+  };
+  if (kept.length === 0) {
+    delete result.popoutGroups;
+  }
+
+  return result;
+}
+
 export type RestoreOutcome = "restored" | "default" | "fallback";
 
 /**
@@ -155,7 +239,7 @@ export function restoreLayout(
 ): RestoreOutcome {
   if (saved.status === "ok") {
     try {
-      api.fromJSON(saved.layout);
+      api.fromJSON(withoutFramePopouts(saved.layout));
 
       return "restored";
     } catch (error) {

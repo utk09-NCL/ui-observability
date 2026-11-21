@@ -80,7 +80,7 @@ describe("login", () => {
     it("revokes the session, clears the token and restarts the library", async () => {
       const logoutCall = vi.fn(() => Promise.resolve());
 
-      // A restart through the queue would wait for the login that holds it, and the spec would hang.
+      // A restart through the queue would wait for the login that holds it, so the spec hangs.
       await expect(login(makeApi({ logout: logoutCall }), "trader1", "tenant-a")).rejects.toThrow(
         "rotation failed",
       );
@@ -141,7 +141,7 @@ describe("logout", () => {
 describe("switchTenant", () => {
   const SECOND = { token: "token-2", user: "trader1", tenant: "tenant-b", expiresInMs: 1000 };
 
-  it("returns the session of the new tenant, and the library rotates after the new token is in place", async () => {
+  it("returns the new tenant's session, and rotates the library after the new token", async () => {
     setToken("token-1");
     let tokenAtRotation: string | undefined;
     switchContext.mockImplementation(() => {
@@ -199,7 +199,7 @@ describe("switchTenant", () => {
     ).toBe(true);
   });
 
-  it("revokes both sessions, clears the token and restarts the library when the rotation fails", async () => {
+  it("revokes both sessions, clears the token and restarts when the rotation fails", async () => {
     setToken("token-1");
     switchContext.mockRejectedValue(new Error("rotation failed"));
     const revoked = vi.fn(() => Promise.resolve());
@@ -290,7 +290,7 @@ describe("refreshSession", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("waits for a login in the queue, and then refreshes with the token of that login", async () => {
+  it("waits for a login in the queue, and then refreshes with that login's token", async () => {
     const refresh = vi.fn(() =>
       Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 }),
     );
@@ -364,7 +364,7 @@ describe("switchTenantOrLeave", () => {
     expect(getToken()).toBeUndefined();
   });
 
-  it("does not log out a second time when the rotation failed, because the cleanup did it", async () => {
+  it("does not log out twice after a failed rotation, because the cleanup did it", async () => {
     setToken("token-1");
     switchContext.mockRejectedValue(new Error("rotation failed"));
     const logoutCall = vi.fn(() => Promise.resolve());
@@ -382,7 +382,7 @@ describe("switchTenantOrLeave", () => {
     expect(getToken()).toBeUndefined();
   });
 
-  it("returns the session of the new tenant, and leaves the old session alone, when it works", async () => {
+  it("returns the new tenant's session, and leaves the old session alone on success", async () => {
     setToken("token-1");
     const api = makeApi({
       login: () => Promise.resolve({ ...LOGIN_RESULT, token: "token-2", tenant: "tenant-b" }),
