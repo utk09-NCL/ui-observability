@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { Bus, type HandshakeOptions } from "../src/bus/bus";
 import {
   createBroadcastLink,
@@ -21,6 +21,7 @@ import {
   unwrap,
   type BusEnvelope,
   type BusMessage,
+  type BusPermission,
   type LinkKind,
   type MessageSource,
 } from "../src/models/bus";
@@ -3864,5 +3865,199 @@ describe("Bus flush requests and answers", () => {
 
     expect(bus.sendRecords([...oneRecord(), big, ...oneRecord()])).toBe(2);
     expect(make().bus.sendRecords(oneRecord())).toBe(0);
+  });
+});
+
+describe("Bus refusals under the registered policy", () => {
+  const buses: Bus[] = [];
+
+  afterEach(() => {
+    for (const bus of buses.splice(0)) {
+      bus.destroy();
+    }
+    vi.useRealTimers();
+  });
+
+  /** Reads the two counters that a refusal can move. A counter that never moved reads 0. */
+  const refusals = (diagnostics: Diagnostics) => {
+    const counts: Partial<Record<string, number>> = diagnostics.snapshot();
+    return {
+      rejected: counts["bus.rejected_message"] ?? 0,
+      denied: counts["bus.journey_denied"] ?? 0,
+    };
+  };
+
+  /**
+   * Builds a bus with one registered source. A journey is always active, so a missing answer
+   * can only come from a refusal.
+   * @param kind A frame that talks over the children link, a same-origin frame that talks over
+   * the direct link, or a worker.
+   * @param permissions What the registration grants.
+   * @param over Bus options for the test.
+   * @returns The bus parts, the active journey, a send function that delivers a message as the
+   * source, and a function that returns each message the source got back.
+   */
+  function registeredSource(
+    kind: "frame" | "direct frame" | "worker",
+    permissions: BusPermission[],
+    over: Partial<BusOptions> = {},
+  ) {
+    const made = make({ sourcePolicy: "registered", ...over });
+    buses.push(made.bus);
+    const journey = fakeJourney();
+    made.handlers.onJourneyRequest.mockReturnValue(journey);
+
+    if (kind === "direct frame") {
+      const peer = {} as Window;
+      const reply = vi.fn<Receive>();
+      made.bus.registerFrame(peer, { origin: location.origin, permissions });
+      return {
+        ...made,
+        journey,
+        send: (message: BusMessage): void => {
+          made.bus.acceptDirect(message, reply, peer);
+        },
+        answers: (): BusMessage[] => reply.mock.calls.map(([message]) => message),
+      };
+    }
+
+    if (kind === "frame") {
+      const peer = { closed: false, postMessage: vi.fn() } as unknown as Window;
+      const reply = vi.fn<(message: BusMessage) => void>();
+      made.bus.registerFrame(peer, { origin: location.origin, permissions });
+      return {
+        ...made,
+        journey,
+        send: (message: BusMessage): void => {
+          deliver(made.bus, message, { link: "children", origin: location.origin, peer, reply });
+        },
+        answers: (): BusMessage[] => reply.mock.calls.map(([message]) => message),
+      };
+    }
+
+    // A worker's message goes through its link listener, the way a real worker start does.
+    const addEventListener = vi.fn();
+    const worker = { postMessage: vi.fn(), addEventListener, removeEventListener: vi.fn() };
+    made.bus.attachWorker(worker, { permissions });
+    const listener = addEventListener.mock.calls[0][1] as (event: MessageEvent) => void;
+    return {
+      ...made,
+      journey,
+      send: (message: BusMessage): void => {
+        listener(new MessageEvent("message", { data: envelope(message) }));
+      },
+      answers: (): BusMessage[] =>
+        worker.postMessage.mock.calls.flatMap(([data]) => unwrap(data) ?? []),
+    };
+  }
+
+  const JOURNEY_REQUEST = { t: "ui-observability.message.journey-request", from: "child" } as const;
+
+  describe.each(["frame", "direct frame", "worker"] as const)("a registered %s", (kind) => {
+    it("counts bus.journey_denied, not a rejection, for a request without journey:read", () => {
+      // The default permissions are ["records"], so every worker start asks without the right.
+      const { send, answers, diagnostics } = registeredSource(kind, ["records"]);
+
+      send(JOURNEY_REQUEST);
+
+      expect(refusals(diagnostics)).toEqual({ rejected: 0, denied: 1 });
+      expect(answers()).toEqual([]);
+    });
+
+    it("answers a journey request with journey:read, and counts no refusal", () => {
+      const { send, answers, diagnostics, journey } = registeredSource(kind, [
+        "records",
+        "journey:read",
+      ]);
+
+      send(JOURNEY_REQUEST);
+
+      expect(answers()).toEqual([
+        { t: "ui-observability.message.journey", from: "ctx-1", to: "child", journey },
+      ]);
+      expect(refusals(diagnostics)).toEqual({ rejected: 0, denied: 0 });
+    });
+
+    it.each([
+      [
+        "a journey message without journey:write",
+        ["records", "journey:read"],
+        { t: "ui-observability.message.journey", from: "child", journey: null },
+      ],
+      [
+        "a records message without records",
+        ["journey:read"],
+        { t: "ui-observability.message.records", from: "child", records: oneRecord() },
+      ],
+      [
+        "a sampling question without sampling:read",
+        ["records"],
+        { t: "ui-observability.message.sampling-request", from: "child" },
+      ],
+    ] as const)("keeps counting bus.rejected_message for %s", (_name, permissions, message) => {
+      const { send, answers, diagnostics, handlers: h } = registeredSource(kind, [...permissions]);
+
+      send(message);
+
+      expect(refusals(diagnostics)).toEqual({ rejected: 1, denied: 0 });
+      expect(answers()).toEqual([]);
+      expect(h.onRecords).not.toHaveBeenCalled();
+      expect(h.onJourney).not.toHaveBeenCalled();
+    });
+
+    // With journey:read the refusal can only come from the check under test. Without it, the
+    // permission check would refuse too, so the spec pins which check runs first.
+    it.each([
+      ["with", ["records", "journey:read"]],
+      ["without", ["records"]],
+    ] as const)(
+      "keeps counting a journey request over the rate budget as a rejection, %s journey:read",
+      (_name, permissions) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const { send, answers, diagnostics } = registeredSource(kind, [...permissions], {
+          maxMessagesPerSecond: 1,
+        });
+
+        // The hello spends the whole budget of the second.
+        send({ t: "ui-observability.message.hello", from: "child", tabId: "tab-2" });
+        send(JOURNEY_REQUEST);
+
+        expect(refusals(diagnostics)).toEqual({ rejected: 1, denied: 0 });
+        expect(answers().filter((message) => message.t === JOURNEY_REQUEST.t)).toEqual([]);
+      },
+    );
+
+    it.each([
+      ["with", ["records", "journey:read"]],
+      ["without", ["records"]],
+    ] as const)(
+      "keeps counting a malformed journey request as a rejection, %s journey:read",
+      (_name, permissions) => {
+        const { send, answers, diagnostics } = registeredSource(kind, [...permissions]);
+
+        // A request with no sender id fails the shape check, which runs before the permissions.
+        send({ t: JOURNEY_REQUEST.t } as never);
+
+        expect(refusals(diagnostics)).toEqual({ rejected: 1, denied: 0 });
+        expect(answers()).toEqual([]);
+      },
+    );
+  });
+
+  it("keeps counting a journey request from a frame that isn't registered as a rejection", () => {
+    const { bus, diagnostics } = make({ sourcePolicy: "registered" });
+    buses.push(bus);
+    const reply = vi.fn<(message: BusMessage) => void>();
+    const stranger = { closed: false, postMessage: vi.fn() } as unknown as Window;
+
+    deliver(bus, JOURNEY_REQUEST, {
+      link: "children",
+      origin: location.origin,
+      peer: stranger,
+      reply,
+    });
+
+    expect(refusals(diagnostics)).toEqual({ rejected: 1, denied: 0 });
+    expect(reply).not.toHaveBeenCalled();
   });
 });

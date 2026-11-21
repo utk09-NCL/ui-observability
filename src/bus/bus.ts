@@ -641,19 +641,23 @@ export class Bus {
       return false;
     }
 
-    let accepted: boolean;
+    let verdict: boolean | "journey_denied";
     try {
-      accepted = this.passesChecks(message, source, child);
+      verdict = this.passesChecks(message, source, child);
     } catch {
       // Either a value JSON can't encode or a non-finite number fails the checks.
       // The count below reports the rejection.
-      accepted = false;
+      verdict = false;
     }
 
-    if (!accepted) {
+    if (verdict === "journey_denied") {
+      this.diagnostics.count("bus.journey_denied");
+      return false;
+    }
+    if (!verdict) {
       this.diagnostics.count("bus.rejected_message");
     }
-    return accepted;
+    return verdict;
   }
 
   /**
@@ -663,9 +667,14 @@ export class Bus {
    * @param message Message from the source.
    * @param source Link and identity of the source.
    * @param child True if the source is a child of this context.
-   * @returns True if the message passes every check.
+   * @returns True if the message passes every check, or "journey_denied" for a journey request
+   * from a registered source without journey:read.
    */
-  private passesChecks(message: BusMessage, source: MessageSource, child: boolean): boolean {
+  private passesChecks(
+    message: BusMessage,
+    source: MessageSource,
+    child: boolean,
+  ): boolean | "journey_denied" {
     const { bus } = this.config;
     const registration =
       typeof source.peer === "object" ? this.sources.get(source.peer) : undefined;
@@ -736,7 +745,9 @@ export class Bus {
                 ? "sampling:read"
                 : undefined;
       if (permission && !registration.permissions?.includes(permission)) {
-        return false;
+        // Each child asks for the journey when it starts, so this refusal is routine. Counting
+        // it as a rejection would make every worker start with default permissions look hostile.
+        return permission === "journey:read" ? "journey_denied" : false;
       }
     }
 
