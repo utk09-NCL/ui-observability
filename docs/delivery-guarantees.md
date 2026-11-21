@@ -28,7 +28,14 @@ The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uio
 
 A `413` answer makes the library split the batch. Each half gets a new batch ID. The server did not accept the first batch. No duplicate occurs.
 
-The request deadline also covers the read of a response body. A body that does not arrive in time, or that fails, does not change the result of the status code. After a `413`, the library then splits the batch with no size hint. After a `2xx`, it accepts the batch with no `partialSuccess`. It reports `transport.http_error`. A stop or a rotation during the read ends the send.
+- The library always splits the batch into two halves. It does not use a size limit from the `413` body.
+- The halves wait in storage until the retry drain sends them. After a failed live send, the next drain starts after `delivery.retryBaseDelayMs`, 2 seconds by default.
+- A half that gets a `413` again waits for the next drain. That drain starts about 30 seconds later. It can start later when another stored batch waits for a throttle or a backoff.
+- The exit flush does not read the answer to its own request. A `413` to that request does not split the batch. See [Page Exit](#page-exit).
+- With `storage.backend: "none"`, the library cannot keep the halves. It loses the batch, and `onDrop` reports `not_stored`.
+- A single record that gets a `413` cannot split. The library drops it, and `onDrop` reports `rejected`.
+
+The request deadline also covers the read of a response body. A body that does not arrive in time, or that fails, does not change the result of the status code. After a `413`, the library then splits the batch, and the `transport.batch_split` diagnostic has no server limit. After a `2xx`, it accepts the batch with no `partialSuccess`. It reports `transport.http_error`. A stop or a rotation during the read ends the send.
 
 An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The library then gives the rejected count to `onDrop` with the reason `partially_rejected`. The server gives only a count, so `journeyIds` and `actions` are empty. The library reports `transport.partial_success`. It does not send the batch again, because the server kept the other records. A `partialSuccess` with no rejected records and an `errorMessage` gives only the diagnostic.
 
@@ -87,7 +94,7 @@ Some records never reach delivery by design. `onDrop` does not report them. The 
 - A record that a processor or `redact` drops.
 - A log record above the error ceiling, `sampling.errorCeiling`. Metric points and spans do not count. `record.dropped_by_ceiling` counts the record.
 - A capture event above its rate limit.
-- A logger call during a rotation. The library does not build the record. A record that the library built during a rotation goes to `onDrop` with `security_context`.
+- A logger call during a rotation. The library does not build the record. A record that the library built during a rotation goes to `onDrop` with `security_context`. The exception is the diagnostic record of the rotation's check of the next settings. That record goes to the new identity (see [Operational budgets](runtime-policies.md#operational-budgets)).
 - A `startMeasure()` measure that ends after `shutdown()`. With isolation, also one that ends after a new delivery identity.
 - A bus message that a budget refuses, and the records of a forwarder that has no owner.
 - A record that a forwarder sends with another security context. The owner counts `security.context_mismatch`.
@@ -121,6 +128,8 @@ The exit flush is best effort.
 - With `headers`, it uses a keepalive fetch. Before the first call of a `headers` function, the exit flush has no header values. It then puts the batch in the emergency queue. It also uses a keepalive fetch for an endpoint on the origin of the page. That request has the content type of the serializer. For OTLP, that is `application/json`. The endpoint origin must be the same as `location.origin` and the `origin` global of the page. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame send the `text/plain` request.
 - A stock OpenTelemetry Collector on another origin refuses the `text/plain` batch with `415`. The exit flush does not read that answer. `onDrop` does not report that loss.
 - To prevent that loss, set `headers` or put a same-origin proxy in front of the collector.
+- At page exit, the library puts the queued batches, the batches in flight and the buffer of one stream into one batch. That batch can hold more than `batching.logBatchSize` records. A batch that a keepalive request already carries is not in it.
+- A server that answers `413` to an exit request loses that batch. The exit flush does not read the answer, so it does not split the batch. `onDrop` does not report that loss. Accept a body of 60,000 bytes or more at the ingest server.
 - With `headers`, the keepalive fetch to another origin needs a CORS preflight. It is possible that a browser cancels that request during page exit. No test in this repository checks this risk.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
@@ -200,7 +209,7 @@ In a forwarder, the call gives the forward buffer to the sender. Then it sends a
 - `retain` keeps them in storage under the old identity.
 - `carry` moves them to the new identity.
 
-During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. The library does not hold such a record for the next identity. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order. Each call waits for the earlier call.
+During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. The library does not hold such a record for the next identity. The one exception is the diagnostic record of the rotation's check of the next settings. The library writes that record after the rotation, to the new identity. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order. Each call waits for the earlier call.
 
 A rotation that rejects stops the delivery of the old identity. A rotation code chunk that does not load also rejects the rotation. The library keeps the unsent records of the old identity in storage under the old ID. `getHealth().delivery.stored` still counts them. It sends no record with the old endpoint or headers until a rotation succeeds. `onDrop` reports each dropped record with `security_context`. The next rotation that succeeds applies its `pending` rule to the stored records and the emergency queue of the old identity. With `flush`, it removes them as `discard` does, because a flush would use the old settings. See [runtime policies](runtime-policies.md) for each rule.
 

@@ -53,7 +53,7 @@ Each `configure()` call merges its keys into the current settings. These rules a
 | `journey.scope` | `"auto"` | Which contexts adopt a journey. `context`: each context keeps its own. `tab`: a frame or a worker adopts the journey of its owner. `origin`: each context of the origin, also in other tabs. `auto` is `origin` in OpenFin and `tab` in a browser. |
 | `journey.maxAgeMs` | `1800000` | Maximum open time of a journey, in milliseconds. Then the library ends it. The range is 60000 to 86400000. |
 | `batching.logFlushIntervalMs` | `2000` | Maximum wait of a partial log or span batch, in milliseconds. The range is 100 to 60000. |
-| `batching.logBatchSize` | `100` | Maximum records in one log or span batch. The range is 1 to 1000. |
+| `batching.logBatchSize` | `100` | Maximum records in one live log or span batch. The range is 1 to 1000. An exit batch can hold more records (see [Page Exit](delivery-guarantees.md#page-exit)). |
 | `batching.metricBatchSize` | `500` | Maximum records in one metric batch. The range is 1 to 1000. |
 | `retention.maxBatches` | `500` | Maximum stored batches. A new batch evicts the oldest batch without an action first. The range is 1 to 5000. |
 | `retention.maxAgeMs` | `86400000` | Maximum age of a stored batch, in milliseconds. The range is 60000 to 604800000. `null` sets no age limit. |

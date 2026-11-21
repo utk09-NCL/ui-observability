@@ -337,6 +337,10 @@ export class ObservabilityRuntime {
   private storagePersistence: StoragePersistence = "off";
   /** True while a diagnostic record goes out. Diagnostics raised meanwhile produce no record. */
   private recordingDiagnostic = false;
+  /** True while a rotation checks the next context's settings, so their records wait for it. */
+  private holdingRecords = false;
+  /** Diagnostics from that check. Their records go out when the new context opens. */
+  private heldDiagnostics: DiagnosticEvent[] = [];
   /** Logger for the records that diagnostics.records produces. */
   private readonly diagnosticLogger = new OneLogger(() => this, DIAGNOSTICS_NAMESPACE);
   /** Records that minLevel or sampling dropped. An error in this context sends them first. */
@@ -742,6 +746,13 @@ export class ObservabilityRuntime {
       return;
     }
 
+    // The logger would drop this record with the rotation's other calls, but it's about the
+    // next context, so endRotation() writes it there.
+    if (this.holdingRecords) {
+      this.heldDiagnostics.push(event);
+      return;
+    }
+
     this.recordingDiagnostic = true;
     try {
       const write = NOTICE_CODES.has(event.code)
@@ -754,6 +765,20 @@ export class ObservabilityRuntime {
       });
     } finally {
       this.recordingDiagnostic = false;
+    }
+  }
+
+  /**
+   * Drops the held diagnostic records of a rotation that didn't open its context, and counts
+   * each one as the logger counts a call during a rotation.
+   */
+  private dropHeldRecords(): void {
+    const dropped = this.heldDiagnostics.length;
+    this.heldDiagnostics = [];
+
+    // A count of 0 would still add the counter, so a clean rotation would show a drop.
+    if (dropped > 0) {
+      this.diagnostics.count("record.dropped_during_rotation", dropped);
     }
   }
 
@@ -2838,7 +2863,13 @@ export class ObservabilityRuntime {
       throw new Error("The runtime has stopped.");
     }
 
-    await rotate(this.rotationHost(), update, options, seq);
+    try {
+      await rotate(this.rotationHost(), update, options, seq);
+    } finally {
+      // endRotation() takes the held records once the new context opens, so only a failed
+      // rotation leaves any here. Dropping them keeps them out of a later rotation's context.
+      this.dropHeldRecords();
+    }
   }
 
   /**
@@ -2851,6 +2882,14 @@ export class ObservabilityRuntime {
       quiet: new Diagnostics(),
       senderLoaded: async () => {
         await this.senderLoad;
+      },
+      holdRecords: (plan) => {
+        this.holdingRecords = true;
+        try {
+          return plan();
+        } finally {
+          this.holdingRecords = false;
+        }
       },
       allowed: (input) => this.allowed(input),
       closeDelivery: () => this.closeDelivery(),
@@ -2897,6 +2936,18 @@ export class ObservabilityRuntime {
       endRotation: (seq) => {
         // A queued rotation keeps the flag up, because a later record belongs to its context.
         this.rotating = seq !== this.rotationSeq;
+
+        // The queued rotation replaces this context, so the held records have nowhere to go.
+        if (this.rotating) {
+          this.dropHeldRecords();
+          return;
+        }
+
+        const held = this.heldDiagnostics;
+        this.heldDiagnostics = [];
+        for (const event of held) {
+          this.recordDiagnostic(event);
+        }
       },
       route: (record) => {
         this.route(record);

@@ -163,7 +163,7 @@ endpoint is relative. The library sends to http://localhost:5185.
 - The live strip shows the count of each code, and the count includes the throttled reports. It starts at 3. The login rotation checks the URLs again and adds 3. The logout rotation adds 3 more.
 - A restart makes a new runtime, and the count starts again at 3. With spans off, it starts at 2.
 
-After a login, the strip can show `record.dropped_during_rotation 1`. The cause is the library, not the app. With `diagnostics.records` on, the `config.invalid` report of the rotation becomes a record. The library drops each record that it builds during a rotation. The library throttles the report to one in each second. The counter shows 1 only when the login comes more than a second after the page load. With `diagnostics.records` off, or with absolute URLs, the counter stays at 0.
+With `diagnostics.records` on, the `config.invalid` report of a login or logout rotation also becomes a record. The library writes that record after the rotation, so it goes to the new context. The library throttles the report to one in each second. Thus the record appears only when the rotation comes more than a second after the previous report.
 
 To remove the report, give an absolute URL. `new URL("/uilogs", location.href).href` builds it from the relative path. Use the same call for the other two endpoints.
 

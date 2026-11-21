@@ -42,6 +42,13 @@ export interface RotationHost {
   /** Waits for a delivery stack load in progress. */
   senderLoaded(): Promise<void>;
   /**
+   * Runs the plan and holds the diagnostic records it raises until endRotation(), because the
+   * logger drops every call during a rotation and these records belong to the next context.
+   * @param plan Checks the next context's settings. It's synchronous, so nothing else is held.
+   * @returns The plan's result.
+   */
+  holdRecords(plan: () => RotationPlan): RotationPlan;
+  /**
    * Removes the routing settings in a console-only runtime.
    * @param input The settings of the next context.
    * @returns The settings the runtime accepts.
@@ -73,7 +80,8 @@ export interface RotationHost {
   /** Opens delivery again and loads the new context's sender. */
   openDelivery(): Promise<void>;
   /**
-   * Lets records through again, unless a later rotation waits.
+   * Lets records through again and writes the held diagnostic records. If a later rotation
+   * waits, records stay blocked and the held ones are dropped, because they describe this context.
    * @param seq Number of this rotation call.
    */
   endRotation(seq: number): void;
@@ -191,20 +199,18 @@ function validOptions(update: SecurityContextUpdate, pending: string, timeoutMs:
 
 /**
  * Checks a rotation's arguments and builds the next config. Nothing changes before it returns.
+ * It stays synchronous, because holdRecords() holds only what runs before the plan returns.
  * @param host The runtime's rotation operations.
  * @param update New identity, routing settings and attributes.
  * @param options What to do with the old records, and the flush deadline.
- * @returns The checked rotation. It rejects for a setting it can't apply.
+ * @returns The checked rotation. It throws for a setting it can't apply.
  */
-async function planRotation(
+function planRotation(
   host: RotationHost,
   update: SecurityContextUpdate,
   options: SecurityContextRotationOptions,
-): Promise<RotationPlan> {
+): RotationPlan {
   const { runtime } = host;
-  // Wait for a delivery stack load first. A rejection then closes the sender that the load
-  // built, and no late sender can drain the old batches afterwards.
-  await host.senderLoaded();
   const pending = options.pending ?? "discard";
   const timeoutMs = options.timeoutMs ?? FLUSH_TIMEOUT_MS;
 
@@ -284,7 +290,10 @@ export async function rotateContext(
   let plan: RotationPlan;
 
   try {
-    plan = await planRotation(host, update, options);
+    // Wait for a delivery stack load first. A rejection then closes the sender that the load
+    // built, and no late sender can drain the old batches afterwards.
+    await host.senderLoaded();
+    plan = host.holdRecords(() => planRotation(host, update, options));
   } catch (error) {
     await host.closeDelivery();
     throw error;
