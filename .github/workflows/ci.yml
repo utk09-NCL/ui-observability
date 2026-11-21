@@ -1,0 +1,125 @@
+# .github/workflows/ci.yml
+#
+# Runs each part of `pnpm run verify` as its own step on the repo's Node floor and on Node 24, then builds every playground.
+# The browser tests run in a parallel job.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a pull request makes its older run useless. A push to main keeps every run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: verify (Node ${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      # A failure on one Node version would otherwise cancel the other and hide its result.
+      fail-fast: false
+      matrix:
+        include:
+          # The floor comes from .nvmrc, so CI can't drift from the version devEngines checks.
+          - label: floor
+            node-version-file: .nvmrc
+          - label: "24"
+            node-version: "24"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Reads the pnpm version from packageManager in package.json.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      # Caches the pnpm store, keyed on pnpm-lock.yaml. Build outputs aren't cached, because a
+      # stale dist/ or lint cache could pass a change that a clean run fails.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          node-version-file: ${{ matrix.node-version-file }}
+          cache: pnpm
+
+      # The root prepare script builds dist/, which lint, the checks and the playgrounds read.
+      - name: Install
+        id: install
+        run: pnpm install --frozen-lockfile
+
+      # Each later step runs even when an earlier check fails, so one run reports every failure.
+      - name: Format check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run format:check
+
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run typecheck
+
+      - name: Build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run build
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run lint
+
+      - name: Peer import check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run check:peers
+
+      - name: Size check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run check:size
+
+      - name: Dev server check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run check:dev
+
+      - name: Consumer check
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run check:consumers
+
+      - name: Tests with coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run test:coverage
+
+      # Not part of verify. It catches an example that no longer builds against the package.
+      - name: Build the playgrounds
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm --filter './playground/**' --if-present run build
+
+  e2e:
+    name: e2e (Chromium, Firefox, WebKit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Playwright advises against caching the browsers. The system libraries can't be cached,
+      # and a cache restore takes about as long as the download.
+      - name: Install the browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Browser tests
+        run: pnpm run test:e2e
