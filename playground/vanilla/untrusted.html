@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>untrusted widget</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+
+  <body>
+    <strong>untrusted widget</strong>
+    <p>
+      This page belongs to the React FX workspace. The workspace does not register its window, so
+      the bus rejects it.
+    </p>
+    <div>role: <code id="role">resolving…</code></div>
+    <div><code id="note"></code></div>
+    <button type="button" id="untrusted-send">send a record</button>
+    <script type="module" src="./untrusted.ts"></script>
+  </body>
+</html>

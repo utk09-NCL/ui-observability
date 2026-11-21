@@ -5,30 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5180 --strictPort",
-    "build": "tsc --noEmit && vite build"
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run"
   },
   "dependencies": {
     "react": "catalog:react",
     "react-dom": "catalog:react",
-    "@utk09/ui-observability": "workspace:*",
-    "web-vitals": "catalog:react"
+    "web-vitals": "catalog:react",
+    "dockview-react": "catalog:react",
+    "@utk09/ui-observability": "workspace:*"
   },
   "devDependencies": {
     "@rrweb/record": "catalog:react",
-    "@rrweb/rrweb-plugin-console-record": "catalog:react",
-    "@rrweb/rrweb-plugin-console-replay": "catalog:react",
-    "@rrweb/rrweb-plugin-network-record": "catalog:react",
-    "@rrweb/rrweb-plugin-network-replay": "catalog:react",
-    "@rrweb/rrweb-plugin-sequential-id-record": "catalog:react",
-    "@rrweb/rrweb-plugin-sequential-id-replay": "catalog:react",
-    "@rrweb/types": "catalog:react",
-    "@rrweb/utils": "catalog:react",
     "@types/react": "catalog:react",
     "@types/react-dom": "catalog:react",
     "@vitejs/plugin-react": "catalog:react",
-    "rrweb": "catalog:react",
+    "happy-dom": "catalog:react",
     "rrweb-player": "catalog:react",
     "typescript": "catalog:react",
-    "vite": "catalog:react"
+    "vite": "catalog:react",
+    "vitest": "catalog:react"
   }
 }

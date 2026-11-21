@@ -340,30 +340,6 @@ catalogs:
     '@rrweb/record':
       specifier: 2.2.2
       version: 2.2.2
-    '@rrweb/rrweb-plugin-console-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-console-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-network-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-network-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-sequential-id-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-sequential-id-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/types':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/utils':
-      specifier: 2.2.2
-      version: 2.2.2
     '@types/react':
       specifier: 19.3.0
       version: 19.3.0
@@ -373,15 +349,18 @@ catalogs:
     '@vitejs/plugin-react':
       specifier: 6.3.0
       version: 6.3.0
+    dockview-react:
+      specifier: 8.9.1
+      version: 8.9.1
+    happy-dom:
+      specifier: 21.0.4
+      version: 21.0.4
     react:
       specifier: 19.3.1
       version: 19.3.1
     react-dom:
       specifier: 19.3.1
       version: 19.3.1
-    rrweb:
-      specifier: 2.2.2
-      version: 2.2.2
     rrweb-player:
       specifier: 2.2.2
       version: 2.2.2
@@ -391,6 +370,9 @@ catalogs:
     vite:
       specifier: 8.3.8
       version: 8.3.8
+    vitest:
+      specifier: 5.1.0
+      version: 5.1.0
     web-vitals:
       specifier: 6.2.3
       version: 6.2.3
@@ -432,8 +414,6 @@ catalogs:
     web-vitals:
       specifier: 6.2.3
       version: 6.2.3
-
-packageExtensionsChecksum: sha256-4aGWw0aXHlIYyIQLFa+ChIupAll0vPd8YBlrdYRAPp0=
 
 importers:
 
@@ -616,6 +596,9 @@ importers:
       '@utk09/ui-observability':
         specifier: workspace:*
         version: link:../..
+      dockview-react:
+        specifier: catalog:react
+        version: 8.9.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: catalog:react
         version: 19.3.1
@@ -629,30 +612,6 @@ importers:
       '@rrweb/record':
         specifier: catalog:react
         version: 2.2.2
-      '@rrweb/rrweb-plugin-console-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-console-replay':
-        specifier: catalog:react
-        version: 2.2.2(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-network-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-network-replay':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-sequential-id-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-sequential-id-replay':
-        specifier: catalog:react
-        version: 2.2.2(rrweb@2.2.2)
-      '@rrweb/types':
-        specifier: catalog:react
-        version: 2.2.2
-      '@rrweb/utils':
-        specifier: catalog:react
-        version: 2.2.2
       '@types/react':
         specifier: catalog:react
         version: 19.3.0
@@ -662,9 +621,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: catalog:react
         version: 6.3.0(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(sass-embedded@1.104.1)(sass@1.104.1))
-      rrweb:
+      happy-dom:
         specifier: catalog:react
-        version: 2.2.2
+        version: 21.0.4
       rrweb-player:
         specifier: catalog:react
         version: 2.2.2
@@ -674,6 +633,9 @@ importers:
       vite:
         specifier: catalog:react
         version: 8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(sass-embedded@1.104.1)(sass@1.104.1)
+      vitest:
+        specifier: catalog:react
+        version: 5.1.0(@opentelemetry/api@1.10.0)(@types/node@26.6.6)(@vitest/coverage-istanbul@5.1.0)(happy-dom@21.0.4)(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(sass-embedded@1.104.1)(sass@1.104.1))
 
   playground/react-custom-backend:
     dependencies:
@@ -2137,42 +2099,6 @@ packages:
   '@rrweb/replay@2.2.2':
     resolution: {integrity: sha512-PumY+65QmOUje7H5TBBhpgMhucmgC9aYpkwfYoy4rhTWQzE93IuvXPivU/YGr0/QNHs+MynffrakMwcXsRcZLQ==}
 
-  '@rrweb/rrweb-plugin-console-record@2.2.2':
-    resolution: {integrity: sha512-lgTklj2MKznnFBeQfLU50+Z0xE19+8TZITCgcdkwOaijIzAUfgvdML9+r7lBUz1DN8erdgnhABuVtJ0aiWvMTw==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      '@rrweb/utils': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-console-replay@2.2.2':
-    resolution: {integrity: sha512-f6dJr0Zf38RHJmMlJgFlUfu017F2JIvGA8hV8+w0T1maNiQgl4s/OX3AELIG8+uQ9liTCaosvbGitodhYMGk+A==}
-    peerDependencies:
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-network-record@2.2.2':
-    resolution: {integrity: sha512-tY8DlIK9WSexN+Vo5Xe01H3RSQE+SERMYtgg6MD0Xezl954M8tsOoQOfHHMRsy+gTpY69MDqsIebaO3kaJTUpA==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      '@rrweb/utils': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-network-replay@2.2.2':
-    resolution: {integrity: sha512-GSqlcoLXHyNxQaypKxsf5JNpT7FviuKlWWxlGCr/lYTtcj9jjVob/Gj5wki+ixdRbMkpwcVpITzloyqtv5oxYA==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-sequential-id-record@2.2.2':
-    resolution: {integrity: sha512-OA0V+pjlpKxqjZRHBhmlEv32PqMpG1hC2rl9w/fPQiqmMyC4xz6jUwViOJ5m4cYTgUpPoafVS8ahdN75Nf/xKw==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-sequential-id-replay@2.2.2':
-    resolution: {integrity: sha512-KrTL8MbwP5dBi/Q2u/zvUyLi319Dnd1K6SyCm1LdyCkrD0xAwUN8omgmRgx3Sy0UNephcnbp6IMXMzUrne39lA==}
-    peerDependencies:
-      rrweb: ^2.1.1
-
   '@rrweb/types@2.2.2':
     resolution: {integrity: sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w==}
 
@@ -2523,6 +2449,18 @@ packages:
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
+
+  dockview-core@8.9.1:
+    resolution: {integrity: sha512-OzqB63P65qeSquFoyYjQi5yT85ERcmceaJ0+YdQL68IZJmBd5kAfe4UD9bl3xILuXJ1tlXIoExdZ+vLpv30u1g==}
+
+  dockview-react@8.9.1:
+    resolution: {integrity: sha512-xH63jytJwoLPNhK1XohVAQ3RnoWu+wh8U5ISlHQpxQ/jWxS94HuPMDB2JZbszfJ2ziBRafG1XHzrDlyvhIOdCw==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  dockview@8.9.1:
+    resolution: {integrity: sha512-y35BxYANBtHJ4q7AIkd2c1Oh2pPx3dsaMhm6s4YvMXyIWlklxHRZupXtN6bS8QuJ/hmy/5ih/Ow2oARbEx4Yog==}
 
   dom-serializer@3.1.1:
     resolution: {integrity: sha512-4MEa38/QexBob6gFNwu+EGdWvhJ1OKuNwdYY3Y3NyeWDQfnGeDYQUDfIRzWu5B5gsv03so2Uxd28YC6zrsx3Lw==}
@@ -4786,36 +4724,6 @@ snapshots:
       '@rrweb/types': 2.2.2
       rrweb: 2.2.2
 
-  '@rrweb/rrweb-plugin-console-record@2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      '@rrweb/utils': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-console-replay@2.2.2(rrweb@2.2.2)':
-    dependencies:
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-network-record@2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      '@rrweb/utils': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-network-replay@2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-sequential-id-record@2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-sequential-id-replay@2.2.2(rrweb@2.2.2)':
-    dependencies:
-      rrweb: 2.2.2
-
   '@rrweb/types@2.2.2': {}
 
   '@rrweb/utils@2.2.2': {}
@@ -5204,6 +5112,18 @@ snapshots:
   deep-is@0.1.4: {}
 
   detect-libc@2.1.2: {}
+
+  dockview-core@8.9.1: {}
+
+  dockview-react@8.9.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+    dependencies:
+      dockview: 8.9.1
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
+  dockview@8.9.1:
+    dependencies:
+      dockview-core: 8.9.1
 
   dom-serializer@3.1.1:
     dependencies:

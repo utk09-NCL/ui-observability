@@ -6,12 +6,23 @@
 /** Port of the react-custom-backend dev server. The mock ingest server lists its origin. */
 export const APP_PORT = 5186;
 
+/** Port of the react (FX workspace) dev server. The mock ingest server lists its origin. */
+export const REACT_PORT = 5187;
+
+/**
+ * Port of the cross-origin server of the partner widget. The workspace of the smoke test embeds a
+ * page from it, and the page lists the smoke origin of the workspace in its trusted origins.
+ */
+export const PARTNER_PORT = 5188;
+
 /** Port of the mock ingest server. */
 export const INGEST_PORT = 8797;
 
 /** Port of the mock app API. */
 export const APP_API_PORT = 8798;
 
+export const PARTNER_ORIGIN = `http://localhost:${String(PARTNER_PORT)}`;
+export const REACT_ORIGIN = `http://localhost:${String(REACT_PORT)}`;
 export const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
 export const INGEST_ORIGIN = `http://localhost:${String(INGEST_PORT)}`;
 export const APP_API_ORIGIN = `http://localhost:${String(APP_API_PORT)}`;

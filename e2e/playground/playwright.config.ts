@@ -12,6 +12,10 @@ import {
   APP_PORT,
   INGEST_ORIGIN,
   INGEST_PORT,
+  PARTNER_ORIGIN,
+  PARTNER_PORT,
+  REACT_ORIGIN,
+  REACT_PORT,
 } from "./ports";
 
 // The app dev server reads these two variables for its proxy, so it calls the test servers.
@@ -52,6 +56,23 @@ export default defineConfig({
       command: `pnpm --filter @example/react-custom-backend exec vite --port ${String(APP_PORT)} --strictPort`,
       env: proxyTargets,
       url: APP_ORIGIN,
+      cwd: "../..",
+      reuseExistingServer: false,
+    },
+    {
+      // The page of the partner widget comes from another origin, as in production. It is the
+      // server of `pnpm run dev:cross-origin` on another port, with the source of the repository.
+      command: `pnpm exec vite --config vite.cross-origin.config.ts --port ${String(PARTNER_PORT)} --strictPort`,
+      url: `${PARTNER_ORIGIN}/playground/vanilla/partner.html`,
+      cwd: "../..",
+      reuseExistingServer: false,
+    },
+    {
+      command: `pnpm --filter @example/react exec vite --port ${String(REACT_PORT)} --strictPort`,
+      // The workspace embeds the widget from this origin. The widget page trusts the origin of
+      // this smoke test, port 5187.
+      env: { ...proxyTargets, VITE_PARTNER_ORIGIN: PARTNER_ORIGIN },
+      url: REACT_ORIGIN,
       cwd: "../..",
       reuseExistingServer: false,
     },

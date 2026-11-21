@@ -2,13 +2,15 @@
 // Run:     node tools/mock-app-api.mjs
 //          UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs
 // Env:     UIOBS_APP_API_PORT  Port. Default 8790, and the Vite proxy of each app reads it.
+//          UIOBS_APP_API_TOKEN_TTL_MS  Life of a token in milliseconds. Default one hour.
 // Control: curl -X POST "http://localhost:8790/api/__fault?mode=reject"   (none|slow|reject|error)
 //          curl "http://localhost:8790/api/__fault"
 // Tests:   curl -X POST "http://localhost:8790/api/__reset"
 //
 // The business API of the playground apps: login, orders, positions and a WebSocket price
 // stream. State lives in memory. The apps call it through their Vite proxy, so it sends no CORS
-// headers. It prints one line for each order request, with the traceparent that it received.
+// headers. It prints one line for each order request, with the traceparent that it received, and
+// one line for each login and logout.
 
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -18,7 +20,9 @@ const DEFAULT_PORT = 8790;
 // A PORT exported for another project would move this server off 8790, so the name isn't PORT.
 const PORT = Number(process.env.UIOBS_APP_API_PORT) || DEFAULT_PORT;
 
-const TOKEN_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1000;
+// A short life lets a test or a demo watch a token refresh without a wait of an hour.
+const TOKEN_TTL_MS = Number(process.env.UIOBS_APP_API_TOKEN_TTL_MS) || DEFAULT_TOKEN_TTL_MS;
 const FILL_DELAY_MS = 1500;
 const SLOW_DELAY_MS = 2000;
 const TICK_MS = 250;
@@ -79,6 +83,20 @@ function reset() {
     quotes[pair] = { mid, digits };
   }
 }
+
+// A page that an attacker controls can point its DNS name to 127.0.0.1 and then call this server
+// as its own origin, which is called DNS rebinding. The browser sends the name of the attacker in
+// the Host header, so the server answers a loopback name only, with or without a port. [::1] is
+// out, because the server listens on 127.0.0.1 only.
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/i;
+
+function hasLoopbackHost(req) {
+  return typeof req.headers.host === "string" && LOOPBACK_HOST.test(req.headers.host);
+}
+
+const HOST_REFUSED =
+  "The Host header is not a loopback name. " +
+  "This mock server answers localhost and 127.0.0.1.\n";
 
 function sendJson(res, status, value) {
   res.setHeader("Content-Type", "application/json");
@@ -298,6 +316,7 @@ async function handleLogin(req, res) {
   forgetOldSessions();
   const token = randomBytes(24).toString("hex");
   sessions.set(token, { user, tenant: body.tenant, expiresAt: Date.now() + TOKEN_TTL_MS });
+  console.log(`[session] login user=${user} tenant=${body.tenant} sessions=${sessions.size}`);
   sendJson(res, 200, { token, user, tenant: body.tenant, expiresInMs: TOKEN_TTL_MS });
 }
 
@@ -365,6 +384,11 @@ function handleOrderDelete(res, session, id) {
 }
 
 async function handle(req, res) {
+  if (!hasLoopbackHost(req)) {
+    res.writeHead(403, { "Content-Type": "text/plain" }).end(HOST_REFUSED);
+    return;
+  }
+
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
   const startedAt = Date.now();
@@ -412,9 +436,31 @@ async function handle(req, res) {
     return;
   }
 
+  if (path === "/api/refresh" && req.method === "POST") {
+    // The refresh gives a new token for the same session and ends the old token. A stream socket
+    // keeps its session, so it stays open, and only its token changes.
+    const next = randomBytes(24).toString("hex");
+    const refreshed = { ...session, expiresAt: Date.now() + TOKEN_TTL_MS };
+    sessions.delete(token);
+    sessions.set(next, refreshed);
+    for (const socket of sockets) {
+      if (socket.token === token) {
+        socket.token = next;
+        socket.session = refreshed;
+      }
+    }
+    sendJson(res, 200, {
+      token: next,
+      user: session.user,
+      tenant: session.tenant,
+      expiresInMs: TOKEN_TTL_MS,
+    });
+    return;
+  }
   if (path === "/api/logout" && req.method === "POST") {
     sessions.delete(token);
     closeSocketsOf(token, "logout");
+    console.log(`[session] logout user=${session.user} sessions=${sessions.size}`);
     res.writeHead(204).end();
     return;
   }
@@ -499,6 +545,14 @@ streams.on("connection", (socket) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+  if (!hasLoopbackHost(req)) {
+    // The socket has no ServerResponse yet, so the refusal is written by hand.
+    const refusal =
+      "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
+    socket.end(refusal + HOST_REFUSED);
+    return;
+  }
+
   const { pathname } = new URL(req.url, `http://localhost:${PORT}`);
   if (pathname !== "/api/stream") {
     socket.destroy();
@@ -537,6 +591,7 @@ setInterval(() => {
 }, TICK_MS);
 
 reset();
-server.listen(PORT, () => {
+// Loopback only, so a device on the same network can't reach the server.
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`mock app API listening on http://localhost:${PORT}/api (stream: /api/stream)`);
 });

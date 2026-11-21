@@ -221,7 +221,7 @@ configure({
 });
 ```
 
-React error boundary. A render error that a React error boundary catches does not reach `window.onerror`, so the error capture does not see it. Log it in `componentDidCatch`. The library has no React code. The example app in `playground/react/src/observability.tsx` on GitHub has a boundary, a provider and hooks. Call `configure()` at module top level, not in a component.
+React error boundary. A render error that a React error boundary catches does not reach `window.onerror`, so the error capture does not see it. Log it in `componentDidCatch`. The library has no React code. The example app in `playground/react/src/observability/react.tsx` on GitHub has a boundary, a provider and hooks. Call `configure()` at module top level, not in a component.
 
 ```ts
 componentDidCatch(error: Error, info: React.ErrorInfo): void {
@@ -396,4 +396,4 @@ const rows = await measure("rows.fetch", () => fetchRows()).catch((err: unknown)
 - [Browser support](https://github.com/utk09-NCL/ui-observability/blob/main/docs/browser-support.md): the browser APIs and the fallback for each.
 - [Threat model](https://github.com/utk09-NCL/ui-observability/blob/main/docs/threat-model.md): the trust boundaries and the controls.
 - [Release and support](https://github.com/utk09-NCL/ui-observability/blob/main/docs/release-and-support.md): the stable API contract.
-- [React example](https://github.com/utk09-NCL/ui-observability/blob/main/playground/react/src/observability.tsx): an error boundary, a provider and hooks.
+- [React example](https://github.com/utk09-NCL/ui-observability/blob/main/playground/react/src/observability/react.tsx): an error boundary, a provider and hooks.

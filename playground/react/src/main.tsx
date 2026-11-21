@@ -2,30 +2,19 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { configure } from "@utk09/ui-observability";
 import { App } from "./app";
+import { buildConfig } from "./observability/config";
+import { resumeReplay } from "./observability/user-context";
+import { getSettingsState } from "./observability-settings/settings-store";
+import { applyTheme, loadTheme } from "./workspace/theme";
 
-// Module scope, before render, exactly once. configure() is idempotent, so a
-// second call is survivable, but a call inside a component is work repeated on
-// every render and, under StrictMode, immediately doubled.
-configure({
-  endpoint: "http://localhost:8787/v1/logs",
-  // Counter, histogram and HTTP duration points go here in the OTLP metrics format.
-  metricsEndpoint: "http://localhost:8787/v1/metrics",
-  serviceName: "example-react",
-  serviceVersion: "0.0.0",
-  environment: "local",
-  minLevel: "TRACE",
-  consoleOutput: true,
-  capture: {
-    errors: true,
-    rejections: true,
-    fetch: true,
-    interactions: true,
-    navigation: true,
-    // The loader is required, because the library never imports web-vitals by name. Without it
-    // the library reports config.invalid and LCP, CLS and INP stay off.
-    webVitals: { loader: () => import("web-vitals") },
-  },
-});
+// Module scope, before render, one time. A call in a component would run on each render, and
+// StrictMode would run it twice.
+configure(buildConfig(getSettingsState().applied, "anonymous"));
+// A user who agreed to the replay in an earlier visit keeps that choice. The recorder is off
+// until this call, because the config has replay.requireConsent.
+resumeReplay();
+// The theme is set before the first paint, so a light user doesn't see a dark flash.
+applyTheme(loadTheme());
 
 const container = document.getElementById("root");
 if (!container) {

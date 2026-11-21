@@ -1,8 +1,10 @@
-// playground/react/src/observability.tsx
+// playground/react/src/observability/react.tsx
 //
 // COPY THIS FILE into your application and own it. It imports nothing but the
 // public API, so nothing here depends on a library internal and nothing here
-// breaks when the library's internals change.
+// breaks when the library's internals change. It has a logger provider, a logger hook, a
+// journey hook and the error boundary. React catches a render error in the nearest boundary,
+// so window.onerror never sees it, and only this boundary can report it.
 
 import * as React from "react";
 import { endJourney, getLogger, type Logger, startJourney } from "@utk09/ui-observability";
