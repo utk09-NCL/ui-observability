@@ -30,6 +30,7 @@ Vite opens the main page in your browser. To stop that, run `BROWSER=none pnpm r
 | Profiler blotter | `/playground/vanilla/blotter.html` | A blotter of 5,000 rows that profiler probes time |
 | Profiler benchmark | `/playground/vanilla/profiler.html` | The cost of one `begin()` and `end()` pair of a probe, in nanoseconds |
 | Child frame | `/playground/vanilla/child.html` | The main page loads it two times, from port 5173 and from port 5174 |
+| Partner widget | `http://localhost:5174/playground/vanilla/partner.html` | Not a page of this playground. The [React example](../react/README.md#the-frames-and-the-bus) embeds it as a cross-origin frame. |
 
 ## At startup
 
@@ -149,6 +150,7 @@ Each page accepts `?autorun=1`. The page text lists the other URL parameters.
 | --- | --- |
 | `main.ts` | The main page. One `configure()` call turns on each capture. |
 | `child.ts` | The child frame. It calls `configure()` and the bus resolves its role. |
+| `partner.ts` | The partner widget of the React example. It lists the origins of the workspace in `bus.trustedOrigins`. It lives here, because only this playground loads the library source. |
 | `transport-worker.ts` | The worker for `?worker=1`. It calls `serveTransportWorker()`. |
 | `blotter.ts` | The profiler blotter page |
 | `profiler.ts` | The profiler benchmark page |

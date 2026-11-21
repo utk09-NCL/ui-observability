@@ -2,6 +2,7 @@
 // Run:     node tools/mock-app-api.mjs
 //          UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs
 // Env:     UIOBS_APP_API_PORT  Port. Default 8790, and the Vite proxy of each app reads it.
+//          UIOBS_APP_API_TOKEN_TTL_MS  Life of a token in milliseconds. Default one hour.
 // Control: curl -X POST "http://localhost:8790/api/__fault?mode=reject"   (none|slow|reject|error)
 //          curl "http://localhost:8790/api/__fault"
 // Tests:   curl -X POST "http://localhost:8790/api/__reset"
@@ -18,7 +19,9 @@ const DEFAULT_PORT = 8790;
 // A PORT exported for another project would move this server off 8790, so the name isn't PORT.
 const PORT = Number(process.env.UIOBS_APP_API_PORT) || DEFAULT_PORT;
 
-const TOKEN_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1000;
+// A short life lets a test or a demo watch a token refresh without a wait of an hour.
+const TOKEN_TTL_MS = Number(process.env.UIOBS_APP_API_TOKEN_TTL_MS) || DEFAULT_TOKEN_TTL_MS;
 const FILL_DELAY_MS = 1500;
 const SLOW_DELAY_MS = 2000;
 const TICK_MS = 250;
@@ -412,6 +415,27 @@ async function handle(req, res) {
     return;
   }
 
+  if (path === "/api/refresh" && req.method === "POST") {
+    // The refresh gives a new token for the same session and ends the old token. A stream socket
+    // keeps its session, so it stays open, and only its token changes.
+    const next = randomBytes(24).toString("hex");
+    const refreshed = { ...session, expiresAt: Date.now() + TOKEN_TTL_MS };
+    sessions.delete(token);
+    sessions.set(next, refreshed);
+    for (const socket of sockets) {
+      if (socket.token === token) {
+        socket.token = next;
+        socket.session = refreshed;
+      }
+    }
+    sendJson(res, 200, {
+      token: next,
+      user: session.user,
+      tenant: session.tenant,
+      expiresInMs: TOKEN_TTL_MS,
+    });
+    return;
+  }
   if (path === "/api/logout" && req.method === "POST") {
     sessions.delete(token);
     closeSocketsOf(token, "logout");

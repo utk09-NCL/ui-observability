@@ -36,12 +36,13 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 2. Install Chromium one time with `pnpm exec playwright install chromium`.
 3. Run `pnpm run test:playground`.
 
-Playwright starts four servers and stops them after the run.
+Playwright starts five servers and stops them after the run.
 
 | Port | Server | Use |
 | --- | --- | --- |
 | 5186 | `vite --port 5186` in `playground/react-custom-backend` | The app. |
 | 5187 | `vite --port 5187` in `playground/react` | The FX workspace. |
+| 5188 | `vite --config vite.cross-origin.config.ts --port 5188` | The cross-origin server of the partner widget. |
 | 8797 | `UIOBS_MOCK_PORT=8797 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
 | 8798 | `UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs` | The mock app API. |
 
@@ -57,6 +58,9 @@ The ports differ from the dev ports and from the ports above, so a running examp
 | `react.smoke.ts` | **Console output** off and **Lowest level sent** at WARN stop the price ticks in the Activity log. The level DEBUG brings them back. |
 | `react.smoke.ts` | A closed panel stays closed after a reload. Another tenant opens the default layout. A damaged saved layout opens the default layout. |
 | `react.smoke.ts` | **Log out on a shared device** removes the saved layouts of the user, and the next login works. |
+| `react.smoke.ts` | The Research frame and the Partner widget forward their records, also after a reload of the Research frame. The Untrusted widget raises `bus.rejected_message`. |
+| `react.smoke.ts` | After a refused order, a recording appears in the Support panel, and the player plays it. |
+| `react.smoke.ts` | **Refresh token now** gives a new token, and the old token answers `401`. A panel window and the workspace log with the same journey id. |
 
 ## Test APIs of the mock ingest server
 
@@ -65,6 +69,8 @@ The ports differ from the dev ports and from the ports above, so a running examp
 | `POST /__reset` | Clears the received requests, the known batch ids, the forced status and the sampling rules. |
 | `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces`, `/v1/replay` and `/uilogs`. |
 | `GET /__echo` | Returns the headers of this request as the server received them. |
+| `GET /v1/replay/recordings` | Returns the stored replay recordings, newest first. The store is always on, and `POST /__reset` clears it. |
+| `GET /v1/replay/recordings/<id>` | Returns one recording with its segments in order. |
 
 Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. For an NDJSON body, it is the list of the parsed lines. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie. An entry of `/uilogs` also has `hasAuthorization`, which tells if the request had an `Authorization` header.
 

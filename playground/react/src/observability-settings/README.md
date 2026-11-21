@@ -9,12 +9,12 @@ This folder holds the "Observability settings" section. It imports only React an
 | `hints.ts` | The hint catalog. It also maps each setting to its config key. | The texts, when your app differs. |
 | `settings-store.ts` | The draft and the applied settings. It reads and writes `localStorage` and calls `configure()` in the queue. | Nothing. |
 | `operation-queue.ts` | One queue for each call that changes the library, and the busy state. Login, logout, restart and a run of the cost meter use it too. | Nothing. |
-| `tap.ts` | A processor that counts records and keeps the last 50 of each kind. A handler that keeps the last 20 diagnostics. | The list of noisy namespaces. |
+| `tap.ts` | A processor that counts records and keeps the last 50 of each kind. A handler that keeps the last 20 diagnostics. A hook that keeps the last 20 loss reports, for `onDrop`. | The list of noisy namespaces. |
 | `meter.ts` | The cost meter. | Nothing. |
 | `transport.worker.ts` | The transport worker. It calls `serveTransportWorker()`. | Nothing. |
 | `*.tsx` | The section, the settings table, the live strip, the cost meter and the recent records. | The class names. |
 
-The section needs the processor and the diagnostic handler in the config. `buildConfig()` in `../observability/config.ts` sets both. Copy those two lines too.
+The section needs the processor and the diagnostic handler in the config. `buildConfig()` in `../observability/config.ts` sets both, and `onDrop`. Copy those lines too.
 
 This folder imports nothing from outside, except the library and React. The specs of this folder need `vitest.setup.ts` and `test/observability.ts` of the app. `hints.test.ts` also needs the `happyDOM.url` setting of `vite.config.ts`, because the span endpoint is an absolute URL on the origin of the page.
 
@@ -34,6 +34,8 @@ Each hint has the config path, the faster value, what the faster value costs, wh
 
 - `applies: "runtime"` goes to `configure()` at once.
 - `applies: "restart"` waits for **Apply and restart**. `limits`, `batching`, `storage`, `transportWorker` and `tracesEndpoint` are in this group. With isolation on, `configure()` also refuses a change of a routing setting.
+- The group "Replay" has `replay.enabled` and `replay.recordCanvas`. The replay config that is fixed for the app, the loader, the endpoint, the headers and `requireConsent`, is in `buildConfig()`. `configFor()` and `buildConfig()` merge the `replay` section.
+- `capture.webVitals` needs a loader, because the library never imports `web-vitals` by name. `hints.ts` has it as one stable function.
 - The click rows, `rageClicks` and `deadClicks`, and the profiler rows, `framePhases` and `framePacing`, write into one config section each. `interactionsConfig()` and `profilerConfig()` in `hints.ts` build it from all the settings of the section.
 - `evidence: "measure here"` means that the cost meter shows the difference. `evidence: "expected"` means that nobody measured it.
 - A hint without a faster value, such as compression, trades two costs. It does not call one value faster.

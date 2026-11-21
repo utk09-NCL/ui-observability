@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Untrusted widget</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./workspace.css" />
+  </head>
+
+  <body>
+    <main class="frame">
+      <h1>Untrusted widget</h1>
+      <p>The workspace does not register this frame. The bus rejects it, so it sends for itself.</p>
+      <p>Bus role of this frame: <code id="role">resolving</code></p>
+      <p class="muted" id="note"></p>
+      <div class="controls">
+        <button type="button" id="send">Send a record</button>
+        <span>Records sent: <strong id="sent">0</strong></span>
+      </div>
+    </main>
+    <script type="module" src="/src/frames/untrusted.ts"></script>
+  </body>
+</html>

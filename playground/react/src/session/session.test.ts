@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flush } from "@utk09/ui-observability";
 import { memory } from "../../test/observability";
 import type { Api } from "../api/client";
-import { login, logout, logoutSharedDevice, switchTenant } from "./session";
+import { login, logout, logoutSharedDevice, refreshSession, switchTenant } from "./session";
 import { getToken, setToken } from "./token";
 
 // The login and the logout call the library through user-context.ts. The spec replaces that
@@ -34,6 +34,8 @@ function makeApi(overrides: Partial<Api> = {}): Api {
     login: () => Promise.resolve(LOGIN_RESULT),
     logout: () => Promise.resolve(),
     logoutToken: () => Promise.resolve(),
+    refresh: () =>
+      Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 }),
     ...overrides,
   } as Api;
 }
@@ -53,7 +55,12 @@ describe("login", () => {
   it("returns the session with its token", async () => {
     const session = await login(makeApi(), "trader1", "tenant-a");
 
-    expect(session).toEqual({ user: "trader1", tenant: "tenant-a", token: "token-1" });
+    expect(session).toEqual({
+      user: "trader1",
+      tenant: "tenant-a",
+      token: "token-1",
+      expiresInMs: 1000,
+    });
     expect(getToken()).toBe("token-1");
     expect(restart).not.toHaveBeenCalled();
   });
@@ -142,7 +149,12 @@ describe("switchTenant", () => {
       "tenant-b",
     );
 
-    expect(session).toEqual({ user: "trader1", tenant: "tenant-b", token: "token-2" });
+    expect(session).toEqual({
+      user: "trader1",
+      tenant: "tenant-b",
+      token: "token-2",
+      expiresInMs: 1000,
+    });
     expect(tokenAtRotation).toBe("token-2");
     expect(getToken()).toBe("token-2");
     expect(switchContext).toHaveBeenCalledWith("tenant-b", expect.anything());
@@ -241,5 +253,59 @@ describe("logoutSharedDevice", () => {
 
     expect(stop).not.toHaveBeenCalled();
     expect(startAnon).not.toHaveBeenCalled();
+  });
+});
+
+describe("refreshSession", () => {
+  it("keeps the new token and returns how long it lives", async () => {
+    setToken("token-1");
+
+    await expect(refreshSession(makeApi())).resolves.toBe(5000);
+
+    expect(getToken()).toBe("token-refreshed");
+  });
+
+  it("keeps the old token when the refresh fails", async () => {
+    setToken("token-1");
+
+    await expect(
+      refreshSession(makeApi({ refresh: () => Promise.reject(new Error("401")) })),
+    ).rejects.toThrow("401");
+
+    expect(getToken()).toBe("token-1");
+  });
+
+  it("revokes the new token, and keeps the current one, when the session changed meanwhile", async () => {
+    setToken("token-1");
+    const revoked = vi.fn(() => Promise.resolve());
+    const api = makeApi({
+      logoutToken: revoked,
+      refresh: () => {
+        // A tenant switch in the middle of the request gives the page another token.
+        setToken("token-of-the-new-tenant");
+
+        return Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 });
+      },
+    });
+
+    await refreshSession(api);
+
+    expect(getToken()).toBe("token-of-the-new-tenant");
+    expect(revoked).toHaveBeenCalledWith("token-refreshed");
+  });
+
+  it("returns the life of the token also when the revoke of a stale token fails", async () => {
+    setToken("token-1");
+    const api = makeApi({
+      logoutToken: () => Promise.reject(new Error("revoke failed")),
+      refresh: () => {
+        setToken(undefined);
+
+        return Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 });
+      },
+    });
+
+    await expect(refreshSession(api)).resolves.toBe(5000);
+    expect(getToken()).toBeUndefined();
   });
 });

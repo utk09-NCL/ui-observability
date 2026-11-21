@@ -2,13 +2,13 @@
 //
 // "Privacy choices". It follows the "Consent withdrawal" recipe. A withdrawal stops the library,
 // drops what it did not send and leaves it with no endpoint. The choice stays in localStorage,
-// so the next page load starts paused. The replay switch is a stub until the replay panel
-// exists. It stores the choice and records nothing.
+// so the next page load starts paused. The replay switch starts and stops the recorder. The
+// config has replay.requireConsent, so nothing records before the user agrees here.
 
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { getLogger } from "@utk09/ui-observability";
-import { loadConsent, saveConsent, type Consent } from "../observability/consent";
-import { setTelemetryConsent } from "../observability/user-context";
+import { loadConsent, type Consent } from "../observability/consent";
+import { setReplayConsent, setTelemetryConsent } from "../observability/user-context";
 import { runExclusive, useBusy } from "../observability-settings/operation-queue";
 import { getSettingsState } from "../observability-settings/settings-store";
 
@@ -61,6 +61,23 @@ export function PrivacyDialog({
       });
   };
 
+  const changeReplay = (allowed: boolean): void => {
+    setConsent((previous) => ({ ...previous, replay: allowed }));
+    // In the queue, like the telemetry choice, so it can't meet a rotation or a restart.
+    runExclusive(() => {
+      setReplayConsent(allowed);
+
+      return Promise.resolve();
+    })
+      .then(() => {
+        setStatus(allowed ? "The replay records." : "The replay is off.");
+      })
+      .catch((error: unknown) => {
+        log.error("The replay change failed.", error);
+        setStatus("The change failed. Reload the page.");
+      });
+  };
+
   return (
     <dialog ref={dialog} className="dialog" aria-labelledby="privacy-heading" onClose={onClose}>
       <h2 id="privacy-heading">Privacy choices</h2>
@@ -83,16 +100,17 @@ export function PrivacyDialog({
         <input
           type="checkbox"
           checked={consent.replay}
+          disabled={busy || !consent.telemetry}
           onChange={(event) => {
-            const next = { ...consent, replay: event.target.checked };
-            setConsent(next);
-            saveConsent(next);
+            changeReplay(event.target.checked);
           }}
         />
-        Record this session for support (stub)
+        Record this session for support
       </label>
       <p className="muted">
-        The replay recorder comes in the next stage. This switch only stores your choice.
+        When you agree, the library records the page and keeps the last minute in memory. After an
+        error, it sends that minute to the support service. The recorder masks the text and the
+        input values. It needs the telemetry switch above.
       </p>
       <p role="status" className="muted">
         {status}

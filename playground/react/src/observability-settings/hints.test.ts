@@ -59,7 +59,10 @@ describe("hint catalog", () => {
     expect(measurable.sort()).toEqual(
       ["consoleOutput", "maxArrayLength", "maxDepth", "maxNodes", "minLevel", "payloadMode"].sort(),
     );
-    expect(HINTS.filter((hint) => hint.evidence === "measured")).toEqual([]);
+    // The replay row cites the run of docs/performance.md, so it is the one measured row.
+    expect(HINTS.filter((hint) => hint.evidence === "measured").map((hint) => hint.key)).toEqual([
+      "replayEnabled",
+    ]);
   });
 
   it("calls no compression value faster", () => {
@@ -116,6 +119,28 @@ describe("hint catalog", () => {
     const config = configFor({ ...DEFAULT_SETTINGS, interactions: false }, "runtime");
 
     expect(config.capture?.interactions).toBe(false);
+  });
+
+  it("gives the two replay rows one section, and keeps the recorder off the canvas by default", () => {
+    expect(configFor(DEFAULT_SETTINGS, "runtime").replay).toEqual({
+      enabled: true,
+      recordCanvas: false,
+    });
+    expect(configFor({ ...DEFAULT_SETTINGS, recordCanvas: true }, "runtime").replay).toMatchObject({
+      recordCanvas: true,
+    });
+  });
+
+  it("gives the web vitals loader as one function, and turns the capture off with false", () => {
+    const on = configFor(DEFAULT_SETTINGS, "runtime").capture?.webVitals;
+    const again = configFor(DEFAULT_SETTINGS, "runtime").capture?.webVitals;
+    const off = configFor({ ...DEFAULT_SETTINGS, webVitals: false }, "runtime").capture?.webVitals;
+
+    // configure() counts a function as the same setting only when it is the same reference.
+    expect(on).toHaveProperty("loader");
+    expect(typeof (on as { loader: unknown }).loader).toBe("function");
+    expect(on).toEqual(again);
+    expect(off).toBe(false);
   });
 
   it("builds the span endpoint on the origin of the page", () => {

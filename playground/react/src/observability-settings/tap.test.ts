@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configure, flush, getLogger } from "@utk09/ui-observability";
 import { memory } from "../../test/observability";
-import { readDiagnostics, readTap, resetTap, tapDiagnostic, tapProcessor } from "./tap";
+import {
+  readDiagnostics,
+  readDrops,
+  readTap,
+  resetTap,
+  tapDiagnostic,
+  tapDrop,
+  tapProcessor,
+} from "./tap";
 
 beforeEach(() => {
   resetTap();
@@ -109,5 +117,48 @@ describe("processor tap", () => {
 
     expect(readDiagnostics()).toHaveLength(20);
     expect(readDiagnostics()[0]?.message).toBe("report 5");
+  });
+});
+
+describe("drop tap", () => {
+  const summary = (records: number): Parameters<typeof tapDrop>[0] => ({
+    reason: "discarded",
+    records,
+    batchIds: [],
+    journeyIds: [],
+    actions: [],
+  });
+
+  it("keeps the loss reports, oldest first", () => {
+    tapDrop(summary(1));
+    tapDrop(summary(2));
+
+    expect(readDrops().map((drop) => drop.summary.records)).toEqual([1, 2]);
+  });
+
+  it("keeps the last 20 reports", () => {
+    for (let index = 1; index <= 25; index += 1) {
+      tapDrop(summary(index));
+    }
+
+    expect(readDrops()).toHaveLength(20);
+    expect(readDrops()[0].summary.records).toBe(6);
+    expect(readDrops().at(-1)?.summary.records).toBe(25);
+  });
+
+  it("gets a report from the library, when the config has the hook", async () => {
+    configure({ onDrop: tapDrop, storage: { backend: "none" } });
+    getLogger("tap.spec").info("never sent");
+    const { shutdown } = await import("@utk09/ui-observability");
+    await shutdown({ pending: "discard" });
+
+    expect(readDrops().some((drop) => drop.summary.reason === "discarded")).toBe(true);
+  });
+
+  it("empties on reset", () => {
+    tapDrop(summary(1));
+    resetTap();
+
+    expect(readDrops()).toEqual([]);
   });
 });

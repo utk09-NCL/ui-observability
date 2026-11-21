@@ -18,7 +18,7 @@ import {
   useSettingsState,
 } from "./settings-store";
 
-const GROUPS: Group[] = ["Logging", "Capture", "Delivery", "Privacy and metadata"];
+const GROUPS: Group[] = ["Logging", "Capture", "Replay", "Delivery", "Privacy and metadata"];
 
 interface RowProps {
   hint: Hint;

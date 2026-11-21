@@ -15,6 +15,7 @@ export interface UserMenuProps {
   busy: boolean;
   onSwitchTenant: (tenant: string) => void;
   onPrivacy: () => void;
+  onRefreshToken: () => void;
   onLogout: () => void;
   onLogoutShared: () => void;
 }
@@ -65,6 +66,18 @@ export function UserMenu(props: UserMenuProps): ReactElement {
             }}
           >
             Privacy choices
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            title="Asks the API for a new token now. The page also does it on a timer. The library needs no call."
+            data-observability-action="refresh-token"
+            onClick={() => {
+              close();
+              props.onRefreshToken();
+            }}
+          >
+            Refresh token now
           </button>
           <button
             type="button"

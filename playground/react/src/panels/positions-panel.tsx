@@ -47,7 +47,10 @@ export function PositionsPanel(): ReactElement {
   // the worker, so StrictMode can mount, unmount and mount again. Nothing else leaves the panel.
   useEffect(() => {
     const instance = createWorker();
-    const unregister = registerWorker(instance);
+    // The worker asks for the journey of the page when its runtime starts. Without journey:read,
+    // the bus rejects that request and counts bus.rejected_message. With it, the records of the
+    // worker carry the active journey.
+    const unregister = registerWorker(instance, { permissions: ["records", "journey:read"] });
     instance.addEventListener("message", (event: MessageEvent) => {
       const message: unknown = event.data;
       if (isFromWorker(message)) {

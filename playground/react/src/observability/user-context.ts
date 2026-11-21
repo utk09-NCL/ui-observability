@@ -15,11 +15,12 @@ import {
   rotateSecurityContext,
   setContext,
   shutdown,
+  startReplay,
   stopReplay,
 } from "@utk09/ui-observability";
 import type { Settings } from "../observability-settings/settings";
 import { buildConfig, routing } from "./config";
-import { loadConsent, saveConsent } from "./consent";
+import { loadConsent, resetConsent, saveConsent } from "./consent";
 
 const FLUSH_TIMEOUT_MS = 3000;
 
@@ -92,12 +93,26 @@ export async function endUserContext(settings: Settings): Promise<void> {
 }
 
 /**
+ * Starts the session replay when the user agreed to it. The recorder stays off until this call,
+ * because replay.requireConsent is on, and a new runtime starts with the recorder off. So the
+ * page start, a restart and a start after a shared-device logout call it.
+ */
+export function resumeReplay(): void {
+  const consent = loadConsent();
+  if (consent.telemetry && consent.replay) {
+    startReplay();
+  }
+}
+
+/**
  * Stops the library for the next user of a shared device. The discard sends nothing, and
  * clearStorage removes the stored batches, the session id, the tab id and the journey of the
- * active context. The caller then revokes the token and calls startAnonymous().
+ * active context. The privacy choices go too, because the next user decides for himself. The
+ * caller then revokes the token and calls startAnonymous().
  */
 export async function stopForSharedDevice(): Promise<void> {
   activeTenant = undefined;
+  resetConsent();
   await shutdown({ pending: "discard", clearStorage: "context" });
 }
 
@@ -107,6 +122,7 @@ export async function stopForSharedDevice(): Promise<void> {
  */
 export function startAnonymous(settings: Settings): void {
   configure(buildConfig(settings, "anonymous"));
+  resumeReplay();
 }
 
 /**
@@ -125,13 +141,14 @@ export async function restartObservability(settings: Settings): Promise<void> {
   if (activeTenant !== undefined) {
     setContext({ tenant: activeTenant });
   }
+  resumeReplay();
 }
 
 /**
  * Stores the telemetry choice and applies it. A withdrawal pauses the library, drops what is
  * not sent and leaves the runtime with no endpoint. A grant resumes it with the routing of
- * the current context. The stored choice also decides the next page load, see buildConfig().
- * The replay recorder comes in the next stage, where a grant also calls startReplay().
+ * the current context, and starts the replay for a user who agreed to it. The stored choice also
+ * decides the next page load, see buildConfig().
  * @param allowed True when the user agrees to telemetry.
  * @param settings The settings in force.
  */
@@ -156,4 +173,20 @@ export async function setTelemetryConsent(allowed: boolean, settings: Settings):
     },
     { pending: "discard" },
   );
+  resumeReplay();
+}
+
+/**
+ * Stores the replay choice and applies it. The recorder starts only for a user who also allows
+ * telemetry. stopReplay() drops each event that was not sent.
+ * @param allowed True when the user agrees to the session replay.
+ */
+export function setReplayConsent(allowed: boolean): void {
+  saveConsent({ ...loadConsent(), replay: allowed });
+
+  if (allowed) {
+    resumeReplay();
+  } else {
+    stopReplay();
+  }
 }

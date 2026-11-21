@@ -9,14 +9,12 @@ import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockvi
 import "dockview-react/dist/styles/dockview.css";
 import { getLogger } from "@utk09/ui-observability";
 import type { Api } from "../api/client";
-import type { Order, Tenant } from "../api/types";
-import { applyTick, resetMarket, startTickRate } from "../data/market-store";
-import { replaceOrders, resetOrders, upsertOrder } from "../data/orders-store";
-import { useStream } from "../data/stream";
+import type { Tenant } from "../api/types";
 import { useBusy } from "../observability-settings/operation-queue";
 import { PANEL_COMPONENTS } from "../panels/registry";
-import type { Session } from "../session/session";
+import { refreshSession, type Session } from "../session/session";
 import { WorkspaceContext } from "./context";
+import { useTokenRefresh, useWorkspaceData } from "./use-workspace-data";
 import { addDefaultPanels, openPanel, PANELS } from "./default-layout";
 import { HeaderActions } from "./header-actions";
 import {
@@ -27,13 +25,13 @@ import {
   writeLayout,
 } from "./layout-store";
 import { MenuButton } from "./menu";
+import { closePanelWindows } from "./panel-windows";
 import { PrivacyDialog } from "./privacy-dialog";
 import { applyTheme, loadTheme, THEMES, type ThemeName } from "./theme";
 import { UserMenu } from "./user-menu";
 import { Watermark } from "./watermark";
 
 const log = getLogger("workspace.layout");
-const ordersLog = getLogger("orders.blotter");
 
 const TAB_CONTEXT_MENU = [
   "close",
@@ -44,47 +42,6 @@ const TAB_CONTEXT_MENU = [
   "float",
   "popout",
 ] as const;
-
-function onOrder(order: Order): void {
-  upsertOrder(order);
-  if (order.status === "filled") {
-    ordersLog.logEvent("ORDER_FILLED", { orderId: order.id, price: order.price });
-  }
-}
-
-/**
- * Starts the data of the page: the stream, the tick-rate meter and the first order list. The
- * cleanup of each effect stops its own work, so StrictMode can run mount, unmount and mount
- * again. The token comes from the session, so a render between the logout and the end of the
- * session can't open a socket with an empty token.
- * @param session The session of the user.
- * @param api The client of the app API.
- */
-function useWorkspaceData(session: Session, api: Api): void {
-  useStream(session.token, { onPrice: applyTick, onOrder });
-
-  useEffect(() => startTickRate(), []);
-
-  useEffect(() => {
-    let active = true;
-    api
-      .listOrders()
-      .then((list) => {
-        if (active) {
-          replaceOrders(list);
-        }
-      })
-      .catch((error: unknown) => {
-        ordersLog.error("order list failed", error);
-      });
-
-    return () => {
-      active = false;
-      resetOrders();
-      resetMarket();
-    };
-  }, [api, session.token]);
-}
 
 /**
  * Renders the workspace of a logged-in user.
@@ -118,6 +75,7 @@ export function Workspace({
   const context = useMemo(() => ({ api, session }), [api, session]);
 
   useWorkspaceData(session, api);
+  useTokenRefresh(session, api);
 
   useEffect(() => {
     applyTheme(theme);
@@ -168,6 +126,7 @@ export function Workspace({
     // A closing page would lose the last change, so the saver also writes at pagehide.
     const onPageHide = (): void => {
       instance.flush();
+      closePanelWindows();
     };
     addEventListener("pagehide", onPageHide);
 
@@ -211,9 +170,11 @@ export function Workspace({
   };
 
   // A leave starts a logout, a tenant switch or a shared-device logout. The layout is saved
-  // first, because the next step can remove the user from the page.
+  // first, because the next step can remove the user from the page. The windows of single panels
+  // have a session of their own, and they close with this one.
   const leaving = (action: () => void): void => {
     saver.current?.flush();
+    closePanelWindows();
     action();
   };
 
@@ -270,6 +231,11 @@ export function Workspace({
             }}
             onPrivacy={() => {
               setPrivacyOpen(true);
+            }}
+            onRefreshToken={() => {
+              refreshSession(api).catch((error: unknown) => {
+                log.error("token refresh failed", error);
+              });
             }}
             onLogout={() => {
               leaving(onLogout);

@@ -5,7 +5,18 @@
 
 import type { DockviewApi } from "dockview-react";
 
-export type PanelId = "prices" | "ticket" | "blotter" | "positions" | "activity" | "settings";
+export type PanelId =
+  | "prices"
+  | "ticket"
+  | "blotter"
+  | "positions"
+  | "chart"
+  | "research"
+  | "partner"
+  | "untrusted"
+  | "activity"
+  | "support"
+  | "settings";
 
 export interface PanelInfo {
   id: PanelId;
@@ -19,9 +30,25 @@ export const PANELS: readonly PanelInfo[] = [
   { id: "ticket", title: "Order ticket", description: "Place an order" },
   { id: "blotter", title: "Blotter", description: "Filter and cancel orders" },
   { id: "positions", title: "Positions", description: "P&L that a worker computes" },
+  { id: "chart", title: "Chart", description: "A canvas chart of the prices" },
+  { id: "research", title: "Research", description: "A same-origin frame on the bus" },
+  { id: "partner", title: "Partner widget", description: "A cross-origin frame, registered" },
+  {
+    id: "untrusted",
+    title: "Untrusted widget",
+    description: "A frame that the app did not register",
+  },
   { id: "activity", title: "Activity log", description: "The records that the app emits" },
+  { id: "support", title: "Support", description: "Replays, health and the debug bundle" },
   { id: "settings", title: "Observability settings", description: "Change the config" },
 ];
+
+/**
+ * The panels that hold an iframe. dockview removes the DOM of a hidden panel and puts it back
+ * when the panel shows again, and the browser reloads an iframe that it takes out of the
+ * document. Their renderer is "always", so a tab change or a move does not reload the frame.
+ */
+const FRAME_PANELS: readonly PanelId[] = ["research", "partner", "untrusted"];
 
 /**
  * Adds one panel, or shows it when it already exists. The id of the panel is its component name,
@@ -47,6 +74,7 @@ export function openPanel(
     id,
     component: id,
     title: info?.title ?? id,
+    ...(FRAME_PANELS.includes(id) ? { renderer: "always" as const } : {}),
     ...(position ? { position } : {}),
   });
 }

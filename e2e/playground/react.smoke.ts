@@ -3,7 +3,8 @@
 // Smoke test of playground/react, the FX workspace, in Chromium. It logs in, checks the default
 // layout, places an order and reads what the mock ingest server received. It changes a setting
 // and watches the Activity log, and it checks that the layout survives a reload and that a
-// damaged saved layout falls back to the default.
+// damaged saved layout falls back to the default. It also checks the three frames and the bus,
+// the replay of a refused order, the token refresh and the window of one panel.
 
 import { expect, test, type Page } from "@playwright/test";
 import { APP_API_ORIGIN, INGEST_ORIGIN, REACT_ORIGIN } from "./ports";
@@ -102,6 +103,20 @@ async function logIn(page: Page, user: string): Promise<void> {
 
 function tabs(page: Page): Promise<string[]> {
   return page.getByRole("tab").allTextContents();
+}
+
+/** Opens a panel through the "Add panel" menu. */
+async function addPanel(page: Page, title: string): Promise<void> {
+  await page.getByRole("button", { name: /^Add panel/ }).click();
+  await page.getByRole("menuitem", { name: new RegExp(`^${title}`) }).click();
+  await expect(page.getByRole("tab", { name: title })).toBeVisible();
+}
+
+/** Counts the records of one service with one text that the ingest server received. */
+async function countRecords(service: string, body: string): Promise<number> {
+  return (await receivedRecords()).filter(
+    (record) => record.service === service && record.body === body,
+  ).length;
 }
 
 async function logOut(page: Page): Promise<void> {
@@ -267,4 +282,163 @@ test("logs out on a shared device and removes the saved layouts of the user", as
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page.getByRole("tab", { name: "Prices" })).toBeVisible();
   await logOut(page);
+});
+
+test("registers the three frames, and the bus rejects the one that it does not know", async ({
+  page,
+}) => {
+  await logIn(page, "smoke-user");
+  await addPanel(page, "Research");
+  await addPanel(page, "Untrusted widget");
+  await addPanel(page, "Partner widget");
+
+  // A same-origin frame forwards its records over the direct link. The workspace registered it
+  // before it loaded, and it registered the frame with journey:read, so no request was refused.
+  await page.getByRole("tab", { name: "Research" }).click();
+  const research = page.frameLocator('iframe[title="Research"]');
+  await expect(research.locator("#role")).toHaveText("forwarder");
+  await research.getByRole("button", { name: "Log an action" }).click();
+  await expect
+    .poll(() => countRecords("react-workspace-research", "RESEARCH_VIEWED"), { timeout: 15_000 })
+    .toBe(1);
+
+  // The registration binds the window and not one document, so a reload brings the link back.
+  await page.locator('[data-observability-action="reload-research"]').click();
+  await expect(research.locator("#role")).toHaveText("forwarder");
+  await research.getByRole("button", { name: "Log an action" }).click();
+  await expect
+    .poll(() => countRecords("react-workspace-research", "RESEARCH_VIEWED"), { timeout: 15_000 })
+    .toBe(2);
+
+  // A frame on another origin forwards over the message link. The widget trusts the origin of
+  // the workspace, and the workspace registered the exact origin of the widget.
+  await page.getByRole("tab", { name: "Partner widget" }).click();
+  const partner = page.frameLocator('iframe[title="Partner widget"]');
+  await expect(partner.locator("#role")).toHaveText("forwarder");
+  await partner.getByRole("button", { name: "log from the partner" }).click();
+  await expect
+    .poll(() => countRecords("react-workspace-partner", "PARTNER_CLICK"), { timeout: 15_000 })
+    .toBe(1);
+
+  // The frame that nobody registered joins no bus. Each load of it adds to the counter.
+  await page.getByRole("tab", { name: "Untrusted widget" }).click();
+  const counter = page.getByTestId("rejected-messages");
+  await expect.poll(async () => Number(await counter.textContent())).toBeGreaterThan(0);
+  const before = Number(await counter.textContent());
+  await page.locator('[data-observability-action="reload-untrusted-widget"]').click();
+  await expect.poll(async () => Number(await counter.textContent())).toBeGreaterThan(before);
+  await expect(page.frameLocator('iframe[title="Untrusted widget"]').locator("#role")).toHaveText(
+    "sender",
+  );
+});
+
+test("uploads a replay after a refused order, and the Support panel plays it", async ({ page }) => {
+  await logIn(page, "smoke-user");
+
+  // The replay is off until the user agrees, because the config has replay.requireConsent.
+  await page.getByRole("button", { name: /^smoke-user, / }).click();
+  await page.getByRole("menuitem", { name: "Privacy choices" }).click();
+  const dialog = page.getByRole("dialog", { name: "Privacy choices" });
+  await dialog.getByLabel("Record this session for support").check();
+  await expect(dialog.getByText("The replay records.")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+
+  // The radio button is controlled. It turns on after the answer of the API, so check() is too fast.
+  await page.getByLabel("Reject, 422").click();
+  await expect(page.getByLabel("Reject, 422")).toBeChecked();
+  await page.getByRole("button", { name: "Place order" }).click();
+  await expect(page.getByText("Order refused. Insufficient credit")).toBeVisible();
+
+  // The upload starts after the ERROR record. The recorder keeps sending for 5 seconds after it.
+  await addPanel(page, "Support");
+  const rows = page.locator("table.replays tbody tr");
+  await expect
+    .poll(
+      async () => {
+        await page.getByRole("button", { name: "Refresh the list" }).click();
+
+        return rows.count();
+      },
+      { timeout: 30_000 },
+    )
+    .toBeGreaterThan(0);
+  await rows.first().getByRole("button", { name: /^Play/ }).click();
+  await expect(page.locator(".replay-stage .rr-player")).toBeVisible();
+
+  // The recording is also on the server, with the segments in order.
+  const list = (await (await fetch(`${INGEST_ORIGIN}/v1/replay/recordings`)).json()) as {
+    id: string;
+    segments: number;
+  }[];
+  const detail = (await (
+    await fetch(`${INGEST_ORIGIN}/v1/replay/recordings/${list[0].id}`)
+  ).json()) as {
+    segments: { sequence: number }[];
+  };
+  expect(detail.segments.map((segment) => segment.sequence)).toEqual(
+    detail.segments.map((_segment, index) => index),
+  );
+});
+
+test("refreshes the token without a call to the library, and opens a panel in a window with the journey", async ({
+  page,
+}) => {
+  const tokens: string[] = [];
+  page.on("request", (request) => {
+    const header = request.headers().authorization;
+    if (request.url().endsWith("/api/orders") && header) {
+      tokens.push(header.replace("Bearer ", ""));
+    }
+  });
+  await logIn(page, "smoke-user");
+  await expect.poll(() => tokens.length).toBeGreaterThan(0);
+  const oldToken = tokens[0];
+
+  const refreshed = page.waitForResponse((response) => response.url().endsWith("/api/refresh"));
+  await page.getByRole("button", { name: /^smoke-user, / }).click();
+  await page.getByRole("menuitem", { name: "Refresh token now" }).click();
+  expect((await refreshed).status()).toBe(200);
+
+  // The next request carries the new token, and the old one is no longer valid.
+  await page.getByRole("button", { name: "Place order" }).click();
+  await expect(page.getByText(/^Order ORD-\d+ placed\.$/)).toBeVisible();
+  const newToken = tokens.at(-1) ?? "";
+  expect(newToken).not.toBe(oldToken);
+  const session = (token: string): Promise<Response> =>
+    fetch(`${APP_API_ORIGIN}/api/session`, { headers: { Authorization: `Bearer ${token}` } });
+  expect((await session(oldToken)).status).toBe(401);
+  expect((await session(newToken)).status).toBe(200);
+
+  // The window of one panel is its own document. It starts its own runtime, and it adopts the
+  // journey of the opener, so the records of both have the same journey id.
+  const popup = page.waitForEvent("popup");
+  await page
+    .getByRole("region", { name: "Blotter" })
+    .first()
+    .getByRole("button", { name: "Open panel in new window" })
+    .click();
+  const child = await popup;
+  await expect(child.getByTestId("journey-id")).not.toHaveText("none", { timeout: 15_000 });
+  const journeyId = (await child.getByTestId("journey-id").textContent()) ?? "";
+  await child.getByRole("button", { name: "Freeze 300 ms" }).click();
+  await page.getByRole("button", { name: "Freeze 300 ms" }).click();
+
+  await expect
+    .poll(
+      async () =>
+        (await receivedRecords()).filter(
+          (record) =>
+            record.body === "The page froze on purpose." &&
+            record.attributes["journey.id"] === journeyId,
+        ),
+      { timeout: 15_000 },
+    )
+    .toHaveLength(2);
+  const froze = (await receivedRecords()).filter(
+    (record) => record.body === "The page froze on purpose.",
+  );
+  expect(new Set(froze.map((record) => record.attributes["page.url"]))).toEqual(
+    new Set([`${REACT_ORIGIN}/`, `${REACT_ORIGIN}/panel.html`]),
+  );
+  expect(froze.every((record) => record.attributes["journey.name"] === "panel-window")).toBe(true);
 });

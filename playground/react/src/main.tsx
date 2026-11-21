@@ -3,12 +3,16 @@ import { createRoot } from "react-dom/client";
 import { configure } from "@utk09/ui-observability";
 import { App } from "./app";
 import { buildConfig } from "./observability/config";
+import { resumeReplay } from "./observability/user-context";
 import { getSettingsState } from "./observability-settings/settings-store";
 import { applyTheme, loadTheme } from "./workspace/theme";
 
 // Module scope, before render, one time. A call in a component would run on each render, and
 // StrictMode would run it twice.
 configure(buildConfig(getSettingsState().applied, "anonymous"));
+// A user who agreed to the replay in an earlier visit keeps that choice. The recorder is off
+// until this call, because the config has replay.requireConsent.
+resumeReplay();
 // The theme is set before the first paint, so a light user doesn't see a dark flash.
 applyTheme(loadTheme());
 

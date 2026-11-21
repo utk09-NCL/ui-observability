@@ -7,7 +7,7 @@ The playground has six example applications. Each example shows the library in o
 | Example | Project type | Command | Open |
 | --- | --- | --- | --- |
 | [vanilla](vanilla/README.md) | Plain TypeScript with no framework. Each feature has a control. | `pnpm run dev` | `http://localhost:5173/playground/vanilla/index.html` |
-| [react](react/README.md) | React 19 FX workspace on dockview. It has a login, tabs, floating and popout groups, a worker, the account recipes and a settings panel. | `pnpm run example:react` | `http://localhost:5180` |
+| [react](react/README.md) | React 19 FX workspace on dockview. It has a login, tabs, floating and popout groups, a worker, three frames on the bus, a session replay with a player, the account recipes and a settings panel. | `pnpm run example:react` | `http://localhost:5180` |
 | [react-custom-backend](react-custom-backend/README.md) | React 19 that sends logs to its own backend. It has a custom serializer, relative endpoints, Vitest specs and a settings section. | `pnpm run example:react-custom-backend` | `http://localhost:5185` |
 | [angular](angular/README.md) | Angular 22 with a provider, an `ErrorHandler` and the router. | `pnpm run example:angular` | `http://localhost:4200` |
 | [microfrontend](microfrontend/README.md) | Module Federation. One shell and two remotes share one runtime. | `pnpm run example:microfrontend` | `http://localhost:5191` |
@@ -32,7 +32,7 @@ The vanilla playground imports the library from `src/` and needs no build. The o
 
 ## Start the mock ingest server
 
-Each example that sends records sends them to `tools/mock-ingest-server.mjs` on port 8787. `pnpm run dev` starts this server with the vanilla playground. `pnpm run example:react` and `pnpm run example:react-custom-backend` start it too. For each other example, start the server in a second terminal:
+Each example that sends records sends them to `tools/mock-ingest-server.mjs` on port 8787. `pnpm run dev` starts this server with the vanilla playground. `pnpm run example:react` and `pnpm run example:react-custom-backend` start it too. `pnpm run example:react` also starts the cross-origin server on port 5174, so it can not run with `pnpm run dev`. For each other example, start the server in a second terminal:
 
 ```bash
 pnpm run dev:ingest
@@ -48,7 +48,9 @@ Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a differe
 | `/v1/metrics` | Metric points in the OTLP metrics format. The React and react-custom-backend examples set `metricsEndpoint`. |
 | `/v1/traces` | Spans in the OTLP traces format. The vanilla playground, react and react-custom-backend set `tracesEndpoint`. |
 | `/uilogs` | The example custom backend of react-custom-backend. It takes the JSON of the custom serializer and answers `400` for a record over its limits. |
-| `/v1/replay` | Session replay segments. Only the vanilla playground sets `replay.endpoint`. |
+| `/v1/replay` | Session replay segments. The vanilla playground and the react example set `replay.endpoint`. The server keeps the segments in a bounded memory store. |
+| `GET /v1/replay/recordings` | The stored replay recordings, newest first, without events. The replay player of the react example reads it. |
+| `GET /v1/replay/recordings/<id>` | One recording with its segments in order. The id has 8 to 64 letters, digits and hyphens. |
 | `/__control` | Sets the status that the server returns for each batch. The vanilla playground has a button for it. |
 | `/__sampling` | Sets the sampling rules that the server returns. The vanilla playground has a button for it. |
 | `/__timing` | Returns a `Server-Timing` header. The vanilla playground has a button for it. |
@@ -68,7 +70,9 @@ The server keeps its state in memory. The Vite dev server of the example proxies
 | `POST /api/logout`, `GET /api/session` | Need `Authorization: Bearer <token>`. |
 | `GET /api/tenants` | Returns the three tenants. |
 | `GET /api/orders`, `POST /api/orders`, `DELETE /api/orders/:id` | List, place and cancel orders. A new order is `working` and fills after about 1.5 seconds. A cancel of a filled order answers `409`. |
+| `POST /api/refresh` | Needs a bearer token. Returns a new token for the same session, and ends the old token. `UIOBS_APP_API_TOKEN_TTL_MS` sets the life of a token. |
 | `GET /api/positions` | Returns the net quantity and the average price of the filled orders of the user, for each pair. The react example reads it. |
+| `POST /api/refresh` | Needs a bearer token. Returns a new token for the same session, and ends the old token. `UIOBS_APP_API_TOKEN_TTL_MS` sets the life of a token. |
 | `GET /api/positions` | Returns the net position of each pair from the filled orders. |
 | WebSocket `/api/stream` | The first message must be `{ "type": "auth", "token": "..." }`. The server then sends prices and order updates. |
 | `POST /api/__fault?mode=none\|slow\|reject\|error` | Changes how `POST /api/orders` answers. `slow` adds 2 seconds. `reject` answers `422`. `error` answers `500`. |
@@ -164,7 +168,9 @@ The vanilla playground has buttons for these requests and for the sampling rules
 | Unit tests with the memory transport | [react-custom-backend](react-custom-backend/README.md#tests) | `react-custom-backend/vitest.setup.ts` and `react-custom-backend/test/observability.ts` |
 | Iframes | [vanilla](vanilla/README.md#child-frames) | The `registerFrame()` loop in `vanilla/main.ts`, and `vanilla/child.ts` |
 | Delivery from a worker | [vanilla](vanilla/README.md#worker-transport) | `transportWorker` in `vanilla/main.ts`, and `vanilla/transport-worker.ts` |
-| Session replay | [react](react/README.md#session-replay) | `react/src/replay-spike.tsx` |
+| Session replay | [react](react/README.md#session-replay) | `react/src/replay-player/`, and the `replay` section in `react/src/observability/config.ts` |
+| A frame that the app registers, and a frame that it does not | [react](react/README.md#the-frames-and-the-bus) | `react/src/panels/frame-panel.tsx` |
+| A window for one panel with the journey of its opener | [react](react/README.md#the-window-of-one-panel) | `react/src/workspace/panel-windows.ts` and `react/src/panel-window/` |
 | Profiler | [vanilla](vanilla/README.md#profiler-pages) | `vanilla/blotter.ts` |
 
 Each example imports the library by its package name, `@utk09/ui-observability`. The vanilla playground is the one exception. It imports `../../src/index`. Your app imports the package name.

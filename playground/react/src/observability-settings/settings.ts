@@ -28,6 +28,10 @@ export interface Settings {
   framePhases: boolean;
   framePacing: boolean;
   console: boolean;
+  webVitals: boolean;
+  /** Session replay. It records only after the user agrees, because requireConsent is on. */
+  replayEnabled: boolean;
+  recordCanvas: boolean;
   transportWorker: boolean;
   compression: "gzip" | "none";
   logBatchSize: number;
@@ -63,6 +67,10 @@ export const DEFAULT_SETTINGS: Settings = {
   framePhases: false,
   framePacing: false,
   console: true,
+  webVitals: true,
+  replayEnabled: true,
+  // A canvas is a large source of events, so it stays off until the app turns it on.
+  recordCanvas: false,
   transportWorker: false,
   compression: "gzip",
   logBatchSize: 100,

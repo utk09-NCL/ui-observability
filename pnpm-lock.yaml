@@ -340,30 +340,6 @@ catalogs:
     '@rrweb/record':
       specifier: 2.2.2
       version: 2.2.2
-    '@rrweb/rrweb-plugin-console-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-console-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-network-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-network-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-sequential-id-record':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/rrweb-plugin-sequential-id-replay':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/types':
-      specifier: 2.2.2
-      version: 2.2.2
-    '@rrweb/utils':
-      specifier: 2.2.2
-      version: 2.2.2
     '@types/react':
       specifier: 19.3.0
       version: 19.3.0
@@ -385,9 +361,6 @@ catalogs:
     react-dom:
       specifier: 19.3.1
       version: 19.3.1
-    rrweb:
-      specifier: 2.2.2
-      version: 2.2.2
     rrweb-player:
       specifier: 2.2.2
       version: 2.2.2
@@ -441,8 +414,6 @@ catalogs:
     web-vitals:
       specifier: 6.2.3
       version: 6.2.3
-
-packageExtensionsChecksum: sha256-4aGWw0aXHlIYyIQLFa+ChIupAll0vPd8YBlrdYRAPp0=
 
 importers:
 
@@ -641,30 +612,6 @@ importers:
       '@rrweb/record':
         specifier: catalog:react
         version: 2.2.2
-      '@rrweb/rrweb-plugin-console-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-console-replay':
-        specifier: catalog:react
-        version: 2.2.2(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-network-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-network-replay':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-sequential-id-record':
-        specifier: catalog:react
-        version: 2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)
-      '@rrweb/rrweb-plugin-sequential-id-replay':
-        specifier: catalog:react
-        version: 2.2.2(rrweb@2.2.2)
-      '@rrweb/types':
-        specifier: catalog:react
-        version: 2.2.2
-      '@rrweb/utils':
-        specifier: catalog:react
-        version: 2.2.2
       '@types/react':
         specifier: catalog:react
         version: 19.3.0
@@ -677,9 +624,6 @@ importers:
       happy-dom:
         specifier: catalog:react
         version: 21.0.4
-      rrweb:
-        specifier: catalog:react
-        version: 2.2.2
       rrweb-player:
         specifier: catalog:react
         version: 2.2.2
@@ -2154,42 +2098,6 @@ packages:
 
   '@rrweb/replay@2.2.2':
     resolution: {integrity: sha512-PumY+65QmOUje7H5TBBhpgMhucmgC9aYpkwfYoy4rhTWQzE93IuvXPivU/YGr0/QNHs+MynffrakMwcXsRcZLQ==}
-
-  '@rrweb/rrweb-plugin-console-record@2.2.2':
-    resolution: {integrity: sha512-lgTklj2MKznnFBeQfLU50+Z0xE19+8TZITCgcdkwOaijIzAUfgvdML9+r7lBUz1DN8erdgnhABuVtJ0aiWvMTw==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      '@rrweb/utils': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-console-replay@2.2.2':
-    resolution: {integrity: sha512-f6dJr0Zf38RHJmMlJgFlUfu017F2JIvGA8hV8+w0T1maNiQgl4s/OX3AELIG8+uQ9liTCaosvbGitodhYMGk+A==}
-    peerDependencies:
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-network-record@2.2.2':
-    resolution: {integrity: sha512-tY8DlIK9WSexN+Vo5Xe01H3RSQE+SERMYtgg6MD0Xezl954M8tsOoQOfHHMRsy+gTpY69MDqsIebaO3kaJTUpA==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      '@rrweb/utils': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-network-replay@2.2.2':
-    resolution: {integrity: sha512-GSqlcoLXHyNxQaypKxsf5JNpT7FviuKlWWxlGCr/lYTtcj9jjVob/Gj5wki+ixdRbMkpwcVpITzloyqtv5oxYA==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-sequential-id-record@2.2.2':
-    resolution: {integrity: sha512-OA0V+pjlpKxqjZRHBhmlEv32PqMpG1hC2rl9w/fPQiqmMyC4xz6jUwViOJ5m4cYTgUpPoafVS8ahdN75Nf/xKw==}
-    peerDependencies:
-      '@rrweb/types': ^2.1.1
-      rrweb: ^2.1.1
-
-  '@rrweb/rrweb-plugin-sequential-id-replay@2.2.2':
-    resolution: {integrity: sha512-KrTL8MbwP5dBi/Q2u/zvUyLi319Dnd1K6SyCm1LdyCkrD0xAwUN8omgmRgx3Sy0UNephcnbp6IMXMzUrne39lA==}
-    peerDependencies:
-      rrweb: ^2.1.1
 
   '@rrweb/types@2.2.2':
     resolution: {integrity: sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w==}
@@ -4814,36 +4722,6 @@ snapshots:
   '@rrweb/replay@2.2.2':
     dependencies:
       '@rrweb/types': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-console-record@2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      '@rrweb/utils': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-console-replay@2.2.2(rrweb@2.2.2)':
-    dependencies:
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-network-record@2.2.2(@rrweb/types@2.2.2)(@rrweb/utils@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      '@rrweb/utils': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-network-replay@2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-sequential-id-record@2.2.2(@rrweb/types@2.2.2)(rrweb@2.2.2)':
-    dependencies:
-      '@rrweb/types': 2.2.2
-      rrweb: 2.2.2
-
-  '@rrweb/rrweb-plugin-sequential-id-replay@2.2.2(rrweb@2.2.2)':
-    dependencies:
       rrweb: 2.2.2
 
   '@rrweb/types@2.2.2': {}

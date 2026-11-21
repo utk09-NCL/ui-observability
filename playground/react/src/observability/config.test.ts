@@ -66,6 +66,41 @@ describe("buildConfig", () => {
   });
 });
 
+describe("replay config", () => {
+  it("records only after the user agrees, and sends to the replay endpoint of the page", () => {
+    const { replay } = buildConfig(DEFAULT_SETTINGS, "anonymous");
+
+    expect(replay).toMatchObject({
+      enabled: true,
+      recordCanvas: false,
+      requireConsent: true,
+      endpoint: `${location.origin}/telemetry/v1/replay`,
+    });
+  });
+
+  it("gives the same loader and headers function each time, because configure() compares references", () => {
+    const first = buildConfig(DEFAULT_SETTINGS, "anonymous").replay;
+    const second = buildConfig(DEFAULT_SETTINGS, "user").replay;
+
+    expect(first?.loader).toBeTypeOf("function");
+    expect(first?.loader).toBe(second?.loader);
+    expect(first?.headers).toBe(authHeaders);
+  });
+
+  it("follows the replay rows of the settings", () => {
+    const { replay } = buildConfig(
+      { ...DEFAULT_SETTINGS, replayEnabled: false, recordCanvas: true },
+      "anonymous",
+    );
+
+    expect(replay).toMatchObject({ enabled: false, recordCanvas: true, requireConsent: true });
+  });
+
+  it("reports the lost records to the tap", () => {
+    expect(buildConfig(DEFAULT_SETTINGS, "anonymous").onDrop).toBeTypeOf("function");
+  });
+});
+
 describe("authHeaders", () => {
   it("sends no header before the login", () => {
     expect(authHeaders()).toEqual({});

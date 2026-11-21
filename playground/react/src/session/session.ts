@@ -23,6 +23,8 @@ export interface Session {
   tenant: string;
   /** The token of this session. The stream reads it here, and not from the module variable. */
   token: string;
+  /** How long the token of the login lives, in milliseconds. The refresh timer starts from it. */
+  expiresInMs: number;
 }
 
 /**
@@ -46,7 +48,12 @@ export function login(api: Api, user: string, tenant: string): Promise<Session> 
       throw error;
     }
 
-    return { user: result.user, tenant: result.tenant, token: result.token };
+    return {
+      user: result.user,
+      tenant: result.tenant,
+      token: result.token,
+      expiresInMs: result.expiresInMs,
+    };
   });
 }
 
@@ -139,7 +146,12 @@ export function switchTenant(api: Api, user: string, tenant: string): Promise<Se
       await revokeOld(api, oldToken);
     }
 
-    return { user: result.user, tenant: result.tenant, token: result.token };
+    return {
+      user: result.user,
+      tenant: result.tenant,
+      token: result.token,
+      expiresInMs: result.expiresInMs,
+    };
   });
 }
 
@@ -178,4 +190,27 @@ export function logoutSharedDevice(api: Api): Promise<void> {
       startAnonymous(getSettingsState().applied);
     }
   });
+}
+
+/**
+ * Refreshes the token of the session. The library needs no call for it. Its headers function
+ * reads the current token on each request, so the next batch carries the new token. The "Token
+ * refresh" recipe says the same.
+ * @param api The client of the app API.
+ * @returns How long the new token lives, in milliseconds.
+ */
+export async function refreshSession(api: Api): Promise<number> {
+  const before = getToken();
+  const result = await api.refresh();
+  if (getToken() !== before) {
+    // A logout or a tenant switch ended this session while the request ran. The new token
+    // belongs to a session that nobody uses, so it is revoked and not kept.
+    await api.logoutToken(result.token).catch(() => undefined);
+
+    return result.expiresInMs;
+  }
+
+  setToken(result.token);
+
+  return result.expiresInMs;
 }

@@ -7,7 +7,7 @@
 // out, because the library also builds a record for the console, or for a breadcrumb when
 // sampling drops it. So the count is "records built", not "records sent".
 
-import type { DiagnosticEvent, LogRecord } from "@utk09/ui-observability";
+import type { DiagnosticEvent, DropSummary, LogRecord } from "@utk09/ui-observability";
 
 const RECENT_LIMIT = 50;
 
@@ -15,6 +15,7 @@ const RECENT_LIMIT = 50;
 // price ticks can't push an ORDER_PLACED or an error record out of the list of the other records.
 const NOISY_NAMESPACES = new Set(["market.prices", "observability.meter"]);
 const DIAGNOSTIC_LIMIT = 20;
+const DROP_LIMIT = 20;
 const BODY_CHARS = 200;
 
 export interface TappedRecord {
@@ -32,11 +33,19 @@ export interface TappedDiagnostic {
   message: string;
 }
 
+export interface TappedDrop {
+  id: number;
+  at: number;
+  summary: DropSummary;
+}
+
 let built = 0;
 let recent: TappedRecord[] = [];
 let recentNoisy: TappedRecord[] = [];
 let reported = 0;
 let diagnostics: TappedDiagnostic[] = [];
+let dropped = 0;
+let drops: TappedDrop[] = [];
 
 function textOf(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -77,9 +86,27 @@ export function tapDiagnostic(event: DiagnosticEvent): void {
   }
 }
 
+/**
+ * Keeps the last 20 loss reports of the library. The library calls the hook with a summary of
+ * the records that it lost, with the reason, and never with their content.
+ * @param summary What was lost and why.
+ */
+export function tapDrop(summary: DropSummary): void {
+  dropped += 1;
+  drops.push({ id: dropped, at: Date.now(), summary });
+  if (drops.length > DROP_LIMIT) {
+    drops.shift();
+  }
+}
+
 /** Returns how many records the processors saw, and the last ones, oldest first. */
 export function readTap(): { built: number; recent: readonly TappedRecord[] } {
   return { built, recent: [...recent, ...recentNoisy].sort((a, b) => a.id - b.id) };
+}
+
+/** Returns the last loss reports, oldest first. */
+export function readDrops(): readonly TappedDrop[] {
+  return [...drops];
 }
 
 /** Returns the last diagnostic reports. */
@@ -94,4 +121,6 @@ export function resetTap(): void {
   recentNoisy = [];
   reported = 0;
   diagnostics = [];
+  dropped = 0;
+  drops = [];
 }

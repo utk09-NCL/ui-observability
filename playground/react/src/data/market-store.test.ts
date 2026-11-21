@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyTick, getMarketState, resetMarket, startTickRate } from "./market-store";
+import { applyTick, getHistory, getMarketState, resetMarket, startTickRate } from "./market-store";
 
 afterEach(() => {
   resetMarket();
@@ -51,5 +51,33 @@ describe("market store", () => {
     resetMarket();
 
     expect(getMarketState()).toEqual({ prices: {}, ticksPerSecond: null });
+  });
+});
+
+describe("price history", () => {
+  it("keeps the mid prices of a pair in order", () => {
+    applyTick("EURUSD", 1.08, 1.082);
+    applyTick("EURUSD", 1.09, 1.092);
+
+    expect(getHistory("EURUSD")[0]).toBeCloseTo(1.081, 10);
+    expect(getHistory("EURUSD")[1]).toBeCloseTo(1.091, 10);
+    expect(getHistory("GBPUSD")).toEqual([]);
+  });
+
+  it("keeps the last 240 prices", () => {
+    for (let tick = 0; tick < 300; tick += 1) {
+      applyTick("EURUSD", tick, tick);
+    }
+
+    expect(getHistory("EURUSD")).toHaveLength(240);
+    expect(getHistory("EURUSD")[0]).toBe(60);
+    expect(getHistory("EURUSD").at(-1)).toBe(299);
+  });
+
+  it("forgets the history on reset", () => {
+    applyTick("EURUSD", 1.08, 1.082);
+    resetMarket();
+
+    expect(getHistory("EURUSD")).toEqual([]);
   });
 });

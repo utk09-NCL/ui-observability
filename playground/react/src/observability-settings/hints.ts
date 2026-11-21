@@ -8,7 +8,7 @@ import type { LogLevel, ObservabilityConfig } from "@utk09/ui-observability";
 import { onOrigin, TRACE_TARGETS, TRACES_PATH } from "./app-routes";
 import type { Settings, SettingKey } from "./settings";
 
-export type Group = "Logging" | "Capture" | "Delivery" | "Privacy and metadata";
+export type Group = "Logging" | "Capture" | "Replay" | "Delivery" | "Privacy and metadata";
 
 /** "runtime" applies through configure() at once. "restart" needs shutdown() and configure(). */
 export type Applies = "runtime" | "restart";
@@ -52,6 +52,13 @@ const LEVELS: LogLevel[] = ["DEBUG", "INFO", "WARN"];
  */
 const createTransportWorker = (): Worker =>
   new Worker(new URL("./transport.worker.ts", import.meta.url), { type: "module" });
+
+/**
+ * The loader of the web-vitals module. The library never imports the package by name, so the app
+ * owns the import. A stable function, because configure() compares references.
+ * @returns A promise that resolves to the web-vitals module.
+ */
+const loadWebVitals = () => import("web-vitals");
 
 /**
  * Click capture, click text, rage clicks and dead clicks are one config key, so the four hints
@@ -337,6 +344,19 @@ export const HINTS: readonly Hint[] = [
     toConfig: (s) => ({ capture: { console: s.console } }),
   },
   {
+    key: "webVitals",
+    path: "capture.webVitals",
+    group: "Capture",
+    label: "Web vitals",
+    options: [true, false],
+    faster: false,
+    cost: "No LCP, CLS and INP points, and no navigation timing.",
+    applies: "runtime",
+    evidence: "expected",
+    why: "The web-vitals package observes the page and reports each metric when it is final.",
+    toConfig: (s) => ({ capture: { webVitals: s.webVitals ? { loader: loadWebVitals } : false } }),
+  },
+  {
     key: "profiler",
     path: "profiler.enabled",
     group: "Capture",
@@ -374,6 +394,34 @@ export const HINTS: readonly Hint[] = [
     evidence: "expected",
     why: "The library runs one frame callback for each frame while the page is visible.",
     toConfig: profilerConfig,
+  },
+  {
+    key: "replayEnabled",
+    path: "replay.enabled",
+    group: "Replay",
+    label: "Session replay",
+    options: [true, false],
+    faster: false,
+    cost: "No replay of what the user saw before an error. The recorder also stops for a user who agreed.",
+    applies: "runtime",
+    // docs/performance.md, run of 2026-11-17 on an Apple M5 Max, 5 runs: the recorder adds 75
+    // microseconds at p50 to a round that adds 20 DOM rows.
+    evidence: "measured",
+    why: "The recorder reads each DOM change and keeps the events in memory. With the setting on, nothing records before the user agrees in Privacy choices.",
+    toConfig: (s) => ({ replay: { enabled: s.replayEnabled } }),
+  },
+  {
+    key: "recordCanvas",
+    path: "replay.recordCanvas",
+    group: "Replay",
+    label: "Record the canvas",
+    options: [false, true],
+    faster: false,
+    cost: "The replay shows the canvas element without its pixels, so the chart panel is blank.",
+    applies: "runtime",
+    evidence: "expected",
+    why: "The recorder then reads the pixels of each canvas. A change starts a new recording and drops the buffer.",
+    toConfig: (s) => ({ replay: { recordCanvas: s.recordCanvas } }),
   },
   TRANSPORT_WORKER_HINT,
   {

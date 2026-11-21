@@ -1,4 +1,5 @@
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { defineConfig } from "vitest/config";
 
@@ -22,6 +23,18 @@ export default defineConfig({
     proxy: {
       "/api": { target: appApi, ws: true },
       "/telemetry": { target: ingest, rewrite: (path) => path.replace(/^\/telemetry/, "") },
+    },
+  },
+  // The build has four pages: the workspace, the two frames of the Research and the Untrusted
+  // panels, and the window of one panel. The dev server serves each of them from the project root.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("index.html", import.meta.url)),
+        research: fileURLToPath(new URL("research.html", import.meta.url)),
+        untrusted: fileURLToPath(new URL("untrusted.html", import.meta.url)),
+        panel: fileURLToPath(new URL("panel.html", import.meta.url)),
+      },
     },
   },
   // The workers are created with type "module", so the build keeps them as modules. A worker

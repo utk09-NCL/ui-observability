@@ -25,6 +25,8 @@ export interface OrderApi {
 export interface Api extends OrderApi {
   login(user: string, tenant: string): Promise<LoginResult>;
   logout(): Promise<void>;
+  /** Gives a new token for the same session, and ends the old token. */
+  refresh(): Promise<LoginResult>;
   /** Revokes a token other than the current one, for example the token of the old tenant. */
   logoutToken(token: string): Promise<void>;
   tenants(): Promise<Tenant[]>;
@@ -82,6 +84,7 @@ export function createApi(getToken: () => string | undefined): Api {
   return {
     login: (user, tenant) => request("POST", "/api/login", { user, tenant }),
     logout: () => request("POST", "/api/logout"),
+    refresh: () => request("POST", "/api/refresh"),
     logoutToken: (token) => request("POST", "/api/logout", undefined, token),
     tenants: () => request("GET", "/api/tenants"),
     listOrders: () => {

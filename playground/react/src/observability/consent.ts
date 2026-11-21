@@ -1,15 +1,15 @@
 // src/observability/consent.ts
 //
 // The privacy choices of the user, kept in localStorage. A withdrawal must survive a reload,
-// because the next page load calls configure() before any component runs. Replay is a stub in
-// this stage. It has a switch so the "Privacy choices" dialog has its final shape.
+// because the next page load calls configure() before any component runs. The replay choice does
+// too, because replay.requireConsent keeps the recorder off until startReplay() runs.
 
 const STORAGE_KEY = "react-workspace.consent";
 
 export interface Consent {
   /** False after the user withdrew consent. The library then builds no record. */
   telemetry: boolean;
-  /** Stub. Nothing records a replay yet, so the value only goes into the stored choice. */
+  /** True after the user agreed to the session replay. */
   replay: boolean;
 }
 
@@ -50,5 +50,14 @@ export function saveConsent(consent: Consent): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(consent));
   } catch {
     // The choice then lasts until the page closes. Nothing else depends on the store.
+  }
+}
+
+/** Removes the stored choices, so the next user of a device starts from the defaults. */
+export function resetConsent(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing to remove when the store is blocked.
   }
 }

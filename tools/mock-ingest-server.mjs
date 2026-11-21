@@ -8,6 +8,8 @@
 // Tests:   curl -X POST "http://localhost:8787/__reset"
 //          curl "http://localhost:8787/__received"   (empty without UIOBS_MOCK_RECORD=1)
 //          curl "http://localhost:8787/__echo"
+// Replay: curl "http://localhost:8787/v1/replay/recordings"        (the stored recordings)
+//         curl "http://localhost:8787/v1/replay/recordings/<id>"   (one recording, in order)
 
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -63,6 +65,23 @@ const seenBatchIds = new Map(); // idempotency, as the real server must also do
 // Every parsed body by ingest path, so a test can assert what the server really got.
 const received = new Map();
 
+// The replay segments that /v1/replay received, grouped by recording. Unlike /__received this
+// store is always on, because the replay player of the playground reads it. It is bounded: when a
+// limit is over, the oldest recording leaves first. A full snapshot of a large page is one
+// segment of several MB, so the byte limit is the one that matters.
+const REPLAY_LIMITS = {
+  maxRecordings: 20,
+  maxSegmentsPerRecording: 100,
+  maxSegmentBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 64 * 1024 * 1024,
+};
+// The library makes a recording id with crypto.randomUUID(). The route accepts this shape only,
+// so an id from a URL can't be anything else than a key of the store.
+const REPLAY_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+// id -> { id, service, sessionId, tabId, startedAt, bytes, segments: Map(sequence -> { events, text }) }
+const replayRecordings = new Map();
+let replayBytes = 0;
+
 // Keeps one request for GET /__received, or nothing when recording is off.
 function remember(path, entry) {
   if (!RECORD) {
@@ -84,6 +103,103 @@ function reset() {
   samplingRules = "";
   seenBatchIds.clear();
   received.clear();
+  replayRecordings.clear();
+  replayBytes = 0;
+}
+
+// Removes the oldest recording. A Map keeps the order of insertion, so the first key is the
+// oldest recording.
+function evictOldestReplay() {
+  const [id, recording] = replayRecordings.entries().next().value;
+  replayRecordings.delete(id);
+  replayBytes -= recording.bytes;
+  console.log(`[replay] evicted recording=${id} bytes=${recording.bytes}`);
+}
+
+// Stores one replay segment. Returns "stored", "duplicate" or a text that says why it was not
+// stored. A segment with the same recording and sequence replaces the first one, because the
+// library sends a segment again after a failed attempt.
+function storeReplaySegment(payload, text) {
+  const id = payload["replay.id"];
+  const sequence = payload.sequence;
+  if (typeof id !== "string" || !REPLAY_ID_PATTERN.test(id)) {
+    return "the replay.id is not an id of this library";
+  }
+  if (!Number.isInteger(sequence) || sequence < 0) {
+    return "the sequence is not a whole number of 0 or more";
+  }
+  if (!Array.isArray(payload.events)) {
+    return "events is not a list";
+  }
+  if (text.length > REPLAY_LIMITS.maxSegmentBytes) {
+    return "the segment is over the size limit";
+  }
+
+  let recording = replayRecordings.get(id);
+  if (!recording) {
+    recording = {
+      id,
+      service: String(payload["service.name"] ?? ""),
+      sessionId: String(payload["session.id"] ?? ""),
+      tabId: String(payload["tab.id"] ?? ""),
+      startedAt: new Date().toISOString(),
+      bytes: 0,
+      segments: new Map(),
+    };
+    replayRecordings.set(id, recording);
+  }
+
+  const before = recording.segments.get(sequence);
+  if (!before && recording.segments.size >= REPLAY_LIMITS.maxSegmentsPerRecording) {
+    return "the recording has the most segments that the store keeps";
+  }
+
+  const delta = text.length - (before?.text.length ?? 0);
+  recording.segments.set(sequence, { events: payload.events.length, text });
+  recording.bytes += delta;
+  replayBytes += delta;
+  // The recording that just got a segment is the newest, so it is last in the order of eviction.
+  replayRecordings.delete(id);
+  replayRecordings.set(id, recording);
+  while (
+    replayRecordings.size > 1 &&
+    (replayRecordings.size > REPLAY_LIMITS.maxRecordings ||
+      replayBytes > REPLAY_LIMITS.maxTotalBytes)
+  ) {
+    evictOldestReplay();
+  }
+
+  return before ? "duplicate" : "stored";
+}
+
+// The recordings for GET /v1/replay/recordings, newest first. The list has no events.
+function listReplayRecordings() {
+  return [...replayRecordings.values()].reverse().map((recording) => ({
+    id: recording.id,
+    service: recording.service,
+    sessionId: recording.sessionId,
+    tabId: recording.tabId,
+    startedAt: recording.startedAt,
+    segments: recording.segments.size,
+    events: [...recording.segments.values()].reduce((sum, segment) => sum + segment.events, 0),
+    bytes: recording.bytes,
+  }));
+}
+
+// One recording with its segments in the order of their sequence numbers.
+function readReplayRecording(recording) {
+  const segments = [...recording.segments.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([sequence, segment]) => ({ sequence, events: JSON.parse(segment.text).events }));
+
+  return {
+    id: recording.id,
+    service: recording.service,
+    sessionId: recording.sessionId,
+    tabId: recording.tabId,
+    startedAt: recording.startedAt,
+    segments,
+  };
 }
 
 function sendJson(res, value) {
@@ -455,6 +571,33 @@ async function handle(req, res) {
     return;
   }
 
+  // The replay player of the playground reads the stored recordings. The recording id is checked
+  // before it is looked up.
+  if (req.method === "GET" && url.pathname === "/v1/replay/recordings") {
+    res.setHeader("Cache-Control", "no-store");
+    sendJson(res, listReplayRecordings());
+    return;
+  }
+  const recordingPath = /^\/v1\/replay\/recordings\/([^/]+)$/.exec(url.pathname);
+  if (req.method === "GET" && recordingPath) {
+    const id = recordingPath[1];
+    res.setHeader("Cache-Control", "no-store");
+    if (!REPLAY_ID_PATTERN.test(id)) {
+      res.setHeader("Content-Type", "application/json");
+      res.writeHead(400).end(JSON.stringify({ error: "the recording id is not valid" }));
+      return;
+    }
+
+    const recording = replayRecordings.get(id);
+    if (!recording) {
+      res.setHeader("Content-Type", "application/json");
+      res.writeHead(404).end(JSON.stringify({ error: "no recording has this id" }));
+      return;
+    }
+    sendJson(res, readReplayRecording(recording));
+    return;
+  }
+
   // Answers with the request headers as the server saw them. A test reads traceparent here,
   // because a page can't read the headers that the browser really sent.
   if (url.pathname === "/__echo" && req.method === "GET") {
@@ -599,6 +742,13 @@ async function handle(req, res) {
       `[replay] replay=${payload["replay.id"]} sequence=${payload.sequence} events=${events} ` +
         `bytes=${raw.length} session=${payload["session.id"]}`,
     );
+    const outcome = storeReplaySegment(payload, raw.toString("utf8"));
+    if (outcome !== "stored" && outcome !== "duplicate") {
+      console.error(`[error] replay segment not stored: ${outcome}`);
+      res.setHeader("Content-Type", "application/json");
+      res.writeHead(400).end(JSON.stringify({ error: outcome }));
+      return;
+    }
     res.writeHead(204).end();
     return;
   }

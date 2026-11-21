@@ -3,9 +3,6 @@
 // The worker of the Positions panel. It computes the profit and loss and logs what it did. The
 // page registers this worker with registerWorker(), so the library forwards the records of this
 // worker to the page. The page batches them and runs its redact hook on them.
-//
-// The worker calls configure() too. A worker that starts before the page runtime gets no owner,
-// and then it sends its own records, with its own config, after a timeout.
 
 import { configure, getLogger } from "@utk09/ui-observability";
 import { computePnl, isToWorker, type FromWorker, type PositionInput } from "./positions-protocol";
@@ -14,13 +11,14 @@ const COMPUTE_EVERY_MS = 500;
 // The worker computes twice a second. A summary every 20 passes is one record in 10 seconds.
 const LOG_EVERY_COMPUTES = 20;
 
+// The worker calls configure() too. It has no endpoint, so a worker that finds no owner sends
+// nothing. That happens when the page runs paused, because a paused runtime starts no bus. A
+// worker can't read the consent of the user, because it has no localStorage. With an endpoint, it
+// would send its own records around a withdrawal of consent.
 configure({
   serviceName: "react-workspace-positions",
   serviceVersion: "0.0.0",
   environment: "local",
-  // The worker sends its own records only when it finds no owner, so it names the same endpoint
-  // as the page. A forwarded record never goes to this URL.
-  endpoint: new URL("/telemetry/v1/logs", self.location.origin).href,
   minLevel: "DEBUG",
 });
 

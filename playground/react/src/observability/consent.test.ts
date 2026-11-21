@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConsent, saveConsent } from "./consent";
+import { loadConsent, resetConsent, saveConsent } from "./consent";
 
 const KEY = "react-workspace.consent";
 
@@ -31,17 +31,27 @@ describe("consent", () => {
     expect(loadConsent()).toEqual({ telemetry: true, replay: false });
   });
 
+  it("goes back to the defaults on reset, so the next user of a device decides again", () => {
+    saveConsent({ telemetry: false, replay: true });
+
+    resetConsent();
+
+    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(loadConsent()).toEqual({ telemetry: true, replay: false });
+  });
+
   it("works when the storage throws", () => {
     // A spy on Storage.prototype does not reach the localStorage of happy-dom, so the spec
     // replaces the global.
     const fail = (): never => {
       throw new Error("blocked");
     };
-    vi.stubGlobal("localStorage", { getItem: fail, setItem: fail });
+    vi.stubGlobal("localStorage", { getItem: fail, setItem: fail, removeItem: fail });
 
     expect(loadConsent()).toEqual({ telemetry: true, replay: false });
     expect(() => {
       saveConsent({ telemetry: false, replay: false });
+      resetConsent();
     }).not.toThrow();
   });
 });
