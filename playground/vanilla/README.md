@@ -13,23 +13,23 @@ pnpm run dev
 
 `pnpm run dev` starts three processes. Each terminal line starts with the number of its process.
 
-| Number | Process                                      | Address                                               |
-| ------ | -------------------------------------------- | ----------------------------------------------------- |
-| `[0]`  | Vite server of the playground                | `http://localhost:5173/playground/vanilla/index.html` |
-| `[1]`  | Mock ingest server                           | `http://localhost:8787`                               |
-| `[2]`  | Vite server for the cross-origin child frame | `http://localhost:5174`                               |
+| Number | Process | Address |
+| --- | --- | --- |
+| `[0]` | Vite server of the playground | `http://localhost:5173/playground/vanilla/index.html` |
+| `[1]` | Mock ingest server | `http://localhost:8787` |
+| `[2]` | Vite server for the cross-origin child frame | `http://localhost:5174` |
 
 Vite opens the main page in your browser. To stop that, run `BROWSER=none pnpm run dev`. Watch the lines that start with `[1]`.
 
 ## Pages
 
-| Page                       | Path                                      | Use                                                                   |
-| -------------------------- | ----------------------------------------- | --------------------------------------------------------------------- |
-| Main page                  | `/playground/vanilla/index.html`          | Each capture, journeys, durability, the profiler and session replay   |
-| Main page, worker delivery | `/playground/vanilla/index.html?worker=1` | The same page. A dedicated worker encodes and sends each batch.       |
-| Profiler blotter           | `/playground/vanilla/blotter.html`        | A blotter of 5,000 rows that profiler probes time                     |
-| Profiler benchmark         | `/playground/vanilla/profiler.html`       | The cost of one `begin()` and `end()` pair of a probe, in nanoseconds |
-| Child frame                | `/playground/vanilla/child.html`          | The main page loads it two times, from port 5173 and from port 5174   |
+| Page | Path | Use |
+| --- | --- | --- |
+| Main page | `/playground/vanilla/index.html` | Each capture, journeys, durability, the profiler and session replay |
+| Main page, worker delivery | `/playground/vanilla/index.html?worker=1` | The same page. A dedicated worker encodes and sends each batch. |
+| Profiler blotter | `/playground/vanilla/blotter.html` | A blotter of 5,000 rows that profiler probes time |
+| Profiler benchmark | `/playground/vanilla/profiler.html` | The cost of one `begin()` and `end()` pair of a probe, in nanoseconds |
+| Child frame | `/playground/vanilla/child.html` | The main page loads it two times, from port 5173 and from port 5174 |
 
 ## At startup
 
@@ -49,40 +49,40 @@ A record reaches the terminal about two seconds after the click. Each click also
 
 ### Manual
 
-| Control                                                          | Look for in the terminal                                                                                                                                             |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **info**                                                         | `INFO [playground] [log] hello from the playground`                                                                                                                  |
-| **logAction**                                                    | `[action] ORDER_SUBMIT`. Sampling never drops an action.                                                                                                             |
-| **gauge**                                                        | `[metric] grid.render`. The click sets the gauge and flushes, so the point does not wait for the metric interval.                                                    |
-| **startMeasure**                                                 | `[metric] ui.measure.duration` and two `ui.measure.phase.duration` records. A `[traces]` batch has the span `checkout` with the child spans `validate` and `submit`. |
-| **logger.error**                                                 | `ERROR [playground] [log] something went wrong`                                                                                                                      |
-| **Defer payload builds**, then **log a payload, then change it** | `[log] Payload mode sample`. [Deferred payloads](../../docs/configuration.md#deferred-payloads) explains the difference between the two modes.                       |
+| Control | Look for in the terminal |
+| --- | --- |
+| **info** | `INFO [playground] [log] hello from the playground` |
+| **logAction** | `[action] ORDER_SUBMIT`. Sampling never drops an action. |
+| **gauge** | `[metric] grid.render`. The click sets the gauge and flushes, so the point does not wait for the metric interval. |
+| **startMeasure** | `[metric] ui.measure.duration` and two `ui.measure.phase.duration` records. A `[traces]` batch has the span `checkout` with the child spans `validate` and `submit`. |
+| **logger.error** | `ERROR [playground] [log] something went wrong` |
+| **Defer payload builds**, then **log a payload, then change it** | `[log] Payload mode sample`. [Deferred payloads](../../docs/configuration.md#deferred-payloads) explains the difference between the two modes. |
 
 ### Journeys
 
-| Control                                             | Look for                                                                                                    |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **startJourney**                                    | The **Diagnostics** panel shows the journey id. Each later record shows that id in `journey=`.              |
-| **endJourney**                                      | Each later record shows `journey=-`.                                                                        |
+| Control | Look for |
+| --- | --- |
+| **startJourney** | The **Diagnostics** panel shows the journey id. Each later record shows that id in `journey=`. |
+| **endJourney** | Each later record shows `journey=-`. |
 | **open a second window carrying the journey token** | A new tab opens with the URL parameter `__uiobs_journey`. The records of the new tab show the same journey. |
 
 [Context & Correlation](../../docs/api.md#context--correlation) lists the journey functions.
 
 ### Auto-capture
 
-| Control                                                                        | Look for in the terminal                                                                                                              |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **throw an uncaught error**                                                    | `ERROR [playground] [system] uncaught from a timeout`                                                                                 |
-| **unhandled rejection**                                                        | `ERROR [playground] [system] nobody caught me`                                                                                        |
-| **fetch a 404**                                                                | `WARN [system] GET http://localhost:8787/does-not-exist returned 404`. The `[traces]` batch has a `[client] GET` span marked `ERROR`. |
-| **log a circular object**                                                      | `INFO [log] circular payload`. The log call does not throw.                                                                           |
-| **block the page for 300 ms**                                                  | `[metric] ui.long_frame.duration`. Chrome can report the frame some seconds later. Firefox and Safari report no long frames.          |
-| **console.error from app code**                                                | `ERROR [system] grid failed to render`                                                                                                |
-| **performance.measure**                                                        | `[metric] ui.user_timing.duration`. The library sums the measures and sends one point after 10 seconds.                               |
-| **a button that does nothing**                                                 | One click gives `[event] ui.dead_click`. Three fast clicks give `[event] ui.rage_click`.                                              |
-| **Server timing**, then **fetch server timing entries**                        | The fetch span and record of `/__timing` get the `Server-Timing` entries. The terminal does not print them.                           |
-| **Browser reports**, **Resource timing**, **Lifecycle events**                 | Each box turns one capture on or off with `configure()`. The **Diagnostics** panel shows `config.reconfigured`.                       |
-| **Permit remote capture switches**, then **send capture rules for 10 seconds** | The server turns on `serverTiming` and `lifecycle` for 10 seconds. The page permits only these two switches.                          |
+| Control | Look for in the terminal |
+| --- | --- |
+| **throw an uncaught error** | `ERROR [playground] [system] uncaught from a timeout` |
+| **unhandled rejection** | `ERROR [playground] [system] nobody caught me` |
+| **fetch a 404** | `WARN [system] GET http://localhost:8787/does-not-exist returned 404`. The `[traces]` batch has a `[client] GET` span marked `ERROR`. |
+| **log a circular object** | `INFO [log] circular payload`. The log call does not throw. |
+| **block the page for 300 ms** | `[metric] ui.long_frame.duration`. Chrome can report the frame some seconds later. Firefox and Safari report no long frames. |
+| **console.error from app code** | `ERROR [system] grid failed to render` |
+| **performance.measure** | `[metric] ui.user_timing.duration`. The library sums the measures and sends one point after 10 seconds. |
+| **a button that does nothing** | One click gives `[event] ui.dead_click`. Three fast clicks give `[event] ui.rage_click`. |
+| **Server timing**, then **fetch server timing entries** | The fetch span and record of `/__timing` get the `Server-Timing` entries. The terminal does not print them. |
+| **Browser reports**, **Resource timing**, **Lifecycle events** | Each box turns one capture on or off with `configure()`. The **Diagnostics** panel shows `config.reconfigured`. |
+| **Permit remote capture switches**, then **send capture rules for 10 seconds** | The server turns on `serverTiming` and `lifecycle` for 10 seconds. The page permits only these two switches. |
 
 [Auto-Capture Options](../../docs/configuration.md#auto-capture-options) and [Remote capture switches](../../docs/configuration.md#remote-capture-switches) describe each capture.
 
@@ -104,13 +104,13 @@ The recorder masks each text on the page except the paragraph with `data-observa
 
 ### Durability
 
-| Control                                              | Look for                                                                                                                              |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **250 logs in a burst**                              | Three `[batch]` lines with 100, 100 and 50 records. Chrome hides the `DEBUG` lines in the console until you select **Verbose**.       |
-| **toggle forced 503 on the server**                  | `[control] forcedStatus=503`. Then `[forced 503] batch=<id> attempt=<n>` for each send. **Diagnostics** shows `transport.http_error`. |
-| **what is waiting**                                  | **Diagnostics** shows the number of batches in storage and the failed sends in a row. During a forced 503, both numbers go up.        |
-| **toggle forced 503 on the server** again            | `[control] forcedStatus=200`. The stored batches arrive with their first batch ids.                                                   |
-| **toggle server sampling rules (10% of playground)** | The server sends rules that keep 10 percent of the `playground` records for one minute.                                               |
+| Control | Look for |
+| --- | --- |
+| **250 logs in a burst** | Three `[batch]` lines with 100, 100 and 50 records. Chrome hides the `DEBUG` lines in the console until you select **Verbose**. |
+| **toggle forced 503 on the server** | `[control] forcedStatus=503`. Then `[forced 503] batch=<id> attempt=<n>` for each send. **Diagnostics** shows `transport.http_error`. |
+| **what is waiting** | **Diagnostics** shows the number of batches in storage and the failed sends in a row. During a forced 503, both numbers go up. |
+| **toggle forced 503 on the server** again | `[control] forcedStatus=200`. The stored batches arrive with their first batch ids. |
+| **toggle server sampling rules (10% of playground)** | The server sends rules that keep 10 percent of the `playground` records for one minute. |
 
 The sampling rules arrive with the next accepted batch. Click **info** one time. Then click **250 logs in a burst**. The **Diagnostics** panel shows how many records sampling dropped.
 
@@ -145,10 +145,10 @@ Each page accepts `?autorun=1`. The page text lists the other URL parameters.
 
 ## Files
 
-| File                  | Content                                                                |
-| --------------------- | ---------------------------------------------------------------------- |
-| `main.ts`             | The main page. One `configure()` call turns on each capture.           |
-| `child.ts`            | The child frame. It calls `configure()` and the bus resolves its role. |
-| `transport-worker.ts` | The worker for `?worker=1`. It calls `serveTransportWorker()`.         |
-| `blotter.ts`          | The profiler blotter page                                              |
-| `profiler.ts`         | The profiler benchmark page                                            |
+| File | Content |
+| --- | --- |
+| `main.ts` | The main page. One `configure()` call turns on each capture. |
+| `child.ts` | The child frame. It calls `configure()` and the bus resolves its role. |
+| `transport-worker.ts` | The worker for `?worker=1`. It calls `serveTransportWorker()`. |
+| `blotter.ts` | The profiler blotter page |
+| `profiler.ts` | The profiler benchmark page |

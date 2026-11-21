@@ -4,35 +4,35 @@ This document gives each function that the package exports. [Configuration Optio
 
 ## Lifecycle & Setup
 
-| Function                                  | Description                                                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `configure(config)`                       | Starts the runtime singleton, or updates it.                                                                                                                                                                                                                                                                                                                                |
-| `shutdown(options?)`                      | Stops every subsystem. By default it sends the pending records, runs the exit flush and cancels a request that is still open after that. `pending: "discard"` sends nothing. `clearStorage` also removes the stored data. Later calls do nothing until the next `configure()`. See [Shutdown options](#shutdown-options).                                                   |
+| Function | Description |
+| --- | --- |
+| `configure(config)` | Starts the runtime singleton, or updates it. |
+| `shutdown(options?)` | Stops every subsystem. By default it sends the pending records, runs the exit flush and cancels a request that is still open after that. `pending: "discard"` sends nothing. `clearStorage` also removes the stored data. Later calls do nothing until the next `configure()`. See [Shutdown options](#shutdown-options). |
 | `rotateSecurityContext(update, options?)` | Changes the delivery identity and the routing settings in `update.routing` together. Use it at logout or a tenant change. A call during another rotation runs after it. The rotation code loads on the first call. See [runtime policies](runtime-policies.md#security-context-rotation). It rejects before the first `configure()` call that works and after `shutdown()`. |
-| `setConfigurationLocked(locked)`          | Locks or unlocks changes through `configure()`. Call it after `configure()`. A lock before the first `configure()` refuses that call too.                                                                                                                                                                                                                                   |
+| `setConfigurationLocked(locked)` | Locks or unlocks changes through `configure()`. Call it after `configure()`. A lock before the first `configure()` refuses that call too. |
 
 ## Logging Methods
 
-| Function                                  | Description                                                                                                                                                                                                    |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `getLogger(namespace, options?)`          | Returns the cached logger for a namespace. With `options`, it returns a new logger that is not cached.                                                                                                         |
-| `trace(msg, payload?)`                    | Logs a TRACE record.                                                                                                                                                                                           |
-| `debug(msg, payload?)`                    | Logs a DEBUG record.                                                                                                                                                                                           |
-| `info(msg, payload?)`                     | Logs an INFO record.                                                                                                                                                                                           |
-| `warn(msg, payload?)`                     | Logs a WARN record.                                                                                                                                                                                            |
-| `error(msg, err?, payload?)`              | Logs an ERROR record with the error and the breadcrumb trail.                                                                                                                                                  |
-| `fatal(msg, err?, payload?)`              | Logs a FATAL record with the error and the breadcrumb trail.                                                                                                                                                   |
-| `logAction(name, payload?)`               | Logs one user action.                                                                                                                                                                                          |
-| `logEvent(name, payload?)`                | Logs one domain or lifecycle event.                                                                                                                                                                            |
-| `counter(name, { unit? })`                | Gives a counter. `add(value, attrs?)` sums a value of 0 or larger in memory. The library sends one point for each attribute set at each interval.                                                              |
-| `gauge(name, { unit? })`                  | Gives a gauge. `set(value, attrs?)` keeps the last value for each attribute set in memory. The library sends that value as one point at each interval.                                                         |
-| `histogram(name, { unit?, boundaries? })` | Gives a histogram. `record(value, attrs?)` counts a value in buckets in memory. The library sends one point for each attribute set at each interval.                                                           |
-| `measure(name, fn, attrs?)`               | Calls `fn` and times the call with a measure. A promise result ends the measure when it settles. A throw or a rejection gives the outcome `"error"`, and the caller gets the error. See [Measures](#measures). |
-| `startMeasure(name, attrs?)`              | Times an operation with named phases. See [Measures](#measures).                                                                                                                                               |
-| `profiler.probe(name, options?)`          | Gives a probe that times code spans with a small fixed cost. See [Profiler](#profiler).                                                                                                                        |
-| `profiler.time(name, fn)`                 | Calls `fn` and times the call with the probe of the name. A promise result ends the span when it settles. See [Profiler](#profiler).                                                                           |
-| `startReplay()`                           | Starts the session replay recorder. With `replay.requireConsent`, nothing records before this call. See [Session replay](#session-replay).                                                                     |
-| `stopReplay()`                            | Stops the session replay recorder and drops each replay event that is not sent.                                                                                                                                |
+| Function | Description |
+| --- | --- |
+| `getLogger(namespace, options?)` | Returns the cached logger for a namespace. With `options`, it returns a new logger that is not cached. |
+| `trace(msg, payload?)` | Logs a TRACE record. |
+| `debug(msg, payload?)` | Logs a DEBUG record. |
+| `info(msg, payload?)` | Logs an INFO record. |
+| `warn(msg, payload?)` | Logs a WARN record. |
+| `error(msg, err?, payload?)` | Logs an ERROR record with the error and the breadcrumb trail. |
+| `fatal(msg, err?, payload?)` | Logs a FATAL record with the error and the breadcrumb trail. |
+| `logAction(name, payload?)` | Logs one user action. |
+| `logEvent(name, payload?)` | Logs one domain or lifecycle event. |
+| `counter(name, { unit? })` | Gives a counter. `add(value, attrs?)` sums a value of 0 or larger in memory. The library sends one point for each attribute set at each interval. |
+| `gauge(name, { unit? })` | Gives a gauge. `set(value, attrs?)` keeps the last value for each attribute set in memory. The library sends that value as one point at each interval. |
+| `histogram(name, { unit?, boundaries? })` | Gives a histogram. `record(value, attrs?)` counts a value in buckets in memory. The library sends one point for each attribute set at each interval. |
+| `measure(name, fn, attrs?)` | Calls `fn` and times the call with a measure. A promise result ends the measure when it settles. A throw or a rejection gives the outcome `"error"`, and the caller gets the error. See [Measures](#measures). |
+| `startMeasure(name, attrs?)` | Times an operation with named phases. See [Measures](#measures). |
+| `profiler.probe(name, options?)` | Gives a probe that times code spans with a small fixed cost. See [Profiler](#profiler). |
+| `profiler.time(name, fn)` | Calls `fn` and times the call with the probe of the name. A promise result ends the span when it settles. See [Profiler](#profiler). |
+| `startReplay()` | Starts the session replay recorder. With `replay.requireConsent`, nothing records before this call. See [Session replay](#session-replay). |
+| `stopReplay()` | Stops the session replay recorder and drops each replay event that is not sent. |
 
 The level methods give records with `log.type: "log"`. Records of the library itself have `log.type: "system"`. A logger has no metric method. Use `counter`, `gauge` or `histogram`. Each instrument drops a value that is not finite and reports `record.dropped_malformed`.
 
@@ -184,21 +184,21 @@ configure({
 
 ## Context & Correlation
 
-| Function                           | Description                                                                                                                                                                                                                                       |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setContext(values)`               | Merges an attribute map into the ambient context. Each later record has the attributes. A `null` value removes its key. An `undefined` value keeps the current value. A value that is not an object reports `config.invalid` and changes nothing. |
-| `removeContext(key)`               | Removes one attribute from the ambient context.                                                                                                                                                                                                   |
-| `addBreadcrumb(message, data?)`    | Adds a breadcrumb with the category `custom`. The next error record carries the trail. The library copies `data` at the call.                                                                                                                     |
-| `startJourney(name, options?)`     | Starts a journey across windows. `options.parent: true` links the active journey as the parent. `options.id` sets the id, 1 to 64 letters, digits, `_`, `.`, `:` or `-`. Another value gives a new id and a `config.invalid` report.              |
-| `endJourney()`                     | Ends the active journey.                                                                                                                                                                                                                          |
-| `currentJourney()`                 | Returns the active `Journey`, or null.                                                                                                                                                                                                            |
-| `getJourneyToken()`                | Serializes the active journey into a URL token. Returns null with no active journey, or for a token above the size limit.                                                                                                                         |
-| `adoptJourney(token)`              | Adopts a journey token into this context.                                                                                                                                                                                                         |
-| `newTrace()`                       | Starts a new trace. Later records and requests have the new trace id.                                                                                                                                                                             |
-| `getTraceHeaders()`                | Returns the W3C `traceparent` header for an outgoing request.                                                                                                                                                                                     |
-| `registerWorker(worker, options?)` | Attaches a Web Worker or MessagePort to the bus, with its permissions. Returns a function that removes the registration.                                                                                                                          |
-| `registerFrame(frame, options)`    | Registers a child iframe element or window at its exact origin, with its permissions. Returns a function that removes the registration. A child frame forwards only after its registration, unless `bus.sourcePolicy` is `trusted-origin`.        |
-| `newSession()`                     | Rotates correlation in this tab. Use `rotateSecurityContext()` for logout or tenant changes. It sends the open metric points, ends the active trace and journey, and clears the breadcrumbs. Other tabs read the new id at their next startup.    |
+| Function | Description |
+| --- | --- |
+| `setContext(values)` | Merges an attribute map into the ambient context. Each later record has the attributes. A `null` value removes its key. An `undefined` value keeps the current value. A value that is not an object reports `config.invalid` and changes nothing. |
+| `removeContext(key)` | Removes one attribute from the ambient context. |
+| `addBreadcrumb(message, data?)` | Adds a breadcrumb with the category `custom`. The next error record carries the trail. The library copies `data` at the call. |
+| `startJourney(name, options?)` | Starts a journey across windows. `options.parent: true` links the active journey as the parent. `options.id` sets the id, 1 to 64 letters, digits, `_`, `.`, `:` or `-`. Another value gives a new id and a `config.invalid` report. |
+| `endJourney()` | Ends the active journey. |
+| `currentJourney()` | Returns the active `Journey`, or null. |
+| `getJourneyToken()` | Serializes the active journey into a URL token. Returns null with no active journey, or for a token above the size limit. |
+| `adoptJourney(token)` | Adopts a journey token into this context. |
+| `newTrace()` | Starts a new trace. Later records and requests have the new trace id. |
+| `getTraceHeaders()` | Returns the W3C `traceparent` header for an outgoing request. |
+| `registerWorker(worker, options?)` | Attaches a Web Worker or MessagePort to the bus, with its permissions. Returns a function that removes the registration. |
+| `registerFrame(frame, options)` | Registers a child iframe element or window at its exact origin, with its permissions. Returns a function that removes the registration. A child frame forwards only after its registration, unless `bus.sourcePolicy` is `trusted-origin`. |
+| `newSession()` | Rotates correlation in this tab. Use `rotateSecurityContext()` for logout or tenant changes. It sends the open metric points, ends the active trace and journey, and clears the breadcrumbs. Other tabs read the new id at their next startup. |
 
 See [runtime policies, operational budgets and migration](runtime-policies.md) for `rotateSecurityContext()`, `registerFrame()`, source permissions, `setConfigurationLocked()`, `getHealth()` and configurable cache/bus budgets. Defaults favor privacy and isolation; applications can explicitly choose broader capture and delivery policies.
 
@@ -206,27 +206,27 @@ See [runtime policies, operational budgets and migration](runtime-policies.md) f
 
 ## Delivery & Diagnostics
 
-| Function                  | Description                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `flush(options?)`         | Sends the records in memory. Then it waits until each record has a final state, or until `timeoutMs` passes. The default is 5000 ms. It returns a `FlushResult` and never rejects. See [Flush result](#flush-result).                                                                                                                                                                                  |
-| `getDiagnosticCounters()` | Returns the count of each diagnostic code.                                                                                                                                                                                                                                                                                                                                                             |
-| `getHealth()`             | Returns the state of this SDK copy. It has the SDK version, the status, the delivery role, the lock and cache state, the issue codes and the policies. The status is `unconfigured`, `disabled`, `starting`, `ready`, `rotating`, `degraded` or `stopped`. The `delivery` block has the delivery state. See [Delivery health](#delivery-health).                                                       |
-| `collectDebugBundle()`    | Returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary. The summary has no headers and no URL query. A plugin or a custom serializer shows only its name. The privacy hooks process the breadcrumbs. A debug buffer record keeps its context attributes. Your app decides where to send it. |
+| Function | Description |
+| --- | --- |
+| `flush(options?)` | Sends the records in memory. Then it waits until each record has a final state, or until `timeoutMs` passes. The default is 5000 ms. It returns a `FlushResult` and never rejects. See [Flush result](#flush-result). |
+| `getDiagnosticCounters()` | Returns the count of each diagnostic code. |
+| `getHealth()` | Returns the state of this SDK copy. It has the SDK version, the status, the delivery role, the lock and cache state, the issue codes and the policies. The status is `unconfigured`, `disabled`, `starting`, `ready`, `rotating`, `degraded` or `stopped`. The `delivery` block has the delivery state. See [Delivery health](#delivery-health). |
+| `collectDebugBundle()` | Returns a JSON-safe bundle for a support ticket. It has the health, the diagnostic counters, the resource, the breadcrumbs, the debug buffer and a config summary. The summary has no headers and no URL query. A plugin or a custom serializer shows only its name. The privacy hooks process the breadcrumbs. A debug buffer record keeps its context attributes. Your app decides where to send it. |
 
 ## Delivery health
 
 `getHealth().delivery` has numbers and times only. It has no response text, no header and no URL.
 
-| Field                 | Description                                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pending`             | The records in the buffers of the library, not yet in a request. A forwarder counts only its own buffers.                                        |
-| `inFlight`            | The records in requests that are not complete.                                                                                                   |
-| `stored`              | The batches in storage that wait for a retry. A forwarder stores nothing and reports 0.                                                          |
-| `lastSendAt`          | The epoch time in ms of the last batch that the server accepted, or null.                                                                        |
-| `lastFailureAt`       | The epoch time in ms of the last failed send, or null.                                                                                           |
+| Field | Description |
+| --- | --- |
+| `pending` | The records in the buffers of the library, not yet in a request. A forwarder counts only its own buffers. |
+| `inFlight` | The records in requests that are not complete. |
+| `stored` | The batches in storage that wait for a retry. A forwarder stores nothing and reports 0. |
+| `lastSendAt` | The epoch time in ms of the last batch that the server accepted, or null. |
+| `lastFailureAt` | The epoch time in ms of the last failed send, or null. |
 | `consecutiveFailures` | The failed sends after the last batch that the server accepted. A batch that makes no request does not change it. The exit flush does not count. |
-| `throttledUntil`      | The epoch time in ms when the latest server throttle ends, over all endpoints. Null when no endpoint is throttled.                               |
-| `dropped`             | The lost records for each `onDrop` reason, from the start of the runtime. A reason with no loss has no key.                                      |
+| `throttledUntil` | The epoch time in ms when the latest server throttle ends, over all endpoints. Null when no endpoint is throttled. |
+| `dropped` | The lost records for each `onDrop` reason, from the start of the runtime. A reason with no loss has no key. |
 
 - The library counts `dropped` also without an `onDrop` hook.
 - A security context rotation resets `lastFailureAt`, `consecutiveFailures` and `throttledUntil`. It keeps `lastSendAt` and `dropped`.
@@ -244,14 +244,14 @@ if (result.status !== "complete") {
 }
 ```
 
-| Field       | Description                                                                                                                                                                                                                                             |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`    | `"complete"`, `"timeout"` or `"inactive"`.                                                                                                                                                                                                              |
-| `accepted`  | The records that the transport accepted. For HTTP, the server answered `2xx`. For a custom transport, it returned a `2xx` status. For the transport worker, the worker confirmed the send.                                                              |
-| `stored`    | The records that storage keeps after a failed send or a throttle. The retry engine sends them later.                                                                                                                                                    |
-| `dropped`   | The records that the library lost. `onDrop` reports them. A record with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup. |
-| `forwarded` | In a forwarder, the records that the call gave to the sender. In a sender, 0.                                                                                                                                                                           |
-| `pending`   | The records that have no final state at the end of the wait. A store with an unknown result counts here.                                                                                                                                                |
+| Field | Description |
+| --- | --- |
+| `status` | `"complete"`, `"timeout"` or `"inactive"`. |
+| `accepted` | The records that the transport accepted. For HTTP, the server answered `2xx`. For a custom transport, it returned a `2xx` status. For the transport worker, the worker confirmed the send. |
+| `stored` | The records that storage keeps after a failed send or a throttle. The retry engine sends them later. |
+| `dropped` | The records that the library lost. `onDrop` reports them. A record with no destination only counts `record.dropped_no_destination`. A forwarder with no owner drops its records with no `onDrop` report. It reports `bus.no_owner` one time at startup. |
+| `forwarded` | In a forwarder, the records that the call gave to the sender. In a sender, 0. |
+| `pending` | The records that have no final state at the end of the wait. A store with an unknown result counts here. |
 
 - `timeoutMs` is from 0 to 600000 ms. The default is 5000 ms. The wait includes startup and the load of the delivery stack.
 - A `timeoutMs` that is not a number in the range reports `config.invalid`. Options that are not an object also report it. The call then uses 5000 ms. `null` gives 5000 ms with no report.
@@ -279,9 +279,9 @@ if (result.status !== "complete") {
 await shutdown({ pending: "discard", clearStorage: "context" });
 ```
 
-| Option         | Values                                          | Effect                                                                                                                                                                                |
-| -------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`      | `"flush"` (default), `"discard"`                | `"flush"` sends the records in memory, then runs the exit flush. `"discard"` sends nothing and runs no exit flush.                                                                    |
+| Option | Values | Effect |
+| --- | --- | --- |
+| `pending` | `"flush"` (default), `"discard"` | `"flush"` sends the records in memory, then runs the exit flush. `"discard"` sends nothing and runs no exit flush. |
 | `clearStorage` | `"context"`, `"namespace"`. Not set by default. | Removes the stored batches, the emergency queue entries, the stored session id, the tab id and the journey. `"namespace"` removes the batches of each context in `storage.namespace`. |
 
 - A discard reports each record in memory to `onDrop` with the reason `"discarded"`. A request in flight can still reach the server. The library does not report its records. Its result writes nothing and starts no retry.

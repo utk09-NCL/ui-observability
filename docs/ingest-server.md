@@ -69,15 +69,15 @@ pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin 
 
 The tool prints `PASS` or `FAIL` for each rule. The exit code is 0 when each rule passes, 1 when a rule fails and 2 for a wrong command.
 
-| Rule              | Check                                                                                            |
-| ----------------- | ------------------------------------------------------------------------------------------------ |
-| `preflight`       | `OPTIONS` answers with a `2xx` status and permits the origin.                                    |
-| `allowed headers` | The preflight allows each request header of the library.                                         |
-| `test batch`      | A `POST` of an OTLP batch gets a `2xx` status and permits the origin.                            |
-| `exposed headers` | The batch answer exposes `Retry-After`. A `PASS` line names optional headers that stay hidden.   |
-| `gzip`            | A `POST` with `Content-Encoding: gzip` gets a `2xx` status.                                      |
-| `deduplication`   | A second `POST` with the same `X-UiObs-Batch-Id` gets a `2xx` status.                            |
-| `beacon`          | A `POST` with `text/plain;charset=UTF-8`, the exit batch to another origin, gets a `2xx` status. |
+| Rule | Check |
+| --- | --- |
+| `preflight` | `OPTIONS` answers with a `2xx` status and permits the origin. |
+| `allowed headers` | The preflight allows each request header of the library. |
+| `test batch` | A `POST` of an OTLP batch gets a `2xx` status and permits the origin. |
+| `exposed headers` | The batch answer exposes `Retry-After`. A `PASS` line names optional headers that stay hidden. |
+| `gzip` | A `POST` with `Content-Encoding: gzip` gets a `2xx` status. |
+| `deduplication` | A second `POST` with the same `X-UiObs-Batch-Id` gets a `2xx` status. |
+| `beacon` | A `POST` with `text/plain;charset=UTF-8`, the exit batch to another origin, gets a `2xx` status. |
 
 - The tool sends real test batches. Each record has `service.name: "uiobs-doctor"`. The tool sends four test requests with three batch ids. A server that deduplicates keeps three test batches.
 - The `beacon` batch has its batch id in `uiobs_batch_id` and the reason `pagehide` in `uiobs_exit`, as in the exit flush of the library.
@@ -113,14 +113,14 @@ To test a replay endpoint, give the value of `replay.endpoint` and add `--replay
 pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/replay --origin https://app.example --replay
 ```
 
-| Rule              | Check                                                                    |
-| ----------------- | ------------------------------------------------------------------------ |
-| `preflight`       | `OPTIONS` answers with a `2xx` status and permits the origin.            |
-| `allowed headers` | The preflight allows each request header of the library.                 |
-| `test segment`    | A `POST` of a small segment gets a `2xx` status and permits the origin.  |
-| `gzip`            | A `POST` of a segment with `Content-Encoding: gzip` gets a `2xx` status. |
-| `large segment`   | A `POST` of a segment of 5 MB without gzip gets a `2xx` status.          |
-| `deduplication`   | A second `POST` with the same `X-UiObs-Batch-Id` gets a `2xx` status.    |
+| Rule | Check |
+| --- | --- |
+| `preflight` | `OPTIONS` answers with a `2xx` status and permits the origin. |
+| `allowed headers` | The preflight allows each request header of the library. |
+| `test segment` | A `POST` of a small segment gets a `2xx` status and permits the origin. |
+| `gzip` | A `POST` of a segment with `Content-Encoding: gzip` gets a `2xx` status. |
+| `large segment` | A `POST` of a segment of 5 MB without gzip gets a `2xx` status. |
+| `deduplication` | A second `POST` with the same `X-UiObs-Batch-Id` gets a `2xx` status. |
 
 - The tool sends four test requests with three segments and one `replay.id`. Each segment has `service.name: "uiobs-doctor"` and one custom event of the recorder. One segment has 5 MB.
 - The `large segment` rule finds a body limit that is too low. The library drops a segment after a `413` status, and the first segment of an upload has a full snapshot of the page.

@@ -52,13 +52,13 @@ The command compares the CPU model of the machine with the CPU model in `bench/b
 
 Each log call is `info("order accepted", payload)`. The payload has four fields. The parameters are in the `WORKLOAD` constant of `tools/bench-release.mjs`.
 
-| Workload   | Load                                                                                            | Transport                |
-| ---------- | ----------------------------------------------------------------------------------------------- | ------------------------ |
-| Latency    | 20 000 warm-up calls. Then 100 000 calls with a time for each call. Then 2 000 blocks of 500.   | Memory transport         |
-| Throughput | Calls at the maximum rate for 5 seconds, 500 calls in each task.                                | Memory transport         |
-| Heap       | 5 000 warm-up calls. Then 30 checkpoints of 10 000 calls. A task has 50 calls and a 1 ms sleep. | Memory transport         |
-| Outage     | 2 000 records into a server that returns 503 for 3 seconds. Then the server returns 200.        | HTTP to `127.0.0.1:8801` |
-| Replay     | 2 000 rounds of 20 new DOM rows, with the recorder off and then on. Needs `@rrweb/record`.      | Memory transport         |
+| Workload | Load | Transport |
+| --- | --- | --- |
+| Latency | 20 000 warm-up calls. Then 100 000 calls with a time for each call. Then 2 000 blocks of 500. | Memory transport |
+| Throughput | Calls at the maximum rate for 5 seconds, 500 calls in each task. | Memory transport |
+| Heap | 5 000 warm-up calls. Then 30 checkpoints of 10 000 calls. A task has 50 calls and a 1 ms sleep. | Memory transport |
+| Outage | 2 000 records into a server that returns 503 for 3 seconds. Then the server returns 200. | HTTP to `127.0.0.1:8801` |
+| Replay | 2 000 rounds of 20 new DOM rows, with the recorder off and then on. Needs `@rrweb/record`. | Memory transport |
 
 Each workload sends one record and calls `flush()` before the load starts. The library loads its sender on the first record. Records that arrive before the sender loads go into a small hold buffer. A workload without this step loses records with the reason `buffer_full`.
 
@@ -80,11 +80,11 @@ A block value is the mean of 500 calls. Thus a block percentile does not show on
 The block size comes from a measurement. A block must be 100 clock steps or longer, which is 500 microseconds. These values are **measured**. The date is 2026-11-17. A temporary copy of `tools/bench-release.mjs` ran only the latency workload, one time for each block size. Each run had 2 000 blocks. The load average was 1.49 to 1.97.
 
 | Calls in a block | Clock steps in the p50 block | Block p50 (ns/call) | Block p99 (ns/call) | Block p99.9 (ns/call) |
-| ---------------- | ---------------------------- | ------------------- | ------------------- | --------------------- |
-| 100              | 44                           | 2 200               | 2 550               | 2 900                 |
-| 250              | 110                          | 2 200               | 2 740               | 2 900                 |
-| 500              | 224                          | 2 240               | 2 540               | 2 960                 |
-| 1 000            | 482                          | 2 410               | 2 575               | 2 675                 |
+| --- | --- | --- | --- | --- |
+| 100 | 44 | 2 200 | 2 550 | 2 900 |
+| 250 | 110 | 2 200 | 2 740 | 2 900 |
+| 500 | 224 | 2 240 | 2 540 | 2 960 |
+| 1 000 | 482 | 2 410 | 2 575 | 2 675 |
 
 A block of 250 calls is only 10 percent above the limit. A block of 500 calls is 2.2 times the limit. With 500 calls, one clock step is 10 nanoseconds for each call.
 
@@ -97,15 +97,15 @@ The benchmark reads `JSHeapUsedSize` through the Chrome DevTools Protocol comman
 The heap increase does not scale with the number of records. These values are **measured**. The date is 2026-11-17. A temporary copy of `tools/bench-release.mjs` ran only the heap workload, one time for each sleep time. Each run had 40 checkpoints. The load average was 1.78 to 1.98.
 
 | Records | Heap increase with a 1 ms sleep (KB) | Heap increase with a 10 ms sleep (KB) |
-| ------- | ------------------------------------ | ------------------------------------- |
-| 10 000  | 23                                   | 23                                    |
-| 20 000  | 45                                   | 45                                    |
-| 50 000  | 95                                   | 96                                    |
-| 100 000 | 113                                  | 113                                   |
-| 130 000 | 119                                  | 123                                   |
-| 200 000 | 119                                  | 122                                   |
-| 300 000 | 119                                  | 120                                   |
-| 400 000 | 120                                  | 121                                   |
+| --- | --- | --- |
+| 10 000 | 23 | 23 |
+| 20 000 | 45 | 45 |
+| 50 000 | 95 | 96 |
+| 100 000 | 113 | 113 |
+| 130 000 | 119 | 123 |
+| 200 000 | 119 | 122 |
+| 300 000 | 119 | 120 |
+| 400 000 | 120 | 121 |
 
 The heap increases in steps until 130 000 records. After that, it stays in a band of 6 KB. The steps are at the same record counts for the two sleep times. Thus the record count causes the steps, not the time. The benchmark does not identify the object that increases.
 
@@ -141,37 +141,37 @@ These values are **measured**. The date is 2026-11-17. The command is `pnpm run 
 
 Before each run, a script read the 1-minute load average with `os.loadavg()[0]`. The limit for a run was a load average of 3.
 
-| Item    | Value                                                                        |
-| ------- | ---------------------------------------------------------------------------- |
-| CPU     | Apple M5 Max, 18 cores                                                       |
-| Memory  | 64 GiB                                                                       |
-| System  | macOS, Darwin 25.6.0, arm64                                                  |
-| Browser | Chromium 145.0.7632.6, headless                                              |
-| Node    | v22.22.3                                                                     |
-| Library | 0.12.0 at commit d2805b3, source from the Vite dev server                    |
-| Tree    | The working tree had changes that were not committed. `src/` had no changes. |
+| Item | Value |
+| --- | --- |
+| CPU | Apple M5 Max, 18 cores |
+| Memory | 64 GiB |
+| System | macOS, Darwin 25.6.0, arm64 |
+| Browser | Chromium 145.0.7632.6, headless |
+| Node | v22.22.3 |
+| Library | 0.12.0 at commit d2805b3, source from the Vite dev server |
+| Tree | The working tree had changes that were not committed. `src/` had no changes. |
 
-| Metric                          | Unit      | Run 1   | Run 2   | Run 3   | Run 4   | Run 5   |
-| ------------------------------- | --------- | ------- | ------- | ------- | ------- | ------- |
-| Load average at the start       | 1 minute  | 0.94    | 1.63    | 1.71    | 1.70    | 2.09    |
-| `latency.blockP50Ns`            | ns/call   | 2 200   | 2 200   | 2 210   | 2 200   | 2 210   |
-| `latency.blockP99Ns`            | ns/call   | 2 520   | 2 440   | 2 470   | 2 560   | 2 440   |
-| `latency.blockP999Ns`           | ns/call   | 2 700   | 2 670   | 2 650   | 2 770   | 2 540   |
-| Clock steps in the p50 block    | steps     | 220     | 220     | 221     | 220     | 221     |
-| `latency.p50Us`, clock-limited  | us        | 0       | 0       | 0       | 0       | 0       |
-| `latency.p99Us`, clock-limited  | us        | 10      | 10      | 10      | 10      | 10      |
-| `latency.p999Us`, clock-limited | us        | 10      | 10      | 10      | 10      | 10      |
-| `latency.slowestCallUs`         | us        | 50      | 55      | 40      | 45      | 20      |
-| `throughput.acceptedPerSecond`  | records/s | 321 416 | 325 093 | 323 593 | 324 807 | 322 734 |
-| `heap.slopeBytesPer10k`         | bytes/10k | -62     | -65     | -62     | -62     | -62     |
-| `heap.fixedBytes`               | bytes     | 122 940 | 128 671 | 123 964 | 124 400 | 124 432 |
-| `outage.recoveryToDrainMs`      | ms        | 634     | 113     | 545     | 624     | 94      |
-| `outage.drainMs`                | ms        | 30      | 42      | 38      | 35      | 42      |
-| `replay.offP50Us`               | us/round  | 10      | 10      | 10      | 10      | 10      |
-| `replay.onP50Us`                | us/round  | 85      | 85      | 85      | 85      | 85      |
-| `replay.onP99Us`                | us/round  | 190     | 200     | 180     | 170     | 200     |
-| `replay.onP999Us`               | us/round  | 3 005   | 2 820   | 2 125   | 2 635   | 2 680   |
-| `replay.overheadP50Us`          | us/round  | 75      | 75      | 75      | 75      | 75      |
+| Metric | Unit | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Load average at the start | 1 minute | 0.94 | 1.63 | 1.71 | 1.70 | 2.09 |
+| `latency.blockP50Ns` | ns/call | 2 200 | 2 200 | 2 210 | 2 200 | 2 210 |
+| `latency.blockP99Ns` | ns/call | 2 520 | 2 440 | 2 470 | 2 560 | 2 440 |
+| `latency.blockP999Ns` | ns/call | 2 700 | 2 670 | 2 650 | 2 770 | 2 540 |
+| Clock steps in the p50 block | steps | 220 | 220 | 221 | 220 | 221 |
+| `latency.p50Us`, clock-limited | us | 0 | 0 | 0 | 0 | 0 |
+| `latency.p99Us`, clock-limited | us | 10 | 10 | 10 | 10 | 10 |
+| `latency.p999Us`, clock-limited | us | 10 | 10 | 10 | 10 | 10 |
+| `latency.slowestCallUs` | us | 50 | 55 | 40 | 45 | 20 |
+| `throughput.acceptedPerSecond` | records/s | 321 416 | 325 093 | 323 593 | 324 807 | 322 734 |
+| `heap.slopeBytesPer10k` | bytes/10k | -62 | -65 | -62 | -62 | -62 |
+| `heap.fixedBytes` | bytes | 122 940 | 128 671 | 123 964 | 124 400 | 124 432 |
+| `outage.recoveryToDrainMs` | ms | 634 | 113 | 545 | 624 | 94 |
+| `outage.drainMs` | ms | 30 | 42 | 38 | 35 | 42 |
+| `replay.offP50Us` | us/round | 10 | 10 | 10 | 10 | 10 |
+| `replay.onP50Us` | us/round | 85 | 85 | 85 | 85 | 85 |
+| `replay.onP99Us` | us/round | 190 | 200 | 180 | 170 | 200 |
+| `replay.onP999Us` | us/round | 3 005 | 2 820 | 2 125 | 2 635 | 2 680 |
+| `replay.overheadP50Us` | us/round | 75 | 75 | 75 | 75 | 75 |
 
 The load average at the end of the 5 runs was 1.63, 1.71, 1.70, 2.09 and 1.94. The benchmark itself adds to the load average.
 
@@ -218,25 +218,25 @@ The proposed budgets come from a rule with four parts.
 
 The floor prevents a failure from noise on a small value. Without the floor, the margin of a 40 ms value is 10 ms.
 
-| Unit of the metric | Floor of the margin | Source of the floor                                                  |
-| ------------------ | ------------------- | -------------------------------------------------------------------- |
-| ms                 | 25 ms               | Two times the range of `outage.drainMs` in the 5 runs (12 ms).       |
-| us                 | 10 us               | Two clock steps.                                                     |
-| bytes/10k          | 1 000 bytes         | The band of the 15 heap reads in the fit (952 to 988 bytes).         |
-| ns/call, records/s | No floor            | 25 percent of the value is much larger than the range of the 5 runs. |
+| Unit of the metric | Floor of the margin | Source of the floor |
+| --- | --- | --- |
+| ms | 25 ms | Two times the range of `outage.drainMs` in the 5 runs (12 ms). |
+| us | 10 us | Two clock steps. |
+| bytes/10k | 1 000 bytes | The band of the 15 heap reads in the fit (952 to 988 bytes). |
+| ns/call, records/s | No floor | 25 percent of the value is much larger than the range of the 5 runs. |
 
-| Metric                         | Worst of 5 | Margin             | Proposed    | Approved    |
-| ------------------------------ | ---------- | ------------------ | ----------- | ----------- |
-| `latency.blockP50Ns`           | 2 210      | 25 percent         | max 2 763   | max 3 040   |
-| `latency.blockP99Ns`           | 2 560      | 25 percent         | max 3 200   | max 3 520   |
-| `latency.blockP999Ns`          | 2 770      | 25 percent         | max 3 463   | max 3 810   |
-| `throughput.acceptedPerSecond` | 321 416    | 25 percent         | min 241 062 | min 216 955 |
-| `heap.slopeBytesPer10k`        | -62        | Floor, 1 000 bytes | max 938     | max 1 032   |
-| `outage.drainMs`               | 42         | Floor, 25 ms       | max 67      | max 74      |
-| `outage.recoveryToDrainMs`     | 634        | Not from the rule  | max 1 067   | max 1 174   |
-| `replay.onP50Us`               | 85         | 25 percent         | max 110     | max 125     |
-| `replay.onP99Us`               | 200        | 25 percent         | max 250     | max 275     |
-| `replay.onP999Us`              | 3 005      | 25 percent         | max 3 760   | max 4 140   |
+| Metric | Worst of 5 | Margin | Proposed | Approved |
+| --- | --- | --- | --- | --- |
+| `latency.blockP50Ns` | 2 210 | 25 percent | max 2 763 | max 3 040 |
+| `latency.blockP99Ns` | 2 560 | 25 percent | max 3 200 | max 3 520 |
+| `latency.blockP999Ns` | 2 770 | 25 percent | max 3 463 | max 3 810 |
+| `throughput.acceptedPerSecond` | 321 416 | 25 percent | min 241 062 | min 216 955 |
+| `heap.slopeBytesPer10k` | -62 | Floor, 1 000 bytes | max 938 | max 1 032 |
+| `outage.drainMs` | 42 | Floor, 25 ms | max 67 | max 74 |
+| `outage.recoveryToDrainMs` | 634 | Not from the rule | max 1 067 | max 1 174 |
+| `replay.onP50Us` | 85 | 25 percent | max 110 | max 125 |
+| `replay.onP99Us` | 200 | 25 percent | max 250 | max 275 |
+| `replay.onP999Us` | 3 005 | 25 percent | max 3 760 | max 4 140 |
 
 `outage.recoveryToDrainMs` does not use the rule. Its proposed budget is `retryMaxDelayMs` (1000 ms) plus the proposed `outage.drainMs` budget (67 ms), which gives 1067 ms. The random wait of the retry timer can be as long as `retryMaxDelayMs`. The approved budget adds 10 percent, as for each other budget.
 

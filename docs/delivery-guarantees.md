@@ -17,12 +17,12 @@ A batch is delivered when the server answers `2xx`. A custom transport gives the
 
 The server can get a record more than one time in these cases:
 
-| Case                                                                                | Batch ID |
-| ----------------------------------------------------------------------------------- | -------- |
-| A request times out, but the server already has the batch. The library sends again. | Same ID  |
-| A stored batch goes again after a failed send, also after a page reload.            | Same ID  |
-| A browser without Web Locks lets two tabs send the same stored batch.               | Same ID  |
-| The exit flush sends the records of a request that has no answer yet.               | New ID   |
+| Case | Batch ID |
+| --- | --- |
+| A request times out, but the server already has the batch. The library sends again. | Same ID |
+| A stored batch goes again after a failed send, also after a page reload. | Same ID |
+| A browser without Web Locks lets two tabs send the same stored batch. | Same ID |
+| The exit flush sends the records of a request that has no answer yet. | New ID |
 
 The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uiobs_batch_id` query parameter. Keep each ID for at least 24 hours. With a longer `retention.maxAgeMs`, keep each ID for that time. To find a duplicate record with a new batch ID, use `context.id` and `log.seq` together. Each record has a different pair.
 
@@ -43,22 +43,22 @@ An OTLP endpoint can answer `2xx` with `partialSuccess` in a JSON body. The libr
 
 `onDrop` receives a summary of each loss. The `reason` field tells the cause.
 
-| `reason`             | Cause                                                                                            | Setting to change                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `buffer_full`        | A hold buffer before startup, or the live buffer, is full.                                       | `buffering`                                                             |
-| `expired`            | A stored batch is older than `retention.maxAgeMs`.                                               | `retention.maxAgeMs`                                                    |
-| `over_capacity`      | Storage has `retention.maxBatches` batches. A new batch evicts an old batch.                     | `retention.maxBatches`                                                  |
-| `quota`              | The browser storage quota is full.                                                               | A lower `retention.maxBatches`                                          |
-| `max_attempts`       | A stored batch reached `retention.maxAttempts`.                                                  | `retention.maxAttempts`                                                 |
-| `rejected`           | The server refused the batch permanently, or one record is too large for the server.             | The ingest server, `limits`                                             |
-| `partially_rejected` | An OTLP server accepted the batch but rejected some records in it.                               | The ingest server                                                       |
-| `unserializable`     | The serializer threw an error on the batch.                                                      | A custom `serializer`                                                   |
-| `exit_queue_full`    | The emergency queue in `localStorage` is full. It drops its oldest batch.                        | None                                                                    |
-| `load_failed`        | The delivery code did not load, or `shutdown()` came first.                                      | None                                                                    |
-| `not_stored`         | Storage did not keep a batch after a failed send, for example with `storage.backend: "none"`.    | `storage.backend`                                                       |
-| `security_context`   | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid routing settings |
-| `disabled`           | `enabled` is false, so the sender sends nothing. See the rules after this table.                 | `enabled`                                                               |
-| `discarded`          | `shutdown()` with `pending: "discard"` or `clearStorage` dropped the records in memory.          | The `pending` option of `shutdown()`                                    |
+| `reason` | Cause | Setting to change |
+| --- | --- | --- |
+| `buffer_full` | A hold buffer before startup, or the live buffer, is full. | `buffering` |
+| `expired` | A stored batch is older than `retention.maxAgeMs`. | `retention.maxAgeMs` |
+| `over_capacity` | Storage has `retention.maxBatches` batches. A new batch evicts an old batch. | `retention.maxBatches` |
+| `quota` | The browser storage quota is full. | A lower `retention.maxBatches` |
+| `max_attempts` | A stored batch reached `retention.maxAttempts`. | `retention.maxAttempts` |
+| `rejected` | The server refused the batch permanently, or one record is too large for the server. | The ingest server, `limits` |
+| `partially_rejected` | An OTLP server accepted the batch but rejected some records in it. | The ingest server |
+| `unserializable` | The serializer threw an error on the batch. | A custom `serializer` |
+| `exit_queue_full` | The emergency queue in `localStorage` is full. It drops its oldest batch. | None |
+| `load_failed` | The delivery code did not load, or `shutdown()` came first. | None |
+| `not_stored` | Storage did not keep a batch after a failed send, for example with `storage.backend: "none"`. | `storage.backend` |
+| `security_context` | A change of the delivery identity removed the records of the old identity, or a rotation failed. | The `pending` rule of `rotateSecurityContext()`, valid routing settings |
+| `disabled` | `enabled` is false, so the sender sends nothing. See the rules after this table. | `enabled` |
+| `discarded` | `shutdown()` with `pending: "discard"` or `clearStorage` dropped the records in memory. | The `pending` option of `shutdown()` |
 
 `onDrop` reports `disabled` in three cases.
 

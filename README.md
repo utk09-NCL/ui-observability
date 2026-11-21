@@ -23,9 +23,7 @@ pnpm add --save-exact @utk09/ui-observability
 yarn add --exact @utk09/ui-observability
 ```
 
-The package has an ES module entry and a CommonJS entry. Each entry has its own type declarations.
-The types work with `moduleResolution` set to `NodeNext` or `Bundler`. They also work with `skipLibCheck: false`.
-Use one module format in one application. The two entries are separate copies with separate state and separate types.
+The package has an ES module entry and a CommonJS entry. Each entry has its own type declarations. The types work with `moduleResolution` set to `NodeNext` or `Bundler`. They also work with `skipLibCheck: false`. Use one module format in one application. The two entries are separate copies with separate state and separate types.
 
 ### Peer Dependencies
 
@@ -159,28 +157,28 @@ configure({
 
 ## Documentation
 
-| Document                                                   | Content                                                                                          |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [API Reference](docs/api.md)                               | Each exported function, the delivery health, the flush result and the shutdown options.          |
-| [Configuration Options](docs/configuration.md)             | Each config key and its default, auto-capture, spans and the browser storage keys.               |
-| [Guides](docs/guides.md)                                   | Console output, custom transport, worker transport, testing and remote sampling.                 |
-| [Production recipes](docs/production-recipes.md)           | Login, logout, tenant rotation, token refresh, consent withdrawal and the initialization order.  |
-| [Ingest Server Requirements](docs/ingest-server.md)        | The ingest contract and the `uiobs doctor` check of an ingest server.                            |
-| [Migration to 1.0.0](docs/migration-v1.md)                 | Each change from 0.12.x, with the new code.                                                      |
-| [Release and support](docs/release-and-support.md)         | The stable API contract, the supported environments and the release evidence.                    |
-| [Runtime policies and migration](docs/runtime-policies.md) | Each default, each range, security-context rotation and the upgrade steps.                       |
-| [Delivery guarantees](docs/delivery-guarantees.md)         | Duplicates, order, each loss and its `onDrop` reason, retention, the exit flush and rotation.    |
-| [Attribute reference](docs/attributes.md)                  | Each attribute that the library writes, and its type.                                            |
-| [Browser support](docs/browser-support.md)                 | The minimum browser versions, the browser APIs that the library uses, and the fallback for each. |
-| [Architecture](docs/architecture.md)                       | The core architecture, the layers of the library and the path of a record.                       |
-| [Threat model](docs/threat-model.md)                       | The trust boundaries, the threats and the controls.                                              |
-| [Performance](docs/performance.md)                         | The release benchmark, its baselines and its budgets.                                            |
-| [Development](docs/development.md)                         | The workspace, the checks and the example applications.                                          |
-| [Browser tests](e2e/README.md)                             | The Playwright tests and the coverage that is still missing.                                     |
-| [Collector check](e2e/collector/README.md)                 | The check against a pinned OpenTelemetry Collector.                                              |
-| [Playground guide](playground/README.md)                   | The five example applications and how to start each one.                                         |
-| [Security policy](SECURITY.md)                             | How to report a vulnerability.                                                                   |
-| [llms.txt](llms.txt)                                       | A summary of the library for a large language model. The package includes it.                    |
+| Document | Content |
+| --- | --- |
+| [API Reference](docs/api.md) | Each exported function, the delivery health, the flush result and the shutdown options. |
+| [Configuration Options](docs/configuration.md) | Each config key and its default, auto-capture, spans and the browser storage keys. |
+| [Guides](docs/guides.md) | Console output, custom transport, worker transport, testing and remote sampling. |
+| [Production recipes](docs/production-recipes.md) | Login, logout, tenant rotation, token refresh, consent withdrawal and the initialization order. |
+| [Ingest Server Requirements](docs/ingest-server.md) | The ingest contract and the `uiobs doctor` check of an ingest server. |
+| [Migration to 1.0.0](docs/migration-v1.md) | Each change from 0.12.x, with the new code. |
+| [Release and support](docs/release-and-support.md) | The stable API contract, the supported environments and the release evidence. |
+| [Runtime policies and migration](docs/runtime-policies.md) | Each default, each range, security-context rotation and the upgrade steps. |
+| [Delivery guarantees](docs/delivery-guarantees.md) | Duplicates, order, each loss and its `onDrop` reason, retention, the exit flush and rotation. |
+| [Attribute reference](docs/attributes.md) | Each attribute that the library writes, and its type. |
+| [Browser support](docs/browser-support.md) | The minimum browser versions, the browser APIs that the library uses, and the fallback for each. |
+| [Architecture](docs/architecture.md) | The core architecture, the layers of the library and the path of a record. |
+| [Threat model](docs/threat-model.md) | The trust boundaries, the threats and the controls. |
+| [Performance](docs/performance.md) | The release benchmark, its baselines and its budgets. |
+| [Development](docs/development.md) | The workspace, the checks and the example applications. |
+| [Browser tests](e2e/README.md) | The Playwright tests and the coverage that is still missing. |
+| [Collector check](e2e/collector/README.md) | The check against a pinned OpenTelemetry Collector. |
+| [Playground guide](playground/README.md) | The five example applications and how to start each one. |
+| [Security policy](SECURITY.md) | How to report a vulnerability. |
+| [llms.txt](llms.txt) | A summary of the library for a large language model. The package includes it. |
 
 ---
 

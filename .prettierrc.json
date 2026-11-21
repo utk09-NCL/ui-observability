@@ -12,5 +12,15 @@
   "endOfLine": "lf",
   "proseWrap": "preserve",
   "htmlWhitespaceSensitivity": "css",
-  "embeddedLanguageFormatting": "auto"
+  "embeddedLanguageFormatting": "auto",
+  "overrides": [
+    {
+      "files": "*.md",
+      "options": {
+        "proseWrap": "never",
+        "printWidth": 1,
+        "embeddedLanguageFormatting": "off"
+      }
+    }
+  ]
 }

@@ -19,24 +19,24 @@ pnpm run build
 pnpm run example:react
 ```
 
-| Page                 | URL                                        |
-| -------------------- | ------------------------------------------ |
-| Example app          | `http://localhost:5180`                    |
-| Session replay spike | `http://localhost:5180/replay-spike.html`  |
-| Replay viewer        | `http://localhost:5180/replay-viewer.html` |
+| Page | URL |
+| --- | --- |
+| Example app | `http://localhost:5180` |
+| Session replay spike | `http://localhost:5180/replay-spike.html` |
+| Replay viewer | `http://localhost:5180/replay-viewer.html` |
 
 ## What to look for
 
 Open the devtools console. Log records go to `/v1/logs`. Metric points go to `/v1/metrics`, because the example sets `metricsEndpoint`. A metric point arrives about 10 seconds after its first value.
 
-| Action                          | Look for in the terminal                                                                                                   |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Load the page                   | A `[metrics]` batch with `[gauge]` points for `navigation.*` and `web_vitals.*`.                                           |
-| **submit**                      | `[action] ORDER_SUBMIT` with a `journey=` id. Later, `[sum] orders.submitted 1 count venue=LSE`.                           |
-| **price 20 quotes**             | One point, `[histogram] pricing.latency count=20`. The library sends one point, not 20 records.                            |
-| **fetch a missing URL**         | `WARN [system] GET http://localhost:8787/missing returned 404`. Later, a `[histogram] http.client.request.duration` point. |
-| **toggle the ticket** two times | The ticket mounts again, and `useJourney` starts a new journey. Later records show a new `journey=` id.                    |
-| **break a render**              | `ERROR [log] render failed`. The page shows the fallback text. The console shows the `react.component_stack` payload.      |
+| Action | Look for in the terminal |
+| --- | --- |
+| Load the page | A `[metrics]` batch with `[gauge]` points for `navigation.*` and `web_vitals.*`. |
+| **submit** | `[action] ORDER_SUBMIT` with a `journey=` id. Later, `[sum] orders.submitted 1 count venue=LSE`. |
+| **price 20 quotes** | One point, `[histogram] pricing.latency count=20`. The library sends one point, not 20 records. |
+| **fetch a missing URL** | `WARN [system] GET http://localhost:8787/missing returned 404`. Later, a `[histogram] http.client.request.duration` point. |
+| **toggle the ticket** two times | The ticket mounts again, and `useJourney` starts a new journey. Later records show a new `journey=` id. |
+| **break a render** | `ERROR [log] render failed`. The page shows the fallback text. The console shows the `react.component_stack` payload. |
 
 ## What to copy
 
@@ -68,13 +68,13 @@ The page does these steps:
 
 Read these fields of the **JSON** block:
 
-| Field                           | Expected value                                                                                                               |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `upload.segments`               | Three or more segments. One segment has the full snapshot of the page, about 4.7 MB.                                         |
-| `upload.errorRecordHasReplayId` | `true`. The error record carries `replay.id`.                                                                                |
-| `masking`                       | `true` only for `unmaskedHeadingInClear`. The recorder masked the cells, the password, the hidden input and the shadow text. |
-| `plugins.tokenOfTheUrlInClear`  | `false`. The network plugin got the URL without its query.                                                                   |
-| `plugins.sequentialIdsInOrder`  | `true`. No event is missing.                                                                                                 |
+| Field | Expected value |
+| --- | --- |
+| `upload.segments` | Three or more segments. One segment has the full snapshot of the page, about 4.7 MB. |
+| `upload.errorRecordHasReplayId` | `true`. The error record carries `replay.id`. |
+| `masking` | `true` only for `unmaskedHeadingInClear`. The recorder masked the cells, the password, the hidden input and the shadow text. |
+| `plugins.tokenOfTheUrlInClear` | `false`. The network plugin got the URL without its query. |
+| `plugins.sequentialIdsInOrder` | `true`. No event is missing. |
 
 Add `?autorun=1` to run the spike at load.
 

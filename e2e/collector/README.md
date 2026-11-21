@@ -19,27 +19,27 @@ The check adds no padding to a body. Each body is larger than the compression th
 
 The collector accepts a field with an incorrect name and an empty identifier. It drops them and gives no error. Thus the check also reads these fields in the output of the file exporter.
 
-| Item       | Field                    | Expected value                                |
-| ---------- | ------------------------ | --------------------------------------------- |
-| Log record | `severityNumber`         | 9                                             |
-| Log record | `timeUnixNano`           | More than zero                                |
-| Sum        | `aggregationTemporality` | 1 (delta)                                     |
-| Sum        | `isMonotonic`            | `true`                                        |
-| Span       | `traceId`                | 32 hexadecimal characters, not all zero       |
-| Span       | `spanId`                 | 16 hexadecimal characters, not all zero       |
-| Span       | `startTimeUnixNano`      | More than zero                                |
-| Span       | `endTimeUnixNano`        | More than zero, and not before the start time |
+| Item | Field | Expected value |
+| --- | --- | --- |
+| Log record | `severityNumber` | 9 |
+| Log record | `timeUnixNano` | More than zero |
+| Sum | `aggregationTemporality` | 1 (delta) |
+| Sum | `isMonotonic` | `true` |
+| Span | `traceId` | 32 hexadecimal characters, not all zero |
+| Span | `spanId` | 16 hexadecimal characters, not all zero |
+| Span | `startTimeUnixNano` | More than zero |
+| Span | `endTimeUnixNano` | More than zero, and not before the start time |
 
 ## Pinned collector
 
-| Item                   | Value                                                              |
-| ---------------------- | ------------------------------------------------------------------ |
-| Distribution           | `otelcol-contrib`                                                  |
-| Version                | `0.164.0`, published on 2026-10-26                                 |
-| Archive                | `otelcol-contrib_0.164.0_darwin_arm64.tar.gz`                      |
+| Item | Value |
+| --- | --- |
+| Distribution | `otelcol-contrib` |
+| Version | `0.164.0`, published on 2026-10-26 |
+| Archive | `otelcol-contrib_0.164.0_darwin_arm64.tar.gz` |
 | SHA-256 of the archive | `af6a0c56886e3cc36ccebe849fa167bad2bc47a97a48fd8497a0d6f93d0cf73a` |
-| SHA-256 of the binary  | `4d60abcd101c768268f885e3c42a5d2ca083d9d7461c68c6c77dc044371aa0c5` |
-| Configuration          | `e2e/collector/config.yaml`                                        |
+| SHA-256 of the binary | `4d60abcd101c768268f885e3c42a5d2ca083d9d7461c68c6c77dc044371aa0c5` |
+| Configuration | `e2e/collector/config.yaml` |
 
 - The check runs on macOS arm64 only. On another platform, it stops with a message.
 - The two SHA-256 values in `PLATFORMS` are the trust anchor. The check downloads no checksum file.

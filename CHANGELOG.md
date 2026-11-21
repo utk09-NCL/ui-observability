@@ -764,16 +764,16 @@ configure({ endpoint, console: true });
 configure({ endpoint, console: "WARN" });
 ```
 
-| Section   | Removed keys                                                                                                              |
-| --------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `streams` | `logs.batchSize`, `logs.flushIntervalMs`, `metrics.batchSize`, `metrics.flushIntervalMs`                                  |
-| `retry`   | `baseDelayMs`, `maxDelayMs`, `idleDelayMs`                                                                                |
-| `journey` | `maxAgeMs`, `endOnOwnerClose`, `urlParam`                                                                                 |
-| `limits`  | `maxBodyChars`, `maxAttributeChars`, `maxAttributeCount`, `maxStackChars`, `maxDepth`, `maxArrayLength`, `maxRecordBytes` |
-| `storage` | `dbName`, `maxBatches`, `maxAgeMs`, `maxAttempts`                                                                         |
-| `bus`     | `channelName`, `handshakeTimeoutMs`, `maxHandshakeAttempts`, `maxBootBufferRecords`, `openFinHost`, `orphanPolicy`        |
-| `capture` | `maxBreadcrumbs`, `errorDedupeMs`                                                                                         |
-| top level | `maxConcurrentRequests`, `requestTimeoutMs`, `compressionThresholdBytes`                                                  |
+| Section | Removed keys |
+| --- | --- |
+| `streams` | `logs.batchSize`, `logs.flushIntervalMs`, `metrics.batchSize`, `metrics.flushIntervalMs` |
+| `retry` | `baseDelayMs`, `maxDelayMs`, `idleDelayMs` |
+| `journey` | `maxAgeMs`, `endOnOwnerClose`, `urlParam` |
+| `limits` | `maxBodyChars`, `maxAttributeChars`, `maxAttributeCount`, `maxStackChars`, `maxDepth`, `maxArrayLength`, `maxRecordBytes` |
+| `storage` | `dbName`, `maxBatches`, `maxAgeMs`, `maxAttempts` |
+| `bus` | `channelName`, `handshakeTimeoutMs`, `maxHandshakeAttempts`, `maxBootBufferRecords`, `openFinHost`, `orphanPolicy` |
+| `capture` | `maxBreadcrumbs`, `errorDedupeMs` |
+| top level | `maxConcurrentRequests`, `requestTimeoutMs`, `compressionThresholdBytes` |
 
 `sampling` is unchanged.
 

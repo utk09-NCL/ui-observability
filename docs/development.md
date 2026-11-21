@@ -2,23 +2,13 @@
 
 This document tells how to work on the library in this repository.
 
-Use Node 22.22.3 or later and pnpm 12.21.0. `.nvmrc` selects the minimum Node version.
-`devEngines` in `package.json` stops `pnpm install` on an older Node version.
-The `packageManager` field pins pnpm. See the [pnpm installation instructions](https://pnpm.io/installation).
-Angular supports Node `^22.22.3 || ^24.15.0 || >=26.0.0`.
-Use one of these Node versions for the complete workspace.
+Use Node 22.22.3 or later and pnpm 12.21.0. `.nvmrc` selects the minimum Node version. `devEngines` in `package.json` stops `pnpm install` on an older Node version. The `packageManager` field pins pnpm. See the [pnpm installation instructions](https://pnpm.io/installation). Angular supports Node `^22.22.3 || ^24.15.0 || >=26.0.0`. Use one of these Node versions for the complete workspace.
 
-Install from the repository root. The first pnpm install creates `pnpm-lock.yaml`.
-Commit that file with dependency changes. Use `pnpm install --frozen-lockfile` for later installs that must keep the resolved versions.
+Install from the repository root. The first pnpm install creates `pnpm-lock.yaml`. Commit that file with dependency changes. Use `pnpm install --frozen-lockfile` for later installs that must keep the resolved versions.
 
-`pnpm-workspace.yaml` holds separate catalogs for `library`, `vanilla`, `react`, `angular`, `console-only`, `mf-host`, `mf-blotter` and `mf-ticket`.
-Each manifest uses its named catalog for external dependencies.
-The consumer playgrounds use `workspace:*` for the local library. The vanilla playground loads the library source.
-Change versions in the relevant catalog, then run `pnpm install`.
+`pnpm-workspace.yaml` holds separate catalogs for `library`, `vanilla`, `react`, `angular`, `console-only`, `mf-host`, `mf-blotter` and `mf-ticket`. Each manifest uses its named catalog for external dependencies. The consumer playgrounds use `workspace:*` for the local library. The vanilla playground loads the library source. Change versions in the relevant catalog, then run `pnpm install`.
 
-Dependency versions use the current stable releases checked on 2026-11-07.
-TypeScript uses 6.0.3 because Angular 22 and typescript-eslint require TypeScript below 6.1.
-The workspace enables install scripts for `@parcel/watcher`, `esbuild`, `fsevents`, `lmdb` and `msgpackr-extract`.
+Dependency versions use the current stable releases checked on 2026-11-07. TypeScript uses 6.0.3 because Angular 22 and typescript-eslint require TypeScript below 6.1. The workspace enables install scripts for `@parcel/watcher`, `esbuild`, `fsevents`, `lmdb` and `msgpackr-extract`.
 
 ```bash
 pnpm install
@@ -49,9 +39,18 @@ pnpm run verify
 pnpm --filter './playground/**' --if-present run build
 ```
 
-`verify` checks the library. The last command builds each consumer playground that has a build script.
-Check the vanilla frames, React and Angular in a browser before a release.
-To clear the React dependency cache, run `pnpm --filter @example/react run dev --force`.
+`verify` checks the library. The last command builds each consumer playground that has a build script. Check the vanilla frames, React and Angular in a browser before a release. To clear the React dependency cache, run `pnpm --filter @example/react run dev --force`.
+
+Prettier prints each Markdown table in the compact form, with one space on each side of a cell. Prettier aligns a table only when it is narrower than `printWidth`, so the Markdown override in `.prettierrc.json` sets `printWidth` to 1. Because of this override, Prettier does not format the code blocks in Markdown files. Format a code block by hand before you commit it.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on each pull request and on each push to `main`. It has two jobs.
+
+- `verify` runs on the Node version in `.nvmrc` and on Node 24. Each part of `pnpm run verify` is a separate step. After the tests, the job builds each playground.
+- `e2e` runs `pnpm run test:e2e` in Chromium, Firefox and WebKit on the Node version in `.nvmrc`.
+
+A failed check does not stop the later checks, so one run shows each failure. CI caches the pnpm store only. It does not cache `dist/`, lint results or browsers. CI does not run `test:collector` or `bench:release`. The collector check has a binary for macOS on Apple silicon only. Shared runners are too noisy for the benchmark budgets.
 
 ## Example Applications
 

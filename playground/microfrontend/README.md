@@ -4,11 +4,11 @@ This example shows the library in a page that Module Federation composes. One sh
 
 Read the [playground guide](../README.md) first. It explains the mock ingest server and each line that the terminal prints.
 
-| Folder            | Package               | Port | Framework        | Role                                  |
-| ----------------- | --------------------- | ---- | ---------------- | ------------------------------------- |
-| `host/`           | `@example/mf-host`    | 5191 | Plain TypeScript | The shell. It calls `configure()`.    |
+| Folder | Package | Port | Framework | Role |
+| --- | --- | --- | --- | --- |
+| `host/` | `@example/mf-host` | 5191 | Plain TypeScript | The shell. It calls `configure()`. |
 | `remote-blotter/` | `@example/mf-blotter` | 5192 | Plain TypeScript | A remote. It uses `getLogger()` only. |
-| `remote-ticket/`  | `@example/mf-ticket`  | 5193 | React            | A remote. It uses `getLogger()` only. |
+| `remote-ticket/` | `@example/mf-ticket` | 5193 | React | A remote. It uses `getLogger()` only. |
 
 ## Run it
 
@@ -31,13 +31,13 @@ Open `http://localhost:5191`.
 
 Open the devtools console.
 
-| Action                           | Look for                                                                                                               |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Load the page                    | The terminal shows `shell booted` and `ticket remote mounted`. Both records have the same `journey=` id.               |
-| Load the page                    | The console shows the namespaces `shell`, `blotter.grid` and `ticket.form`. The namespace tells you which part logged. |
-| Load the page                    | The console shows `blotter remote mounted`. The terminal does not show it in most loads.                               |
-| **load positions**               | `[action] POSITIONS_LOAD` in the terminal. Sampling never drops an action.                                             |
-| **submit from the React remote** | `[action] ORDER_SUBMIT` in the terminal.                                                                               |
+| Action | Look for |
+| --- | --- |
+| Load the page | The terminal shows `shell booted` and `ticket remote mounted`. Both records have the same `journey=` id. |
+| Load the page | The console shows the namespaces `shell`, `blotter.grid` and `ticket.form`. The namespace tells you which part logged. |
+| Load the page | The console shows `blotter remote mounted`. The terminal does not show it in most loads. |
+| **load positions** | `[action] POSITIONS_LOAD` in the terminal. Sampling never drops an action. |
+| **submit from the React remote** | `[action] ORDER_SUBMIT` in the terminal. |
 
 Each record in the terminal shows `[example-shell]`. The remotes do not call `configure()`, so the shell's `serviceName` applies to all parts.
 

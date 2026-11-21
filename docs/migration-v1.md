@@ -17,38 +17,38 @@ Upgrade each copy of the library on a page in the same release. [Coordinated mic
 9. `captureLimits.windowMs` now sets only the window of the capture rate limits. Set the window of the replay uploads in `replay.uploadWindowMs`. Set the window of the error ceiling in `sampling.errorCeilingWindowMs`. The default of each is 10000 ms.
 10. Change each key in this table. A key that the library does not know reports `config.invalid`.
 
-| 0.12.x                                                                                                                                             | 1.0.0                                                             |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `console` (top level)                                                                                                                              | `consoleOutput`                                                   |
-| `capturePolicy`                                                                                                                                    | `captureLimits`                                                   |
-| `capturePolicy.errorCeiling`                                                                                                                       | `sampling.errorCeiling`                                           |
-| `batching.metricFlushIntervalMs`, `profiler.flushIntervalMs`                                                                                       | `metrics.intervalMs`                                              |
-| `capture.longFrameMs`                                                                                                                              | `capture.longFrames: { thresholdMs }`                             |
-| `capture.userTimingInclude`                                                                                                                        | `capture.userTiming: { include }`                                 |
-| `capture.webVitalsLoader`                                                                                                                          | `capture.webVitals: { loader }`                                   |
-| `capture.console: ["error", "warn"]`                                                                                                               | `capture.console: { levels: ["error", "warn"] }`                  |
-| `storage: "indexeddb"` with `persistence: { namespace, requestPersistent }`                                                                        | `storage: { backend: "indexeddb", namespace, requestPersistent }` |
-| `retention.mode: "until-delivered"`                                                                                                                | `retention: { maxAgeMs: null, maxAttempts: null }`                |
-| `delivery.retryIdleDelayMs`, `delivery.batchesPerDrain`, `correlation.sessionTouchMs`, `bus.maxTrackedSources`, `capturePolicy.maxErrorSignatures` | No key. Remove it.                                                |
-| `bus.validation`                                                                                                                                   | No key. The bus always checks each message.                       |
+| 0.12.x | 1.0.0 |
+| --- | --- |
+| `console` (top level) | `consoleOutput` |
+| `capturePolicy` | `captureLimits` |
+| `capturePolicy.errorCeiling` | `sampling.errorCeiling` |
+| `batching.metricFlushIntervalMs`, `profiler.flushIntervalMs` | `metrics.intervalMs` |
+| `capture.longFrameMs` | `capture.longFrames: { thresholdMs }` |
+| `capture.userTimingInclude` | `capture.userTiming: { include }` |
+| `capture.webVitalsLoader` | `capture.webVitals: { loader }` |
+| `capture.console: ["error", "warn"]` | `capture.console: { levels: ["error", "warn"] }` |
+| `storage: "indexeddb"` with `persistence: { namespace, requestPersistent }` | `storage: { backend: "indexeddb", namespace, requestPersistent }` |
+| `retention.mode: "until-delivered"` | `retention: { maxAgeMs: null, maxAttempts: null }` |
+| `delivery.retryIdleDelayMs`, `delivery.batchesPerDrain`, `correlation.sessionTouchMs`, `bus.maxTrackedSources`, `capturePolicy.maxErrorSignatures` | No key. Remove it. |
+| `bus.validation` | No key. The bus always checks each message. |
 
 11. Change each imported section type in this table.
 
-| 0.12.x type                             | 1.0.0 type             |
-| --------------------------------------- | ---------------------- |
-| `BufferingPolicy`                       | `BufferingOptions`     |
-| `CapturePolicy`                         | `CaptureLimitsOptions` |
-| `ConsoleOptions`                        | `ConsoleOutputOptions` |
-| `CorrelationPolicy`                     | `CorrelationOptions`   |
-| `DebugBufferPolicy`                     | `DebugBufferOptions`   |
-| `DeliveryPolicy`                        | `DeliveryOptions`      |
-| `DeliveryOptions` (the rotation fields) | `RoutingOptions`       |
-| `DiagnosticsPolicy`                     | `DiagnosticsOptions`   |
-| `MetadataPolicy`                        | `MetadataOptions`      |
-| `MetricsPolicy`                         | `MetricsOptions`       |
-| `PersistencePolicy`                     | `StorageOptions`       |
-| `ProfilerPolicy`                        | `ProfilerOptions`      |
-| `ReplayPolicy`                          | `ReplayOptions`        |
+| 0.12.x type | 1.0.0 type |
+| --- | --- |
+| `BufferingPolicy` | `BufferingOptions` |
+| `CapturePolicy` | `CaptureLimitsOptions` |
+| `ConsoleOptions` | `ConsoleOutputOptions` |
+| `CorrelationPolicy` | `CorrelationOptions` |
+| `DebugBufferPolicy` | `DebugBufferOptions` |
+| `DeliveryPolicy` | `DeliveryOptions` |
+| `DeliveryOptions` (the rotation fields) | `RoutingOptions` |
+| `DiagnosticsPolicy` | `DiagnosticsOptions` |
+| `MetadataPolicy` | `MetadataOptions` |
+| `MetricsPolicy` | `MetricsOptions` |
+| `PersistencePolicy` | `StorageOptions` |
+| `ProfilerPolicy` | `ProfilerOptions` |
+| `ReplayPolicy` | `ReplayOptions` |
 
 ## Start and pause
 
@@ -117,12 +117,12 @@ const pending = (await getHealth()).delivery.pending;
 19. `getHealth().bus` no longer has `validation` and `maxTrackedSources`.
 20. An exhaustive `switch` on one of these unions breaks, because each one has new values. Add a case for each new value.
 
-| Union                                  | New values since 0.12.0                                                                                               |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `getHealth().status`                   | `"unconfigured"`, `"disabled"`                                                                                        |
-| `getHealth().issues`                   | `"security.rotation_failed"`, `"records.refused"`                                                                     |
-| `LossReason`, the `reason` of `onDrop` | `"disabled"`, `"discarded"`, `"partially_rejected"`                                                                   |
-| `DiagnosticCode`                       | `"bus.protocol_mismatch"`, `"capture.trace_header_kept"`, `"security.rotation_failed"`, `"transport.partial_success"` |
+| Union | New values since 0.12.0 |
+| --- | --- |
+| `getHealth().status` | `"unconfigured"`, `"disabled"` |
+| `getHealth().issues` | `"security.rotation_failed"`, `"records.refused"` |
+| `LossReason`, the `reason` of `onDrop` | `"disabled"`, `"discarded"`, `"partially_rejected"` |
+| `DiagnosticCode` | `"bus.protocol_mismatch"`, `"capture.trace_header_kept"`, `"security.rotation_failed"`, `"transport.partial_success"` |
 
 21. `clearPersistedLogs()` is now a `shutdown()` option. The shutdown stops the runtime, so call `configure()` again.
 

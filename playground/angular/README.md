@@ -25,12 +25,12 @@ Open `http://localhost:4200`. The first start of `ng serve` can take some second
 
 Open the devtools console.
 
-| Action                         | Look for in the terminal                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| **submit** on the ticket route | `[action] ORDER_SUBMIT` with a `journey=` id. The journey starts before the action and ends after it.   |
-| **throw inside Angular**       | `ERROR [log] unhandled Angular error`. The console also shows the error, because the handler prints it. |
-| The **blotter** link           | `[event] NAVIGATION` with a new `trace=` value. Each navigation starts a new trace.                     |
-| **select ORD-2002**            | `[event] ORDER_SELECTED`, with the same trace as the navigation before it.                              |
+| Action | Look for in the terminal |
+| --- | --- |
+| **submit** on the ticket route | `[action] ORDER_SUBMIT` with a `journey=` id. The journey starts before the action and ends after it. |
+| **throw inside Angular** | `ERROR [log] unhandled Angular error`. The console also shows the error, because the handler prints it. |
+| The **blotter** link | `[event] NAVIGATION` with a new `trace=` value. Each navigation starts a new trace. |
+| **select ORD-2002** | `[event] ORDER_SELECTED`, with the same trace as the navigation before it. |
 
 The devtools console shows the namespace of each record. It is `oms.ticket`, `oms.blotter`, `angular.errors` or `uiobs.capture`.
 

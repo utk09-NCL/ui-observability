@@ -14,10 +14,10 @@ Run one browser with `pnpm run test:e2e --project firefox`. Run one file with `p
 
 Playwright starts three servers and stops them after the run.
 
-| Port | Server                                                                       | Use                                  |
-| ---- | ---------------------------------------------------------------------------- | ------------------------------------ |
-| 5181 | `vite --config vite.cross-origin.config.ts`                                  | The page under test.                 |
-| 5182 | `vite --config vite.cross-origin.config.ts`                                  | The same files from a second origin. |
+| Port | Server | Use |
+| --- | --- | --- |
+| 5181 | `vite --config vite.cross-origin.config.ts` | The page under test. |
+| 5182 | `vite --config vite.cross-origin.config.ts` | The same files from a second origin. |
 | 8791 | `UIOBS_MOCK_PORT=8791 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
 
 The run fails when a different program uses one of these ports. Playwright does not use a server that is already there.
@@ -30,11 +30,11 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 
 ## Test APIs of the mock ingest server
 
-| Request           | Result                                                                                       |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| `POST /__reset`   | Clears the received requests, the known batch ids, the forced status and the sampling rules. |
-| `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`.      |
-| `GET /__echo`     | Returns the headers of this request as the server received them.                             |
+| Request | Result |
+| --- | --- |
+| `POST /__reset` | Clears the received requests, the known batch ids, the forced status and the sampling rules. |
+| `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`. |
+| `GET /__echo` | Returns the headers of this request as the server received them. |
 
 Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. For an NDJSON body, it is the list of the parsed lines. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie.
 
@@ -59,23 +59,23 @@ Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `co
 
 ## What each spec covers
 
-| Spec                       | Coverage                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `logging.e2e.ts`           | A logger call arrives at `/v1/logs` with its body, level, scope, attributes and resource attributes. The body is gzip-encoded.                                                                                                                                                                                                                                                                                                 |
-| `rotation-chunk.e2e.ts`    | A failed load of the rotation code rejects `rotateSecurityContext()` with a `TypeError` and closes the delivery. A later rotation in the same page rejects. The browser sends no request for the code. `shutdown({ pending: "discard", clearStorage: "context" })` and `configure()` open the delivery. The next context has a new session id, and no stored batch of the old context stays. After a reload, a rotation works. |
-| `startup-burst.e2e.ts`     | A page logs one error and 2,000 records before the sender loads. The server gets the error. `onDrop` reports 1,501 records as `buffer_full`.                                                                                                                                                                                                                                                                                   |
-| `startup-burst.e2e.ts`     | With `buffering.maxHeldRecords: 5000`, the server gets each record of the same burst. `onDrop` reports nothing.                                                                                                                                                                                                                                                                                                                |
-| `exit-flush.e2e.ts`        | After a navigation, the exit batch arrives at another origin as a `text/plain` keepalive `fetch`. It has `uiobs_exit=pagehide` and no cookie.                                                                                                                                                                                                                                                                                  |
-| `exit-flush.e2e.ts`        | With `credentials: "include"`, the exit batch of the same navigation arrives as a beacon. It has the cookie of the page.                                                                                                                                                                                                                                                                                                       |
-| `forwarding.e2e.ts`        | A same-origin child frame forwards a record through the parent. The `redact` hook of the parent removes a field from it.                                                                                                                                                                                                                                                                                                       |
-| `forwarding.e2e.ts`        | A same-origin `srcdoc` frame forwards a record through the parent. The `redact` hook of the parent removes a field. Only the parent frame posts.                                                                                                                                                                                                                                                                               |
-| `forwarding.e2e.ts`        | A `srcdoc` frame forwards a record over `postMessage` when the parent refuses the direct call. The `redact` hook of the parent applies. Only the parent frame posts. In Firefox, the frame reads the `origin` global of the parent.                                                                                                                                                                                            |
-| `forwarding.e2e.ts`        | A cross-origin child forwards a record when `bus.trustedOrigins` has the origin of the parent. Only the parent frame posts.                                                                                                                                                                                                                                                                                                    |
-| `forwarding.e2e.ts`        | A cross-origin child without `bus.trustedOrigins` resolves to `sender` and posts its own record. The parent posts nothing.                                                                                                                                                                                                                                                                                                     |
-| `replay.e2e.ts`            | The real `@rrweb/record` recorder records the page and a few DOM changes. After an error, `/v1/replay` gets segments that start with a full snapshot. Text is masked. The input value is masked in the snapshot and in the input event. An element with `data-observability-unmask` keeps its text. An element with `data-observability-ignore` has no content. The error record has the `replay.id` of the segments.          |
-| `trace-propagation.e2e.ts` | A `fetch` to an origin in `capture.propagateTraceHeaderTo` has `traceparent`. A `fetch` to a different origin does not.                                                                                                                                                                                                                                                                                                        |
-| `worker-transport.e2e.ts`  | With `transportWorker`, the worker sends the batch.                                                                                                                                                                                                                                                                                                                                                                            |
-| `worker-transport.e2e.ts`  | A worker that gives no ready answer causes the fallback to plain HTTP. The server gets the record one time. No `transport.timeout` diagnostic occurs.                                                                                                                                                                                                                                                                          |
+| Spec | Coverage |
+| --- | --- |
+| `logging.e2e.ts` | A logger call arrives at `/v1/logs` with its body, level, scope, attributes and resource attributes. The body is gzip-encoded. |
+| `rotation-chunk.e2e.ts` | A failed load of the rotation code rejects `rotateSecurityContext()` with a `TypeError` and closes the delivery. A later rotation in the same page rejects. The browser sends no request for the code. `shutdown({ pending: "discard", clearStorage: "context" })` and `configure()` open the delivery. The next context has a new session id, and no stored batch of the old context stays. After a reload, a rotation works. |
+| `startup-burst.e2e.ts` | A page logs one error and 2,000 records before the sender loads. The server gets the error. `onDrop` reports 1,501 records as `buffer_full`. |
+| `startup-burst.e2e.ts` | With `buffering.maxHeldRecords: 5000`, the server gets each record of the same burst. `onDrop` reports nothing. |
+| `exit-flush.e2e.ts` | After a navigation, the exit batch arrives at another origin as a `text/plain` keepalive `fetch`. It has `uiobs_exit=pagehide` and no cookie. |
+| `exit-flush.e2e.ts` | With `credentials: "include"`, the exit batch of the same navigation arrives as a beacon. It has the cookie of the page. |
+| `forwarding.e2e.ts` | A same-origin child frame forwards a record through the parent. The `redact` hook of the parent removes a field from it. |
+| `forwarding.e2e.ts` | A same-origin `srcdoc` frame forwards a record through the parent. The `redact` hook of the parent removes a field. Only the parent frame posts. |
+| `forwarding.e2e.ts` | A `srcdoc` frame forwards a record over `postMessage` when the parent refuses the direct call. The `redact` hook of the parent applies. Only the parent frame posts. In Firefox, the frame reads the `origin` global of the parent. |
+| `forwarding.e2e.ts` | A cross-origin child forwards a record when `bus.trustedOrigins` has the origin of the parent. Only the parent frame posts. |
+| `forwarding.e2e.ts` | A cross-origin child without `bus.trustedOrigins` resolves to `sender` and posts its own record. The parent posts nothing. |
+| `replay.e2e.ts` | The real `@rrweb/record` recorder records the page and a few DOM changes. After an error, `/v1/replay` gets segments that start with a full snapshot. Text is masked. The input value is masked in the snapshot and in the input event. An element with `data-observability-unmask` keeps its text. An element with `data-observability-ignore` has no content. The error record has the `replay.id` of the segments. |
+| `trace-propagation.e2e.ts` | A `fetch` to an origin in `capture.propagateTraceHeaderTo` has `traceparent`. A `fetch` to a different origin does not. |
+| `worker-transport.e2e.ts` | With `transportWorker`, the worker sends the batch. |
+| `worker-transport.e2e.ts` | A worker that gives no ready answer causes the fallback to plain HTTP. The server gets the record one time. No `transport.timeout` diagnostic occurs. |
 
 ## Coverage that is missing
 
