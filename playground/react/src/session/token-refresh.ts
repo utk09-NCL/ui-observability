@@ -1,17 +1,20 @@
 // src/session/token-refresh.ts
 //
-// The timer of the "Token refresh" recipe. It asks for a new token at a part of the life of the
-// token, and then again at the same part of the life of the new one. The library needs no call
-// for a refresh. Its headers function reads the current token on each request.
+// The timer of the "Token refresh" recipe. It refreshes at 80 percent of each token's life. The
+// library needs no call for a refresh, because its headers function reads the current token on each
+// request.
 
-/** The part of the life of a token after which the app refreshes it. */
+/** The part of a token's life after which the app refreshes it. */
 const REFRESH_AT_FRACTION = 0.8;
 /** A token that lives less than this still gets a pause, so a bad answer can't make a busy loop. */
 const MIN_DELAY_MS = 1000;
 
 export interface TokenRefreshOptions {
-  /** Refreshes the token. Returns how long the new token lives, in milliseconds. */
-  refresh: () => Promise<number>;
+  /**
+   * Refreshes the token. Returns how long the new token lives, in milliseconds. Null means that no
+   * session is open, and the timer stops without an error.
+   */
+  refresh: () => Promise<number | null>;
   /** How long the token of the login lives, in milliseconds. */
   expiresInMs: number;
   /** Called when a refresh fails. The timer stops, because the session is probably over. */
@@ -39,7 +42,7 @@ export function startTokenRefresh(options: TokenRefreshOptions): () => void {
   const run = async (): Promise<void> => {
     try {
       const next = await options.refresh();
-      if (!stopped) {
+      if (!stopped && next !== null) {
         schedule(next);
       }
     } catch (error) {

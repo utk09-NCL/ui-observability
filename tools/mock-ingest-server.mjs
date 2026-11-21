@@ -78,7 +78,7 @@ const REPLAY_LIMITS = {
 // The library makes a recording id with crypto.randomUUID(). The route accepts this shape only,
 // so an id from a URL can't be anything else than a key of the store.
 const REPLAY_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
-// id -> { id, service, sessionId, tabId, startedAt, bytes, segments: Map(sequence -> { events, text }) }
+// id -> { id, service, sessionId, tabId, startedAt, bytes, segments: Map(sequence -> { events, text, bytes }) }
 const replayRecordings = new Map();
 let replayBytes = 0;
 
@@ -107,19 +107,26 @@ function reset() {
   replayBytes = 0;
 }
 
-// Removes the oldest recording. A Map keeps the order of insertion, so the first key is the
-// oldest recording.
-function evictOldestReplay() {
-  const [id, recording] = replayRecordings.entries().next().value;
-  replayRecordings.delete(id);
-  replayBytes -= recording.bytes;
-  console.log(`[replay] evicted recording=${id} bytes=${recording.bytes}`);
+// Removes the oldest recording except the one that gets the new segment. A Map keeps the order
+// of insertion, so the first key is the oldest recording. Returns false when there is none.
+function evictOldestReplay(keepId) {
+  for (const [id, recording] of replayRecordings) {
+    if (id !== keepId) {
+      replayRecordings.delete(id);
+      replayBytes -= recording.bytes;
+      console.log(`[replay] evicted recording=${id} bytes=${recording.bytes}`);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // Stores one replay segment. Returns "stored", "duplicate" or a text that says why it was not
 // stored. A segment with the same recording and sequence replaces the first one, because the
-// library sends a segment again after a failed attempt.
-function storeReplaySegment(payload, text) {
+// library sends a segment again after a failed attempt. `size` is the length of the body in
+// bytes. The limits count bytes, and a text of 2-byte characters is twice as long in bytes.
+function storeReplaySegment(payload, text, size) {
   const id = payload["replay.id"];
   const sequence = payload.sequence;
   if (typeof id !== "string" || !REPLAY_ID_PATTERN.test(id)) {
@@ -131,42 +138,43 @@ function storeReplaySegment(payload, text) {
   if (!Array.isArray(payload.events)) {
     return "events is not a list";
   }
-  if (text.length > REPLAY_LIMITS.maxSegmentBytes) {
+  if (size > REPLAY_LIMITS.maxSegmentBytes) {
     return "the segment is over the size limit";
   }
 
-  let recording = replayRecordings.get(id);
-  if (!recording) {
-    recording = {
-      id,
-      service: String(payload["service.name"] ?? ""),
-      sessionId: String(payload["session.id"] ?? ""),
-      tabId: String(payload["tab.id"] ?? ""),
-      startedAt: new Date().toISOString(),
-      bytes: 0,
-      segments: new Map(),
-    };
-    replayRecordings.set(id, recording);
-  }
-
-  const before = recording.segments.get(sequence);
-  if (!before && recording.segments.size >= REPLAY_LIMITS.maxSegmentsPerRecording) {
+  const existing = replayRecordings.get(id);
+  const before = existing?.segments.get(sequence);
+  if (existing && !before && existing.segments.size >= REPLAY_LIMITS.maxSegmentsPerRecording) {
     return "the recording has the most segments that the store keeps";
   }
 
-  const delta = text.length - (before?.text.length ?? 0);
-  recording.segments.set(sequence, { events: payload.events.length, text });
-  recording.bytes += delta;
-  replayBytes += delta;
+  // Check before the write. One recording can't be bigger than the whole store, and the store
+  // never evicts the recording that gets the segment, so this is the one place that stops it.
+  const added = size - (before?.bytes ?? 0);
+  if ((existing?.bytes ?? 0) + added > REPLAY_LIMITS.maxTotalBytes) {
+    return "the segment would take the recording past the byte limit of the store";
+  }
+  while (replayBytes + added > REPLAY_LIMITS.maxTotalBytes && evictOldestReplay(id)) {
+    // Each pass removes one recording, and the loop ends when the segment fits.
+  }
+
+  const recording = existing ?? {
+    id,
+    service: String(payload["service.name"] ?? ""),
+    sessionId: String(payload["session.id"] ?? ""),
+    tabId: String(payload["tab.id"] ?? ""),
+    startedAt: new Date().toISOString(),
+    bytes: 0,
+    segments: new Map(),
+  };
+  recording.segments.set(sequence, { events: payload.events.length, text, bytes: size });
+  recording.bytes += added;
+  replayBytes += added;
   // The recording that just got a segment is the newest, so it is last in the order of eviction.
   replayRecordings.delete(id);
   replayRecordings.set(id, recording);
-  while (
-    replayRecordings.size > 1 &&
-    (replayRecordings.size > REPLAY_LIMITS.maxRecordings ||
-      replayBytes > REPLAY_LIMITS.maxTotalBytes)
-  ) {
-    evictOldestReplay();
+  while (replayRecordings.size > REPLAY_LIMITS.maxRecordings && evictOldestReplay(id)) {
+    // The oldest recording leaves, and the loop ends at the limit of recordings.
   }
 
   return before ? "duplicate" : "stored";
@@ -201,6 +209,18 @@ function readReplayRecording(recording) {
     segments,
   };
 }
+
+// A page that an attacker controls can point its DNS name to 127.0.0.1 and then read this server
+// as its own origin, which is called DNS rebinding. The browser sends the name of the attacker in
+// the Host header, so the server answers a loopback name only, with or without a port.
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i;
+
+function hasLoopbackHost(req) {
+  return typeof req.headers.host === "string" && LOOPBACK_HOST.test(req.headers.host);
+}
+
+const HOST_REFUSED =
+  "The Host header is not a loopback name. This mock server answers localhost, 127.0.0.1 and [::1].\n";
 
 function sendJson(res, value) {
   res.setHeader("Content-Type", "application/json");
@@ -525,6 +545,10 @@ function readBody(req) {
 }
 
 async function handle(req, res) {
+  if (!hasLoopbackHost(req)) {
+    res.writeHead(403, { "Content-Type": "text/plain" }).end(HOST_REFUSED);
+    return;
+  }
   cors(req, res);
 
   if (req.method === "OPTIONS") {
@@ -742,7 +766,7 @@ async function handle(req, res) {
       `[replay] replay=${payload["replay.id"]} sequence=${payload.sequence} events=${events} ` +
         `bytes=${raw.length} session=${payload["session.id"]}`,
     );
-    const outcome = storeReplaySegment(payload, raw.toString("utf8"));
+    const outcome = storeReplaySegment(payload, raw.toString("utf8"), raw.length);
     if (outcome !== "stored" && outcome !== "duplicate") {
       console.error(`[error] replay segment not stored: ${outcome}`);
       res.setHeader("Content-Type", "application/json");
@@ -810,7 +834,8 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+// Loopback only, so a device on the same network can't reach the server.
+server.listen(PORT, "127.0.0.1", () => {
   console.log(
     `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics, /v1/traces, ` +
       "/v1/replay and /uilogs",

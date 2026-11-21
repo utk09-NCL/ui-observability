@@ -5,7 +5,12 @@
 // the prices and the order updates for every panel.
 
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
+import {
+  DockviewReact,
+  type DockviewApi,
+  type DockviewReadyEvent,
+  type DockviewWillDropEvent,
+} from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 import { getLogger } from "@utk09/ui-observability";
 import type { Api } from "../api/client";
@@ -24,6 +29,7 @@ import {
   restoreLayout,
   writeLayout,
 } from "./layout-store";
+import { isFramePanel, movesFrameIntoPopout } from "./frame-panels";
 import { MenuButton } from "./menu";
 import { closePanelWindows } from "./panel-windows";
 import { PrivacyDialog } from "./privacy-dialog";
@@ -42,6 +48,29 @@ const TAB_CONTEXT_MENU = [
   "float",
   "popout",
 ] as const;
+
+/**
+ * Blocks the drop of a frame panel into a popout window. dockview lets a user drag a tab from the
+ * page into an open popout window, and the drop moves the panel there. The browser then loads
+ * the iframe again, and its runtime finds no owner.
+ * @param event The drop event of dockview, before it moves anything.
+ */
+function blockFrameDrop(event: DockviewWillDropEvent): void {
+  const data = event.getData();
+  const dragged = data?.panelId
+    ? [event.api.getPanel(data.panelId)]
+    : (event.api.getGroup(data?.groupId ?? "")?.panels ?? []);
+  const target = event.nativeEvent.target;
+  const blocked = movesFrameIntoPopout({
+    targetGroup: event.group,
+    overPopoutDocument: target instanceof Node && target.ownerDocument !== document,
+    dragged: dragged.filter((panel) => panel !== undefined),
+  });
+  if (blocked) {
+    event.preventDefault();
+    log.warn("A panel with a frame can't move into a popout window.");
+  }
+}
 
 /**
  * Renders the workspace of a logged-in user.
@@ -256,7 +285,11 @@ export function Workspace({
           popoutUrl="/popout.html"
           watermarkComponent={Watermark}
           rightHeaderActionsComponent={HeaderActions}
-          getTabContextMenuItems={() => [...TAB_CONTEXT_MENU]}
+          getTabContextMenuItems={({ panel }) =>
+            // "popout" moves a panel into a popout window, which a frame panel can't do.
+            TAB_CONTEXT_MENU.filter((item) => item !== "popout" || !isFramePanel(panel.id))
+          }
+          onWillDrop={blockFrameDrop}
           onReady={onReady}
         />
       </div>

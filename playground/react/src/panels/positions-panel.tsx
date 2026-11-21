@@ -6,8 +6,9 @@
 
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { getLogger, registerWorker } from "@utk09/ui-observability";
-import { PAIRS } from "../api/types";
+import { PAIRS, type Position } from "../api/types";
 import { getMarketState } from "../data/market-store";
+import { useRuntimeGeneration } from "../observability/runtime-generation";
 import { useOrders } from "../data/orders-store";
 import { useWorkspace } from "../workspace/context";
 import { isFromWorker, type PnlRow, type ToWorker } from "./positions-protocol";
@@ -36,6 +37,10 @@ export function PositionsPanel(): ReactElement {
   const [computeMs, setComputeMs] = useState<number | null>(null);
   const [error, setError] = useState("");
   const worker = useRef<Worker | null>(null);
+  // The last positions that the API gave. A new worker of a new generation gets them at its start,
+  // so a restart needs no new request. A request after a logout would get a 401.
+  const latest = useRef<Position[]>([]);
+  const generation = useRuntimeGeneration();
   // A fill changes the positions, and a fill is the only change that the API nets. The count
   // of filled orders is the cheap signal to read them again.
   const filled = useMemo(
@@ -45,6 +50,8 @@ export function PositionsPanel(): ReactElement {
 
   // The worker lives while the panel is mounted. The cleanup removes the registration and ends
   // the worker, so StrictMode can mount, unmount and mount again. Nothing else leaves the panel.
+  // A restart of the library removes the registration of the worker with the old runtime, so a
+  // new generation starts a new worker and registers it with the new runtime.
   useEffect(() => {
     const instance = createWorker();
     // The worker asks for the journey of the page when its runtime starts. Without journey:read,
@@ -63,6 +70,10 @@ export function PositionsPanel(): ReactElement {
       log.error("The positions worker failed.");
     });
     worker.current = instance;
+    if (latest.current.length > 0) {
+      const known: ToWorker = { type: "positions", rows: latest.current };
+      instance.postMessage(known);
+    }
 
     // The worker keeps the latest mid price of each pair, so a push twice a second is enough
     // and a lost push is harmless. A push for each tick would post 64 messages a second.
@@ -85,7 +96,7 @@ export function PositionsPanel(): ReactElement {
       instance.terminate();
       worker.current = null;
     };
-  }, []);
+  }, [generation]);
 
   useEffect(() => {
     let active = true;
@@ -93,6 +104,7 @@ export function PositionsPanel(): ReactElement {
       .positions()
       .then((positions) => {
         if (active) {
+          latest.current = positions;
           const message: ToWorker = { type: "positions", rows: positions };
           worker.current?.postMessage(message);
         }

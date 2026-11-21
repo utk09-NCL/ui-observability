@@ -46,7 +46,8 @@ describe("open a panel in a new window", () => {
     expect(url.origin).toBe(location.origin);
     expect(url.pathname).toBe("/panel.html");
     expect(url.searchParams.get("panel")).toBe("blotter");
-    expect(url.searchParams.get("journey")).toBe(getJourneyToken());
+    expect(new URLSearchParams(url.hash.slice(1)).get("journey")).toBe(getJourneyToken());
+    expect(url.searchParams.has("journey")).toBe(false);
   });
 
   it("starts a journey when none runs, so the records of the opener carry it", () => {

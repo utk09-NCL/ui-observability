@@ -9,7 +9,8 @@
 //
 // The business API of the playground apps: login, orders, positions and a WebSocket price
 // stream. State lives in memory. The apps call it through their Vite proxy, so it sends no CORS
-// headers. It prints one line for each order request, with the traceparent that it received.
+// headers. It prints one line for each order request, with the traceparent that it received, and
+// one line for each login and logout.
 
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -82,6 +83,18 @@ function reset() {
     quotes[pair] = { mid, digits };
   }
 }
+
+// A page that an attacker controls can point its DNS name to 127.0.0.1 and then call this server
+// as its own origin, which is called DNS rebinding. The browser sends the name of the attacker in
+// the Host header, so the server answers a loopback name only, with or without a port.
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i;
+
+function hasLoopbackHost(req) {
+  return typeof req.headers.host === "string" && LOOPBACK_HOST.test(req.headers.host);
+}
+
+const HOST_REFUSED =
+  "The Host header is not a loopback name. This mock server answers localhost, 127.0.0.1 and [::1].\n";
 
 function sendJson(res, status, value) {
   res.setHeader("Content-Type", "application/json");
@@ -301,6 +314,7 @@ async function handleLogin(req, res) {
   forgetOldSessions();
   const token = randomBytes(24).toString("hex");
   sessions.set(token, { user, tenant: body.tenant, expiresAt: Date.now() + TOKEN_TTL_MS });
+  console.log(`[session] login user=${user} tenant=${body.tenant} sessions=${sessions.size}`);
   sendJson(res, 200, { token, user, tenant: body.tenant, expiresInMs: TOKEN_TTL_MS });
 }
 
@@ -368,6 +382,11 @@ function handleOrderDelete(res, session, id) {
 }
 
 async function handle(req, res) {
+  if (!hasLoopbackHost(req)) {
+    res.writeHead(403, { "Content-Type": "text/plain" }).end(HOST_REFUSED);
+    return;
+  }
+
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
   const startedAt = Date.now();
@@ -439,6 +458,7 @@ async function handle(req, res) {
   if (path === "/api/logout" && req.method === "POST") {
     sessions.delete(token);
     closeSocketsOf(token, "logout");
+    console.log(`[session] logout user=${session.user} sessions=${sessions.size}`);
     res.writeHead(204).end();
     return;
   }
@@ -523,6 +543,14 @@ streams.on("connection", (socket) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+  if (!hasLoopbackHost(req)) {
+    // The socket has no ServerResponse yet, so the refusal is written by hand.
+    socket.end(
+      `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${HOST_REFUSED}`,
+    );
+    return;
+  }
+
   const { pathname } = new URL(req.url, `http://localhost:${PORT}`);
   if (pathname !== "/api/stream") {
     socket.destroy();
@@ -561,6 +589,7 @@ setInterval(() => {
 }, TICK_MS);
 
 reset();
-server.listen(PORT, () => {
+// Loopback only, so a device on the same network can't reach the server.
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`mock app API listening on http://localhost:${PORT}/api (stream: /api/stream)`);
 });

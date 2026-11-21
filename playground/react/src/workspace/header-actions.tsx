@@ -6,13 +6,11 @@
 
 import { type ReactElement, useEffect, useState } from "react";
 import type { IDockviewHeaderActionsProps } from "dockview-react";
-import { getLogger } from "@utk09/ui-observability";
 import { WINDOW_PANELS } from "../panel-window/protocol";
 import { useWorkspace } from "./context";
+import { holdsFramePanel } from "./frame-panels";
 import type { PanelId } from "./default-layout";
 import { openPanelWindow } from "./panel-windows";
-
-const log = getLogger("workspace.layout");
 
 /**
  * Renders the header buttons of one group.
@@ -24,8 +22,12 @@ export function HeaderActions({
   containerApi,
   group,
   activePanel,
+  panels,
 }: IDockviewHeaderActionsProps): ReactElement {
   const { session } = useWorkspace();
+  // A frame in a popout window loads again with a parent that has no runtime, so a group with a
+  // frame panel has no "Pop out" button. See frame-panels.ts.
+  const canPopOut = !holdsFramePanel(panels);
   const windowPanel = WINDOW_PANELS.find((id: PanelId) => id === activePanel?.id);
   const [maximized, setMaximized] = useState(api.isMaximized());
   const [location, setLocation] = useState(api.location.type);
@@ -44,12 +46,9 @@ export function HeaderActions({
     };
   }, [api, containerApi]);
 
+  // dockview tells the workspace when the browser blocks the window, and workspace.tsx logs it.
   const popout = (): void => {
-    void containerApi.addPopoutGroup(group).then((opened) => {
-      if (!opened) {
-        log.warn("The browser did not open the popout window. Allow popups for this site.");
-      }
-    });
+    void containerApi.addPopoutGroup(group);
   };
 
   return (
@@ -101,16 +100,18 @@ export function HeaderActions({
           >
             {"⧉"}
           </button>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Pop out group"
-            title="Pop out into a new window"
-            data-observability-action="group-popout"
-            onClick={popout}
-          >
-            {"↗"}
-          </button>
+          {canPopOut && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Pop out group"
+              title="Pop out into a new window"
+              data-observability-action="group-popout"
+              onClick={popout}
+            >
+              {"↗"}
+            </button>
+          )}
         </>
       )}
       {location !== "grid" && (

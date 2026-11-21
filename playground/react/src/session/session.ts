@@ -156,6 +156,31 @@ export function switchTenant(api: Api, user: string, tenant: string): Promise<Se
 }
 
 /**
+ * Moves to another tenant, and ends the session when the move fails. A failure in the login call
+ * leaves the old tenant's token and user context in place, while the page shows the login screen.
+ * A failure in the rotation has cleared both already, and the logout then finds no token and does
+ * nothing. The error of the move is the one that the caller gets.
+ * @param api The client of the app API.
+ * @param user The user name.
+ * @param tenant The new tenant id.
+ * @returns The session of the new tenant.
+ */
+export async function switchTenantOrLeave(
+  api: Api,
+  user: string,
+  tenant: string,
+): Promise<Session> {
+  try {
+    return await switchTenant(api, user, tenant);
+  } catch (error) {
+    // The logout has its own errors, and the caller needs the error of the switch.
+    await logout(api).catch(() => undefined);
+
+    throw error;
+  }
+}
+
+/**
  * Revokes a token that the app no longer uses. The api client sends the current token, so the
  * call goes through fetch with the old one.
  * @param api The client of the app API.
@@ -195,22 +220,20 @@ export function logoutSharedDevice(api: Api): Promise<void> {
 /**
  * Refreshes the token of the session. The library needs no call for it. Its headers function
  * reads the current token on each request, so the next batch carries the new token. The "Token
- * refresh" recipe says the same.
+ * refresh" recipe says the same. The call runs in the queue, like a login and a logout. A logout
+ * that arrives during the request then waits, and it revokes the new token and not the old one.
  * @param api The client of the app API.
- * @returns How long the new token lives, in milliseconds.
+ * @returns How long the new token lives, in milliseconds, or null when no session is open.
  */
-export async function refreshSession(api: Api): Promise<number> {
-  const before = getToken();
-  const result = await api.refresh();
-  if (getToken() !== before) {
-    // A logout or a tenant switch ended this session while the request ran. The new token
-    // belongs to a session that nobody uses, so it is revoked and not kept.
-    await api.logoutToken(result.token).catch(() => undefined);
+export function refreshSession(api: Api): Promise<number | null> {
+  return runExclusive(async () => {
+    if (getToken() === undefined) {
+      return null;
+    }
+
+    const result = await api.refresh();
+    setToken(result.token);
 
     return result.expiresInMs;
-  }
-
-  setToken(result.token);
-
-  return result.expiresInMs;
+  });
 }

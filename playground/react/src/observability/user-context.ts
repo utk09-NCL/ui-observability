@@ -21,6 +21,7 @@ import {
 import type { Settings } from "../observability-settings/settings";
 import { buildConfig, routing } from "./config";
 import { loadConsent, resetConsent, saveConsent } from "./consent";
+import { bumpRuntimeGeneration } from "./runtime-generation";
 
 const FLUSH_TIMEOUT_MS = 3000;
 
@@ -106,23 +107,28 @@ export function resumeReplay(): void {
 
 /**
  * Stops the library for the next user of a shared device. The discard sends nothing, and
- * clearStorage removes the stored batches, the session id, the tab id and the journey of the
- * active context. The privacy choices go too, because the next user decides for himself. The
+ * clearStorage removes the stored batches, the session id, the tab id and the journey of each
+ * context in the storage namespace. The privacy choices go too, because the next user decides for himself. The
  * caller then revokes the token and calls startAnonymous().
  */
 export async function stopForSharedDevice(): Promise<void> {
   activeTenant = undefined;
   resetConsent();
-  await shutdown({ pending: "discard", clearStorage: "context" });
+  // "namespace" and not "context", which the recipe uses. Each page load starts a new security
+  // context, so a scope of one context would leave the parked batches of earlier loads and of
+  // panel windows on the device for up to 24 hours.
+  await shutdown({ pending: "discard", clearStorage: "namespace" });
 }
 
 /**
- * Starts a new runtime in the anonymous context, with new ids.
+ * Starts a new runtime in the anonymous context, with new ids. It also marks the new runtime, so
+ * the panels with a frame or a worker register again.
  * @param settings The settings in force.
  */
 export function startAnonymous(settings: Settings): void {
   configure(buildConfig(settings, "anonymous"));
   resumeReplay();
+  bumpRuntimeGeneration();
 }
 
 /**
@@ -142,6 +148,9 @@ export async function restartObservability(settings: Settings): Promise<void> {
     setContext({ tenant: activeTenant });
   }
   resumeReplay();
+  // shutdown() cleared the registrations of the frames and the workers. A panel that lists the
+  // generation in its effect registers again.
+  bumpRuntimeGeneration();
 }
 
 /**

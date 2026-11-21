@@ -11,7 +11,7 @@ Read the [playground guide](../README.md) first. It explains the mock ingest ser
 - Eleven panels. Each panel uses one part of the library. Six panels are in the default layout, and **Add panel** opens the other five.
 - A login, a tenant switch, a logout, a shared-device logout and a consent withdrawal that follow the recipes in [Production recipes](../../docs/production-recipes.md).
 - An "Observability settings" panel. The user changes the config and sees which value costs less.
-- A worker that logs through `registerWorker()`. Three frames that use the bus: a same-origin frame, a cross-origin frame and a frame that the app does not register.
+- A worker that logs through `registerWorker()`. Three frames that use the bus: a same-origin frame, a cross-origin frame and an unregistered cross-origin frame.
 - A session replay that records only after the user agrees, and a Support panel that plays it.
 - A window that shows one panel. It starts its own runtime and adopts the journey of the workspace.
 - A token refresh on a timer.
@@ -39,6 +39,8 @@ The command starts four servers.
 
 `pnpm run dev` also uses port 5174. The two commands can not run together.
 
+The two mock servers listen on `127.0.0.1`. They answer a request only when its `Host` header is `localhost`, `127.0.0.1` or `[::1]`. Any other name gets `403`. A web page on another name that points to this machine can then not read the replay routes.
+
 Open `http://localhost:5180`. Log in with any user name. The terminal of the command shows the lines of all four servers, with the numbers `[0]` to `[3]`.
 
 | Proxy path | Goes to |
@@ -54,7 +56,7 @@ The app has five more pages. Do not open them yourself. Each one belongs to a fe
 | --- | --- |
 | `/popout.html` | The page of the dockview popout windows. |
 | `/research.html` | The frame of the Research panel. |
-| `/untrusted.html` | The frame of the Untrusted widget panel. |
+| `http://localhost:5174/playground/vanilla/untrusted.html` | The Untrusted widget, on another origin. The app does not register it. |
 | `/panel.html` | The window of one panel, from **Open panel in new window**. |
 | `http://localhost:5174/playground/vanilla/partner.html` | The partner widget, on another origin. The vanilla playground may load the library source, so the page lives in `playground/vanilla`. |
 
@@ -69,9 +71,9 @@ The app has five more pages. Do not open them yourself. Each one belongs to a fe
 | Activity log | Read the records that the library built. | A processor tap keeps the last records. A change in the settings panel shows here at once. |
 | Observability settings | Change the config. | See [Observability settings](#observability-settings). |
 | Chart | Read the move of each pair. | A canvas has no DOM nodes. The replay shows it only with `replay.recordCanvas`, which is off. A profiler probe times each draw. |
-| Research | Click **Log an action**, then **Reload frame**, then click again. | A same-origin frame. `registerFrame()` runs before the frame loads. The frame forwards its records over the bus, in the namespace `research.frame`. The panel uses the dockview renderer `always`, so a move does not reload the frame. |
+| Research | Click **Log an action**, then **Reload frame**, then click again. | A same-origin frame. `registerFrame()` runs before the frame loads. The frame forwards its records over the bus, in the namespace `research.frame`. The panel uses the dockview renderer `always`, so a move does not reload the frame. A group that holds this panel has no **Pop out** button. |
 | Partner widget | Click **log from the partner** in the frame. | A frame from port 5174. `registerFrame()` binds its exact origin. The widget lists the origin of the workspace in `bus.trustedOrigins`. |
-| Untrusted widget | Click **Reload frame**. | The app does not register this frame. The bus rejects it, and the counters of the bus diagnostics go up. The frame then sends for itself. |
+| Untrusted widget | Click **Reload frame**. | A frame from port 5174. The app does not register it. The bus rejects its hello, and the counters `bus.rejected_message` and `bus.untrusted_origin` go up. The frame then sends for itself. It has no endpoint, so it sends nothing. |
 | Support | Play a replay. Read the health. Collect the debug bundle. Read the lost records. | `collectDebugBundle()`, `getHealth()` and the `onDrop` hook. The replay list and the player are in `replay-player/`. |
 
 The fault switch is in the order ticket. **Reject, 422** and **Error, 500** make the API refuse the next orders. **Slow, 2 s** delays them.
@@ -81,8 +83,8 @@ The fault switch is in the order ticket. **Reject, 422** and **Error, 500** make
 - **Layout.** The workspace saves the layout with `toJSON()` after each change. Its key is `react-workspace.layout:<user>:<tenant>` in `localStorage`. A new user, or a new tenant of a user, opens the default layout.
 - **A damaged layout.** The workspace reads the saved layout with checks. It falls back to the default layout for bad JSON, a wrong shape, an old format version and a layout that dockview refuses. It writes a WARN record with the reason. `src/workspace/layout-store.test.ts` shows each case.
 - **Add panel** opens a panel, or shows it when it is open. **Reset layout** clears dockview and builds the default layout again.
-- **Group buttons.** Each group has **Open panel in new window**, **Maximize**, **Float** and **Pop out**. A floating group and a popout group have **Dock**. The tab menu has the same actions.
-- **Popout windows.** dockview opens `/popout.html` in a new window and moves the DOM of the group into it. The file is `public/popout.html`, so the dev server and the build both serve it. The panel code keeps running in the opener window. The browser must allow popups for the site. A reload of the page closes the popout window. The group then returns to the grid, so no panel is lost. This came from one run in Chrome.
+- **Group buttons.** Each group has **Open panel in new window**, **Maximize**, **Float** and **Pop out**. A group that holds a frame panel has no **Pop out** button. A floating group and a popout group have **Dock**. The tab menu has the same actions, except for a frame panel. The tab of a frame panel has no **Open in New Window** item. That item is the popout item of dockview. The workspace also blocks the drop of a frame tab into a popout window.
+- **Popout windows.** dockview opens `/popout.html` in a new window and moves the DOM of the group into it. The file is `public/popout.html`, so the dev server and the build both serve it. The panel code keeps running in the opener window. The browser must allow popups for the site. A frame in a popout window loads again, and its parent has no runtime. So no frame panel goes to a popout window. A reload of the page closes the popout window. The group then returns to the grid, so no panel is lost. This came from one run in Chrome.
 - **Theme.** The theme switch changes the dockview theme and the colors of the page. Dark is the default. The choice stays in `localStorage`. A popout window that is open keeps the theme of its start.
 - **Empty layout.** The watermark has a button for each panel and one for the default layout.
 
@@ -90,11 +92,13 @@ The fault switch is in the order ticket. **Reject, 422** and **Error, 500** make
 
 | Item | What the app does | Recipe |
 | --- | --- | --- |
-| Switch tenant | Logs in again for the new tenant. Rotates the security context with `pending: "discard"`. Revokes the old token. The workspace opens the layout of the new tenant. | [Tenant rotation](../../docs/production-recipes.md#tenant-rotation) |
-| Privacy choices | Opens a dialog. The telemetry switch calls `configure({ enabled: false })`, `stopReplay()` and a rotation with an empty `routing`. The replay switch calls `startReplay()` or `stopReplay()`. Both choices stay in `localStorage`, so the next page load starts with them. | [Consent withdrawal](../../docs/production-recipes.md#consent-withdrawal) |
+| Switch tenant | Logs in again for the new tenant. Rotates the security context with `pending: "discard"`. Revokes the old token. The workspace opens the layout of the new tenant. When the login for the new tenant fails, the app logs the user out. | [Tenant rotation](../../docs/production-recipes.md#tenant-rotation) |
+| Privacy choices | Opens a dialog. The telemetry switch calls `configure({ enabled: false })`, `stopReplay()` and a rotation with an empty `routing`. The replay switch calls `startReplay()` or `stopReplay()`. Both choices stay in `localStorage`, so the next page load starts with them. A panel window follows the change at once, through a `storage` event. | [Consent withdrawal](../../docs/production-recipes.md#consent-withdrawal) |
 | Refresh token now | Asks the API for a new token. The page also does it on a timer. The library needs no call. | [Token refresh](../../docs/production-recipes.md#token-refresh) |
 | Log out | Rotates to the anonymous context, then revokes the token. It closes the windows of single panels. | [Logout](../../docs/production-recipes.md#logout) |
-| Log out on a shared device | Calls `shutdown({ pending: "discard", clearStorage: "context" })`, revokes the token and starts a new anonymous runtime. It removes the saved layouts of the user in every tenant, and the privacy choices of the device. | [Logout on a shared device](../../docs/production-recipes.md#logout-on-a-shared-device) |
+| Log out on a shared device | Calls `shutdown({ pending: "discard", clearStorage: "namespace" })`, revokes the token and starts a new anonymous runtime. It removes the saved layouts of the user in every tenant, and the privacy choices of the device. | [Logout on a shared device](../../docs/production-recipes.md#logout-on-a-shared-device) |
+
+The shared-device logout differs from the recipe in one value. The recipe has `clearStorage: "context"`. This app has `"namespace"`. Each page load and each panel window starts its own security context. A scope of one context would leave the stored batches of the other contexts on the device. `src/observability/shared-device.test.ts` checks the value.
 
 ## What to look for
 
@@ -108,11 +112,11 @@ The fault switch is in the order ticket. **Reject, 422** and **Error, 500** make
 | Click **Freeze 300 ms** | A `ui.long_frame.duration` point in the next metrics batch. |
 | Change a filter in the blotter | `ui.profile.duration` points for the probes `blotter.filter` and `blotter.filter.paint`. |
 | Click **Export** three times in one second | `ui.rage_click` in a log batch. |
-| **Privacy choices**, clear the telemetry switch | Nothing arrives at the ingest server. Set the switch again, and records arrive with the tenant. |
+| **Privacy choices**, clear the telemetry switch | Nothing arrives at the ingest server, also from an open panel window. Set the switch again, and records arrive with the tenant. |
 | **Log out on a shared device** | The saved layouts of the user leave `localStorage`. The next login opens the default layout. |
 | Add **Research**, click **Log an action** in the frame | `[react-workspace-research] [action] RESEARCH_VIEWED` in a log batch of the page. |
 | Add **Partner widget**, click **log from the partner** | `[react-workspace-partner] [action] PARTNER_CLICK` in a log batch of the page. |
-| Add **Untrusted widget**, click **Reload frame** | The counter **Rejected bus messages** goes up. |
+| Add **Untrusted widget**, click **Reload frame** | The counters of the bus go up. The role in the frame changes to `sender` after a few seconds. |
 | **Privacy choices**, set the replay switch. Fault switch **Reject, 422**, **Place order** | `[replay] replay=... sequence=0 events=...` in the terminal of the ingest server. The **Support** panel lists the recording after **Refresh the list**. |
 | **Open panel in new window** on the Blotter | A new window with the journey id in its header. Its records and the records of the workspace have the same `journey=<id>`. |
 
@@ -122,16 +126,17 @@ The workspace shows three iframes. Each one uses the bus in another way. Each fr
 
 | Frame | Origin | Registered | What happens |
 | --- | --- | --- | --- |
-| Research | The origin of the workspace | Yes, with `["records", "journey:read"]` | The frame attaches over the direct link and forwards its records. The records carry the journey of the workspace. |
+| Research | The origin of the workspace | Yes, with `["records", "journey:read"]` | The frame attaches over the direct link and forwards its records. The records carry the journey of the workspace. The frame has no endpoint, so it never sends for itself. |
 | Partner widget | Port 5174 | Yes, at the exact origin, with `["records", "journey:read"]` | The frame attaches over the message link. The workspace trusts the registered origin. The widget lists the workspace in its own `bus.trustedOrigins`, and it posts its hello only to those origins. |
-| Untrusted widget | The origin of the workspace | No | The bus rejects the frame. The counter `bus.rejected_message` goes up with each load of the frame. The frame then sends for itself. It has no endpoint, so it sends nothing. |
+| Untrusted widget | Port 5174 | No | The frame can not read the workspace. It lists the workspace in `bus.trustedOrigins`, so it posts its hello. The bus rejects the hello. The counters `bus.rejected_message` and `bus.untrusted_origin` go up with each load. The frame then sends for itself. It has no endpoint, so it sends nothing. |
 
 Each frame element is in the document with no `src`. `registerFrame()` runs, then `flush()` waits for the start of the runtime, and then the frame gets its `src`. A frame that loads earlier finds no owner. `src/panels/frame-panel.tsx` does this in one effect with a cleanup, so StrictMode can mount, unmount and mount again.
 
 - **Permissions.** A frame or a worker asks for the journey when its runtime starts. A registration without `journey:read` makes the bus reject that request. The bus counts `bus.rejected_message`. With `journey:read`, the counter does not move for a registered source. The main session measured this in Chrome.
-- **The renderer.** dockview removes the DOM of a hidden panel and puts it back when the panel shows again. The browser reloads an iframe that it takes out of the document. The three frame panels use the renderer `always`, so a tab change or a move does not reload the frame.
+- **The renderer.** dockview removes the DOM of a hidden panel and puts it back when the panel shows again. The browser reloads an iframe that it takes out of the document. The three frame panels use the renderer `always`, so a tab change or a move in the grid does not reload the frame. A move into a popout window still reloads it, because the popout window is a new browsing context. The frame then has a parent with no runtime, and it leaves the bus. A group with a frame panel has no **Pop out** button. The workspace also blocks the drop of a frame tab into a popout window. In Chrome, the drop of the Research tab into a popout window did not happen. The drop of the Order ticket tab did.
 - **A reload of the frame.** The registration binds the window of the frame and not one document. After **Reload frame**, the link comes back, and the records arrive again. `e2e/playground/react.smoke.ts` checks it.
-- **The sandbox.** The partner iframe has `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` keeps the origin of the widget. Without it, the frame has an opaque origin, and the bus can not forward for it.
+- **A restart.** `shutdown()` removes each registration of a frame and a worker. After **Apply and restart**, the app raises a runtime generation in `src/observability/runtime-generation.ts`. The Positions panel and each frame panel register again when the number changes. `e2e/playground/react.smoke.ts` checks that the worker and the Research frame send records after a restart.
+- **The sandbox.** The partner iframe and the Untrusted iframe have `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` keeps the origin of the widget. Without it, the frame has an opaque origin, and the bus can not forward for it. The setting is safe only because the widgets are on port 5174 and the workspace is on another origin. A frame of the same origin with both flags can remove its own sandbox. With `allow-scripts` alone, the Untrusted widget did not start in Chrome. Its module script has the origin `null`, and the dev server sends no CORS header for that origin.
 
 ## Session replay
 
@@ -146,25 +151,28 @@ The recorder masks the text of each element and the value of each input. The pla
 
 A new runtime starts with the recorder off. `resumeReplay()` in `src/observability/user-context.ts` calls `startReplay()` again for a user who agreed. It runs at the page start, after a restart and after the start that follows a shared-device logout. A shared-device logout also removes the choice, so the next user does not record.
 
-The replay service is the mock ingest server. It keeps at most 20 recordings, 100 segments for each recording and 64 MB. The oldest recording leaves first. `GET /v1/replay/recordings` lists them. `GET /v1/replay/recordings/<id>` gives one recording with its segments in order. The folder [`src/replay-player/`](src/replay-player/README.md) reads these two routes. A team that copies it replaces one function.
+The replay service is the mock ingest server. It keeps at most 20 recordings, 100 segments for each recording and 64 MB. The store counts bytes of the body. The oldest recording leaves first. A segment that would take one recording past 64 MB gets `400` and a reason. `GET /v1/replay/recordings` lists them. `GET /v1/replay/recordings/<id>` gives one recording with its segments in order. The folder [`src/replay-player/`](src/replay-player/README.md) reads these two routes. A team that copies it replaces one function.
 
 The **Chart** panel shows why `replay.recordCanvas` is a row of its own. A canvas has no DOM nodes. With the row off, the recorder does not read its pixels.
 
 ## The window of one panel
 
-**Open panel in new window** opens `/panel.html` with the panel and the journey token in the address. The window is a new document. It is not an iframe, so the bus does not link it to the workspace.
+**Open panel in new window** opens `/panel.html` with the panel in the query and the journey token in the fragment. A browser sends no fragment to a server, so no server log holds the token. The window is a new document. It is not an iframe, so the bus does not link it to the workspace.
 
 1. The opener starts a journey named `panel-window` when none runs, and reads `getJourneyToken()`.
 2. The window starts its own runtime with `configure()`.
 3. The window asks the opener for the user and the tenant with one `postMessage`. The opener answers only to a window that it opened, from its own origin, to its own origin. The answer has no token.
 4. The window logs in for itself, so it has its own token and its own refresh timer.
 5. The window calls `adoptJourney()` with the token of the address. The login rotates the security context, and a rotation ends the active journey, so the adoption comes after the login.
+6. The window sets `window.opener` to `null`. A page that the window loads later can then not reach the workspace.
+7. The window follows each change of the privacy choices. `watchConsent()` in `src/observability/consent-sync.ts` listens for the `storage` event of the consent key. It applies the same change as the workspace, in both directions.
+8. At `pagehide`, the window revokes its own token. It sends `POST /api/logout` with `keepalive` and its own bearer header.
 
-The records of the window and of the workspace then have the same `journey.id`. The opener ends the journey that it started when the window closes. A logout, a tenant switch and a page unload close the windows.
+The records of the window and of the workspace then have the same `journey.id`. The opener ends the journey that it started when the window closes. A logout, a tenant switch and a page unload close the windows. A new journey in one window, for example an order, ends the link.
 
 ## Token refresh
 
-The page refreshes the token at 80 percent of its life, and again at 80 percent of the life of the new token. The "Token refresh" recipe says that the library needs no call. The `headers` function reads the current token on each request, so the next batch carries the new token. `src/session/token-refresh.ts` is the timer. `refreshSession()` in `src/session/session.ts` keeps the new token only when the session did not change during the request. Otherwise it revokes the new token.
+The page refreshes the token at 80 percent of its life, and again at 80 percent of the life of the new token. The "Token refresh" recipe says that the library needs no call. The `headers` function reads the current token on each request, so the next batch carries the new token. `src/session/token-refresh.ts` is the timer. `refreshSession()` in `src/session/session.ts` runs in the queue of the login, the logout and the rotation. It returns at once when no token is set. A logout that comes during the request waits in the queue. It then revokes the new token.
 
 The mock API has `POST /api/refresh`. It gives a new token for the same session and ends the old token. `UIOBS_APP_API_TOKEN_TTL_MS` shortens the life of a token, for a demo.
 
@@ -174,7 +182,7 @@ The panel is the one of the [react-custom-backend example](../react-custom-backe
 
 - A live strip shows the delivery state of the library, and the diagnostic counters.
 - The table has one row for each setting. It shows the current value, the faster value, what the faster value costs, the evidence label and when the change applies.
-- A setting that applies at runtime goes to `configure()` at once. A setting that is fixed after startup waits as "Staged". **Apply and restart** runs `await shutdown()` and then `configure()`.
+- A setting that applies at runtime goes to `configure()` at once. A setting that is fixed after startup waits as "Staged". **Apply and restart** runs `await shutdown()` and then `configure()`. It also raises the runtime generation, so the worker and the frames register again.
 - The cost meter times log calls under the settings in force. This app sends no COOP and no COEP header, so the clock has a coarse step and the blocks are longer. See [Why the app sends no COOP and COEP headers](#why-the-app-sends-no-coop-and-coep-headers).
 
 New rows in this app:
@@ -205,7 +213,8 @@ These notes come from a run in Chrome, unless a note says otherwise. They are no
 - **A forwarded record skips the processors of the page.** The Activity log shows no record of the worker or of a frame. The ingest server gets them, in the batches of the page. Only `redact` runs on a forwarded record. The example has no workaround.
 - **`bus.rejected_message` and `journey:read`.** A registered worker without `journey:read` adds 1 to `bus.rejected_message`, also with no StrictMode double mount. The worker asks for the journey at startup, and the bus rejects the request. The main session measured this. With `journey:read`, the counter stays at 0 in the default layout.
 - **A pause and a grant in one page do not attach the worker again.** A page that starts paused starts no bus. The Positions worker then finds no owner, and it has no endpoint, so it sends nothing. After the user sets the telemetry switch again, the records of the page arrive, and the records of the worker did not, in one run. Reload the page to attach the worker and the frames. Hypothesis: a worker that found no owner stays without one.
-- **An unregistered same-origin frame becomes a sender.** It reports the role `sender`, and each load adds 1 to `bus.rejected_message`. A click on **Send a record** in the frame adds nothing to the counter, because the frame no longer posts to the workspace.
+- **An unregistered cross-origin frame becomes a sender.** The widget lists the workspace in `bus.trustedOrigins`, so it posts its hello. The bus rejects the hello. In one run, each load added 2 to `bus.rejected_message` and 2 to `bus.untrusted_origin`. The workspace can not read the frame, so the panel shows the counters of its own bus. The widget reports the role `sender` after about 4.5 seconds.
+- **`shutdown()` removes the registrations.** The first version of **Apply and restart** left the Positions worker and the Research and Partner frames without an owner. The records of the worker and of the frames stopped. The generation counter fixed it.
 - **A window with an opener shares the tab id.** `window.open` copies the `sessionStorage` of the opener. The new window then starts with the tab id of the opener. In one run, the records of the opener got a new tab id, and the window kept the old one. The session ids differ.
 
 ## Why the app sends no COOP and COEP headers
@@ -224,22 +233,36 @@ A list for a review. Each item is a place where this app trusts another document
 | --- | --- | --- |
 | `registerFrame()` for Research | The window of `/research.html`, at the origin of the workspace | Exact origin, `["records", "journey:read"]`. The call comes before the frame loads. |
 | `registerFrame()` for the Partner widget | The window of the partner page, at `VITE_PARTNER_ORIGIN` | Exact origin, `["records", "journey:read"]`. The frame has `sandbox="allow-scripts allow-same-origin"`. |
-| No registration for the Untrusted widget | Nothing | The bus rejects the frame. |
+| No registration for the Untrusted widget | Nothing | The widget is on port 5174, so it can not read the workspace. The bus rejects its hello and counts it. |
 | `registerWorker()` for the Positions worker | The dedicated worker of the panel | `["records", "journey:read"]`. |
 | `bus.trustedOrigins` in `playground/vanilla/partner.ts` | `http://localhost:5180` and `http://localhost:5187` | The widget posts its hello only to these origins, and it accepts the welcome only from them. |
-| `configure()` in the Positions worker and in the partner widget | Nothing | No endpoint, so a child that finds no owner sends nothing. A child of another team can not read the consent of the user. |
-| `configure()` in the Research frame | The stored consent of the user | `enabled: loadConsent().telemetry`. The frame has an endpoint, and it starts paused for a user who withdrew consent. |
+| `configure()` in the Positions worker, in the Research frame and in the partner widget | Nothing | No endpoint, so a child that finds no owner sends nothing. A child can not read the consent of the user. |
 | `postMessage` from the opener to a panel window | The window that the opener opened | The target origin is the origin of the page, never `"*"`. The opener checks `event.origin` and `event.source` before it answers. The answer has the user and the tenant, and no token. |
 | `postMessage` from a panel window to its opener | The opener | The target origin is the origin of the page. The window accepts one answer, from the opener window and from its own origin. |
-| The address of a panel window | The panel id | `parsePanelRequest()` accepts only an id of the panel list, and not the settings panel. |
+| The address of a panel window | The panel id | `parsePanelRequest()` accepts only an id of the panel list, and not the settings panel. The journey token is in the fragment. |
+| The `storage` event of the consent key | Another document of the same origin | `watchConsent()` applies a change of `telemetry` and `replay`, in both directions. A page of another origin can not write the key. |
+| `POST /api/logout` at `pagehide` of a panel window | The bearer token of the window | The window revokes only its own token. The request has `keepalive`, so the browser sends it while the page closes. |
+| The `Host` header of the mock servers | The name in the request | The servers answer `localhost`, `127.0.0.1` and `[::1]` only, and they listen on `127.0.0.1`. |
 | `GET /v1/replay/recordings` and `/v1/replay/recordings/<id>` of the mock ingest server | The id in the address | The route accepts only ids of 8 to 64 letters, digits and hyphens. It answers only the allowed origins with CORS headers. |
 | `POST /api/refresh` of the mock app API | The bearer token | The route needs a known token. It ends the old token. |
+
+## Before you copy this to production
+
+The mock servers and the widgets of this example are for a demo. Check each point before a copy goes to a real service.
+
+- The replay read routes need authentication, a support role and a tenant filter. `getJson()` in `replay-api.ts` must then send a credential. CORS is not an access control.
+- Send telemetry with a token that can only write to the ingest service. Do not use the API token that places orders. `src/observability/config.ts` sends the API bearer token today.
+- `playground/vanilla/partner.ts` trusts the smoke origin 5187. A production widget trusts only the production workspace origin.
+- `sandbox="allow-scripts allow-same-origin"` on the partner frame is safe only while the partner origin differs from the workspace origin.
+- The backend must not trust the namespace or the attributes of a record from a frame.
+- Serve the replay player with a CSP or from its own origin. A crafted recording can make the browser load URLs.
+- Clicks in a dockview popout window are not captured. See [What the example found](#what-the-example-found).
 
 ## What to copy
 
 | Copy | Use | Replace |
 | --- | --- | --- |
-| `src/observability/` | The `configure()` config, the headers function, the login, tenant, logout, consent and replay calls, and the error boundary with the provider and hooks. See its [README](src/observability/README.md). | The endpoints, `SERVICE_NAME` and `getToken`. |
+| `src/observability/` | The `configure()` config, the headers function, the login, tenant, logout, consent and replay calls, and the error boundary with the provider and hooks. It also has the consent sync of several windows and the runtime generation. See its [README](src/observability/README.md). | The endpoints, `SERVICE_NAME` and `getToken`. |
 | `src/observability-settings/` | The settings section, the hint catalog, the live strip, the cost meter and the recent records. See its [README](src/observability-settings/README.md). | `app-routes.ts` and `DEFAULT_SETTINGS`. |
 | `src/replay-player/` | The player and the replay list requests. See its [README](src/replay-player/README.md). | `REPLAY_SERVICE_URL` and `getJson()`. |
 | `src/main.tsx` | The `configure()` call at module scope, before `createRoot()`, and `resumeReplay()`. | The settings source. |
@@ -266,9 +289,15 @@ pnpm --filter @example/react run test
 - `paused-start.test.ts` checks a login on a page that starts paused after a withdrawal of consent.
 - `panel-windows.test.ts` and `panel-window/protocol.test.ts` check the address of a window, the journey, and the check of each message.
 - `replay-api.test.ts` checks the parsing of the replay list and of one recording.
-- `config.test.ts`, `hints.test.ts`, `settings-store.test.ts` and `restart.test.ts` check the config, the hint catalog and the settings store.
+- `config.test.ts`, `hints.test.ts` and `settings-store.test.ts` check the config, the hint catalog and the settings store.
+- `restart.test.ts` calls `restartObservability()`. It checks the tenant and the `Authorization` header of the next batch, an anonymous restart and the runtime generation.
+- `runtime-generation.test.ts` checks the counter that the panels read.
+- `consent-sync.test.ts` checks how a window follows a change of the consent key.
+- `shared-device.test.ts` checks the options that the shared-device logout gives to `shutdown()`.
+- `frame-panels.test.ts` checks which groups get a **Pop out** button and which drops the workspace blocks.
+- `api/client.test.ts` checks the logout at `pagehide`, and that `listOrders()` asks again for each call.
 
-The browser smoke test starts its own servers on the ports 5187, 5188, 8797 and 8798. It needs Chromium and a built library.
+The browser smoke test starts its own servers on the ports 5187, 5188, 8797 and 8798. `pnpm run test:playground` also starts port 5186 for the smoke test of the react-custom-backend example. `e2e/playground/mock-servers.smoke.ts` checks the `Host` rule and the byte limit of the replay store. The tests need Chromium and a built library.
 
 ```bash
 pnpm exec playwright install chromium
@@ -285,6 +314,8 @@ pnpm run test:playground
 | The Partner widget panel shows an error page. | The cross-origin server is not on port 5174. Run `pnpm run example:react`, or `pnpm run dev:cross-origin`. |
 | The Support list is empty. | Set the replay switch in **Privacy choices**. Then make an ERROR record, for example with the fault switch on **Reject, 422**. Click **Refresh the list** after a few seconds. |
 | **Pop out** or **Open panel in new window** opens no window. | The browser blocked the popup. Allow popups for `http://localhost:5180`. |
+| A group with a frame panel has no **Pop out** button. | This is on purpose. A frame in a popout window leaves the bus. |
+| A request to a mock server gets `403` and the text "The Host header is not a loopback name". | Use `localhost`, `127.0.0.1` or `[::1]` as the name in the address. |
 | A panel window says "Open this window with the button of a panel in the workspace". | The page has no opener. Open the window from the workspace. |
 | A popout window has the wrong colors after a theme change. | The window keeps the theme of its start. Close it and pop the group out again. |
 | The workspace opens a layout that you do not expect. | Click **Reset layout**. Or remove the key `react-workspace.layout:<user>:<tenant>` from `localStorage`. |

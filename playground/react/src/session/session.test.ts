@@ -2,11 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flush } from "@utk09/ui-observability";
 import { memory } from "../../test/observability";
 import type { Api } from "../api/client";
-import { login, logout, logoutSharedDevice, refreshSession, switchTenant } from "./session";
+import {
+  login,
+  logout,
+  logoutSharedDevice,
+  refreshSession,
+  switchTenant,
+  switchTenantOrLeave,
+} from "./session";
 import { getToken, setToken } from "./token";
 
 // The login and the logout call the library through user-context.ts. The spec replaces that
-// module, because a rotation to the relative endpoints of the app would call a real server.
+// module, because a rotation to the endpoints of the app would call a real server.
 const { begin, end, restart, switchContext, stop, startAnon, order } = vi.hoisted(() => ({
   begin: vi.fn<() => Promise<void>>(),
   end: vi.fn<() => Promise<void>>(),
@@ -275,37 +282,117 @@ describe("refreshSession", () => {
     expect(getToken()).toBe("token-1");
   });
 
-  it("revokes the new token, and keeps the current one, when the session changed meanwhile", async () => {
-    setToken("token-1");
-    const revoked = vi.fn(() => Promise.resolve());
-    const api = makeApi({
-      logoutToken: revoked,
-      refresh: () => {
-        // A tenant switch in the middle of the request gives the page another token.
-        setToken("token-of-the-new-tenant");
+  it("returns null at once when no token is set, and calls no API", async () => {
+    const refresh = vi.fn(() => Promise.reject(new Error("401")));
 
-        return Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 });
-      },
-    });
+    await expect(refreshSession(makeApi({ refresh }))).resolves.toBeNull();
 
-    await refreshSession(api);
-
-    expect(getToken()).toBe("token-of-the-new-tenant");
-    expect(revoked).toHaveBeenCalledWith("token-refreshed");
+    expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("returns the life of the token also when the revoke of a stale token fails", async () => {
-    setToken("token-1");
+  it("waits for a login in the queue, and then refreshes with the token of that login", async () => {
+    const refresh = vi.fn(() =>
+      Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 }),
+    );
+    let finishLogin: () => void = () => undefined;
     const api = makeApi({
-      logoutToken: () => Promise.reject(new Error("revoke failed")),
-      refresh: () => {
-        setToken(undefined);
+      refresh,
+      login: () =>
+        new Promise((resolve) => {
+          finishLogin = () => {
+            resolve(LOGIN_RESULT);
+          };
+        }),
+    });
 
-        return Promise.resolve({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 });
+    const loggingIn = login(api, "trader1", "tenant-a");
+    const refreshing = refreshSession(api);
+    await Promise.resolve();
+    // Before the fix the refresh ran at once, with no token, and the server answered 401.
+    expect(refresh).not.toHaveBeenCalled();
+
+    finishLogin();
+    await loggingIn;
+    await expect(refreshing).resolves.toBe(5000);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(getToken()).toBe("token-refreshed");
+  });
+
+  it("lets a logout that arrives during the request revoke the new token", async () => {
+    setToken("token-1");
+    let answer: (value: typeof LOGIN_RESULT) => void = () => undefined;
+    let revoked: string | undefined;
+    const api = makeApi({
+      refresh: () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      logout: () => {
+        revoked = getToken();
+
+        return Promise.resolve();
       },
     });
 
-    await expect(refreshSession(api)).resolves.toBe(5000);
+    const refreshing = refreshSession(api);
+    const leaving = logout(api);
+    await Promise.resolve();
+    expect(revoked).toBeUndefined();
+
+    answer({ ...LOGIN_RESULT, token: "token-refreshed", expiresInMs: 5000 });
+    await refreshing;
+    await leaving;
+
+    // The logout ran after the refresh, so it revoked the token that the server holds now.
+    expect(revoked).toBe("token-refreshed");
     expect(getToken()).toBeUndefined();
+  });
+});
+
+describe("switchTenantOrLeave", () => {
+  it("ends the session of the old tenant when the login call fails", async () => {
+    setToken("token-1");
+    const logoutCall = vi.fn(() => Promise.resolve());
+    const api = makeApi({ login: () => Promise.reject(new Error("503")), logout: logoutCall });
+
+    await expect(switchTenantOrLeave(api, "trader1", "tenant-b")).rejects.toThrow("503");
+
+    // The library goes back to the anonymous context, and the server revokes the old token.
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(logoutCall).toHaveBeenCalledTimes(1);
+    expect(getToken()).toBeUndefined();
+  });
+
+  it("does not log out a second time when the rotation failed, because the cleanup did it", async () => {
+    setToken("token-1");
+    switchContext.mockRejectedValue(new Error("rotation failed"));
+    const logoutCall = vi.fn(() => Promise.resolve());
+    const api = makeApi({
+      login: () => Promise.resolve({ ...LOGIN_RESULT, token: "token-2", tenant: "tenant-b" }),
+      logout: logoutCall,
+    });
+
+    await expect(switchTenantOrLeave(api, "trader1", "tenant-b")).rejects.toThrow(
+      "rotation failed",
+    );
+
+    expect(logoutCall).toHaveBeenCalledTimes(1);
+    expect(end).not.toHaveBeenCalled();
+    expect(getToken()).toBeUndefined();
+  });
+
+  it("returns the session of the new tenant, and leaves the old session alone, when it works", async () => {
+    setToken("token-1");
+    const api = makeApi({
+      login: () => Promise.resolve({ ...LOGIN_RESULT, token: "token-2", tenant: "tenant-b" }),
+    });
+
+    await expect(switchTenantOrLeave(api, "trader1", "tenant-b")).resolves.toMatchObject({
+      tenant: "tenant-b",
+    });
+
+    expect(end).not.toHaveBeenCalled();
+    expect(getToken()).toBe("token-2");
   });
 });

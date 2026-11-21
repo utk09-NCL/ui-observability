@@ -55,6 +55,8 @@ export function BlotterPanel(): ReactElement {
   // True while a login, a logout, a restart or a change of setting runs.
   const busy = useBusy();
 
+  // StrictMode runs the function of useMemo twice in development, so the dev server counts two
+  // blotter.filter spans for each filter pass.
   const visible = useMemo(
     () =>
       profiler.time(FILTER_PROBE, () =>

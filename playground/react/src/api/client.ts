@@ -25,7 +25,12 @@ export interface OrderApi {
 export interface Api extends OrderApi {
   login(user: string, tenant: string): Promise<LoginResult>;
   logout(): Promise<void>;
-  /** Gives a new token for the same session, and ends the old token. */
+  /**
+   * Revokes the current token while the page closes. The request has keepalive, so the browser
+   * sends it after the page is gone. It returns at once and throws nothing.
+   */
+  logoutOnExit(): void;
+  /** Asks for a new token for the same session. The old token ends. */
   refresh(): Promise<LoginResult>;
   /** Revokes a token other than the current one, for example the token of the old tenant. */
   logoutToken(token: string): Promise<void>;
@@ -77,23 +82,27 @@ export function createApi(getToken: () => string | undefined): Api {
     return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
   };
 
-  // StrictMode runs the effect of a mount twice in development, and a second mount can follow
-  // a first one at once. A call that is already in flight gives its result to the second caller.
-  let ordersInFlight: Promise<Order[]> | undefined;
-
   return {
     login: (user, tenant) => request("POST", "/api/login", { user, tenant }),
     logout: () => request("POST", "/api/logout"),
     refresh: () => request("POST", "/api/refresh"),
     logoutToken: (token) => request("POST", "/api/logout", undefined, token),
-    tenants: () => request("GET", "/api/tenants"),
-    listOrders: () => {
-      ordersInFlight ??= request<Order[]>("GET", "/api/orders").finally(() => {
-        ordersInFlight = undefined;
-      });
+    logoutOnExit: () => {
+      const token = getToken();
+      if (token === undefined) {
+        return;
+      }
 
-      return ordersInFlight;
+      // The page is closing, so nobody can read the answer. A failed request leaves a token that
+      // expires on its own.
+      fetch("/api/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        keepalive: true,
+      }).catch(() => undefined);
     },
+    tenants: () => request("GET", "/api/tenants"),
+    listOrders: () => request("GET", "/api/orders"),
     positions: () => request("GET", "/api/positions"),
     placeOrder: (order) => request("POST", "/api/orders", order),
     cancelOrder: (id) => request("DELETE", `/api/orders/${encodeURIComponent(id)}`),

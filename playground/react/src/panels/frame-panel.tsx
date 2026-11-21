@@ -6,6 +6,7 @@
 
 import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
 import { type BusPermission, flush, registerFrame } from "@utk09/ui-observability";
+import { useRuntimeGeneration } from "../observability/runtime-generation";
 
 export interface FrameRegistration {
   /** The exact origin of the page in the frame. */
@@ -34,9 +35,12 @@ export function FramePanel({
   children?: ReactNode;
 }): ReactElement {
   const frame = useRef<HTMLIFrameElement>(null);
+  const generation = useRuntimeGeneration();
 
   // The cleanup removes the registration and stops the pending load, so StrictMode can mount,
   // unmount and mount again. The first run never sets the src, because its cleanup comes first.
+  // A restart of the library removes the registrations with the old runtime. A new generation
+  // registers the frame again and loads it again, so its runtime finds the new owner.
   useEffect(() => {
     const element = frame.current;
     if (!element) {
@@ -57,7 +61,7 @@ export function FramePanel({
       active = false;
       unregister?.();
     };
-  }, [registration, src]);
+  }, [registration, src, generation]);
 
   const reload = (): void => {
     // The same src again makes the browser load the page again. The registration stays, because

@@ -6,7 +6,13 @@ import { type ReactElement, useState } from "react";
 import { getLogger } from "@utk09/ui-observability";
 import { createApi } from "./api/client";
 import { ObservabilityErrorBoundary } from "./observability/react";
-import { login, logout, logoutSharedDevice, type Session, switchTenant } from "./session/session";
+import {
+  login,
+  logout,
+  logoutSharedDevice,
+  type Session,
+  switchTenantOrLeave,
+} from "./session/session";
 import { getToken } from "./session/token";
 import { LoginScreen } from "./workspace/login-screen";
 import { removeUserLayouts } from "./workspace/layout-store";
@@ -51,7 +57,7 @@ export function App(): ReactElement {
 
   const moveToTenant = async (current: Session, tenant: string): Promise<void> => {
     try {
-      setSession(await switchTenant(api, current.user, tenant));
+      setSession(await switchTenantOrLeave(api, current.user, tenant));
     } catch (error) {
       log.error("tenant switch failed", error);
       setNotice("The tenant switch failed. Log in again.");

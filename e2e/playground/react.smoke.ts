@@ -6,7 +6,7 @@
 // damaged saved layout falls back to the default. It also checks the three frames and the bus,
 // the replay of a refused order, the token refresh and the window of one panel.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { APP_API_ORIGIN, INGEST_ORIGIN, REACT_ORIGIN } from "./ports";
 
 // The page and the servers are separate origins. The app calls its API and its log backend
@@ -35,6 +35,8 @@ interface OtlpLogRecord {
 
 interface Received {
   "/v1/logs": {
+    /** True when the server had this batch id already. The records of such a request count once. */
+    duplicate?: boolean;
     payload: {
       resourceLogs?: {
         resource?: { attributes?: { key: string; value: OtlpValue }[] };
@@ -75,6 +77,11 @@ async function receivedRecords(): Promise<Seen[]> {
   const received = await readReceived();
   const seen: Seen[] = [];
   for (const request of received["/v1/logs"]) {
+    // A batch that the library sent twice would double each count that a test reads.
+    if (request.duplicate) {
+      continue;
+    }
+
     for (const resource of request.payload.resourceLogs ?? []) {
       const service = resource.resource?.attributes?.find((item) => item.key === "service.name");
       for (const scope of resource.scopeLogs ?? []) {
@@ -292,6 +299,15 @@ test("registers the three frames, and the bus rejects the one that it does not k
   await addPanel(page, "Untrusted widget");
   await addPanel(page, "Partner widget");
 
+  // A frame in a popout window loads again with a parent that has no runtime. So the group of a
+  // frame panel has no "Pop out" button, and the group of the prices still has one.
+  const groupOf = (tab: string): Locator =>
+    page.getByRole("region").filter({ has: page.getByRole("tab", { name: tab, exact: true }) });
+  await expect(groupOf("Research").getByRole("button", { name: "Pop out group" })).toHaveCount(0);
+  await expect(
+    groupOf("Prices").first().getByRole("button", { name: "Pop out group" }),
+  ).toHaveCount(1);
+
   // A same-origin frame forwards its records over the direct link. The workspace registered it
   // before it loaded, and it registered the frame with journey:read, so no request was refused.
   await page.getByRole("tab", { name: "Research" }).click();
@@ -320,16 +336,65 @@ test("registers the three frames, and the bus rejects the one that it does not k
     .poll(() => countRecords("react-workspace-partner", "PARTNER_CLICK"), { timeout: 15_000 })
     .toBe(1);
 
-  // The frame that nobody registered joins no bus. Each load of it adds to the counter.
+  // The frame that nobody registered joins no bus. It comes from another origin, so it can't read
+  // the page, and it lists the workspace as its trusted parent, so it posts its hello. The bus
+  // rejects the hello, and each load of the frame adds to the counter.
   await page.getByRole("tab", { name: "Untrusted widget" }).click();
   const counter = page.getByTestId("rejected-messages");
   await expect.poll(async () => Number(await counter.textContent())).toBeGreaterThan(0);
   const before = Number(await counter.textContent());
   await page.locator('[data-observability-action="reload-untrusted-widget"]').click();
   await expect.poll(async () => Number(await counter.textContent())).toBeGreaterThan(before);
+  // The widget then sends for itself. It has no endpoint, so nothing arrives at the ingest server.
   await expect(page.frameLocator('iframe[title="Untrusted widget"]').locator("#role")).toHaveText(
     "sender",
+    { timeout: 15_000 },
   );
+  expect(
+    (await receivedRecords()).filter((record) => record.service === "react-workspace-untrusted"),
+  ).toEqual([]);
+});
+
+test("keeps the worker and the Research frame on the bus after Apply and restart", async ({
+  page,
+}) => {
+  await logIn(page, "smoke-user");
+  await addPanel(page, "Research");
+  await page.getByRole("tab", { name: "Research" }).click();
+  const research = page.frameLocator('iframe[title="Research"]');
+  await expect(research.locator("#role")).toHaveText("forwarder");
+
+  // A limit is fixed after startup. Apply and restart runs shutdown() and then configure(), and
+  // shutdown() removes each registration with the old runtime.
+  await page.getByRole("tab", { name: "Observability settings" }).click();
+  await page.getByLabel("Deepest object").selectOption({ label: "3 levels" });
+  await page.getByRole("button", { name: /Apply and restart/ }).click();
+  await expect(page.getByText("Restarted. The new settings are in force.")).toBeVisible();
+
+  // The frame loads again and joins the new runtime. Until it does, a click sends nothing.
+  await page.getByRole("tab", { name: "Research" }).click();
+  await expect
+    .poll(
+      async () => {
+        await research.getByRole("button", { name: "Log an action" }).click();
+
+        return countRecords("react-workspace-research", "RESEARCH_VIEWED");
+      },
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThan(0);
+
+  // The worker is new too. A fill makes the panel read the positions, and the worker logs them.
+  const before = await countRecords("react-workspace-positions", "positions received");
+  await page.getByRole("button", { name: "Place order" }).click();
+  await expect(page.getByRole("row", { name: /ORD-\d+/ })).toContainText("filled", {
+    timeout: 10_000,
+  });
+  await expect
+    .poll(() => countRecords("react-workspace-positions", "positions received"), {
+      timeout: 15_000,
+    })
+    .toBeGreaterThan(before);
 });
 
 test("uploads a replay after a refused order, and the Support panel plays it", async ({ page }) => {

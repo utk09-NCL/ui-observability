@@ -4,7 +4,7 @@
 // of the library, the debug bundle and the reports of lost records. The replay list and the
 // player are in replay-player/, and a team can copy that folder alone.
 
-import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, type ReactElement, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   collectDebugBundle,
   getHealth,
@@ -18,7 +18,12 @@ import {
   type RecordingHead,
   type ReplayEvent,
 } from "../replay-player/replay-api";
-import { ReplayPlayer } from "../replay-player/replay-player";
+
+// rrweb-player is a large package, and only a support engineer who plays a recording needs it. A
+// dynamic import keeps it out of the first load of the workspace and of each panel window.
+const ReplayPlayer = lazy(() =>
+  import("../replay-player/replay-player").then((module) => ({ default: module.ReplayPlayer })),
+);
 
 const log = getLogger("support");
 const DROP_POLL_MS = 1000;
@@ -130,7 +135,11 @@ function Replays(): ReactElement {
         </table>
         {heads?.length === 0 && <p className="muted">The service has no recording yet.</p>}
       </div>
-      {playing && <ReplayPlayer events={playing.events} width={size.width} height={size.height} />}
+      {playing && (
+        <Suspense fallback={<p className="muted">Loading the player.</p>}>
+          <ReplayPlayer events={playing.events} width={size.width} height={size.height} />
+        </Suspense>
+      )}
     </section>
   );
 }

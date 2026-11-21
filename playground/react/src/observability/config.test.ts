@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../observability-settings/settings";
 import { setToken } from "../session/token";
 import { authHeaders } from "./auth-headers";
+import { tapDrop } from "../observability-settings/tap";
 import { buildConfig, routing } from "./config";
 import { saveConsent } from "./consent";
 
@@ -97,7 +98,7 @@ describe("replay config", () => {
   });
 
   it("reports the lost records to the tap", () => {
-    expect(buildConfig(DEFAULT_SETTINGS, "anonymous").onDrop).toBeTypeOf("function");
+    expect(buildConfig(DEFAULT_SETTINGS, "anonymous").onDrop).toBe(tapDrop);
   });
 });
 

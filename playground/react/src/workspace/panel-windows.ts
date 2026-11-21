@@ -119,7 +119,11 @@ export function openPanelWindow(panel: PanelId, session: PanelSession): boolean 
   return true;
 }
 
-/** Closes each panel window, for example at logout. The windows hold a session that ends. */
+/**
+ * Closes each panel window, for example at a logout. Each window holds a session of its own. It
+ * revokes that session at pagehide, see panel-window/main.tsx, and a closed window gets a
+ * pagehide too.
+ */
 export function closePanelWindows(): void {
   for (const entry of [...opened]) {
     entry.window.close();

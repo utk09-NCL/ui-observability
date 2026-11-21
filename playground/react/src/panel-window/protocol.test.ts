@@ -17,21 +17,38 @@ describe("panel address", () => {
     const url = new URL(buildPanelUrl(BASE, "blotter", "a b+c/d=="));
 
     expect(url.origin + url.pathname).toBe(BASE);
-    expect(parsePanelRequest(url.search)).toEqual({
+    expect(parsePanelRequest(url.search, url.hash)).toEqual({
       panel: "blotter",
       journeyToken: "a b+c/d==",
+    });
+  });
+
+  it("puts the journey token in the fragment, which the browser never sends to a server", () => {
+    const url = new URL(buildPanelUrl(BASE, "blotter", "token-1"));
+
+    expect(url.search).toBe("?panel=blotter");
+    expect(url.hash).toBe("#journey=token-1");
+  });
+
+  it("does not read a journey token from the query, where a server would see it", () => {
+    expect(parsePanelRequest("?panel=prices&journey=token-1", "")).toEqual({
+      panel: "prices",
+      journeyToken: null,
     });
   });
 
   it("leaves the journey out when the opener has none", () => {
     const url = new URL(buildPanelUrl(BASE, "prices", null));
 
-    expect(url.searchParams.has("journey")).toBe(false);
-    expect(parsePanelRequest(url.search)).toEqual({ panel: "prices", journeyToken: null });
+    expect(url.hash).toBe("");
+    expect(parsePanelRequest(url.search, url.hash)).toEqual({
+      panel: "prices",
+      journeyToken: null,
+    });
   });
 
   it("reads an empty journey as no journey", () => {
-    expect(parsePanelRequest("?panel=prices&journey=")).toEqual({
+    expect(parsePanelRequest("?panel=prices", "#journey=")).toEqual({
       panel: "prices",
       journeyToken: null,
     });
@@ -43,7 +60,7 @@ describe("panel address", () => {
     ["the settings panel", "?panel=settings"],
     ["a panel with a path in it", "?panel=../prices"],
   ])("refuses %s", (_name, search) => {
-    expect(parsePanelRequest(search)).toBeNull();
+    expect(parsePanelRequest(search, "")).toBeNull();
   });
 
   it("offers each panel except the settings panel", () => {

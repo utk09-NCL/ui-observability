@@ -1,10 +1,10 @@
 // src/panel-window/main.tsx
 //
 // The window of one panel ("Open in new window"). It is its own document, so it starts its own
-// runtime, sends its own records and logs in for itself. It does not get a token from the opener.
-// The opener passes the user and the tenant with one postMessage, and the address carries the
-// journey token. After the login, this window adopts that journey, so its records have the
-// journey id of the records of the opener.
+// runtime, sends its own records and logs in for itself. It gets no token from the opener.
+// The opener passes the user and the tenant with one postMessage, and the address holds the
+// journey token in its fragment. After the login, this window adopts that journey, so its records
+// have the same journey id as the opener's. At pagehide, the window revokes its own session.
 //
 // The handshake, the login and the adoption run at module scope and not in an effect. They send
 // a message, create a server session and rotate the runtime, and StrictMode would run an effect
@@ -15,7 +15,9 @@ import { createRoot } from "react-dom/client";
 import { adoptJourney, configure, currentJourney, getLogger } from "@utk09/ui-observability";
 import { createApi } from "../api/client";
 import { buildConfig } from "../observability/config";
+import { watchConsent } from "../observability/consent-sync";
 import { resumeReplay } from "../observability/user-context";
+import { runExclusive } from "../observability-settings/operation-queue";
 import { getSettingsState } from "../observability-settings/settings-store";
 import { PANEL_COMPONENTS } from "../panels/registry";
 import { login, type Session } from "../session/session";
@@ -42,6 +44,10 @@ const log = getLogger("panel.window");
 // in, so it sends nothing.
 configure(buildConfig(getSettingsState().applied, "anonymous"));
 resumeReplay();
+// The workspace stores a change of the privacy choices, and the browser sends a storage event to
+// this window. Without the listener, this window would keep sending after the user withdrew the
+// consent, because it read the choice one time, at its start.
+watchConsent({ settings: () => getSettingsState().applied, run: runExclusive });
 
 /**
  * Asks the opener for the user and the tenant. The window accepts one answer, from the opener
@@ -80,7 +86,15 @@ function askOpener(opener: Window): Promise<PanelSession> {
  */
 async function start(request: PanelRequest, opener: Window): Promise<Session> {
   const who = await askOpener(opener);
+  // The window has what it needs from the opener. It drops the reference, so a page that this
+  // window navigates to can't reach the workspace through window.opener.
+  window.opener = null;
   const session = await login(api, who.user, who.tenant);
+  // The window revokes its own server session when it closes. Without it, the token would stay
+  // valid on the server until it expires, because only the workspace's token is revoked at logout.
+  addEventListener("pagehide", () => {
+    api.logoutOnExit();
+  });
   if (request.journeyToken !== null && !adoptJourney(request.journeyToken)) {
     log.warn("The window could not adopt the journey of its opener.");
   }
@@ -88,7 +102,7 @@ async function start(request: PanelRequest, opener: Window): Promise<Session> {
   return session;
 }
 
-const request = parsePanelRequest(location.search);
+const request = parsePanelRequest(location.search, location.hash);
 const opener = window.opener as Window | null;
 const started: Promise<Session> | null = request && opener ? start(request, opener) : null;
 
@@ -140,8 +154,10 @@ function PanelWindow(): ReactElement {
         }
       })
       .catch((reason: unknown) => {
-        log.error("The panel window could not start.", reason);
+        // StrictMode runs this effect twice. Only the run that is still active reports, so the
+        // log gets one ERROR record.
         if (active) {
+          log.error("The panel window could not start.", reason);
           setError("The panel window could not start. Open it again from the workspace.");
         }
       });

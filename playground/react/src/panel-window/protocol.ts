@@ -1,9 +1,10 @@
 // src/panel-window/protocol.ts
 //
-// What the workspace and the window of one panel say to each other. The opener puts the panel and
-// the journey token in the address of the window. The window asks the opener for the user and
-// the tenant with one postMessage, and the opener answers to the same origin. No token crosses
-// the channel. The window logs in for itself.
+// What the workspace and the window of one panel say to each other. The opener puts the panel in
+// the query of the address, and the journey token in the fragment. The browser never sends a
+// fragment to a server, so no log of a server or a proxy holds the token. The window asks the
+// opener for the user and the tenant with one postMessage, and the opener answers to the same
+// origin. No session token crosses the channel. The window logs in for itself.
 
 import { PANELS, type PanelId } from "../workspace/default-layout";
 
@@ -22,7 +23,7 @@ export const WINDOW_PANELS: readonly PanelId[] = PANELS.filter(
 
 export interface PanelRequest {
   panel: PanelId;
-  /** The token of the journey of the opener, or null when the address has none. */
+  /** The opener's journey token, or null when the address has none. */
   journeyToken: string | null;
 }
 
@@ -32,7 +33,7 @@ export interface PanelSession {
 }
 
 /**
- * Builds the address of the window of a panel.
+ * Builds the address of the window of a panel. The journey token goes into the fragment.
  * @param base The address of the page, for example "http://localhost:5180/panel.html".
  * @param panel The panel that the window shows.
  * @param journeyToken The result of getJourneyToken(), or null.
@@ -42,7 +43,7 @@ export function buildPanelUrl(base: string, panel: PanelId, journeyToken: string
   const url = new URL(base);
   url.searchParams.set(PANEL_PARAM, panel);
   if (journeyToken !== null) {
-    url.searchParams.set(JOURNEY_PARAM, journeyToken);
+    url.hash = new URLSearchParams({ [JOURNEY_PARAM]: journeyToken }).toString();
   }
 
   return url.href;
@@ -51,17 +52,18 @@ export function buildPanelUrl(base: string, panel: PanelId, journeyToken: string
 /**
  * Reads the panel and the journey token from the address of the window. The panel must be one
  * that a window can show, so the address can't make the page render anything else.
- * @param search The query string of the window.
+ * @param search The query string of the window, with the panel.
+ * @param hash The fragment of the window, with the journey token.
  * @returns The request, or null when the address has no valid panel.
  */
-export function parsePanelRequest(search: string): PanelRequest | null {
+export function parsePanelRequest(search: string, hash: string): PanelRequest | null {
   const params = new URLSearchParams(search);
   const panel = WINDOW_PANELS.find((id) => id === params.get(PANEL_PARAM));
   if (!panel) {
     return null;
   }
 
-  const token = params.get(JOURNEY_PARAM);
+  const token = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash).get(JOURNEY_PARAM);
 
   return { panel, journeyToken: token === null || token === "" ? null : token };
 }

@@ -8,6 +8,9 @@ import Player from "rrweb-player";
 import "rrweb-player/dist/style.css";
 import type { ReplayEvent } from "./replay-api";
 
+/** The events in the shape that the player takes. */
+type PlayerEvents = ConstructorParameters<typeof Player>[0]["props"]["events"];
+
 /** Fewest events that make a replay. The first two are the meta event and the full snapshot. */
 const MIN_EVENTS = 2;
 
@@ -37,7 +40,9 @@ export function ReplayPlayer({
 
     const player = new Player({
       target: element,
-      props: { events: [...events], width, height, autoPlay: true },
+      // The recorder makes these events, and parseRecordingEvents() checked the two fields that the
+      // player needs. The rest of the shape is the recorder's, so the cast is at this one place.
+      props: { events: [...events] as unknown as PlayerEvents, width, height, autoPlay: true },
     });
 
     return () => {

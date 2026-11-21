@@ -111,3 +111,16 @@ describe("token refresh timer", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 });
+
+describe("token refresh timer, no session", () => {
+  it("stops without an error when the refresh says that there is no session", async () => {
+    const refresh = vi.fn(() => Promise.resolve(null));
+    const onError = vi.fn();
+    startTokenRefresh({ refresh, expiresInMs: 10_000, onError });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+});

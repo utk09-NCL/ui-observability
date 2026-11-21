@@ -4,6 +4,7 @@
 // "Reset layout" open. A panel id is also its dockview component name.
 
 import type { DockviewApi } from "dockview-react";
+import { FRAME_PANELS } from "./frame-panels";
 
 export type PanelId =
   | "prices"
@@ -44,13 +45,6 @@ export const PANELS: readonly PanelInfo[] = [
 ];
 
 /**
- * The panels that hold an iframe. dockview removes the DOM of a hidden panel and puts it back
- * when the panel shows again, and the browser reloads an iframe that it takes out of the
- * document. Their renderer is "always", so a tab change or a move does not reload the frame.
- */
-const FRAME_PANELS: readonly PanelId[] = ["research", "partner", "untrusted"];
-
-/**
  * Adds one panel, or shows it when it already exists. The id of the panel is its component name,
  * so the workspace has at most one panel of each kind.
  * @param api The dockview API.
@@ -74,6 +68,11 @@ export function openPanel(
     id,
     component: id,
     title: info?.title ?? id,
+    // A panel with an iframe uses the renderer "always". dockview removes the DOM of a hidden
+    // panel, and the browser reloads an iframe that leaves the document. With "always", a tab
+    // change or a move inside the page does not reload the frame. A move into a popout window
+    // does, in a new browsing context, so these panels stay out of popout windows. See
+    // frame-panels.ts.
     ...(FRAME_PANELS.includes(id) ? { renderer: "always" as const } : {}),
     ...(position ? { position } : {}),
   });

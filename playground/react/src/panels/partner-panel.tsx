@@ -7,10 +7,9 @@
 
 import type { ReactElement } from "react";
 import { FramePanel, type FrameRegistration } from "./frame-panel";
+import { PARTNER_ORIGIN } from "./partner-origin";
 
 // The page of the widget. The vite.cross-origin.config.ts server serves it from the repository.
-// The smoke test sets another origin, so it runs its own copy of that server.
-const PARTNER_ORIGIN = String(import.meta.env.VITE_PARTNER_ORIGIN ?? "http://localhost:5174");
 const PARTNER_PAGE = `${PARTNER_ORIGIN}/playground/vanilla/partner.html`;
 
 const REGISTRATION: FrameRegistration = {
