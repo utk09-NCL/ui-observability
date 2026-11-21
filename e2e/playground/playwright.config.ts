@@ -12,6 +12,8 @@ import {
   APP_PORT,
   INGEST_ORIGIN,
   INGEST_PORT,
+  REACT_ORIGIN,
+  REACT_PORT,
 } from "./ports";
 
 // The app dev server reads these two variables for its proxy, so it calls the test servers.
@@ -52,6 +54,13 @@ export default defineConfig({
       command: `pnpm --filter @example/react-custom-backend exec vite --port ${String(APP_PORT)} --strictPort`,
       env: proxyTargets,
       url: APP_ORIGIN,
+      cwd: "../..",
+      reuseExistingServer: false,
+    },
+    {
+      command: `pnpm --filter @example/react exec vite --port ${String(REACT_PORT)} --strictPort`,
+      env: proxyTargets,
+      url: REACT_ORIGIN,
       cwd: "../..",
       reuseExistingServer: false,
     },

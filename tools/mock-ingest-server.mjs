@@ -40,6 +40,7 @@ const ALLOWED_ORIGINS = new Set([
   // needs no CORS. These two origins matter when a page sends to this server directly.
   "http://localhost:5185", // react-custom-backend
   "http://localhost:5186", // browser smoke test of react-custom-backend
+  "http://localhost:5187", // browser smoke test of react
 ]);
 
 // The example "uilogs" backend of playground/react-custom-backend. It is a made-up shape for the

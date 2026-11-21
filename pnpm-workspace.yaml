@@ -62,6 +62,7 @@ catalogs:
     "react": "19.3.1"
     "react-dom": "19.3.1"
     "web-vitals": "6.2.3"
+    "dockview-react": "8.9.1"
     "@rrweb/record": "2.2.2"
     "@rrweb/rrweb-plugin-console-record": "2.2.2"
     "@rrweb/rrweb-plugin-console-replay": "2.2.2"
@@ -76,8 +77,10 @@ catalogs:
     "@types/react": "19.3.0"
     "@types/react-dom": "19.3.0"
     "@vitejs/plugin-react": "6.3.0"
+    "happy-dom": "21.0.4"
     "typescript": "6.0.3"
     "vite": "8.3.8"
+    "vitest": "5.1.0"
   angular:
     "@angular/common": "22.2.6"
     "@angular/compiler": "22.2.6"

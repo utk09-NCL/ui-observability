@@ -29,8 +29,8 @@ pnpm run test:playground # Smoke test of each playground app in Chromium. See e2
 - Mock ingest server: `http://localhost:8787`. It accepts `/v1/logs`, `/v1/metrics`, `/v1/traces`, `/v1/replay` and `/uilogs`. It prints one line for each record, metric point, span and replay segment.
 - Cross-origin child frame: `http://localhost:5174`. The vanilla playground registers it and its same-origin child frame before they load.
 - `/uilogs` is the example custom backend of the react-custom-backend example. It takes the JSON of that serializer and answers `400` for a record over its limits.
-- Mock app API: `http://localhost:8790`. It serves the business data of the react-custom-backend example. See the [playground guide](../playground/README.md#start-the-mock-app-api).
-- The React example sends its counter, histogram and HTTP duration points to `/v1/metrics`.
+- Mock app API: `http://localhost:8790`. It serves the business data of the react and react-custom-backend examples. See the [playground guide](../playground/README.md#start-the-mock-app-api).
+- The React example sends its counter, histogram, gauge and HTTP duration points to `/v1/metrics`, and its spans to `/v1/traces`. Its Vite dev server proxies `/telemetry` to the mock ingest server.
 - After a build, run `node bin/uiobs.mjs doctor http://localhost:8787/v1/logs --origin http://localhost:5173` to test the command line tool on the mock server.
 
 After dependency changes, run these checks:
@@ -63,7 +63,7 @@ Build the package first:
 
 ```bash
 pnpm run build
-pnpm run example:react          # http://localhost:5180
+pnpm run example:react          # http://localhost:5180, with the mock ingest server and the mock app API
 pnpm run example:react-custom-backend  # http://localhost:5185, with the mock ingest server and the mock app API
 pnpm run example:angular        # http://localhost:4200
 pnpm run example:microfrontend  # Shell on http://localhost:5191, remotes on 5192 and 5193

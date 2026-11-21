@@ -1,94 +1,92 @@
-import { counter, histogram } from "@utk09/ui-observability";
+// src/app.tsx
+//
+// The login screen, or the workspace of the logged-in user.
+
 import { type ReactElement, useState } from "react";
-import { LoggerProvider, ObservabilityErrorBoundary, useJourney, useLogger } from "./observability";
+import { getLogger } from "@utk09/ui-observability";
+import { createApi } from "./api/client";
+import { ObservabilityErrorBoundary } from "./observability/react";
+import { login, logout, logoutSharedDevice, type Session, switchTenant } from "./session/session";
+import { getToken } from "./session/token";
+import { LoginScreen } from "./workspace/login-screen";
+import { removeUserLayouts } from "./workspace/layout-store";
+import { Workspace } from "./workspace/workspace";
 
-// Create metric handles at module scope. They stay valid across configure() and shutdown().
-// The library sums the values and sends one point per attribute set at every interval.
-const ordersSubmitted = counter("orders.submitted");
-const pricingLatency = histogram("pricing.latency", { unit: "ms" });
+// One client for the page. It reads the token on each call, so it needs no new instance at login.
+const api = createApi(getToken);
 
-/**
- * A component whose lifetime is shorter than the workflow it belongs to.
- * @returns Submit button.
- */
-function OrderTicket(): ReactElement {
-  const log = useLogger("blotter.ticket");
-  useJourney("order-lifecycle");
-  const [submitted, setSubmitted] = useState(false);
-
-  return (
-    <button
-      data-observability-action="submit-order"
-      onClick={() => {
-        log.logAction("ORDER_SUBMIT", { orderId: "ORD-1001", qty: 100 });
-        ordersSubmitted.add(1, { venue: "LSE" });
-        setSubmitted(true);
-      }}
-    >
-      {submitted ? "submitted" : "submit"}
-    </button>
-  );
-}
+const log = getLogger("session");
 
 /**
- * Fails on render so the boundary has something to report.
- * @returns Never returns.
- */
-function Boom(): never {
-  throw new Error("render failed on purpose");
-}
-
-/**
- * The example application.
- * @returns Root element.
+ * The application.
+ * @returns The root element.
  */
 export function App(): ReactElement {
-  const [mounted, setMounted] = useState(true);
-  const [explode, setExplode] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [notice, setNotice] = useState("");
+
+  const leave = async (): Promise<void> => {
+    try {
+      await logout(api);
+    } catch (error) {
+      log.error("logout failed", error);
+    } finally {
+      setNotice("");
+      setSession(null);
+    }
+  };
+
+  const leaveSharedDevice = async (current: Session): Promise<void> => {
+    try {
+      await logoutSharedDevice(api);
+    } catch (error) {
+      log.error("shared-device logout failed", error);
+    } finally {
+      // The next user of this device must not get a layout of this user, in any tenant.
+      removeUserLayouts(current.user);
+      setNotice("");
+      setSession(null);
+    }
+  };
+
+  const moveToTenant = async (current: Session, tenant: string): Promise<void> => {
+    try {
+      setSession(await switchTenant(api, current.user, tenant));
+    } catch (error) {
+      log.error("tenant switch failed", error);
+      setNotice("The tenant switch failed. Log in again.");
+      setSession(null);
+    }
+  };
 
   return (
-    <LoggerProvider namespace="blotter">
-      <h1>ui-observability, React example</h1>
-      {mounted && <OrderTicket />}
-      <button
-        data-observability-action="toggle-ticket"
-        onClick={() => {
-          setMounted((v) => !v);
-        }}
-      >
-        toggle the ticket
-      </button>
-      <button
-        data-observability-action="break-render"
-        onClick={() => {
-          setExplode(true);
-        }}
-      >
-        break a render
-      </button>
-      <button
-        data-observability-action="price-quotes"
-        onClick={() => {
-          // These 20 values become one histogram point at the next interval, not 20 records.
-          for (let i = 0; i < 20; i++) {
-            pricingLatency.record(Math.round(Math.random() * 400), { venue: "LSE" });
-          }
-        }}
-      >
-        price 20 quotes
-      </button>
-      <button
-        data-observability-action="fetch-missing"
-        onClick={() => {
-          // Fetch capture records http.client.request.duration with status 404.
-          void fetch("http://localhost:8787/missing");
-        }}
-      >
-        fetch a missing URL
-      </button>
-      <ObservabilityErrorBoundary fallback={<p>something broke, and it was logged</p>}>
-        {explode ? <Boom /> : null}
-      </ObservabilityErrorBoundary>
-    </LoggerProvider>
+    <ObservabilityErrorBoundary fallback={<p role="alert">Something broke, and it was logged.</p>}>
+      {session ? (
+        <Workspace
+          // A new key remounts the workspace, so each user and tenant opens its own layout.
+          key={`${session.user}|${session.tenant}`}
+          session={session}
+          api={api}
+          onSwitchTenant={(tenant) => {
+            void moveToTenant(session, tenant);
+          }}
+          onLogout={() => {
+            void leave();
+          }}
+          onLogoutShared={() => {
+            void leaveSharedDevice(session);
+          }}
+        />
+      ) : (
+        <LoginScreen
+          api={api}
+          notice={notice}
+          onLogin={async (user, tenant) => {
+            setNotice("");
+            setSession(await login(api, user, tenant));
+          }}
+        />
+      )}
+    </ObservabilityErrorBoundary>
   );
 }

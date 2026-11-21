@@ -36,11 +36,12 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 2. Install Chromium one time with `pnpm exec playwright install chromium`.
 3. Run `pnpm run test:playground`.
 
-Playwright starts three servers and stops them after the run.
+Playwright starts four servers and stops them after the run.
 
 | Port | Server | Use |
 | --- | --- | --- |
 | 5186 | `vite --port 5186` in `playground/react-custom-backend` | The app. |
+| 5187 | `vite --port 5187` in `playground/react` | The FX workspace. |
 | 8797 | `UIOBS_MOCK_PORT=8797 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
 | 8798 | `UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs` | The mock app API. |
 
@@ -52,6 +53,10 @@ The ports differ from the dev ports and from the ports above, so a running examp
 | `react-custom-backend.smoke.ts` | A change of a runtime setting applies at once. After **Console output** goes off, the console shows no price line. |
 | `react-custom-backend.smoke.ts` | A change of a limit waits as staged. **Apply and restart** applies it. The next order logs `ORDER_PLACED`, and `orders.placed` counts both orders. |
 | `react-custom-backend.smoke.ts` | A double click on **Log out** sends one `POST /api/logout`. The button is disabled while the logout runs, and a second logout finds no token. |
+| `react.smoke.ts` | A user logs in and sees the default layout. An order gives `ORDER_PLACED` with a journey id and the tenant, and a `POST` span. The worker of the positions panel logs `positions received`, and the page sends it. |
+| `react.smoke.ts` | **Console output** off and **Lowest level sent** at WARN stop the price ticks in the Activity log. The level DEBUG brings them back. |
+| `react.smoke.ts` | A closed panel stays closed after a reload. Another tenant opens the default layout. A damaged saved layout opens the default layout. |
+| `react.smoke.ts` | **Log out on a shared device** removes the saved layouts of the user, and the next login works. |
 
 ## Test APIs of the mock ingest server
 
