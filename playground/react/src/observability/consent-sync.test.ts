@@ -190,7 +190,8 @@ describe("watchConsent", () => {
 
   it("applies a choice that comes back before the first change ran", async () => {
     // Two events in a row, withdraw and grant, while the queue is busy. The first task runs
-    // later. A comparison at event time would see "no change" for the second event.
+    // later. A version that compares at event time and sets "applied" in the task sees "no
+    // change" for the grant, because the withdrawal has not run yet, and it drops the grant.
     const { queued, run } = collector();
     const stop = watchConsent({ settings: () => DEFAULT_SETTINGS, run });
 

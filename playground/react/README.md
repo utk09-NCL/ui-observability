@@ -166,7 +166,7 @@ The **Chart** panel shows why `replay.recordCanvas` is a row of its own. A canva
 5. The window calls `adoptJourney()` with the token of the address. The login rotates the security context, and a rotation ends the active journey, so the adoption comes after the login.
 6. The window sets `window.opener` to `null`. A page that the window loads later can then not reach the workspace. A reload of the window ends it too, and the window then asks you to open it again from the workspace.
 7. The window follows each change of the privacy choices. `watchConsent()` in `src/observability/consent-sync.ts` listens for the `storage` event of the consent key. It applies the choice that the workspace stored, in both directions. It stores nothing, so a late task can not put an older choice over a newer one. A removed key is no grant, and the window ignores it. A second workspace tab does not follow a change from another tab. Only the windows of single panels do.
-8. At `pagehide`, the window revokes its own token. It sends `POST /api/logout` with `keepalive` and its own bearer header. The listener starts before the login, because the login sets the token first and then rotates for up to 3 seconds. A page that the browser restores from its back/forward cache holds a revoked token. The window then shows "Open it again from the workspace". No browser run covers this restore.
+8. At `pagehide`, the window revokes its own token. It sends `POST /api/logout` with `keepalive` and its own bearer header. The listener starts before the login, because the login sets the token first and then rotates for up to 3 seconds. A page that the browser restores from its back/forward cache holds a revoked token. The window then ends. It clears the token, stops the listeners for `pagehide` and for the consent key, and shuts the library down. It also refuses a login that is still to come, and it shows "Open it again from the workspace". No browser run covers this restore.
 
 The records of the window and of the workspace then have the same `journey.id`. The opener ends the journey that it started when the window closes. A logout, a tenant switch and a page unload close the windows. A new journey in one window, for example an order, ends the link.
 
@@ -297,7 +297,7 @@ pnpm --filter @example/react run test
 - `shared-device.test.ts` checks the options that the shared-device logout gives to `shutdown()`.
 - `frame-panels.test.ts` checks which groups get a **Pop out** button and which drops the workspace blocks.
 - `default-layout.test.ts` checks that **Add panel** puts a frame panel in the grid when a popout window is active.
-- `panel-window/start.test.ts` and `panel-window/page-lifecycle.test.ts` check the start of a panel window and its listeners for `pagehide` and the restore from the cache.
+- `panel-window/window-run.test.ts` and `panel-window/page-lifecycle.test.ts` check the start and the end of a panel window, and its listeners for `pagehide` and the restore from the cache.
 - `api/client.test.ts` checks the logout at `pagehide`, and that `listOrders()` asks again for each call.
 
 The browser smoke test starts its own servers on the ports 5187, 5188, 8797 and 8798. `pnpm run test:playground` also starts port 5186 for the smoke test of the react-custom-backend example. `e2e/playground/mock-servers.smoke.ts` checks the `Host` rule and the byte limit of the replay store. The tests need Chromium and a built library.

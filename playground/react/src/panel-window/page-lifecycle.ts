@@ -3,7 +3,7 @@
 // What the window of a panel does when the browser hides or restores its page. The window revokes
 // its own server session at pagehide, so the token doesn't stay valid after the window closes.
 // A page that the browser restores from its back/forward cache holds that revoked token, so the
-// window must not run on it.
+// window must not run on it. It ends instead, see window-run.ts.
 
 /**
  * Calls revoke each time the page hides. The call must not wait, because the page is going away.

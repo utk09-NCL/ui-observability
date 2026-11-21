@@ -68,6 +68,8 @@ for (const [name, port, path] of [
         "rebind.attacker.example",
         `localhost.attacker.example:${String(port)}`,
         `127.0.0.1.attacker.example:${String(port)}`,
+        // The servers listen on 127.0.0.1 only, so a client can't reach them with this name.
+        `[::1]:${String(port)}`,
       ]) {
         const answer = await send(port, host, path);
 
@@ -77,12 +79,7 @@ for (const [name, port, path] of [
     });
 
     test("answers a loopback Host, with or without a port", async () => {
-      for (const host of [
-        `localhost:${String(port)}`,
-        "localhost",
-        `127.0.0.1:${String(port)}`,
-        `[::1]:${String(port)}`,
-      ]) {
+      for (const host of [`localhost:${String(port)}`, "localhost", `127.0.0.1:${String(port)}`]) {
         const answer = await send(port, host, path);
 
         expect(answer.status, host).toBe(200);
@@ -147,7 +144,7 @@ test.describe("replay store of the mock ingest server", () => {
   });
 
   test("counts bytes and not characters", async () => {
-    // The segment has 7.5 million characters and 15 MB. A count of characters gives half the bytes.
+    // The segment has 7,864,320 characters and 15 MiB. A count of characters gives half the bytes.
     const first = await post(segment("limit-recording-2", 0));
     expect(first.status).toBe(204);
 

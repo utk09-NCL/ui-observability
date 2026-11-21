@@ -12,7 +12,13 @@
 
 import { type ReactElement, StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { adoptJourney, configure, currentJourney, getLogger } from "@utk09/ui-observability";
+import {
+  adoptJourney,
+  configure,
+  currentJourney,
+  getLogger,
+  shutdown,
+} from "@utk09/ui-observability";
 import { createApi } from "../api/client";
 import { buildConfig } from "../observability/config";
 import { watchConsent } from "../observability/consent-sync";
@@ -21,7 +27,7 @@ import { runExclusive } from "../observability-settings/operation-queue";
 import { getSettingsState } from "../observability-settings/settings-store";
 import { PANEL_COMPONENTS } from "../panels/registry";
 import { login, type Session } from "../session/session";
-import { getToken } from "../session/token";
+import { getToken, setToken } from "../session/token";
 import { WorkspaceContext } from "../workspace/context";
 import { PANELS } from "../workspace/default-layout";
 import { useTokenRefresh, useWorkspaceData } from "../workspace/use-workspace-data";
@@ -34,7 +40,7 @@ import {
   parsePanelRequest,
   READY_TYPE,
 } from "./protocol";
-import { startWindow } from "./start";
+import { createPanelWindow } from "./window-run";
 
 const ANSWER_TIMEOUT_MS = 10_000;
 
@@ -49,7 +55,10 @@ resumeReplay();
 // The workspace stores a change of the privacy choices, and the browser sends a storage event to
 // this window. Without the listener, this window would keep sending after the user withdrew the
 // consent, because it read the choice one time, at its start.
-watchConsent({ settings: () => getSettingsState().applied, run: runExclusive });
+const stopConsentWatch = watchConsent({
+  settings: () => getSettingsState().applied,
+  run: runExclusive,
+});
 
 /**
  * Asks the opener for the user and the tenant. The window accepts one answer, from the opener
@@ -81,9 +90,10 @@ function askOpener(opener: Window): Promise<PanelSession> {
 
 const request = parsePanelRequest(location.search, location.hash);
 const opener = window.opener as Window | null;
-const started: Promise<Session> | null =
+// Null for a page that nobody opened from the workspace. It starts nothing and logs in to nothing.
+const windowRun =
   request && opener
-    ? startWindow(request.journeyToken, {
+    ? createPanelWindow({
         ask: () => askOpener(opener),
         dropOpener: () => {
           window.opener = null;
@@ -96,8 +106,19 @@ const started: Promise<Session> | null =
         warn: (message) => {
           log.warn(message);
         },
+        clearToken: () => {
+          setToken(undefined);
+        },
+        stopConsentWatch,
+        // The queue keeps the shutdown behind a login or a rotation that is still running.
+        discard: () => runExclusive(() => shutdown({ pending: "discard" })),
+        report: (reason) => {
+          log.error("The panel window could not stop its library.", reason);
+        },
       })
     : null;
+const started: Promise<Session | null> | null =
+  request && windowRun ? windowRun.start(request.journeyToken) : null;
 
 /** The panel, with the data hooks that every page with panels needs. */
 function Shown({
@@ -142,7 +163,8 @@ function PanelWindow(): ReactElement {
     let active = true;
     started
       ?.then((next) => {
-        if (active) {
+        // Null means that the window ended before its login finished.
+        if (active && next) {
           setSession(next);
         }
       })
@@ -161,10 +183,12 @@ function PanelWindow(): ReactElement {
   }, []);
 
   // A page that comes back from the back/forward cache holds a token that pagehide revoked. The
-  // error state unmounts the panel, which stops its refresh timer and its requests.
+  // window ends: it forgets the token, stops its listeners and stops its library. The error
+  // state unmounts the panel, which stops its refresh timer and its requests.
   useEffect(
     () =>
       watchPageRestore(() => {
+        windowRun?.end();
         setError(
           "This window came back from the browser cache, and its session has ended. " +
             "Open it again from the workspace.",

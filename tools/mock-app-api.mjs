@@ -86,8 +86,9 @@ function reset() {
 
 // A page that an attacker controls can point its DNS name to 127.0.0.1 and then call this server
 // as its own origin, which is called DNS rebinding. The browser sends the name of the attacker in
-// the Host header, so the server answers a loopback name only, with or without a port.
-const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i;
+// the Host header, so the server answers a loopback name only, with or without a port. [::1] is
+// out, because the server listens on 127.0.0.1 only.
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/i;
 
 function hasLoopbackHost(req) {
   return typeof req.headers.host === "string" && LOOPBACK_HOST.test(req.headers.host);
