@@ -67,13 +67,18 @@ describe("collectDebugBundle", () => {
 
   it("cuts the query of a resolved endpoint and each scheme, and names plugins and a serializer", async () => {
     start({
-      endpoint: "/v1/logs?key=abc",
-      serializer: { name: "custom", apiKey: "abc", serialize: vi.fn() } as never,
+      // The random security context id is hex and shows up in the summary. CI run 44957880104
+      // had "abcd" in it, so the secret has non-hex letters and this pinned id keeps that tested.
+      securityContext: { id: "c128a9f6-684a-48b2-abcd-96c16727e08b" },
+      endpoint: "/v1/logs?key=hidden",
+      serializer: { name: "custom", apiKey: "hidden", serialize: vi.fn() } as never,
       capture: {
         errors: false,
         rejections: false,
-        ignoreUrls: ["wss://socket.example/live?token=abc"],
-        plugins: [{ name: "audit", apiKey: "abc", install: vi.fn(), uninstall: vi.fn() } as never],
+        ignoreUrls: ["wss://socket.example/live?token=hidden"],
+        plugins: [
+          { name: "audit", apiKey: "hidden", install: vi.fn(), uninstall: vi.fn() } as never,
+        ],
       },
     });
 
@@ -85,7 +90,7 @@ describe("collectDebugBundle", () => {
     expect(config.serializer).toBe("custom");
     expect(capture.plugins).toEqual(["audit"]);
     expect(capture.ignoreUrls).toEqual(["wss://socket.example/live", `${location.origin}/v1/logs`]);
-    expect(JSON.stringify(config)).not.toContain("abc");
+    expect(JSON.stringify(config)).not.toContain("hidden");
   });
 
   it("has no breadcrumbs and no resource when redact drops the bundle record", async () => {
