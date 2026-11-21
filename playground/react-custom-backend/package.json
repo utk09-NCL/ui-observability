@@ -1,0 +1,25 @@
+{
+  "name": "@example/react-custom-backend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5185 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "catalog:react-custom-backend",
+    "react-dom": "catalog:react-custom-backend",
+    "@utk09/ui-observability": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:react-custom-backend",
+    "@types/react-dom": "catalog:react-custom-backend",
+    "@vitejs/plugin-react": "catalog:react-custom-backend",
+    "happy-dom": "catalog:react-custom-backend",
+    "typescript": "catalog:react-custom-backend",
+    "vite": "catalog:react-custom-backend",
+    "vitest": "catalog:react-custom-backend"
+  }
+}

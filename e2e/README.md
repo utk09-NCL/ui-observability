@@ -28,15 +28,40 @@ Each spec calls `stopLibrary()` after each test. This call runs `shutdown()` in 
 
 `exit-flush.e2e.ts` leaves the page with a navigation. The call then finds no library in the new document. It still stops the library when a test fails before the navigation.
 
+## Playground smoke tests
+
+`pnpm run test:playground` runs one Chromium smoke test for each playground app. The config is `e2e/playground/playwright.config.ts`. A smoke test has the suffix `.smoke.ts`, so `pnpm run test:e2e` does not run it.
+
+1. Build the library with `pnpm run build`.
+2. Install Chromium one time with `pnpm exec playwright install chromium`.
+3. Run `pnpm run test:playground`.
+
+Playwright starts three servers and stops them after the run.
+
+| Port | Server | Use |
+| --- | --- | --- |
+| 5186 | `vite --port 5186` in `playground/react-custom-backend` | The app. |
+| 8797 | `UIOBS_MOCK_PORT=8797 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
+| 8798 | `UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs` | The mock app API. |
+
+The ports differ from the dev ports and from the ports above, so a running example does not clash with a test run.
+
+| Spec | Coverage |
+| --- | --- |
+| `react-custom-backend.smoke.ts` | The page is cross-origin isolated. A user logs in and places an order. The blotter shows it as filled. `/__received` has `ORDER_PLACED` under `/uilogs`, with a token and a journey id, and a `POST` span under `/v1/traces`. |
+| `react-custom-backend.smoke.ts` | A change of a runtime setting applies at once. After **Console output** goes off, the console shows no price line. |
+| `react-custom-backend.smoke.ts` | A change of a limit waits as staged. **Apply and restart** applies it. The next order logs `ORDER_PLACED`, and `orders.placed` counts both orders. |
+| `react-custom-backend.smoke.ts` | A double click on **Log out** sends one `POST /api/logout`. The button is disabled while the logout runs, and a second logout finds no token. |
+
 ## Test APIs of the mock ingest server
 
 | Request | Result |
 | --- | --- |
 | `POST /__reset` | Clears the received requests, the known batch ids, the forced status and the sampling rules. |
-| `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces` and `/v1/replay`. |
+| `GET /__received` | Returns the kept requests for `/v1/logs`, `/v1/metrics`, `/v1/traces`, `/v1/replay` and `/uilogs`. |
 | `GET /__echo` | Returns the headers of this request as the server received them. |
 
-Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. For an NDJSON body, it is the list of the parsed lines. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie.
+Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `contentEncoding`, `hasCookie`, `duplicate` and `payload`. `payload` is the parsed JSON body. For an NDJSON body, it is the list of the parsed lines. `hasCookie` tells if the request had a `Cookie` header. The server never keeps the value of a cookie. An entry of `/uilogs` also has `hasAuthorization`, which tells if the request had an `Authorization` header.
 
 - The server keeps a request only when `UIOBS_MOCK_RECORD` is `1`. Without it, `/__received` returns empty lists. The Playwright config sets it.
 - The server keeps the last 100 entries for each path.

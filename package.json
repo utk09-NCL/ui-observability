@@ -64,8 +64,10 @@
     "dev": "concurrently -k \"pnpm run dev:vanilla\" \"pnpm run dev:ingest\" \"pnpm run dev:cross-origin\"",
     "dev:vanilla": "pnpm --filter @example/vanilla run dev",
     "dev:ingest": "node tools/mock-ingest-server.mjs",
+    "dev:app-api": "node tools/mock-app-api.mjs",
     "dev:cross-origin": "vite --config vite.cross-origin.config.ts",
     "example:react": "pnpm --filter @example/react run dev",
+    "example:react-custom-backend": "concurrently -k \"pnpm --filter @example/react-custom-backend run dev\" \"pnpm run dev:ingest\" \"pnpm run dev:app-api\"",
     "example:angular": "pnpm --filter @example/angular run dev",
     "example:microfrontend": "concurrently -k \"pnpm --filter @example/mf-blotter run dev\" \"pnpm --filter @example/mf-ticket run dev\" \"pnpm --filter @example/mf-host run dev\"",
     "example:console-only": "pnpm --filter @example/console-only run dev",
@@ -79,6 +81,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:playground": "playwright test --config e2e/playground/playwright.config.ts",
     "test:collector": "node tools/check-collector.mjs",
     "bench:release": "node tools/bench-release.mjs",
     "typecheck": "tsc --noEmit",
@@ -124,7 +127,8 @@
     "typescript-eslint": "catalog:library",
     "vite": "catalog:library",
     "vitest": "catalog:library",
-    "web-vitals": "catalog:library"
+    "web-vitals": "catalog:library",
+    "ws": "catalog:library"
   },
   "packageManager": "pnpm@12.21.0"
 }

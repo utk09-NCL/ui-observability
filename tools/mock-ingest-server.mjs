@@ -36,7 +36,23 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost:5193", // microfrontend remote, ticket
   "http://localhost:5181", // browser tests, main page
   "http://localhost:5182", // browser tests, cross-origin frame
+  // react-custom-backend calls this server through its Vite proxy, so a same-origin request
+  // needs no CORS. These two origins matter when a page sends to this server directly.
+  "http://localhost:5185", // react-custom-backend
+  "http://localhost:5186", // browser smoke test of react-custom-backend
 ]);
+
+// The example "uilogs" backend of playground/react-custom-backend. It is a made-up shape for the
+// example, not a standard. The app's serializer cuts each record to the three record limits. A
+// request with more records than maxRecords gets 413, and the library splits it.
+const UILOGS_LIMITS = {
+  maxMessageChars: 2000,
+  maxAttributeKeys: 50,
+  maxAttributesBytes: 16384,
+  maxRecords: 500,
+};
+const UILOGS_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
+const UILOGS_OPTIONAL_IDS = ["sessionId", "tabId", "journeyId", "traceId"];
 
 let forcedStatus = 0;
 let forcedRetryAfter = 0;
@@ -83,7 +99,7 @@ function cors(req, res) {
   }
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt, traceparent",
+    "content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt, traceparent, authorization",
   );
   // Without this the browser hides Retry-After from the client on every
   // cross-origin response, so a 429 or 503 arrives with no delay attached and
@@ -220,6 +236,100 @@ function printEcs(documents, batchId) {
   }
 }
 
+// Returns the first problem of one uilogs record as text, or "" for a good record.
+function uilogsRecordProblem(record) {
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    return "a record must be a JSON object";
+  }
+  if (typeof record.ts !== "string" || Number.isNaN(Date.parse(record.ts))) {
+    return "ts must be a date string";
+  }
+  if (!UILOGS_LEVELS.includes(record.level)) {
+    return `level must be one of ${UILOGS_LEVELS.join(", ")}`;
+  }
+  for (const key of ["logger", "message", "type"]) {
+    if (typeof record[key] !== "string") {
+      return `${key} must be a string`;
+    }
+  }
+  if (record.message.length > UILOGS_LIMITS.maxMessageChars) {
+    return `message is over ${UILOGS_LIMITS.maxMessageChars} characters`;
+  }
+  for (const key of UILOGS_OPTIONAL_IDS) {
+    if (record[key] !== undefined && typeof record[key] !== "string") {
+      return `${key} must be a string when it is present`;
+    }
+  }
+
+  const { attributes } = record;
+  if (typeof attributes !== "object" || attributes === null || Array.isArray(attributes)) {
+    return "attributes must be a JSON object";
+  }
+  if (Object.keys(attributes).length > UILOGS_LIMITS.maxAttributeKeys) {
+    return `attributes has more than ${UILOGS_LIMITS.maxAttributeKeys} keys`;
+  }
+  if (Buffer.byteLength(JSON.stringify(attributes)) > UILOGS_LIMITS.maxAttributesBytes) {
+    return `attributes are over ${UILOGS_LIMITS.maxAttributesBytes} bytes as JSON`;
+  }
+
+  return "";
+}
+
+// Returns { status, error, index? } for the first problem of a uilogs body, or null for a good
+// body. A request with too many records gets 413, and the library splits the batch and sends the
+// halves. A record over a limit gets 400, and the library drops the whole batch, because a split
+// can't fix one oversize record.
+function uilogsProblem(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { status: 400, error: "the body must be a JSON object" };
+  }
+  if (typeof body.service !== "string" || body.service === "") {
+    return { status: 400, error: "service must be a non-empty string" };
+  }
+  if (!Array.isArray(body.records) || body.records.length === 0) {
+    return { status: 400, error: "records must be a non-empty array" };
+  }
+  if (body.records.length > UILOGS_LIMITS.maxRecords) {
+    return {
+      status: 413,
+      error: `a request holds at most ${UILOGS_LIMITS.maxRecords} records`,
+      maxRecords: UILOGS_LIMITS.maxRecords,
+    };
+  }
+
+  for (const [index, record] of body.records.entries()) {
+    const error = uilogsRecordProblem(record);
+    if (error) {
+      return { status: 400, error, index };
+    }
+  }
+
+  return null;
+}
+
+// Prints one line per uilogs record, with the fields of an OTLP record line.
+function printUilogs(body, batchId, hasAuthorization) {
+  console.log(
+    `[uilogs] batch=${batchId} records=${body.records.length} ` +
+      `auth=${hasAuthorization ? "bearer" : "none"}`,
+  );
+  for (const record of body.records) {
+    console.log(
+      [
+        record.ts,
+        record.level.padEnd(5),
+        `[${body.service}]`,
+        `[${record.type}]`,
+        record.logger,
+        record.message,
+        `journey=${record.journeyId ?? "-"}`,
+        `tab=${String(record.tabId ?? "-").slice(0, 8)}`,
+        `trace=${String(record.traceId ?? "-").slice(0, 8)}`,
+      ].join("  "),
+    );
+  }
+}
+
 // Top-level keys of an OTLP request. An ECS document has none of them.
 const OTLP_KEYS = ["resourceLogs", "resourceMetrics", "resourceSpans"];
 
@@ -339,6 +449,7 @@ async function handle(req, res) {
       "/v1/metrics": received.get("/v1/metrics") ?? [],
       "/v1/traces": received.get("/v1/traces") ?? [],
       "/v1/replay": received.get("/v1/replay") ?? [],
+      "/uilogs": received.get("/uilogs") ?? [],
     });
     return;
   }
@@ -363,8 +474,10 @@ async function handle(req, res) {
   const isTraces = url.pathname === "/v1/traces";
   // Session replay segments go to replay.endpoint. They aren't OTLP batches.
   const isReplay = url.pathname === "/v1/replay";
+  // The example custom backend. Its body is the app serializer's JSON, not OTLP.
+  const isUilogs = url.pathname === "/uilogs";
   if (
-    (url.pathname !== "/v1/logs" && !isMetrics && !isTraces && !isReplay) ||
+    (url.pathname !== "/v1/logs" && !isMetrics && !isTraces && !isReplay && !isUilogs) ||
     req.method !== "POST"
   ) {
     res.writeHead(404).end();
@@ -406,8 +519,9 @@ async function handle(req, res) {
     }
   }
 
+  // The exit flush sends the body of any serializer as text/plain. A uilogs body is always JSON.
   const { documents, payload } = parseBody(
-    req.headers["content-type"],
+    isUilogs ? "application/json" : req.headers["content-type"],
     isReplay,
     raw.toString("utf8"),
   );
@@ -417,6 +531,20 @@ async function handle(req, res) {
       raw.toString("utf8").slice(0, 200),
     );
     res.writeHead(400).end();
+    return;
+  }
+
+  // A body that breaks a limit is not kept, as for a real backend. 413 is for a request that is
+  // too large, and 400 is for a record that is wrong.
+  const uilogsError = isUilogs ? uilogsProblem(payload) : null;
+  if (uilogsError) {
+    const { status, ...answer } = uilogsError;
+    console.error(
+      `[error] uilogs refused batch=${batchId} with ${status}: ${answer.error}` +
+        `${answer.index === undefined ? "" : ` (record ${answer.index})`}`,
+    );
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(status).end(JSON.stringify(answer));
     return;
   }
 
@@ -435,6 +563,8 @@ async function handle(req, res) {
     contentEncoding: req.headers["content-encoding"] ?? null,
     // Only whether a cookie came, never its value, so a test can prove an exit send leaked none.
     hasCookie: req.headers.cookie !== undefined,
+    // Only uilogs entries, because only that example backend reads a token. Never the value.
+    ...(isUilogs ? { hasAuthorization: req.headers.authorization !== undefined } : {}),
     duplicate,
     // An NDJSON body has no single JSON value, so its parsed lines are kept as a list.
     payload: documents ?? payload,
@@ -447,6 +577,12 @@ async function handle(req, res) {
   }
   if (givenId) {
     seenBatchIds.set(batchId, Date.now());
+  }
+
+  if (isUilogs) {
+    printUilogs(payload, batchId, String(req.headers.authorization ?? "").startsWith("Bearer "));
+    res.writeHead(204).end();
+    return;
   }
 
   // An ECS batch comes as NDJSON, one document for each record.
@@ -525,6 +661,7 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(
-    `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics, /v1/traces and /v1/replay`,
+    `mock ingest listening on http://localhost:${PORT}/v1/logs, /v1/metrics, /v1/traces, ` +
+      "/v1/replay and /uilogs",
   );
 });

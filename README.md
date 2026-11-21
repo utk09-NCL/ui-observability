@@ -176,7 +176,7 @@ configure({
 | [Development](docs/development.md) | The workspace, the checks and the example applications. |
 | [Browser tests](e2e/README.md) | The Playwright tests and the coverage that is still missing. |
 | [Collector check](e2e/collector/README.md) | The check against a pinned OpenTelemetry Collector. |
-| [Playground guide](playground/README.md) | The five example applications and how to start each one. |
+| [Playground guide](playground/README.md) | The six example applications and how to start each one. |
 | [Security policy](SECURITY.md) | How to report a vulnerability. |
 | [llms.txt](llms.txt) | A summary of the library for a large language model. The package includes it. |
 

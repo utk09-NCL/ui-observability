@@ -1,7 +1,8 @@
 # .github/workflows/ci.yml
 #
-# Runs each part of `pnpm run verify` as its own step on the repo's Node floor and on Node 24, then builds every playground.
-# The browser tests run in a parallel job.
+# Runs each part of `pnpm run verify` as its own step on the repo's Node floor and on Node 24.
+# It then builds every playground and runs the tests of each one.
+# The browser tests and the playground smoke tests run in a parallel job.
 
 name: CI
 
@@ -97,6 +98,11 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm --filter './playground/**' --if-present run build
 
+      # Runs the Vitest specs of the playground apps. They import the dist/ that Build made.
+      - name: Playground tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm --filter './playground/**' --if-present run test
+
   e2e:
     name: e2e (Chromium, Firefox, WebKit)
     runs-on: ubuntu-24.04
@@ -114,6 +120,7 @@ jobs:
           cache: pnpm
 
       - name: Install
+        id: install
         run: pnpm install --frozen-lockfile
 
       # Playwright advises against caching the browsers. The system libraries can't be cached,
@@ -123,3 +130,9 @@ jobs:
 
       - name: Browser tests
         run: pnpm run test:e2e
+
+      # One Chromium smoke test for each playground app. Chromium is installed above. It runs
+      # after a failed browser test too, so one run reports both failures.
+      - name: Playground smoke tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run test:playground

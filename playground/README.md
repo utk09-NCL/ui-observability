@@ -1,6 +1,6 @@
 # Playground
 
-The playground has five example applications. Each example shows the library in one type of project. Use this guide to select an example, start it and find its output.
+The playground has six example applications. Each example shows the library in one type of project. Use this guide to select an example, start it and find its output.
 
 ## Select an example
 
@@ -8,6 +8,7 @@ The playground has five example applications. Each example shows the library in 
 | --- | --- | --- | --- |
 | [vanilla](vanilla/README.md) | Plain TypeScript with no framework. Each feature has a control. | `pnpm run dev` | `http://localhost:5173/playground/vanilla/index.html` |
 | [react](react/README.md) | React 19 with hooks, an error boundary, metrics and session replay. | `pnpm run example:react` | `http://localhost:5180` |
+| [react-custom-backend](react-custom-backend/README.md) | React 19 that sends logs to its own backend. It has a custom serializer, relative endpoints, Vitest specs and a settings section. | `pnpm run example:react-custom-backend` | `http://localhost:5185` |
 | [angular](angular/README.md) | Angular 22 with a provider, an `ErrorHandler` and the router. | `pnpm run example:angular` | `http://localhost:4200` |
 | [microfrontend](microfrontend/README.md) | Module Federation. One shell and two remotes share one runtime. | `pnpm run example:microfrontend` | `http://localhost:5191` |
 | [console-only](console-only/README.md) | No network. The library prints each record to the devtools console. | `pnpm run example:console-only` | `http://localhost:5195` |
@@ -31,7 +32,7 @@ The vanilla playground imports the library from `src/` and needs no build. The o
 
 ## Start the mock ingest server
 
-Each example that sends records sends them to `tools/mock-ingest-server.mjs` on port 8787. `pnpm run dev` starts this server with the vanilla playground. For each other example, start the server in a second terminal:
+Each example that sends records sends them to `tools/mock-ingest-server.mjs` on port 8787. `pnpm run dev` starts this server with the vanilla playground. `pnpm run example:react-custom-backend` starts it too. For each other example, start the server in a second terminal:
 
 ```bash
 pnpm run dev:ingest
@@ -44,15 +45,41 @@ Each example posts to port 8787. `UIOBS_MOCK_PORT` moves the server to a differe
 | Path | Use |
 | --- | --- |
 | `/v1/logs` | Log, action, event, error and metric records. Each example sends here. |
-| `/v1/metrics` | Metric points in the OTLP metrics format. Only the React example sets `metricsEndpoint`. |
-| `/v1/traces` | Spans in the OTLP traces format. Only the vanilla playground sets `tracesEndpoint`. |
+| `/v1/metrics` | Metric points in the OTLP metrics format. The React and react-custom-backend examples set `metricsEndpoint`. |
+| `/v1/traces` | Spans in the OTLP traces format. The vanilla playground and react-custom-backend set `tracesEndpoint`. |
+| `/uilogs` | The example custom backend of react-custom-backend. It takes the JSON of the custom serializer and answers `400` for a record over its limits. |
 | `/v1/replay` | Session replay segments. Only the vanilla playground sets `replay.endpoint`. |
 | `/__control` | Sets the status that the server returns for each batch. The vanilla playground has a button for it. |
 | `/__sampling` | Sets the sampling rules that the server returns. The vanilla playground has a button for it. |
 | `/__timing` | Returns a `Server-Timing` header. The vanilla playground has a button for it. |
 | `/__reset` | Clears the received requests, the known batch ids, the forced status and the sampling rules. The browser tests use it. |
-| `/__received` | Returns the requests that the server kept for each path. The server keeps them only with `UIOBS_MOCK_RECORD=1`. The browser tests read it. |
+| `/__received` | Returns the requests that the server kept for `/v1/logs`, `/v1/metrics`, `/v1/traces`, `/v1/replay` and `/uilogs`. The server keeps them only with `UIOBS_MOCK_RECORD=1`. The browser tests read it. |
 | `/__echo` | Returns the request headers that the server received. The trace propagation test reads it. |
+
+## Start the mock app API
+
+The react-custom-backend example gets its business data from `tools/mock-app-api.mjs` on port 8790. `pnpm run example:react-custom-backend` starts it. To start it alone, run `pnpm run dev:app-api`.
+
+The server keeps its state in memory. The Vite dev server of the example proxies `/api` to it. `UIOBS_APP_API_PORT` moves the server to a different port.
+
+| Request | Use |
+| --- | --- |
+| `POST /api/login` | Takes `{ user, tenant }`. Any non-empty user name works. Returns a token. |
+| `POST /api/logout`, `GET /api/session` | Need `Authorization: Bearer <token>`. |
+| `GET /api/tenants` | Returns the three tenants. |
+| `GET /api/orders`, `POST /api/orders`, `DELETE /api/orders/:id` | List, place and cancel orders. A new order is `working` and fills after about 1.5 seconds. A cancel of a filled order answers `409`. |
+| `GET /api/positions` | Returns the net position of each pair from the filled orders. |
+| WebSocket `/api/stream` | The first message must be `{ "type": "auth", "token": "..." }`. The server then sends prices and order updates. |
+| `POST /api/__fault?mode=none\|slow\|reject\|error` | Changes how `POST /api/orders` answers. `slow` adds 2 seconds. `reject` answers `422`. `error` answers `500`. |
+| `GET /api/__fault`, `POST /api/__reset` | Reads the mode. Clears the state. The browser tests use the reset. |
+
+The server prints one line for each order request.
+
+```text
+[orders] POST /api/orders  user=trader1  traceparent=00-<trace id>-<span id>-01  fault=none  status=201  3ms
+```
+
+`traceparent=-` means that the request had no `traceparent` header. A value shows that the trace propagation of the library reached the API.
 
 ## Where to look
 
@@ -99,6 +126,7 @@ The [Attribute reference](../docs/attributes.md) describes each attribute.
 | --- | --- |
 | `[batch] batch=<id> records=<n>` | One request to `/v1/logs`. The next lines are its records. With `serializer: "ecs"`, each line is one document of the NDJSON body. |
 | `[metrics] batch=<id> points=<n>` | One request to `/v1/metrics`. Each next line is one point with its type, value, unit and attributes. |
+| `[uilogs] batch=<id> records=<n> auth=<bearer\|none>` | One request to `/uilogs`. `auth` tells if the request had a Bearer token. Each next line is one record. |
 | `[traces] batch=<id> spans=<n>` | One request to `/v1/traces`. `[client]` is an HTTP request. `[internal]` is another span. `parent=-` is a root span. |
 | `[replay] replay=<id> sequence=<n> events=<n> bytes=<n> session=<id>` | One segment of a session replay. |
 | `[exit pagehide] batch=<id>` | The exit flush sent this batch while the page closed. See [Page Exit](../docs/delivery-guarantees.md#page-exit). |
@@ -131,6 +159,8 @@ The vanilla playground has buttons for these requests and for the sampling rules
 | Angular | [angular](angular/README.md) | `angular/src/observability.ts`, and `provideObservability()` in `angular/src/main.ts` |
 | Module Federation, or more bundles on one page | [microfrontend](microfrontend/README.md) | `host/src/main.ts` for the shell, and `remote-blotter/src/mount.ts` for a remote |
 | No ingest server, or local development only | [console-only](console-only/README.md) | `console-only/src/logger.ts` |
+| Your own log backend, a custom serializer or relative endpoints | [react-custom-backend](react-custom-backend/README.md) | `react-custom-backend/src/observability/`, and `react-custom-backend/src/observability-settings/` for the settings section |
+| Unit tests with the memory transport | [react-custom-backend](react-custom-backend/README.md#tests) | `react-custom-backend/vitest.setup.ts` and `react-custom-backend/test/observability.ts` |
 | Iframes | [vanilla](vanilla/README.md#child-frames) | The `registerFrame()` loop in `vanilla/main.ts`, and `vanilla/child.ts` |
 | Delivery from a worker | [vanilla](vanilla/README.md#worker-transport) | `transportWorker` in `vanilla/main.ts`, and `vanilla/transport-worker.ts` |
 | Session replay | [react](react/README.md#session-replay) | `react/src/replay-spike.tsx` |
