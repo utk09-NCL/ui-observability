@@ -176,7 +176,12 @@ export default defineConfig(
   },
 
   {
-    files: ["playground/react/**/*", "playground/angular/**/*", "playground/microfrontend/**/*"],
+    files: [
+      "playground/react/**/*",
+      "playground/react-custom-backend/**/*",
+      "playground/angular/**/*",
+      "playground/microfrontend/**/*",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",

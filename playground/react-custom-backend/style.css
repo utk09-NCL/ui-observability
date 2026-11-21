@@ -1,0 +1,434 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --surface: #181b22;
+  --surface-2: #20242d;
+  --text: #e6e8ec;
+  --muted: #9aa1ad;
+  --border: #2d323d;
+  --accent: #5aa2ff;
+  --accent-text: #0b1220;
+  --warn: #f2b14a;
+  --good: #5bd08a;
+  --bad: #ff7b72;
+  --radius: 6px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+/* The trading parts and the observability section sit side by side on a wide screen. The
+   observability column scrolls on its own, so the ticket stays in view while a setting changes. */
+main.workspace {
+  display: grid;
+  gap: 1rem;
+  max-width: none;
+}
+
+@media (min-width: 1200px) {
+  main.workspace {
+    grid-template-columns: minmax(24rem, 2fr) minmax(0, 3fr);
+    align-items: start;
+  }
+
+  .observability {
+    position: sticky;
+    top: 0.5rem;
+    max-height: calc(100vh - 1rem);
+    overflow-y: auto;
+  }
+}
+
+.trading,
+.observability {
+  min-width: 0;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 1.25rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+}
+
+h3 {
+  font-size: 0.95rem;
+  margin-top: 1.25rem;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.bar h1 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.bar p {
+  margin: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.login {
+  max-width: 24rem;
+  margin-top: 4rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.controls label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+label.inline {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-right: 1rem;
+  align-items: center;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.6rem;
+}
+
+input[type="radio"] {
+  padding: 0;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button[type="submit"] {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.quote strong {
+  font-family: var(--font-mono);
+  margin-right: 1rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  /* A positioned parent clips the .sr-only text of a header cell. Without it, that text sits
+     against the page and makes the page scroll sideways on a narrow screen. */
+  position: relative;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+caption {
+  text-align: left;
+  color: var(--muted);
+  padding-bottom: 0.25rem;
+}
+
+th.group {
+  background: var(--surface-2);
+}
+
+tr.staged {
+  background: rgba(242, 177, 74, 0.08);
+}
+
+td[data-status="filled"] {
+  color: var(--good);
+}
+
+td[data-status="cancelled"] {
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.badge-measure-here {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge-measured {
+  border-color: var(--good);
+  color: var(--good);
+}
+
+.strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.strip div {
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.6rem;
+}
+
+.strip .wide {
+  grid-column: 1 / -1;
+}
+
+.strip dt {
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.strip dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.diagnostics,
+.recent {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.recent {
+  max-height: 16rem;
+  overflow-y: auto;
+  list-style: none;
+  padding-left: 0;
+}
+
+.grid > .card {
+  align-self: start;
+}
+
+.level {
+  font-weight: 600;
+}
+
+.level-error,
+.level-fatal {
+  color: var(--bad);
+}
+
+.level-warn {
+  color: var(--warn);
+}
+
+/* The settings table has four fixed columns, so it fits in the right-hand column. */
+table.settings {
+  table-layout: fixed;
+}
+
+table.settings .col-setting {
+  width: 27%;
+}
+
+table.settings .col-value {
+  width: 17%;
+}
+
+table.settings .col-faster {
+  width: 36%;
+}
+
+table.settings .col-status {
+  width: 20%;
+}
+
+table.settings td,
+table.settings th {
+  overflow-wrap: anywhere;
+}
+
+table.settings tr:not(.why) > td {
+  border-bottom: 0;
+  padding-bottom: 0.1rem;
+}
+
+table.settings tr.why > td {
+  padding-top: 0;
+}
+
+.badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.badge-staged {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* On a phone, each setting is a small block and not a row of four columns. The head row stays
+   in the page for a screen reader and is hidden from the eye. */
+@media (max-width: 640px) {
+  table.settings,
+  table.settings tbody,
+  table.settings tr,
+  table.settings td,
+  table.settings th {
+    display: block;
+  }
+
+  table.settings colgroup {
+    display: none;
+  }
+
+  table.settings thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  table.settings tr:not(.why) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 0.75rem;
+    align-items: start;
+  }
+
+  table.settings tr:not(.why) > td:nth-child(3),
+  table.settings tr:not(.why) > td:nth-child(4) {
+    grid-column: 1 / -1;
+  }
+
+  table.settings tr:not(.why) > td:nth-child(4) .badges {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  table.settings select {
+    max-width: 100%;
+  }
+}
