@@ -362,7 +362,7 @@ const rows = await measure("rows.fetch", () => fetchRows()).catch((err: unknown)
 - Each batch has the headers `X-UiObs-Batch-Id` and `X-UiObs-Attempt`. A body of 1 KiB or more has `Content-Encoding: gzip`. The CORS preflight must allow `content-type, content-encoding, x-uiobs-batch-id, x-uiobs-attempt`, and the name of each header in `headers`.
 - The exit batch has its batch id in the query `uiobs_batch_id` and the reason in `uiobs_exit`.
 - The server deduplicates on the batch id for at least 24 hours. The library can send a batch more than one time.
-- `200`, `202` and `204` accept the batch. `413` splits it, and a JSON body `{"maxBytes": n}` gives the limit. `429` and `503` throttle, with `Retry-After`. `408` and `5xx` retry. With a `headers` function, `401` and `403` get one more send with new headers. Each other `4xx` drops the batch.
+- `200`, `202` and `204` accept the batch. `413` splits it into two halves. The halves need storage. With `storage.backend: "none"`, a `413` loses the batch. A `413` to an exit request also loses it. A JSON body `{"maxBytes": n}` goes only into the `transport.batch_split` diagnostic. `429` and `503` throttle, with `Retry-After`. `408` and `5xx` retry. With a `headers` function, `401` and `403` get one more send with new headers. Each other `4xx` drops the batch.
 - Expose `Retry-After`, `X-UiObs-Sampling` and `Date` with `Access-Control-Expose-Headers`.
 - The replay endpoint is a separate URL. It gets one JSON `POST` for each segment, with the batch id `<replay.id>-<sequence>` and only the `replay.headers`.
 - Check a server with `pnpm dlx @utk09/ui-observability doctor https://ingest.example/v1/logs --origin https://app.example`.
