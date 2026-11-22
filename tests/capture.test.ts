@@ -11,9 +11,21 @@ import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { CaptureOptions, ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
+import { observeWindow } from "../src/index";
 import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { type SpanHooks, TraceEngine } from "../src/utils/tracing";
+import {
+  asWindow,
+  blockedDocumentWindow,
+  foreignRealm,
+  foreignWindow,
+  leftOn,
+  openPopout,
+  REGIONS,
+  regions,
+  type Popout,
+} from "./window-fakes";
 
 /** A logger with a spy for every method, so a test can read what the logger recorded. */
 interface SpyLogger {
@@ -2277,6 +2289,588 @@ describe("InteractionCapture rage and dead clicks", () => {
 
       expect(events(live.logger, "ui.dead_click")).toEqual([]);
       expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
+    });
+  });
+
+  describe("in an observed window", () => {
+    const OTHER_ORIGIN =
+      "The library cannot observe a window from another origin. It captures no clicks there.";
+
+    const stops: (() => void)[] = [];
+    const popouts: Popout[] = [];
+    const captures: InteractionCapture[] = [];
+
+    /**
+     * Opens a popout for the spec, and observes it unless told not to.
+     * @param observe False to leave the observing to the spec.
+     * @returns The popout.
+     */
+    const open = (observe = true): Popout => {
+      const popout = openPopout();
+      popouts.push(popout);
+      if (observe) {
+        stops.push(observeWindow(popout.win));
+      }
+      return popout;
+    };
+
+    /**
+     * Builds the capture on a page that holds the regions. It stays uninstalled. Call this
+     * before open(), because it replaces the body, and a popout's iframe lives in the body.
+     * @param interactions The interaction options.
+     * @param over More capture settings.
+     * @returns The capture, its context, the logger and the page's regions.
+     */
+    const build = (
+      interactions: CaptureOptions["interactions"],
+      over: Partial<CaptureOptions> = {},
+    ) => {
+      vi.useFakeTimers();
+      const view = ctx({ interactions, ...over });
+      document.body.innerHTML = REGIONS;
+      const capture = new InteractionCapture(view.ctx);
+      captures.push(capture);
+      return { capture, c: view.ctx, logger: view.logger, page: regions(document) };
+    };
+
+    /** Builds the capture and installs it. */
+    const install = (
+      interactions: CaptureOptions["interactions"],
+      over: Partial<CaptureOptions> = {},
+    ) => {
+      const built = build(interactions, over);
+      built.capture.install();
+      return built;
+    };
+
+    afterEach(() => {
+      for (const stop of stops.splice(0)) {
+        stop();
+      }
+      for (const capture of captures.splice(0)) {
+        capture.uninstall();
+      }
+      for (const popout of popouts.splice(0)) {
+        popout.close();
+      }
+      document.body.innerHTML = "";
+    });
+
+    it("delivers a click in the popout to a capture listener on its window", () => {
+      // A check of the stand-in window, so a red spec below can't blame the harness.
+      const popout = open(false);
+      const seen = vi.fn();
+      popout.win.addEventListener("click", seen, true);
+
+      click(popout.buy);
+
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
+
+    it("records the same click breadcrumb as a click in the page's own window", () => {
+      const { c, page } = install(true);
+      const popout = open();
+
+      click(page.buy);
+      click(popout.buy);
+
+      expect(
+        c.breadcrumbs.snapshot().map(({ category, message }) => ({ category, message })),
+      ).toEqual([
+        { category: "click", message: "buy" },
+        { category: "click", message: "buy" },
+      ]);
+    });
+
+    it("rotates the trace on a click in the observed window", () => {
+      const { c } = install(true);
+      const popout = open();
+      const before = c.tracing.resolve().traceId;
+
+      click(popout.buy);
+
+      expect(c.tracing.resolve().traceId).not.toBe(before);
+    });
+
+    it("counts rage clicks in the observed window", () => {
+      const { logger } = install({ rageClicks: true });
+      const popout = open();
+
+      click(popout.buy);
+      click(popout.buy);
+      click(popout.buy);
+
+      expect(events(logger, "ui.rage_click")).toEqual([
+        { "click.action": "buy", "click.count": 3 },
+      ]);
+    });
+
+    it("records a click on an element that another realm created", () => {
+      // happy-dom windows share one Element class, so this makes the page's own class foreign.
+      const { c } = install(true);
+      const popout = open();
+      foreignRealm();
+
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toMatchObject([{ category: "click", message: "buy" }]);
+    });
+
+    it("skips a click inside an ignore region of the observed window", () => {
+      const { c } = install(true);
+      const popout = open();
+      popout.doc.body.insertAdjacentHTML(
+        "beforeend",
+        '<div data-observability-ignore><button id="secret">Secret</button></div>',
+      );
+
+      click(popout.doc.querySelector("#secret")!);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("records a click in each observed window and in the page's own window", () => {
+      const { c, page } = install(true);
+      const first = open();
+      const second = open();
+
+      click(page.buy);
+      click(first.buy);
+      click(second.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(3);
+    });
+
+    it("adds no listener when the page's own window is observed, so a click records once", () => {
+      const { c, page } = install(true);
+      const added = vi.spyOn(window, "addEventListener");
+
+      stops.push(observeWindow(window));
+      expect(added).not.toHaveBeenCalled();
+      click(page.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("adds one listener when the same window is observed twice", () => {
+      const { c } = install(true);
+      const popout = open();
+      stops.push(observeWindow(popout.win));
+
+      click(popout.buy);
+
+      expect(leftOn(popout, "click")).toBe(1);
+      expect(leftOn(popout, "pagehide")).toBe(1);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("removes the listener when the stop function runs, and a second call is fine", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      const stop = observeWindow(popout.win);
+      click(popout.buy);
+
+      stop();
+      click(popout.buy);
+
+      expect(() => {
+        stop();
+      }).not.toThrow();
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      expect(leftOn(popout, "click")).toBe(0);
+    });
+
+    it("stops one window without touching the others", () => {
+      const { c } = install(true);
+      const first = open(false);
+      const second = open();
+      const stopFirst = observeWindow(first.win);
+
+      stopFirst();
+      click(first.buy);
+      click(second.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("removes a window at pagehide, as if the stop function ran", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      const stop = observeWindow(popout.win);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(leftOn(popout, "pagehide")).toBe(0);
+      expect(() => {
+        stop();
+      }).not.toThrow();
+    });
+
+    it("observes a window again after its stop function ran", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      observeWindow(popout.win)();
+
+      stops.push(observeWindow(popout.win));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("attaches a window that was observed before the capture installed", () => {
+      const { capture, c } = build(true);
+      const popout = open();
+
+      capture.install();
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("forgets a window that closed before the capture installed, for good", () => {
+      // Nothing hears the pagehide of a window while clicks are off, so the install prunes it.
+      const { capture, c } = build(true);
+      const popout = open();
+      // happy-dom assigns `closed` when it destroys the window, so the stub needs a setter too.
+      let closed = true;
+      Object.defineProperty(popout.win, "closed", {
+        configurable: true,
+        get: () => closed,
+        set: (value: boolean) => {
+          closed = value;
+        },
+      });
+
+      capture.install();
+      click(popout.buy);
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+
+      closed = false;
+      capture.uninstall();
+      capture.install();
+      click(popout.buy);
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("removes the listener at uninstall and adds it again at the next install", () => {
+      const { capture, c } = install(true);
+      const popout = open();
+      click(popout.buy);
+
+      capture.uninstall();
+      click(popout.buy);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+
+      capture.install();
+      click(popout.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(2);
+    });
+
+    it("attaches the window to the capture that replaces an uninstalled one", () => {
+      const { capture, c } = install(true);
+      const popout = open();
+      capture.uninstall();
+
+      const next = new InteractionCapture(c);
+      captures.push(next);
+      next.install();
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it.each([
+      ["interactions are off", {}],
+      ["only navigation is on", { navigation: true }],
+    ])("adds nothing to the observed window when %s", (_name, over) => {
+      const { c } = install(false, over);
+      const popout = open();
+
+      click(popout.buy);
+
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("adds no navigation capture to the observed window", () => {
+      install(true, { navigation: true });
+      const popout = open(false);
+      const { pushState, replaceState } = popout.win.history;
+
+      stops.push(observeWindow(popout.win));
+
+      expect(popout.win.history.pushState).toBe(pushState);
+      expect(popout.win.history.replaceState).toBe(replaceState);
+      const added = popout.add.mock.calls.map(([type]) => type);
+      expect(added).not.toContain("popstate");
+      expect(added).not.toContain("hashchange");
+    });
+
+    it.each([
+      ["blocks every read", foreignWindow],
+      ["blocks only the document", blockedDocumentWindow],
+    ])("reports a window from another origin once when it %s", (_name, make) => {
+      const { c, page } = install(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      let stop: (() => void) | undefined;
+
+      expect(() => {
+        stop = observeWindow(make());
+      }).not.toThrow();
+
+      expect(stop).toBeTypeOf("function");
+      expect(() => {
+        stop?.();
+      }).not.toThrow();
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        ["capture.install_failed", OTHER_ORIGIN],
+      ]);
+      click(page.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("reports a window from another origin that was observed before the install", () => {
+      const { capture, c } = build(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      stops.push(observeWindow(foreignWindow()));
+
+      capture.install();
+
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        ["capture.install_failed", OTHER_ORIGIN],
+      ]);
+    });
+
+    it.each([null, undefined, {}])("gives a stop function that does nothing for %s", (value) => {
+      const { c, page } = install(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+
+      const stop = observeWindow(asWindow(value));
+
+      expect(stop).toBeTypeOf("function");
+      expect(() => {
+        stop();
+      }).not.toThrow();
+      expect(reported.mock.calls.map(([event]) => event.message)).not.toContain(OTHER_ORIGIN);
+      click(page.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    describe("dead clicks", () => {
+      /** Lets the check time run out, which flushes the observer's records first. */
+      const wait = async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(1000);
+      };
+
+      it("records a dead click for a click in the observed window with no answer", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records no dead click when the page's own document answers the click", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        page.feed.append(document.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the observed window's own document answers", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when a click in the page changes an observed window", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ignores a change in a live region of the observed window", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("ignores a live region of the page for a click in the observed window", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        page.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("ignores a live region of an observed window for a click in the page", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(page.buy);
+        popout.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("counts a change outside a live region in one document as a response", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.price.textContent = "101";
+        page.feed.append(document.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the observed window's document scrolls", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.doc.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when an element outside a live region scrolls there", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.feed.dispatchEvent(new Event("scroll"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ignores a scroll inside a live region of the observed window", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.grid.dispatchEvent(new Event("scroll"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, (popout: Popout, stop: () => void) => void]>([
+        [
+          "goes away at pagehide",
+          (popout) => {
+            popout.win.dispatchEvent(new Event("pagehide"));
+          },
+        ],
+        [
+          "stops being observed",
+          (_popout, stop) => {
+            stop();
+          },
+        ],
+      ])(
+        "records no dead click and keeps no listener when the clicked window %s",
+        async (_name, leave) => {
+          const { logger } = install({ deadClicks: true });
+          const popout = open(false);
+          const stop = observeWindow(popout.win);
+          click(popout.buy);
+
+          leave(popout, stop);
+          await wait();
+
+          expect(events(logger, "ui.dead_click")).toEqual([]);
+          expect(["click", "pagehide", "scroll"].map((type) => leftOn(popout, type))).toEqual([
+            0, 0, 0,
+          ]);
+        },
+      );
+
+      it("records no dead click when the URL of the clicked window changes", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.win.history.replaceState(null, "", "#moved");
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the URL of the page changes", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+        const original = location.href;
+
+        click(popout.buy);
+        history.replaceState(null, "", "/moved");
+        await wait();
+        history.replaceState(null, "", original);
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (popout: Popout) => void]>([
+        [
+          "the data of a text node",
+          ({ price }) => {
+            (price.firstChild as Text).data = "101";
+          },
+        ],
+        [
+          "an attribute",
+          ({ price }) => {
+            price.setAttribute("class", "up");
+          },
+        ],
+      ])("ignores %s in a live region of another realm", async (_name, change) => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+        foreignRealm();
+
+        click(popout.buy);
+        change(popout);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
     });
   });
 });

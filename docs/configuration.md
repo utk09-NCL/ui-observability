@@ -189,6 +189,7 @@ capture: {
 - A dead click is a click on a control that gives no DOM change, no navigation and no scroll in `deadClickMs` (default 1000). It gives the event `ui.dead_click`. A control is a link, a `button`, a `summary`, or a button, submit or reset `input`. An element with the role `button`, `link`, `menuitem` or `tab` is also a control. An element with the action attribute is also a control. A click on a `target="_blank"` or `download` link gives no event.
 - A request alone is not a response. A page that changes its DOM all the time gives no dead click.
 - A DOM change or a scroll inside an element that matches `deadClickIgnoreSelector` is not a response. The default is `[data-observability-live]`. Mark the element that changes on its own, for example a price cell. Do not mark a panel that also holds the controls. `""` makes each change a response.
+- To capture clicks in a popout window of the page, pass the window to `observeWindow()`.
 
 `uncleanExit` finds a page of this tab that stopped without a clean close, for example after a crash. The top document keeps a marker in `sessionStorage`. A clean close removes it. The next page of the tab logs WARN `ui.unclean_exit`. A popup with an opener reports nothing, because it copies the `sessionStorage` of its opener. A duplicated tab copies it too, and can report a false exit. `identity: "memory"` turns this capture off, because that mode writes nothing to the device.
 

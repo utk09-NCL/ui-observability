@@ -18,10 +18,24 @@ import {
 import type { InteractionOptions } from "../models/config";
 import { patch } from "../utils/patch";
 import { recordedUrl } from "../utils/platform";
+import { addWindowObserver, forgetWindow, observedWindows } from "./observed-windows";
 import type { Capture, CaptureContext } from "./types";
 
 /** Links that open elsewhere. The page shows no response, but the click isn't dead. */
 const LEAVING_LINKS = 'a[target="_blank"], a[download]';
+
+/** An element's nodeType. Node.ELEMENT_NODE won't do, because another window has its own Node. */
+const ELEMENT_NODE = 1;
+
+/**
+ * Checks whether a value is an element of any window. instanceof fails for a popout's element,
+ * because each window has its own Element class.
+ * @param value An event or mutation target.
+ * @returns True for an element.
+ */
+function isElement(value: unknown): value is Element {
+  return (value as Partial<Node> | null)?.nodeType === ELEMENT_NODE;
+}
 
 /**
  * Builds a short CSS selector for an element. Prefers the test ID, then the ID, then the
@@ -99,6 +113,9 @@ export class InteractionCapture implements Capture {
   /** Stops the dead click check that is running now. */
   private stopDeadCheck: (() => void) | undefined;
 
+  /** Detaches the observed windows. Set while clicks are captured. */
+  private unobserve: (() => void) | undefined;
+
   /**
    * @param ctx Capture context: configuration, diagnostics, logger, breadcrumbs and tracing.
    */
@@ -115,6 +132,14 @@ export class InteractionCapture implements Capture {
     if (this.ctx.config.capture.interactions) {
       // In the capture phase we see the click before a page handler can stop propagation.
       addEventListener("click", this.onClick, true);
+      // The app's observed windows outlive this capture, so one observed before the install
+      // gets attached here.
+      this.unobserve = addWindowObserver({
+        attach: (win) => this.attachView(win),
+        detach: (win) => {
+          this.detachView(win);
+        },
+      });
     }
     if (this.ctx.config.capture.navigation) {
       this.installHistory();
@@ -136,6 +161,8 @@ export class InteractionCapture implements Capture {
     removeEventListener("click", this.onClick, true);
     removeEventListener("popstate", this.onNavigate);
     removeEventListener("hashchange", this.onNavigate);
+    this.unobserve?.();
+    this.unobserve = undefined;
 
     for (const restore of this.restores.splice(0)) {
       restore();
@@ -151,7 +178,7 @@ export class InteractionCapture implements Capture {
       return;
     }
     const target = event.target;
-    if (!(target instanceof Element)) {
+    if (!isElement(target)) {
       return;
     }
     const settings = this.ctx.config.capture.interactions;
@@ -187,7 +214,8 @@ export class InteractionCapture implements Capture {
       target.closest(`${DEAD_CLICK_CONTROLS}, [${attribute}]`) &&
       !target.closest(LEAVING_LINKS)
     ) {
-      this.watchDead(message, options);
+      // The listener sits on the window that got the click, the page's own or an observed one.
+      this.watchDead(message, options, event.currentTarget as Window);
     }
   };
 
@@ -216,43 +244,60 @@ export class InteractionCapture implements Capture {
   }
 
   /**
-   * Watches the page after a click on a control. If there's no DOM change, navigation or scroll
-   * within `deadClickMs`, it records `ui.dead_click`. Only one check runs at a time.
+   * Watches the page and each observed window after a click on a control. If there's no DOM
+   * change, URL change or scroll within `deadClickMs`, it records `ui.dead_click`. Only one
+   * check runs at a time.
    * @param action The click's action name.
    * @param options Interaction options.
+   * @param view The window that got the click. Its URL change answers the click too.
    */
-  private watchDead(action: string, options: InteractionOptions): void {
+  private watchDead(action: string, options: InteractionOptions, view: Window): void {
     if (this.stopDeadCheck || typeof MutationObserver === "undefined") {
       return;
     }
 
-    const href = location.href;
+    const pageUrl = location.href;
+    const viewUrl = view.location.href;
     const live = options.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
     let responded = false;
     const observer = new MutationObserver((records) => {
       responded ||= records.some((record) => this.answersClick(record.target, live));
     });
-    observer.observe(document, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      characterData: true,
-    });
     const onScroll = (event: Event): void => {
       responded ||= this.answersClick(event.target, live);
     };
-    addEventListener("scroll", onScroll, { capture: true, passive: true });
+    // A click in a popout can change this page, and a click here can change a popout.
+    const views = [window, ...observedWindows()];
+    for (const each of views) {
+      // An observed window is another document, so a fault there mustn't fail the click handler.
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        "The library could not watch a window for a dead click. The check skips that window.",
+        () => {
+          observer.observe(each.document, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            characterData: true,
+          });
+          each.addEventListener("scroll", onScroll, { capture: true, passive: true });
+        },
+      );
+    }
 
     const stop = (): void => {
       // timer is declared after stop, but stop can only run once that line has executed.
       clearTimeout(timer);
       observer.disconnect();
-      removeEventListener("scroll", onScroll, true);
+      for (const each of views) {
+        each.removeEventListener("scroll", onScroll, true);
+      }
       this.stopDeadCheck = undefined;
     };
     const timer = setTimeout(() => {
       stop();
-      if (!responded && location.href === href && this.ctx.isActive?.() !== false) {
+      const moved = location.href !== pageUrl || view.location.href !== viewUrl;
+      if (!responded && !moved && this.ctx.isActive?.() !== false) {
         this.ctx.logger.logEvent("ui.dead_click", { "click.action": action });
       }
     }, options.deadClickMs ?? DEAD_CLICK_MS);
@@ -273,8 +318,10 @@ export class InteractionCapture implements Capture {
     }
 
     // A text change targets a Text node, and the document and the window have no closest().
-    const element =
-      target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+    // Read the node type, because a popout's nodes fail instanceof.
+    const element = isElement(target)
+      ? target
+      : ((target as Partial<Node> | null)?.parentElement ?? null);
     // The browser calls the observer and the listener directly, so a throw is a page error.
     return (
       this.ctx.diagnostics.guard(
@@ -284,6 +331,45 @@ export class InteractionCapture implements Capture {
       ) ?? true
     );
   }
+
+  /**
+   * Starts listening for clicks in an observed window.
+   * @param win The window.
+   * @returns False for a window from another origin, after it reports the window.
+   */
+  private attachView(win: Window): boolean {
+    try {
+      // Only a window of this origin has a readable document. Reading it first means a window
+      // from another origin throws before it gets a listener.
+      const _sameOrigin = win.document;
+      win.addEventListener("click", this.onClick, true);
+      win.addEventListener("pagehide", this.onViewHide);
+      return true;
+    } catch {
+      this.ctx.diagnostics.report(
+        "capture.install_failed",
+        "The library cannot observe a window from another origin. It captures no clicks there.",
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Stops listening in an observed window. A running dead click check stops too, without a
+   * record, because it holds a listener in this window. A window that leaves during the check
+   * has most often answered the click, for example a popout that docks back into the page.
+   * @param win The window.
+   */
+  private detachView(win: Window): void {
+    this.stopDeadCheck?.();
+    win.removeEventListener("click", this.onClick, true);
+    win.removeEventListener("pagehide", this.onViewHide);
+  }
+
+  /** Forgets an observed window when its page goes away, so the library doesn't hold it. */
+  private readonly onViewHide = (event: Event): void => {
+    forgetWindow(event.currentTarget as Window);
+  };
 
   /** On a URL change, rotates the trace context and records a breadcrumb and an event. */
   private readonly onNavigate = (): void => {

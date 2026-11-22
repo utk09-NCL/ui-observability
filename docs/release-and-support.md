@@ -21,6 +21,7 @@ The public API is each export of `src/index.ts`. A module that the entry point d
 | Delivery and health | `flush`, `getHealth`, `collectDebugBundle`, `getDiagnosticCounters` |
 | Transport | `serveTransportWorker`, `createMemoryTransport` |
 | Session replay | `startReplay`, `stopReplay` |
+| Click capture | `observeWindow` |
 | Types | Each type that `src/index.ts` exports, for example `ObservabilityConfig`, `Logger`, `LogRecord`, `DiagnosticCode` and `StorageAdapter` |
 
 The configuration contract is the type `ObservabilityConfig`. [Configuration Options](configuration.md) gives each key and its default.

@@ -13,6 +13,7 @@ import {
   TELEMETRY_SDK_VERSION,
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
+import type { DiagnosticEvent } from "../src/core/diagnostics";
 import { JourneyEngine } from "../src/core/journey";
 import { LibraryLogger } from "../src/core/logger";
 import { Meter } from "../src/core/meter";
@@ -49,6 +50,7 @@ import {
   logEvent,
   newSession,
   newTrace,
+  observeWindow,
   registerWorker,
   removeContext,
   setContext,
@@ -57,6 +59,7 @@ import {
   trace,
   warn,
 } from "../src/index";
+import { asWindow, foreignWindow, leftOn, openPopout, type Popout } from "./window-fakes";
 
 // These tests select the old policy, which permits routing changes and source discovery by origin.
 const base = {
@@ -2595,6 +2598,207 @@ describe("public API", () => {
 
   it("shuts down cleanly when nothing was ever configured", async () => {
     await expect(shutdown()).resolves.toBeUndefined();
+  });
+});
+
+describe("observeWindow", () => {
+  const OTHER_ORIGIN =
+    "The library cannot observe a window from another origin. It captures no clicks there.";
+  const on = { ...base, capture: { interactions: true } };
+
+  const stops: (() => void)[] = [];
+  const popouts: Popout[] = [];
+
+  /**
+   * Opens a popout for the spec.
+   * @returns The popout, which afterEach closes.
+   */
+  const open = (): Popout => {
+    const popout = openPopout();
+    popouts.push(popout);
+    return popout;
+  };
+
+  /**
+   * Observes a popout, so afterEach can stop it.
+   * @param popout The popout to observe.
+   */
+  const watch = (popout: Popout): void => {
+    stops.push(observeWindow(popout.win));
+  };
+
+  /** Clicks an element with an event that bubbles. */
+  const click = (element: Element): void => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  };
+
+  /** Returns the click breadcrumbs of the live runtime. */
+  const clicks = () =>
+    runtime()
+      .breadcrumbs.snapshot()
+      .filter(({ category }) => category === "click");
+
+  /**
+   * Waits until the interactions capture is in the runtime's capture list, or is gone from it.
+   * @param expected True to wait for the capture, false to wait for its removal.
+   */
+  const installed = (expected = true): Promise<void> =>
+    vi.waitFor(() => {
+      const names = runtime()["captures"].map((capture: { name: string }) => capture.name);
+      expect(names.includes("interactions")).toBe(expected);
+    });
+
+  afterEach(() => {
+    for (const stop of stops.splice(0)) {
+      stop();
+    }
+    for (const popout of popouts.splice(0)) {
+      popout.close();
+    }
+  });
+
+  it("records a click in an observed window and gives a stop function", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+
+    const stop = observeWindow(popout.win);
+    stops.push(stop);
+    click(popout.buy);
+
+    expect(stop).toBeTypeOf("function");
+    expect(clicks()).toMatchObject([{ message: "buy" }]);
+  });
+
+  it("attaches a window observed before configure() when the capture installs", async () => {
+    const popout = open();
+    watch(popout);
+
+    configure(on);
+    await ready();
+    await installed();
+    click(popout.buy);
+
+    expect(clicks()).toHaveLength(1);
+  });
+
+  it("keeps a window observed across shutdown() and a later configure()", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    click(popout.buy);
+    expect(clicks()).toHaveLength(1);
+
+    await shutdown();
+    configure(on);
+    await ready();
+    await installed();
+    click(popout.buy);
+
+    expect(clicks()).toHaveLength(1);
+  });
+
+  it("removes the listener at shutdown()", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    expect(leftOn(popout, "click")).toBe(1);
+
+    await shutdown();
+
+    expect(leftOn(popout, "click")).toBe(0);
+  });
+
+  it("removes the listener when interactions turn off and adds it when they turn on", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    click(popout.buy);
+
+    configure({ capture: { interactions: false } });
+    await installed(false);
+    click(popout.buy);
+    expect(leftOn(popout, "click")).toBe(0);
+    expect(clicks()).toHaveLength(1);
+
+    configure({ capture: { interactions: true } });
+    await installed();
+    click(popout.buy);
+    expect(clicks()).toHaveLength(2);
+  });
+
+  it("adds nothing to an observed window while interactions are off", async () => {
+    configure(base);
+    await ready();
+    // The default error capture shows that the install is complete, so the check is real.
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toContain(
+        "errors",
+      );
+    });
+    const popout = open();
+
+    watch(popout);
+    click(popout.buy);
+
+    expect(popout.add).not.toHaveBeenCalled();
+    expect(runtime().breadcrumbs.snapshot()).toEqual([]);
+  });
+
+  it("reports a window from another origin through onDiagnostic, and never throws", async () => {
+    const onDiagnostic = vi.fn<(event: DiagnosticEvent) => void>();
+    configure({ ...on, onDiagnostic });
+    await ready();
+    await installed();
+    let stop: (() => void) | undefined;
+
+    expect(() => {
+      stop = observeWindow(foreignWindow());
+    }).not.toThrow();
+
+    expect(stop).toBeTypeOf("function");
+    expect(() => {
+      stop?.();
+    }).not.toThrow();
+    const reports = onDiagnostic.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.message === OTHER_ORIGIN);
+    expect(reports).toMatchObject([{ code: "capture.install_failed" }]);
+  });
+
+  it.each([null, undefined, {}])("gives a stop function for %s before configure()", (value) => {
+    let stop: (() => void) | undefined;
+
+    expect(() => {
+      stop = observeWindow(asWindow(value));
+    }).not.toThrow();
+
+    expect(stop).toBeTypeOf("function");
+    expect(() => {
+      stop?.();
+    }).not.toThrow();
+  });
+
+  it("gives a stop function after shutdown(), attaches nothing and starts no runtime", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    await shutdown();
+
+    const stop = observeWindow(popout.win);
+    stops.push(stop);
+
+    expect(stop).toBeTypeOf("function");
+    expect(leftOn(popout, "click")).toBe(0);
+    expect(ObservabilityRuntime.current()).toBeNull();
   });
 });
 
