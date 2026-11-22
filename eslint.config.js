@@ -46,6 +46,8 @@ export default defineConfig(
     "playwright-report",
     ".otelcol",
     "bench-results",
+    // Older releases that tools/build-release-bundle.mjs builds from a git tag.
+    "e2e/.cache",
   ]),
 
   {

@@ -176,6 +176,11 @@ export async function readLogs(body: string): Promise<ReceivedLog[]> {
  * closes the context, and without this its beacon can arrive after the next test's reset.
  */
 export async function stopLibrary(page: Page): Promise<void> {
+  // A test that closed its page has no document left to stop.
+  if (page.isClosed()) {
+    return;
+  }
+
   // A child stops first, so a record it still holds can reach the parent's last flush.
   for (const frame of page.frames().reverse()) {
     // A test that failed before page.goto() leaves a frame with no test page in it.
