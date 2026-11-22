@@ -76,6 +76,7 @@ describe("strict wire schema", () => {
   it.each([
     { t: "ui-observability.message.hello", tabId: "tab" },
     { t: "ui-observability.message.tab", tabId: "tab" },
+    { t: "ui-observability.message.tab", tabId: "tab", since: 1_700_000_000_000.5 },
     { t: "ui-observability.message.welcome", to: "child", tabId: "tab" },
     { t: "ui-observability.message.welcome", to: "child", tabId: "tab", routingContextId: "A" },
     { t: "ui-observability.message.journey-request" },
@@ -125,6 +126,20 @@ describe("strict wire schema", () => {
     const candidate =
       typeof message === "object" && message ? { from: "peer", ...message } : message;
     expect(validMessage(candidate)).toBe(false);
+  });
+
+  it.each([
+    ["a string", "1700000000000"],
+    ["null", null],
+    ["a boolean", true],
+    ["an object", {}],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+  ])("rejects a tab claim whose since is %s", (_name, since) => {
+    expect(
+      validMessage({ t: "ui-observability.message.tab", from: "peer", tabId: "tab", since }),
+    ).toBe(false);
   });
 
   it.each([

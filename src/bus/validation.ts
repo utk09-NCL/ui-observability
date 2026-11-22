@@ -27,8 +27,9 @@ export function validMessage(value: unknown): value is BusMessage {
   const text = (key: string): boolean => typeof m[key] === "string";
   switch (m.t) {
     case BUS_TYPE.hello:
-    case BUS_TYPE.tab:
       return text("tabId");
+    case BUS_TYPE.tab:
+      return text("tabId") && (m.since === undefined || Number.isFinite(m.since));
     case BUS_TYPE.welcome:
       return (
         text("to") &&

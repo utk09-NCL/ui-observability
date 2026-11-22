@@ -405,6 +405,7 @@ export class ObservabilityRuntime {
   private readonly stores: IdentityStores = {
     local: () => this.backing.local(),
     session: () => this.backing.session(),
+    opener: () => this.backing.opener?.() ?? null,
   };
 
   /** The identity strategy that the start uses. The app's startup call fixes it. */
@@ -2739,6 +2740,8 @@ export class ObservabilityRuntime {
     (this.identity as { tabId: string }).tabId = fresh;
     persistTabId(fresh, this.diagnostics, this.stores);
     this.builder.invalidateResource();
+    // Otherwise the bus's next claim and hello carry the old id, and the clash starts again.
+    this.bus?.setTabId(fresh);
   }
 
   /**

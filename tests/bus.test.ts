@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { Bus, type HandshakeOptions } from "../src/bus/bus";
 import {
   createBroadcastLink,
@@ -2226,6 +2226,262 @@ describe("Bus receive: hello and tab", () => {
       { link: "broadcast", origin: "same-origin" },
     );
     expect(h.onTabConflict).not.toHaveBeenCalled();
+  });
+});
+
+/** A BroadcastChannel stand-in. A message reaches each other open channel of the same name. */
+class SharedChannel {
+  /** The channels that are open now. */
+  static open: SharedChannel[] = [];
+  /** Every payload that any channel posted, in order. */
+  static posted: unknown[] = [];
+
+  onmessage: ((event: MessageEvent) => void) | null = null;
+
+  constructor(readonly name: string) {
+    SharedChannel.open.push(this);
+  }
+
+  postMessage(data: unknown): void {
+    SharedChannel.posted.push(data);
+    for (const peer of SharedChannel.open) {
+      if (peer !== this && peer.name === this.name) {
+        // A real channel delivers later, so a handler never runs inside the sender's call.
+        queueMicrotask(() => {
+          peer.onmessage?.({ data } as MessageEvent);
+        });
+      }
+    }
+  }
+
+  close(): void {
+    SharedChannel.open = SharedChannel.open.filter((channel) => channel !== this);
+  }
+}
+
+describe("Bus tab claims: since and tab id conflicts", () => {
+  const TAB = "ui-observability.message.tab";
+  const BROADCAST: MessageSource = { link: "broadcast", origin: "same-origin" };
+  const buses: Bus[] = [];
+
+  /** A tab claim as the test reads it from the channel. */
+  interface Claim {
+    t: string;
+    from: string;
+    tabId: string;
+    since?: number;
+  }
+
+  beforeEach(() => {
+    SharedChannel.open = [];
+    SharedChannel.posted = [];
+    vi.stubGlobal("BroadcastChannel", SharedChannel);
+  });
+
+  afterEach(() => {
+    for (const bus of buses.splice(0)) {
+      bus.destroy();
+    }
+  });
+
+  /**
+   * Starts a sender on the shared channel. Its document began at the given time, and it holds
+   * the tab id "tab-1" like every bus that make() builds.
+   * @param timeOrigin What performance.timeOrigin reads while the bus is built and started.
+   * @param contextId Context id of the bus.
+   * @returns The bus parts.
+   */
+  async function startBus(timeOrigin: unknown, contextId: string) {
+    vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(timeOrigin as number);
+    const made = make({ mode: "sender" }, {}, contextId);
+    buses.push(made.bus);
+    await made.bus.start();
+    return made;
+  }
+
+  /** Reads each tab claim that any bus posted on the channel. */
+  const claims = (): Claim[] =>
+    SharedChannel.posted.flatMap((data) => {
+      const message = unwrap(data);
+      return message?.t === TAB ? [message] : [];
+    });
+
+  /** Builds an incoming claim. An older library sends no since, so the key stays out then. */
+  const claim = (from: string, since?: number, tabId = "tab-1"): BusMessage => ({
+    t: TAB,
+    from,
+    tabId,
+    ...(since === undefined ? {} : { since }),
+  });
+
+  /** Lets the queued channel deliveries run. */
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+  it("claims the tab with the time origin of the document as since", async () => {
+    await startBus(5000, "ctx-1");
+
+    expect(claims()).toEqual([{ t: TAB, from: "ctx-1", tabId: "tab-1", since: 5000 }]);
+  });
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["missing", undefined],
+  ])("sends a claim with no since when performance.timeOrigin is %s", async (_name, value) => {
+    await startBus(value, "ctx-1");
+
+    expect(claims()).toHaveLength(1);
+    expect(Object.keys(claims()[0])).not.toContain("since");
+  });
+
+  it("renames when a claim for its tab id carries an older since", async () => {
+    // This context id is the smaller one, so only since can make this context rename.
+    const { bus, handlers: h } = await startBus(5000, "ctx-aaa");
+
+    deliver(bus, claim("ctx-zzz", 4000), BROADCAST);
+
+    expect(h.onTabConflict).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps its tab id and claims it once more when a claim carries a newer since", async () => {
+    // This context id is the larger one, so the old rule would rename it.
+    const { bus, handlers: h } = await startBus(5000, "ctx-zzz");
+    const own = { t: TAB, from: "ctx-zzz", tabId: "tab-1", since: 5000 };
+
+    deliver(bus, claim("ctx-aaa", 6000), BROADCAST);
+
+    expect(h.onTabConflict).not.toHaveBeenCalled();
+    // The startup claim, then one answer, so the newer context hears the claim and renames.
+    expect(claims()).toEqual([own, own]);
+  });
+
+  it.each([
+    ["has no since", "ctx-zzz", undefined, 1],
+    ["has no since", "ctx-aaa", undefined, 0],
+    ["has the same since", "ctx-zzz", 5000, 1],
+    ["has the same since", "ctx-aaa", 5000, 0],
+  ])(
+    "decides by context id, and sends no answer, when a claim %s (own id %s)",
+    async (_name, contextId, since, renames) => {
+      const { bus, handlers: h } = await startBus(5000, contextId);
+
+      deliver(bus, claim("ctx-mmm", since), BROADCAST);
+
+      expect(h.onTabConflict).toHaveBeenCalledTimes(renames);
+      expect(claims()).toHaveLength(1);
+    },
+  );
+
+  it("ignores a claim for another tab id, whatever its since", async () => {
+    const { bus, handlers: h } = await startBus(5000, "ctx-zzz");
+
+    deliver(bus, claim("ctx-aaa", 4000, "other-tab"), BROADCAST);
+    deliver(bus, claim("ctx-aaa", 6000, "other-tab"), BROADCAST);
+
+    expect(h.onTabConflict).not.toHaveBeenCalled();
+    expect(claims()).toHaveLength(1);
+  });
+
+  it.each(["children", "worker", "parent", "direct", "openfin"] as const)(
+    "ignores a claim with a since on the %s link",
+    async (link) => {
+      const { bus, handlers: h } = await startBus(5000, "ctx-zzz");
+
+      deliver(bus, claim("ctx-aaa", 4000), { link, origin: "same-origin" });
+      deliver(bus, claim("ctx-aaa", 6000), { link, origin: "same-origin" });
+
+      expect(h.onTabConflict).not.toHaveBeenCalled();
+      expect(claims()).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["a string", "5000"],
+    ["null", null],
+    ["a boolean", true],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("counts bus.rejected_message for a claim whose since is %s", async (_name, since) => {
+    const { bus, handlers: h, diagnostics } = await startBus(5000, "ctx-zzz");
+
+    deliver(bus, claim("ctx-aaa", since as number), BROADCAST);
+
+    expect(diagnostics.snapshot()["bus.rejected_message"]).toBe(1);
+    expect(h.onTabConflict).not.toHaveBeenCalled();
+  });
+
+  describe("after setTabId", () => {
+    it("ignores a claim for the old tab id, whatever its since", async () => {
+      const { bus, handlers: h } = await startBus(5000, "ctx-zzz");
+
+      bus.setTabId("tab-2");
+      deliver(bus, claim("ctx-aaa", 4000, "tab-1"), BROADCAST);
+      deliver(bus, claim("ctx-aaa", 6000, "tab-1"), BROADCAST);
+
+      expect(h.onTabConflict).not.toHaveBeenCalled();
+      expect(claims()).toHaveLength(1);
+    });
+
+    it("renames when a claim for the new tab id carries an older since", async () => {
+      const { bus, handlers: h } = await startBus(5000, "ctx-aaa");
+
+      bus.setTabId("tab-2");
+      deliver(bus, claim("ctx-zzz", 4000, "tab-2"), BROADCAST);
+
+      expect(h.onTabConflict).toHaveBeenCalledTimes(1);
+    });
+
+    it("answers a newer claim for the new tab id with a claim that names the new id", async () => {
+      const { bus, handlers: h } = await startBus(5000, "ctx-zzz");
+
+      bus.setTabId("tab-2");
+      deliver(bus, claim("ctx-aaa", 6000, "tab-2"), BROADCAST);
+
+      expect(h.onTabConflict).not.toHaveBeenCalled();
+      expect(claims()).toEqual([
+        { t: TAB, from: "ctx-zzz", tabId: "tab-1", since: 5000 },
+        { t: TAB, from: "ctx-zzz", tabId: "tab-2", since: 5000 },
+      ]);
+    });
+
+    it("sends the new tab id in the next hello", async () => {
+      const { bus } = await startBus(5000, "ctx-1");
+      const upstream = fakeLink("parent");
+
+      bus.setTabId("tab-2");
+      await (bus as unknown as { handshake: (link: Link) => Promise<boolean> }).handshake(upstream);
+
+      expect(upstream.post).toHaveBeenCalledWith({
+        t: "ui-observability.message.hello",
+        from: "ctx-1",
+        tabId: "tab-2",
+      });
+    });
+  });
+
+  // The older context has the larger context id, so the old rule alone would pick the wrong one.
+  it.each([
+    ["the older context starts first", ["older", "newer"]],
+    ["the newer context starts first", ["newer", "older"]],
+  ] as const)("renames only the newer context, once, when %s", async (_name, order) => {
+    const contexts = {
+      older: { since: 1000, contextId: "ctx-zzz" },
+      newer: { since: 2000, contextId: "ctx-aaa" },
+    } as const;
+    const started = {} as Record<"older" | "newer", Awaited<ReturnType<typeof startBus>>>;
+    for (const which of order) {
+      started[which] = await startBus(contexts[which].since, contexts[which].contextId);
+    }
+
+    await settle();
+
+    expect(started.newer.handlers.onTabConflict).toHaveBeenCalledTimes(1);
+    expect(started.older.handlers.onTabConflict).not.toHaveBeenCalled();
+    // One claim for each start and one answer at most, so the pair doesn't answer in a loop.
+    expect(claims().length).toBeLessThanOrEqual(3);
   });
 });
 

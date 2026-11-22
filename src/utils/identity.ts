@@ -51,12 +51,27 @@ export interface IdentityStores {
   local(): KeyValueStore;
   /** Store that lasts for one tab. */
   session(): KeyValueStore;
+  /**
+   * Returns the live opener's tab store, or null without one. Memory stores leave it out,
+   * because they can't hold a copied tab id. A cross-origin opener throws.
+   */
+  opener?(): KeyValueStore | null;
+}
+
+/** The opener's fields that the copy check reads. A worker's global has no opener. */
+interface OpenerWindow {
+  closed: boolean;
+  sessionStorage: KeyValueStore;
 }
 
 /** Stores that write to the browser. Used by the `identity: "storage"` option. */
 export const BROWSER_STORES: IdentityStores = {
   local: () => localStorage,
   session: () => sessionStorage,
+  opener: () => {
+    const { opener } = globalThis as { opener?: OpenerWindow | null };
+    return opener && !opener.closed ? opener.sessionStorage : null;
+  },
 };
 
 /**
@@ -196,6 +211,21 @@ function liveSession(
 }
 
 /**
+ * Reads the tab id in the opener's session store.
+ * @param stores Identity stores.
+ * @returns The opener's tab id, or null without a live same-origin opener.
+ */
+function openerTabId(stores: IdentityStores): string | null {
+  try {
+    return stores.opener?.()?.getItem(TAB_ID_KEY) ?? null;
+  } catch {
+    // A cross-origin opener blocks the read, and that's the expected answer. The fallback is
+    // null, so the popup keeps its stored id.
+    return null;
+  }
+}
+
+/**
  * Resolves or initializes the session, tab, and context identifiers for the active realm.
  * @param diagnostics Diagnostics reporter.
  * @param stores Identity stores.
@@ -215,7 +245,9 @@ export function resolveIdentity(
   safeWrite(stores, "local", SESSION_ID_KEY, session, diagnostics);
 
   let tabId = safeRead(stores, "session", TAB_ID_KEY, diagnostics) ?? "";
-  if (!tabId) {
+  // window.open copies sessionStorage, so a popup starts with its opener's tab id. After the
+  // popup stores its own id the two differ, and a reload keeps it.
+  if (!tabId || tabId === openerTabId(stores)) {
     tabId = newId(diagnostics);
     safeWrite(stores, "session", TAB_ID_KEY, tabId, diagnostics);
   }

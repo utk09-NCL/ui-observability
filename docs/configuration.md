@@ -290,7 +290,7 @@ With `tracesEndpoint`, the library sends spans. The backend then has a root span
 | Key | Store | Written when | Option that stops it |
 | --- | --- | --- | --- |
 | `ui-observability.session` | `localStorage` | At startup, then at most one time each minute while logging | `identity: "memory"` |
-| `ui-observability.tab` | `sessionStorage` | At startup, and when the bus finds a duplicated tab | `identity: "memory"` |
+| `ui-observability.tab` | `sessionStorage` | At startup. A popup writes a new id when its opener has the same id. When the bus finds a duplicated tab, the newer document writes a new id. | `identity: "memory"` |
 | `ui-observability.journey` | `sessionStorage` | When a journey starts or ends | `identity: "memory"` |
 | `ui-observability.alive` | `sessionStorage` | At startup, at each visibility change and at each interval | `capture.uncleanExit: false` or `identity: "memory"` |
 | `ui-observability.batch.*` | `localStorage` | When a send fails and the `localstorage` adapter holds the batch | `storage.backend` other than `auto` or `localstorage` |

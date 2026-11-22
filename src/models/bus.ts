@@ -81,8 +81,12 @@ export type BusMessage =
   | { t: typeof BUS_TYPE.journey; from: string; to?: string; journey: unknown }
   /** Query requesting active journey state from connected peers. */
   | { t: typeof BUS_TYPE.journeyRequest; from: string }
-  /** Tab identifier claim broadcast to detect collisions across windows. */
-  | { t: typeof BUS_TYPE.tab; from: string; tabId: string }
+  /**
+   * Tab identifier claim broadcast to detect collisions across windows. `since` is the
+   * document's `performance.timeOrigin`, so the older document keeps the id. An older library
+   * sends none.
+   */
+  | { t: typeof BUS_TYPE.tab; from: string; tabId: string; since?: number }
   /** A forwarder's request for the current remote sampling rules. */
   | { t: typeof BUS_TYPE.samplingRequest; from: string }
   /**

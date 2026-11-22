@@ -196,6 +196,15 @@ export class Bus {
   }
 
   /**
+   * Switches to the tab id that the runtime made after a clash. Without it, the next claim,
+   * hello and comparison use the old id.
+   * @param tabId The new tab id.
+   */
+  setTabId(tabId: string): void {
+    this.tabId = tabId;
+  }
+
+  /**
    * Sends the context id to child frames and workers.
    * @param openFin True to send it to OpenFin views too.
    */
@@ -283,6 +292,11 @@ export class Bus {
   private flushing = false;
   /** Epoch time in milliseconds when the last flush for a child started. */
   private flushedAt = 0;
+  /**
+   * The document's performance.timeOrigin, read once so each claim and comparison uses one
+   * value. Undefined when the browser gives no finite number.
+   */
+  private readonly since: number | undefined;
 
   /**
    * @param config Active configuration instance.
@@ -297,10 +311,13 @@ export class Bus {
     private readonly diagnostics: Diagnostics,
     private readonly platform: PlatformMetadata,
     private readonly contextId: string,
-    private readonly tabId: string,
+    private tabId: string,
     private readonly handlers: BusHandlers,
     private readonly handshakeOptions: HandshakeOptions = HANDSHAKE_OPTIONS,
-  ) {}
+  ) {
+    const origin = performance.timeOrigin;
+    this.since = Number.isFinite(origin) ? origin : undefined;
+  }
 
   /** Returns the resolved bus role. */
   getRole(): BusRole {
@@ -908,17 +925,39 @@ export class Bus {
         break;
 
       case BUS_TYPE.tab:
-        // Only two different contexts on the broadcast channel can collide. The id comparison
-        // picks one of the pair, otherwise both would report the conflict and rename.
-        if (
-          source.link === "broadcast" &&
-          message.tabId === this.tabId &&
-          this.contextId > message.from
-        ) {
-          this.handlers.onTabConflict();
+        // Only two different contexts on the broadcast channel can collide.
+        if (source.link === "broadcast" && message.tabId === this.tabId) {
+          this.settleTabClaim(message);
         }
         break;
     }
+  }
+
+  /**
+   * Settles another document's claim on this tab id. The older document keeps the id, because
+   * window.open and a duplicated tab copy it into the newer one.
+   * @param claim The other document's claim on the same tab id.
+   */
+  private settleTabClaim(claim: Extract<BusMessage, { t: typeof BUS_TYPE.tab }>): void {
+    const { since } = claim;
+
+    // An older library sends no since, and equal times can't pick one. The id comparison then
+    // picks one of the pair, otherwise both would report the conflict and rename.
+    if (since === undefined || this.since === undefined || since === this.since) {
+      if (this.contextId > claim.from) {
+        this.handlers.onTabConflict();
+      }
+      return;
+    }
+
+    if (since < this.since) {
+      this.handlers.onTabConflict();
+      return;
+    }
+
+    // The claimant started later, so it never heard this document's claim. Claim the id again,
+    // so the claimant renames.
+    this.postOver("broadcast", this.tabClaim());
   }
 
   /**
@@ -1230,13 +1269,23 @@ export class Bus {
     });
   }
 
-  /** Broadcasts tab claim and queries existing journey state. */
-  private announce(): void {
-    this.postOver("broadcast", {
+  /**
+   * Builds this context's tab claim. An unknown start time stays out of the claim, so the
+   * receiver falls back to the id comparison.
+   * @returns The claim.
+   */
+  private tabClaim(): BusMessage {
+    return {
       t: BUS_TYPE.tab,
       from: this.contextId,
       tabId: this.tabId,
-    });
+      ...(this.since === undefined ? {} : { since: this.since }),
+    };
+  }
+
+  /** Broadcasts tab claim and queries existing journey state. */
+  private announce(): void {
+    this.postOver("broadcast", this.tabClaim());
     if (this.upstream && this.ownerId === null) {
       this.upstream.post({ t: BUS_TYPE.hello, from: this.contextId, tabId: this.tabId });
     }

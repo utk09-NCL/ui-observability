@@ -9,6 +9,7 @@ import {
   HOLD_BUFFER_HEAD_RECORDS,
   METRIC_DEFAULT_BOUNDARIES,
   SESSION_ID_KEY,
+  TAB_ID_KEY,
   TELEMETRY_SDK_VERSION,
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
@@ -19,6 +20,7 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
 import type { LogBatch } from "../src/models/batch";
+import { unwrap, type BusMessage } from "../src/models/bus";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import type { CapturePlugin, PluginContext } from "../src/models/plugin";
@@ -148,6 +150,33 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** A BroadcastChannel stand-in that keeps what the runtime's bus posts. */
+class RecordingChannel {
+  /** Every payload that any channel posted, in order. */
+  static posted: unknown[] = [];
+
+  onmessage: ((event: MessageEvent) => void) | null = null;
+
+  constructor(readonly name: string) {}
+
+  /**
+   * Reads the tab id of each tab claim that was posted.
+   * @returns The tab ids in posting order.
+   */
+  static claimedIds(): string[] {
+    return RecordingChannel.posted.flatMap((data) => {
+      const message = unwrap(data);
+      return message?.t === "ui-observability.message.tab" ? [message.tabId] : [];
+    });
+  }
+
+  postMessage(data: unknown): void {
+    RecordingChannel.posted.push(data);
+  }
+
+  close(): void {}
+}
 
 describe("runtime lifecycle", () => {
   it("does nothing at import time, so importing the package is free", async () => {
@@ -1057,6 +1086,52 @@ describe("runtime lifecycle", () => {
     );
 
     expect(runtime().identity.tabId).not.toBe(before);
+  });
+
+  it("claims the new tab id on the channel after a tab conflict", async () => {
+    vi.stubGlobal("BroadcastChannel", RecordingChannel);
+    RecordingChannel.posted = [];
+    configure(base);
+    await ready();
+    const before = runtime().identity.tabId;
+    const { receive } = bus() as unknown as {
+      receive: (message: BusMessage, source: { link: "broadcast"; origin: string }) => void;
+    };
+    const broadcast = { link: "broadcast" as const, origin: "same-origin" };
+
+    // A document that started long before this one claims the same tab id, so this one renames.
+    receive(
+      { t: "ui-observability.message.tab", from: "opener", tabId: before, since: 1 },
+      broadcast,
+    );
+    const renamed = runtime().identity.tabId;
+    // A document that started later claims the new id, and this one answers with its claim.
+    receive(
+      { t: "ui-observability.message.tab", from: "later", tabId: renamed, since: 9e15 },
+      broadcast,
+    );
+
+    expect(renamed).not.toBe(before);
+    expect(RecordingChannel.claimedIds()).toEqual([before, renamed]);
+  });
+
+  it("puts a new tab id on the records of a popup that copied its opener's tab id", async () => {
+    // window.open copies the opener's sessionStorage, so both windows start with one tab id.
+    sessionStorage.setItem(TAB_ID_KEY, "opener-tab");
+    vi.stubGlobal("opener", {
+      closed: false,
+      sessionStorage: { getItem: (key: string) => (key === TAB_ID_KEY ? "opener-tab" : null) },
+    });
+
+    configure(base);
+    await ready();
+    info("from the popup");
+
+    const stamped = buffered().at(-1)?.resource["tab.id"];
+    expect(stamped).toEqual(expect.any(String));
+    expect(stamped).not.toBe("opener-tab");
+    expect(stamped).toBe(runtime().identity.tabId);
+    expect(sessionStorage.getItem(TAB_ID_KEY)).toBe(stamped);
   });
 
   it("installs interactions, web-vitals, long-frames and console captures when enabled", async () => {
