@@ -148,6 +148,7 @@ The residual risks of this path are in [Threat Model](threat-model.md), section 
 | Stream buffers | `RecordStream` in `src/core/pipeline.ts` | `buffering.maxPendingRecords`, `buffering.maxPendingBytes` | `LogPipeline.admit()` and `evict()` report `buffer_full`. |
 | Batch queue | `queue` and `open` in `LogPipeline` | Same budget as the stream buffers | `evict()` removes the oldest queued batch first. `destroy()` clears the queue. |
 | Unconfirmed batches | `unconfirmed` in `LogPipeline` | Same budget | It holds a batch until the send ends or a keepalive request starts. `drainForExit()` copies its records into the exit batches. |
+| Keepalive batches | `keptAlive` in `LogPipeline` | Same budget | It holds a batch while its keepalive request is open. The exit flush skips it. `drainForRetire()` takes it back after a rotation stops the transport. |
 | Replay buffer | `ReplayBuffer` in `src/capture/replay-buffer.ts` | `replay.maxBufferBytes` | The buffer drops its oldest part. `resetSession()` clears it through `replay.reset()`. |
 | Drop summaries | `DropReporter` in `src/core/drops.ts` | `DROP_SUMMARY_MAX_ITEMS` for each list | It sends each summary to `onDrop` on a microtask. |
 
@@ -170,11 +171,12 @@ A stored batch belongs to the storage adapter. The pipeline, the retry engine an
 | `RetryEngine.deliver()` | `attempts` reaches `retention.maxAttempts` | `max_attempts` and `storage.dead_lettered` |
 | `RetryEngine.toStorable()` | A permanent refusal, or a 413 for a batch of one record | `rejected` |
 | `Sender.retire()` | A rotation with `pending` set to `discard` or `flush` | `security_context`, from `rotateContext()` in `src/core/rotation.ts` |
+| `clearStored()` | A rotation with `pending` set to `discard` or `flush` while no sender runs, for example in a pause | `security_context`, from `rotateContext()` in `src/core/rotation.ts` |
 | `clearStored()` | The application calls `shutdown()` with `clearStorage` | See "Open items" |
 
 - `src/storage/eviction.ts` selects the batches to evict. A batch with no action record goes first.
 - `reportGap()` in `src/core/runtime.ts` receives each `onGap` call. It reports to `onDrop` and writes one throttled warning record.
-- `RetryEngine.deliver()` runs only inside `drainLocked()`. With the Web Locks API, one window drains a namespace at a time. Without that API, the drain runs with no lock.
+- `RetryEngine.deliver()` runs only inside `drainLocked()`. With the Web Locks API, one window drains a namespace at a time. Without that API, the drain runs with no lock. When the lock request itself rejects, the drain and the emergency import run with no lock and report `storage.degraded`. An example is a frame sandboxed without `allow-same-origin`. A busy lock is not a rejection. The drain then skips its run, and the emergency import waits.
 - A throttle answer does not change the `attempts` of a stored batch.
 
 ### Emergency queue

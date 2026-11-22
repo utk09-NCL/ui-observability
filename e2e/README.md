@@ -56,7 +56,7 @@ Playwright starts five servers and stops them after the run.
 | 8797 | `UIOBS_MOCK_PORT=8797 UIOBS_MOCK_RECORD=1 node tools/mock-ingest-server.mjs` | The ingest server and its test APIs. |
 | 8798 | `UIOBS_APP_API_PORT=8798 node tools/mock-app-api.mjs` | The mock app API. |
 
-The ports differ from the dev ports and from the ports above, so a running example does not clash with a test run.
+The ports differ from the dev ports and from the ports above, so a running example does not clash with a test run. `e2e/playground/ports.ts` has these ports and origins.
 
 | Spec | Coverage |
 | --- | --- |
@@ -71,6 +71,8 @@ The ports differ from the dev ports and from the ports above, so a running examp
 | `react.smoke.ts` | The Research frame and the Partner widget forward their records, also after a reload of the Research frame. The Untrusted widget raises `bus.rejected_message`. |
 | `react.smoke.ts` | After a refused order, a recording appears in the Support panel, and the player plays it. |
 | `react.smoke.ts` | **Refresh token now** gives a new token, and the old token answers `401`. A panel window and the workspace log with the same journey id. |
+| `mock-servers.smoke.ts` | The mock ingest server and the mock app API answer `403` to a `Host` that is not a loopback name. They answer a loopback `Host` with or without a port. The mock app API refuses a WebSocket upgrade with such a `Host`. This spec uses no browser. |
+| `mock-servers.smoke.ts` | The replay store of the mock ingest server keeps at most 64 MB. It refuses a segment that takes one recording past that limit. It counts bytes, not characters. It removes the oldest recording when a new recording needs the space. |
 
 ## Test APIs of the mock ingest server
 
@@ -105,6 +107,7 @@ Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `co
 - `fixtures/frames.ts` has the helpers of the specs that nest frames. They register a frame, load a page or a srcdoc into it, and tell which frame posted a batch and which bus role a frame resolved to.
 - `fixtures/release.ts` builds an older release and names the page that loads it. `fixtures/release-page.html` loads the bundle that `?release=<tag>` names, and it puts that bundle on `window.e2e`.
 - The page also has `window.e2e.loadWebVitals`. A test passes it as `capture.webVitals.loader`.
+- `fixtures/popup.html` is the page that the observe-window test opens in a popup. It loads no script. The library runs in the opener.
 
 ## What each spec covers
 
@@ -121,6 +124,7 @@ Each entry of `/__received` has `batchId`, `attempt`, `exit`, `contentType`, `co
 | `cross-origin-srcdoc.e2e.ts` | A srcdoc frame in a cross-origin child forwards through the child to the parent, and the `redact` hook of the parent applies. With an untrusting child, the child posts. A srcdoc frame that the child registered with the wrong origin posts its own record. |
 | `cross-version.e2e.ts` | A 1.0.0 parent and a current child, and a current parent and a 1.0.0 child, hand records over. Each pair runs with a same-origin child and a cross-origin child. The parent alone posts, and its `redact` hook applies. |
 | `web-vitals.e2e.ts` | With the real `web-vitals` package, the 7 navigation gauges, `web_vitals.ttfb` and `web_vitals.fcp` reach `/v1/metrics`. The values match what the package reported. The final LCP, INP and CLS of a page that goes away fail in Chromium and Firefox. |
+| `observe-window.e2e.ts` | The page calls `observeWindow()` on a popup that `window.open()` just returned, before the popup page loads. A click in the popup and a click in the page both reach the breadcrumbs of the next error record. |
 | `forwarding.e2e.ts` | A same-origin child frame forwards a record through the parent. The `redact` hook of the parent removes a field from it. |
 | `forwarding.e2e.ts` | A same-origin `srcdoc` frame forwards a record through the parent. The `redact` hook of the parent removes a field. Only the parent frame posts. |
 | `forwarding.e2e.ts` | A `srcdoc` frame forwards a record over `postMessage` when the parent refuses the direct call. The `redact` hook of the parent applies. Only the parent frame posts. In Firefox, the frame reads the `origin` global of the parent. |
