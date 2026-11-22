@@ -27,6 +27,7 @@ import {
 import { blockFrameDrop, isFramePanel } from "./frame-panels";
 import { MenuButton } from "./menu";
 import { closePanelWindows } from "./panel-windows";
+import { observePopouts } from "./popout-observer";
 import { PrivacyDialog } from "./privacy-dialog";
 import { applyTheme, loadTheme, THEMES, type ThemeName } from "./theme";
 import { UserMenu } from "./user-menu";
@@ -139,6 +140,16 @@ export function Workspace({
       saver.current = null;
     };
   }, [dock, user, tenant]);
+
+  // Each popout window goes to the library, so a click in it is captured. The cleanup stops them,
+  // and a StrictMode remount observes the open popouts again.
+  useEffect(() => {
+    if (!dock) {
+      return;
+    }
+
+    return observePopouts(dock);
+  }, [dock]);
 
   const onReady = useCallback(
     (event: DockviewReadyEvent): void => {

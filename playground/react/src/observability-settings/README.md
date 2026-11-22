@@ -48,7 +48,7 @@ A processor sees each record that the library builds. The library also builds a 
 
 The tap keeps the last 50 records of the noisy namespaces `market.prices` and `observability.meter`, and the last 50 of all other records. A stream of price ticks therefore cannot push an order record out of the list.
 
-`RecentRecords` polls the tap twice a second. It keeps a new list in its state only when the shown records changed. A hidden price tick then writes nothing to the DOM. This matters for the dead-click check of the library. The check counts each change of the document as the answer of the page to a click.
+`RecentRecords` polls the tap twice a second. It keeps a new list in its state only when the shown records changed. A hidden price tick then writes nothing to the DOM. The list also has the attribute `data-observability-live`, and so has the live strip. The dead-click check of the library does not count a change inside such an element as the answer of the page to a click. The filter and the switch are outside the list.
 
 ## The cost meter and the clock
 

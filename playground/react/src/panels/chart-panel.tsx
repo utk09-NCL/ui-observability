@@ -135,7 +135,7 @@ export function ChartPanel(): ReactElement {
         The move of each pair in the last minute, in basis points. The replay shows this canvas only
         with <code>replay.recordCanvas</code> on.
       </p>
-      <div className="chart-host" ref={host}>
+      <div className="chart-host" ref={host} data-observability-live>
         <canvas ref={canvas} aria-label="Price chart" role="img" />
       </div>
     </section>

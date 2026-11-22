@@ -2,7 +2,9 @@
 //
 // The price tiles. The WebSocket of the workspace feeds them. The library wraps the WebSocket
 // (capture.webSocket), counts its messages, and the price handler logs each tick at DEBUG in
-// the noisy namespace market.prices, which the sampling setting can thin out.
+// the noisy namespace market.prices, which the sampling setting can thin out. The tick rate and
+// the tiles change on their own, so they carry data-observability-live. The dead-click check of
+// the library then does not take a price tick for the response to a click.
 
 import type { ReactElement } from "react";
 import { PAIRS } from "../api/types";
@@ -20,10 +22,10 @@ export function PricesPanel(): ReactElement {
   return (
     <section className="panel" aria-label="Prices">
       <p className="muted">
-        Ticks per second: <strong>{ticksPerSecond ?? "-"}</strong>. The library sends the same value
-        as the gauge <code>market.tick_rate</code>.
+        Ticks per second: <strong data-observability-live>{ticksPerSecond ?? "-"}</strong>. The
+        library sends the same value as the gauge <code>market.tick_rate</code>.
       </p>
-      <div className="tiles">
+      <div className="tiles" data-observability-live>
         {PAIRS.map((pair) => {
           const tile = prices[pair];
 
