@@ -2,27 +2,48 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] - 2026-11-21
+## [1.1.0] - 2026-11-22
 
-A patch release. It closes gaps in the loss reports of `shutdown()`, and it removes a limit on the signal endpoints. It has no breaking change.
+A minor release. It has no breaking change. It captures clicks in popout windows, and it finds dead clicks on pages with live data. It gives each popup its own tab id. It also closes gaps in the loss reports of `shutdown()`, and it removes a limit on the signal endpoints.
 
-### Added - v1.0.1
+### Added - v1.1.0
 
+- `observeWindow(target)` captures clicks, rage clicks and dead clicks in another window of the page with the same origin, for example a popout. It returns a function that stops the capture. The library does not capture a window from another origin.
+- `capture.interactions.deadClickIgnoreSelector` names the regions that change on their own, for example a price cell. A change or a scroll inside such a region is not an answer to a click. The default is `[data-observability-live]`. `""` turns the filter off.
+- The diagnostic code `bus.journey_denied`. The bus counts it for a journey request from a registered frame or worker without `journey:read`.
+- The `tab` bus message has the optional field `since`. It holds the `performance.timeOrigin` of the document. An older library ignores it.
 - `docs/guides.md` has the section "One Setup for All Specs". It configures the library one time in a Vitest setup file. No spec then needs a mock of the library.
 - The `serializer` reference and the `LogSerializer` JSDoc tell that the library drops a batch that the server refuses with `400`. A custom serializer must keep each record within the limits of the server.
 - `docs/configuration.md` tells that the spans of the library need no OpenTelemetry SDK.
 
-### Changed - v1.0.1
+### Changed - v1.1.0
 
+- A journey request from a registered frame or worker without `journey:read` does not count `bus.rejected_message` now. Each frame and worker with the default permissions sends one at startup.
+- When the bus finds a duplicated tab id, the newer document makes a new tab id. The older document keeps its id. Before, the document with the larger random context id made a new id, or no document did.
+- A write that keeps the old value of an attribute or a text is not an answer to a click. A batch that sets `name` or `type` and then puts back the old value is not an answer either.
+- A swap of marked elements under one parent is not an answer to a click. A marked element that only appears or only goes away is an answer.
+- Click capture checks the node type of the clicked element, not `instanceof Element`. A click on an element of another window is then recorded.
 - `metricsEndpoint` and `tracesEndpoint` work with each `serializer`. Metric batches and span batches always use OTLP. Before, the `ecs` serializer or a custom serializer turned these endpoints off and reported `config.invalid`.
 - With a custom serializer, the transport worker sends the metric batches and the span batches. The log batches still use the main thread.
 - The package has no `engines` field. An install with `engine-strict` no longer fails on an older Node version. Use Node 22 or later. The tests run on Node 22.22.3.
 - **Development:** `devEngines` in `package.json` sets Node 22.22.3 or later for this repository.
-- **Development:** the workspace declares the `@rrweb/types` peer that two rrweb record plugins do not declare. Before, a stale pnpm hoist folder made the lint step fail.
 - **Development:** the workspace accepts the `@emnapi` versions that `oxc-parser` pins for `@napi-rs/wasm-runtime@1.2.7`. `pnpm peers check` passes.
+- **Development:** GitHub CI runs the `verify` steps on the Node floor and on Node 24. It also builds the playgrounds and runs the playground tests, the browser tests and the playground smoke tests.
+- **Development:** the Prettier config prints Markdown tables in compact form, with no column padding.
+- **Development:** `playground/react-custom-backend` is a new example. A React 19 app sends its logs to its own backend through a custom `serializer`. `tools/mock-app-api.mjs` is its mock app API, with a login, prices and orders.
+- **Development:** `playground/react` is now an FX workspace on `dockview-react` 8.9.1. It has a login, a saved layout for each user and tenant, popout windows, panel windows and 11 panels. It calls `observeWindow()` for each popout.
+- **Development:** the replay player in `playground/react/src/replay-player/` replaces the replay spike and the replay viewer. The workspace does not install their rrweb packages now, so it does not declare the `@rrweb/types` peer.
+- **Development:** `tools/mock-ingest-server.mjs` keeps replay segments in a bounded memory store. `GET /v1/replay/recordings` and `GET /v1/replay/recordings/<id>` read them.
+- **Development:** the mock ingest server and the mock app API listen on `127.0.0.1` only. They refuse a `Host` header that is not `localhost` or `127.0.0.1`.
+- **Development:** `tools/mock-app-api.mjs` has `POST /api/refresh` for the token refresh recipe.
+- **Development:** `pnpm run test:playground` runs one Chromium smoke test for each playground app.
+- **Development:** `e2e/observe-window.e2e.ts` checks `observeWindow()` with a real popup in Chromium, Firefox and WebKit.
 
-### Fixed - v1.0.1
+### Fixed - v1.1.0
 
+- A popup that `window.open()` opens gets its own tab id at startup. Before, it kept the tab id that it copied from its opener.
+- React's input writes no longer hide each `ui.dead_click`. React writes `name` and `type` at each render with no net change.
+- With `diagnostics.records`, a diagnostic from the check of the next settings in a rotation goes to the new identity. An example is `config.invalid`. Before, the library dropped that record during the rotation.
 - A `shutdown()` before the end of startup reports each held record to `onDrop` with `load_failed`. Before, with `bus: { mode: "off" }`, the library lost these records with no report.
 - A `shutdown()` after the delivery stack loads, but before the end of startup, sends the startup records. Before, the library lost them with no report.
 - A `shutdown()` during the sender load of a `carry` rotation rejects the rotation. `onDrop` reports the carried records in memory with `security_context`. Before, the rotation resolved, and the library lost the records with no report.
@@ -31,7 +52,15 @@ A patch release. It closes gaps in the loss reports of `shutdown()`, and it remo
 - The testing examples in `docs/guides.md` and `llms.txt` call `memory.clear()` after `await shutdown()`. Before, the records that `shutdown()` sent reached the next test.
 - `docs/configuration.md` and the `endpoint` JSDoc tell that a relative `endpoint` works. The library also reports `config.invalid` with the origin that gets the records.
 - `docs/ingest-server.md` tells that the batches for `metricsEndpoint` and `tracesEndpoint` use OTLP with each `serializer`. This includes a `text/plain` exit batch.
+- `docs/delivery-guarantees.md` tells how a `413` splits a batch. It also tells that the library loses an exit batch that gets a `413`, with no `onDrop` report.
+- `docs/configuration.md` tells that an exit batch can hold more than `batching.logBatchSize` records.
+- `docs/runtime-policies.md` tells that a full `payloadMode: "defer"` queue builds its pending calls inside the log call that finds it full.
+- The "Logout on a shared device" recipe uses `clearStorage: "namespace"`. With `"context"`, the parked batches of earlier page loads stay on the device for `retention.maxAgeMs`.
+- `docs/configuration.md` and `docs/threat-model.md` tell that the processors of the sender do not run on a record from a frame or a worker. Only `redact` runs on it again.
+- `docs/threat-model.md` and `docs/production-recipes.md` tell that `shutdown()` removes each `registerFrame()` and `registerWorker()` registration.
+- The "Consent withdrawal" recipe tells that a frame or a worker with its own `endpoint` becomes its own sender when the owner starts no bus.
 - `CHANGELOG.md` has the 1.0.0 section one time. Before, it had that section two times.
+- **Development:** the debug bundle test does not fail now when the random security context id holds "abc".
 
 ## [1.0.0] - 2026-11-20
 
