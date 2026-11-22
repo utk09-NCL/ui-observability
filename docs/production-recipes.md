@@ -36,7 +36,7 @@ After `shutdown()`, logging does nothing until the next `configure()`. `getHealt
 
 ### Settings that are fixed after startup
 
-A later `configure()` call reports `config.invalid` for these settings and keeps the current values. The `otelLoader` row is the exception. The other settings in the same call apply.
+A later `configure()` call reports `config.invalid` for these settings and keeps the current values. The other settings in the same call apply.
 
 | Setting | Fixed from |
 | --- | --- |
@@ -47,7 +47,7 @@ A later `configure()` call reports `config.invalid` for these settings and keeps
 | `profiler.maxProbes` | The first `configure()` call that works. |
 | `storage` (each key) | The first `configure()` call that works. |
 | `bus.mode`, `bus.openFinRole` | The first `configure()` call that works. |
-| `otelLoader` | The first `configure()` call that works. A later change has no effect and reports nothing. |
+| `otelLoader` | The first `configure()` call that works. |
 | `batching`, `retention` (each key) | The load of the delivery stack. |
 | `transport`, `transportWorker` | The load of the delivery stack. `configure()` cannot add or remove one. |
 | `endpoint` (removal only) | The load of the delivery stack. `configure()` cannot remove it. |

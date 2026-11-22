@@ -159,7 +159,7 @@ With `diagnostics.records`, the library writes a record for each reported diagno
 | `fetch`, `xhr` | `<method> <url>` (DEBUG), `<method> <url> returned <status>` (WARN), `<method> <url> failed` (ERROR) | `http.request.method`, `url.full`, `http.response.status_code` (number), `http.duration_ms` (number) |
 | `httpMetrics` | Histogram `http.client.request.duration`, in seconds | `http.request.method`, `server.address`, `http.response.status_code` (number), `error.type` |
 | Client span | Span named by the HTTP method | `http.request.method`, `url.full`, `server.address`, `http.response.status_code` (number), `error.type` |
-| `resourceErrors` | `resource failed to load` (WARN) | `error.type` (`resource`), `resource.tag`, `resource.url` |
+| `resourceErrors` | `resource failed to load` (WARN) | `error.type` (`resource`), `resource.tag`, `resource.url`. `resource.url` is absent when the element gives no URL string, for example an `<object>` or an `img` with only `srcset`. |
 | `navigation` | Event `NAVIGATION` | `page.url.previous` |
 | `interactions` | Events `ui.rage_click` and `ui.dead_click` | `click.action`, `click.count` (number, rage click only) |
 | `uncleanExit` | `ui.unclean_exit` (WARN) | `exit.session_id`, `exit.last_seen_ms` (number), `exit.visibility`, `exit.discarded` (boolean) |

@@ -236,7 +236,7 @@ A fixed key keeps its value and reports `config.invalid`. The other keys of the 
 | Key | Function that keeps it |
 | --- | --- |
 | `correlation`, `storage` | The loop in `reconfigure()`, after `tunablesLocked` is true. |
-| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `bus.mode`, `bus.openFinRole` | `keepStartupTunables()` |
+| `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `bus.mode`, `bus.openFinRole`, `otelLoader` | `keepStartupTunables()` |
 | `batching`, `retention`, after the delivery stack starts to load | `keepStartupTunables()` with `SENDER_SECTIONS` |
 | `identity` | `keepBuiltIdentity()` |
 | Addition or removal of `transport` or `transportWorker`, removal of `endpoint`, after the load starts | `keepDestination()` |
