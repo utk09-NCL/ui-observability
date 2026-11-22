@@ -39,13 +39,17 @@ function spies(win: Window) {
 
 /** An extra window of the page, with its regions and the spies on its listener methods. */
 export interface Popout extends Regions, ReturnType<typeof spies> {
-  /** The iframe that holds the window. */
-  frame: HTMLIFrameElement;
   /** The popout's window. */
   win: Window;
   /** The popout's document. */
   doc: Document;
-  /** Removes the iframe, so its window is gone. */
+  /**
+   * Makes every read of the window throw a SecurityError, as a window does after it navigates
+   * to another origin. The elements that the spec already holds keep working. It first waits
+   * until happy-dom has finished loading the window, because that step reads the document.
+   */
+  block: () => Promise<void>;
+  /** Closes the window. It also undoes block(), so the window can destroy itself. */
   close: () => void;
 }
 
@@ -71,8 +75,81 @@ export function regions(doc: Document): Regions {
   };
 }
 
+/** How long block() waits for happy-dom to finish loading a window, in real milliseconds. */
+const LOAD_WAIT_MS = 2000;
+
+/** The properties that a window from another origin refuses to read. */
+const CROSS_ORIGIN_NAMES = [
+  "document",
+  "location",
+  "history",
+  "addEventListener",
+  "removeEventListener",
+] as const;
+
 /**
- * Opens a same-origin window, as a popout does. The caller closes it in afterEach.
+ * Builds a popout around a window.
+ * @param win The window.
+ * @param dispose Removes the window from the page.
+ * @returns The popout.
+ */
+function wrap(win: Window, dispose: () => void): Popout {
+  win.document.body.innerHTML = REGIONS;
+  const popout = { ...regions(win.document), ...spies(win) };
+  // The own descriptor, so close() puts back a spy or a data property and not only a getter.
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  const unblock = (): void => {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) {
+        Object.defineProperty(win, name, descriptor);
+      } else {
+        Reflect.deleteProperty(win, name);
+      }
+    }
+    saved.clear();
+  };
+
+  return {
+    ...popout,
+    win,
+    doc: win.document,
+    block: async () => {
+      // happy-dom finishes a window with a real timer, and that step reads the document. Wait by
+      // the clock, because a count of turns runs out sooner when the loop runs faster.
+      const started = vi.getRealSystemTime();
+      while (win.document.readyState !== "complete") {
+        if (vi.getRealSystemTime() - started > LOAD_WAIT_MS) {
+          throw new Error("happy-dom didn't finish loading the window.");
+        }
+        if (vi.isFakeTimers()) {
+          await vi.advanceTimersByTimeAsync(0);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      if (saved.size > 0) {
+        return;
+      }
+      for (const name of CROSS_ORIGIN_NAMES) {
+        saved.set(name, Object.getOwnPropertyDescriptor(win, name));
+        Object.defineProperty(win, name, {
+          configurable: true,
+          get: () => {
+            throw new DOMException("Blocked a frame from another origin.", "SecurityError");
+          },
+        });
+      }
+    },
+    close: () => {
+      unblock();
+      dispose();
+    },
+  };
+}
+
+/**
+ * Opens a same-origin window in an iframe. Its document URL is about:srcdoc. The caller closes
+ * it in afterEach.
  * @returns The window, its regions and the spies on its listener methods.
  */
 export function openPopout(): Popout {
@@ -83,18 +160,26 @@ export function openPopout(): Popout {
   if (!win) {
     throw new Error("happy-dom made no window for the iframe.");
   }
-  win.document.body.innerHTML = REGIONS;
 
-  return {
-    ...regions(win.document),
-    ...spies(win),
-    frame,
-    win,
-    doc: win.document,
-    close: () => {
-      frame.remove();
-    },
-  };
+  return wrap(win, () => {
+    frame.remove();
+  });
+}
+
+/**
+ * Opens a window with window.open(), as a dockview popout does. Its document URL is the initial
+ * about:blank. The caller closes it in afterEach.
+ * @returns The window, its regions and the spies on its listener methods.
+ */
+export function openBlankPopout(): Popout {
+  const win = window.open("about:blank");
+  if (!win) {
+    throw new Error("happy-dom made no window for window.open().");
+  }
+
+  return wrap(win, () => {
+    win.close();
+  });
 }
 
 /** Normalizes the third argument of addEventListener to the capture flag. */
@@ -190,3 +275,50 @@ export function foreignRealm(): void {
  * @returns The same value, typed as a Window.
  */
 export const asWindow = (value: unknown): Window => value as Window;
+
+/**
+ * Makes a window read as closed or open. happy-dom assigns `closed` when it destroys a window,
+ * so the property keeps a setter.
+ * @param win The window.
+ * @param closed What the window reads first.
+ * @returns Function that sets what the window reads from then on.
+ */
+export function stubClosed(win: Window, closed: boolean): (value: boolean) => void {
+  let current = closed;
+  Object.defineProperty(win, "closed", {
+    configurable: true,
+    get: () => current,
+    set: (value: boolean) => {
+      current = value;
+    },
+  });
+
+  return (value) => {
+    current = value;
+  };
+}
+
+/**
+ * Replaces MutationObserver with one that sees nothing on its own and hands the callback the
+ * records that a spec builds. A browser puts a replaced child in one record, and happy-dom
+ * splits it in two, so a spec that needs the browser's shape builds the record itself.
+ * @returns Function that calls the callback of the observer that the code built last.
+ */
+export function stubMutationObserver(): { deliver: (records: Partial<MutationRecord>[]) => void } {
+  let callback: MutationCallback | undefined;
+  class FakeObserver {
+    constructor(given: MutationCallback) {
+      callback = given;
+    }
+    observe = vi.fn();
+    disconnect = vi.fn();
+    takeRecords = (): MutationRecord[] => [];
+  }
+  vi.stubGlobal("MutationObserver", FakeObserver);
+
+  return {
+    deliver: (records) => {
+      callback?.(records as MutationRecord[], new FakeObserver(() => undefined));
+    },
+  };
+}

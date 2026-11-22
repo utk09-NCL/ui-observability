@@ -120,7 +120,7 @@ Frames, workers and transports:
 
 - `registerFrame(frame: HTMLIFrameElement | Window, options: { origin: string; permissions?: BusPermission[] }): () => void`. Lets a child frame on that exact origin forward its records. Returns a function that removes the registration.
 - `registerWorker(worker: WorkerLike, options?: { permissions?: BusPermission[] }): () => void`. The same for a Web Worker or a `MessagePort`.
-- `observeWindow(target: Window): () => void`. Captures clicks, rage clicks and dead clicks in another window of the page with the same origin, for example a popout. It needs `capture.interactions`. A window from another origin reports `capture.install_failed`. Returns a function that stops the observation. The window also leaves at its `pagehide`.
+- `observeWindow(target: Window): () => void`. Captures clicks, rage clicks and dead clicks in another window of the page with the same origin, for example a popout. It needs `capture.interactions`. A window from another origin reports `capture.install_failed`. Returns a function that stops the observation. The window also leaves at its `pagehide`. The result of `window.open()` works at once, because the `pagehide` of its initial `about:blank` does not end the capture. A navigation to another origin ends the capture in that window.
 - `BusPermission` is `"records"`, `"journey:read"`, `"journey:write"` or `"sampling:read"`. Without a list, the source can only send records.
 - `serveTransportWorker(options?: { onDiagnostic? }): () => void`. Call it in the worker script of `transportWorker`. Returns a function that stops the service.
 - `createMemoryTransport(): MemoryTransport`. A transport for tests. It has `transport`, `records()`, `batches()`, `clear()` and `respondWith(status, retryAfterMs?)`.

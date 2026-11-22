@@ -189,6 +189,7 @@ capture: {
 - A dead click is a click on a control that gives no DOM change, no navigation and no scroll in `deadClickMs` (default 1000). It gives the event `ui.dead_click`. A control is a link, a `button`, a `summary`, or a button, submit or reset `input`. An element with the role `button`, `link`, `menuitem` or `tab` is also a control. An element with the action attribute is also a control. A click on a `target="_blank"` or `download` link gives no event.
 - A request alone is not a response. A page that changes its DOM all the time gives no dead click.
 - A DOM change or a scroll inside an element that matches `deadClickIgnoreSelector` is not a response. The default is `[data-observability-live]`. Mark the element that changes on its own, for example a price cell. Do not mark a panel that also holds the controls. `""` makes each change a response.
+- A write that keeps the same value is not a response. A framework can write the same `type` attribute at each render. A replaced element that matches `deadClickIgnoreSelector` is not a response. One limit is known. A text change counts as a response when its element leaves the page in the same task.
 - To capture clicks in a popout window of the page, pass the window to `observeWindow()`.
 
 `uncleanExit` finds a page of this tab that stopped without a clean close, for example after a crash. The top document keeps a marker in `sessionStorage`. A clean close removes it. The next page of the tab logs WARN `ui.unclean_exit`. A popup with an opener reports nothing, because it copies the `sessionStorage` of its opener. A duplicated tab copies it too, and can report a false exit. `identity: "memory"` turns this capture off, because that mode writes nothing to the device.
@@ -292,7 +293,7 @@ With `tracesEndpoint`, the library sends spans. The backend then has a root span
 | Key | Store | Written when | Option that stops it |
 | --- | --- | --- | --- |
 | `ui-observability.session` | `localStorage` | At startup, then at most one time each minute while logging | `identity: "memory"` |
-| `ui-observability.tab` | `sessionStorage` | At startup. A popup writes a new id when its opener has the same id. When the bus finds a duplicated tab, the newer document writes a new id. | `identity: "memory"` |
+| `ui-observability.tab` | `sessionStorage` | At startup. A popup writes a new id when its opener has the same id. When the bus finds a duplicated tab, the newer document writes a new id. With an older library or an equal `since`, the context id comparison decides. Then either document can write the new id. | `identity: "memory"` |
 | `ui-observability.journey` | `sessionStorage` | When a journey starts or ends | `identity: "memory"` |
 | `ui-observability.alive` | `sessionStorage` | At startup, at each visibility change and at each interval | `capture.uncleanExit: false` or `identity: "memory"` |
 | `ui-observability.batch.*` | `localStorage` | When a send fails and the `localstorage` adapter holds the batch | `storage.backend` other than `auto` or `localstorage` |

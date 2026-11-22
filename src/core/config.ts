@@ -1780,21 +1780,18 @@ function resolveCapture(
 }
 
 /**
- * Checks a dead click ignore selector. "" turns the filter off, and matches("") throws, so ""
- * skips the probe. Without a document there's nothing to parse with, so any string passes.
- * @param value The value the consumer passed.
- * @returns True for "" or a selector the browser parses.
+ * Checks whether the browser parses a CSS selector. Without a document there's nothing to parse
+ * with, so any selector passes.
+ * @param selector The selector. matches("") throws, so "" fails.
+ * @returns True for a selector the browser parses, or for any selector without a document.
  */
-function isLiveSelector(value: unknown): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-  if (value === "" || typeof document === "undefined") {
+function parsesSelector(selector: string): boolean {
+  if (typeof document === "undefined") {
     return true;
   }
 
   try {
-    document.createElement("div").matches(value);
+    document.createElement("div").matches(selector);
     return true;
   } catch {
     // A selector the browser can't parse throws, and that's the answer. The fallback is false.
@@ -1817,14 +1814,7 @@ function resolveInteractions(
   const ignore = value.ignoreSelector;
   let ignoreSelector = ignore === undefined ? previous.ignoreSelector : ignore;
   if (ignoreSelector !== undefined && ignoreSelector !== null) {
-    try {
-      if (typeof ignoreSelector !== "string") {
-        throw new Error("Invalid selector");
-      }
-      if (typeof document !== "undefined") {
-        document.createElement("div").matches(ignoreSelector);
-      }
-    } catch {
+    if (typeof ignoreSelector !== "string" || !parsesSelector(ignoreSelector)) {
       diagnostics.report(
         "config.invalid",
         "capture.interactions.ignoreSelector must be a valid CSS selector or null.",
@@ -1850,15 +1840,17 @@ function resolveInteractions(
   }
   // Use ?? here, because "" is a real setting that turns the filter off.
   let deadClickIgnoreSelector = previous.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
-  if (value.deadClickIgnoreSelector !== undefined) {
-    if (isLiveSelector(value.deadClickIgnoreSelector)) {
-      deadClickIgnoreSelector = value.deadClickIgnoreSelector;
+  const live = value.deadClickIgnoreSelector;
+  if (live !== undefined) {
+    // "" is the off switch, and matches("") throws, so "" skips the parse check.
+    if (typeof live === "string" && (live === "" || parsesSelector(live))) {
+      deadClickIgnoreSelector = live;
     } else {
       reportInvalid(
         diagnostics,
         "capture.interactions.deadClickIgnoreSelector",
         'a valid CSS selector, or "" to count every change',
-        value.deadClickIgnoreSelector,
+        live,
         `"${deadClickIgnoreSelector}"`,
       );
     }

@@ -637,6 +637,12 @@ export const RUNTIME_GLOBAL_KEY = "ui-observability.runtime";
 /** Global key for the runtime shutdown() stopped. Calls go to it until the next configure(). */
 export const RUNTIME_STOPPED_KEY = "ui-observability.stopped";
 
+/**
+ * Global key prefix for the observed window list. The key adds the version, so two copies of one
+ * version share the list, as they share the runtime, and another version keeps its own.
+ */
+export const OBSERVED_WINDOWS_KEY = "ui-observability.observed-windows";
+
 /** Global symbol key for the library request scope count, shared by every copy on the page. */
 export const LIBRARY_REQUEST_KEY = "ui-observability.request-scope";
 

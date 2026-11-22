@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCapture } from "../src/capture/errors";
 import { InteractionCapture } from "../src/capture/interactions";
+import { observedWindows } from "../src/capture/observed-windows";
 import { NetworkCapture } from "../src/capture/network";
 import { matchesAny } from "../src/capture/types";
 import type { CaptureContext, CaptureLogger } from "../src/capture/types";
@@ -21,10 +22,14 @@ import {
   foreignRealm,
   foreignWindow,
   leftOn,
+  openBlankPopout,
   openPopout,
   REGIONS,
   regions,
+  stubClosed,
+  stubMutationObserver,
   type Popout,
+  type Regions,
 } from "./window-fakes";
 
 /** A logger with a spy for every method, so a test can read what the logger recorded. */
@@ -2290,6 +2295,226 @@ describe("InteractionCapture rage and dead clicks", () => {
       expect(events(live.logger, "ui.dead_click")).toEqual([]);
       expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
     });
+
+    describe("a child list change and a same-value write", () => {
+      /** Makes a cell that the default selector marks as live. */
+      const marked = (): HTMLElement => {
+        const cell = document.createElement("i");
+        cell.setAttribute("data-observability-live", "");
+        return cell;
+      };
+
+      /** Adds a row outside every live region, before the click, so the observer misses it. */
+      const rowOf = (html: string): HTMLElement => {
+        const row = document.createElement("div");
+        row.innerHTML = html;
+        document.body.append(row);
+        return row;
+      };
+
+      /** Adds an input, as React renders it: with a type and a name. */
+      const field = (): HTMLInputElement => {
+        const input = document.createElement("input");
+        input.setAttribute("type", "text");
+        input.setAttribute("name", "qty");
+        document.body.append(input);
+        return input;
+      };
+
+      const CELL = "<i data-observability-live></i>";
+
+      it.each<[string, string, (row: HTMLElement) => void]>([
+        [
+          "a marked cell replaced by another marked cell",
+          CELL + CELL,
+          (row) => {
+            row.replaceChildren(marked());
+          },
+        ],
+        [
+          "a marked cell added to the row",
+          CELL,
+          (row) => {
+            row.append(marked());
+          },
+        ],
+        [
+          "a marked cell removed from the row",
+          CELL + CELL,
+          (row) => {
+            row.firstElementChild?.remove();
+          },
+        ],
+      ])("records a dead click when the only change is %s", async (_name, html, apply) => {
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(html);
+
+        click(live.buy);
+        apply(row);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, string, (row: HTMLElement) => void]>([
+        [
+          "a marked cell replaced by an unmarked node",
+          CELL,
+          (row) => {
+            row.replaceChildren(document.createElement("b"));
+          },
+        ],
+        [
+          "an unmarked node added next to a marked cell",
+          CELL,
+          (row) => {
+            row.append(document.createElement("b"));
+          },
+        ],
+        [
+          "an unmarked node removed next to a marked cell",
+          `${CELL}<b></b>`,
+          (row) => {
+            row.lastElementChild?.remove();
+          },
+        ],
+        [
+          "a text node added next to a marked cell",
+          CELL,
+          (row) => {
+            row.append(document.createTextNode("x"));
+          },
+        ],
+      ])("records no dead click when the change is %s", async (_name, html, apply) => {
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(html);
+
+        click(live.buy);
+        apply(row);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (row: HTMLElement) => Partial<MutationRecord>, string]>([
+        [
+          "records a dead click when one record replaces a marked cell with another",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [marked()] as unknown as NodeList,
+            removedNodes: [row.firstElementChild] as unknown as NodeList,
+          }),
+          "dead",
+        ],
+        [
+          "records no dead click when one record adds a marked cell and an unmarked node",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [marked(), document.createElement("b")] as unknown as NodeList,
+            removedNodes: [] as unknown as NodeList,
+          }),
+          "answered",
+        ],
+        [
+          "records no dead click when one record swaps a marked cell for an unmarked node",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [document.createElement("b")] as unknown as NodeList,
+            removedNodes: [row.firstElementChild] as unknown as NodeList,
+          }),
+          "answered",
+        ],
+      ])("%s", async (_name, record, outcome) => {
+        // A browser reports a replaced child as one record, and happy-dom reports two.
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(CELL);
+        const observer = stubMutationObserver();
+
+        click(live.buy);
+        observer.deliver([record(row)]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual(
+          outcome === "dead" ? [{ "click.action": "buy" }] : [],
+        );
+      });
+
+      it("records a dead click when the only writes keep an attribute's value", async () => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("type", input.getAttribute("type") ?? "");
+        input.setAttribute("name", input.getAttribute("name") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records a dead click for same-value writes when the selector is empty", async () => {
+        // An empty selector counts every change as a response, but a write that keeps the old
+        // value isn't a change.
+        const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("type", input.getAttribute("type") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records a dead click when the only write keeps a text node's data", async () => {
+        const live = livePage({ deadClicks: true });
+        const text = live.headline.firstChild as Text;
+        const current = text.data;
+
+        click(live.buy);
+        text.data = current;
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, (input: HTMLInputElement, text: Text) => void]>([
+        ["an attribute with a new value", (input) => input.setAttribute("type", "number")],
+        ["an added attribute", (input) => input.setAttribute("placeholder", "Qty")],
+        ["a removed attribute", (input) => input.removeAttribute("name")],
+        [
+          "an attribute set to another value and back in one batch",
+          (input) => {
+            input.setAttribute("type", "number");
+            input.setAttribute("type", "text");
+          },
+        ],
+        [
+          "a text node with new data",
+          (_input, text) => {
+            text.data = "Closed";
+          },
+        ],
+        [
+          "a text node set to other data and back in one batch",
+          (_input, text) => {
+            const original = text.data;
+            text.data = "Closed";
+            text.data = original;
+          },
+        ],
+      ])("records no dead click when the change is %s", async (_name, change) => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        change(input, live.headline.firstChild as Text);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+    });
   });
 
   describe("in an observed window", () => {
@@ -2305,8 +2530,8 @@ describe("InteractionCapture rage and dead clicks", () => {
      * @param observe False to leave the observing to the spec.
      * @returns The popout.
      */
-    const open = (observe = true): Popout => {
-      const popout = openPopout();
+    const open = (observe = true, make: () => Popout = openPopout): Popout => {
+      const popout = make();
       popouts.push(popout);
       if (observe) {
         stops.push(observeWindow(popout.win));
@@ -2341,6 +2566,11 @@ describe("InteractionCapture rage and dead clicks", () => {
       const built = build(interactions, over);
       built.capture.install();
       return built;
+    };
+
+    /** Lets a dead click check time out, which flushes the observer's records first. */
+    const wait = async (): Promise<void> => {
+      await vi.advanceTimersByTimeAsync(1000);
     };
 
     afterEach(() => {
@@ -2509,6 +2739,46 @@ describe("InteractionCapture rage and dead clicks", () => {
       }).not.toThrow();
     });
 
+    it("keeps a window observed at the pagehide of its initial about:blank document", () => {
+      // The browser fires pagehide on the blank document, then loads the page into the same
+      // window object. Forgetting the window here would leave the real page uncaptured.
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      expect(observedWindows().includes(popout.win)).toBe(true);
+      expect(leftOn(popout, "click")).toBe(1);
+      expect(leftOn(popout, "pagehide")).toBe(1);
+    });
+
+    it("forgets a window at the pagehide of a document that isn't the initial about:blank", () => {
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+      popout.win.history.replaceState(null, "", "#moved");
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(leftOn(popout, "pagehide")).toBe(0);
+    });
+
+    it("forgets a closed window at the pagehide of its about:blank document", () => {
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+      stubClosed(popout.win, true);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+    });
+
     it("observes a window again after its stop function ran", () => {
       const { c } = install(true);
       const popout = open(false);
@@ -2534,22 +2804,14 @@ describe("InteractionCapture rage and dead clicks", () => {
       // Nothing hears the pagehide of a window while clicks are off, so the install prunes it.
       const { capture, c } = build(true);
       const popout = open();
-      // happy-dom assigns `closed` when it destroys the window, so the stub needs a setter too.
-      let closed = true;
-      Object.defineProperty(popout.win, "closed", {
-        configurable: true,
-        get: () => closed,
-        set: (value: boolean) => {
-          closed = value;
-        },
-      });
+      const setClosed = stubClosed(popout.win, true);
 
       capture.install();
       click(popout.buy);
       expect(popout.add).not.toHaveBeenCalled();
       expect(c.breadcrumbs.snapshot()).toEqual([]);
 
-      closed = false;
+      setClosed(false);
       capture.uninstall();
       capture.install();
       click(popout.buy);
@@ -2665,12 +2927,147 @@ describe("InteractionCapture rage and dead clicks", () => {
       expect(c.breadcrumbs.snapshot()).toHaveLength(1);
     });
 
-    describe("dead clicks", () => {
-      /** Lets the check time run out, which flushes the observer's records first. */
-      const wait = async (): Promise<void> => {
-        await vi.advanceTimersByTimeAsync(1000);
-      };
+    describe("when an observed window turns cross-origin", () => {
+      let originals: Pick<History, "pushState" | "replaceState"> | undefined;
 
+      beforeEach(() => {
+        originals = { pushState: history.pushState, replaceState: history.replaceState };
+      });
+
+      afterEach(() => {
+        // A failed uninstall leaves the history patches in, and the next spec mustn't inherit them.
+        if (originals) {
+          history.pushState = originals.pushState;
+          history.replaceState = originals.replaceState;
+        }
+      });
+
+      it("lets the stop function run without a throw", async () => {
+        install(true);
+        const popout = open(false);
+        const stop = observeWindow(popout.win);
+        await popout.block();
+
+        expect(() => {
+          stop();
+        }).not.toThrow();
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+
+      it("lets uninstall run without a throw, and restores the history patches", async () => {
+        const { capture, c, page } = build(true, { navigation: true });
+        const { pushState, replaceState } = history;
+        capture.install();
+        const popout = open();
+        await popout.block();
+
+        expect(() => {
+          capture.uninstall();
+        }).not.toThrow();
+
+        expect(history.pushState).toBe(pushState);
+        expect(history.replaceState).toBe(replaceState);
+        click(page.buy);
+        expect(c.breadcrumbs.snapshot()).toEqual([]);
+      });
+
+      it("detaches the other windows when one throws at uninstall", async () => {
+        const { capture } = install(true);
+        const blocked = open();
+        const healthy = open();
+        await blocked.block();
+
+        expect(() => {
+          capture.uninstall();
+        }).not.toThrow();
+
+        expect(leftOn(healthy, "click")).toBe(0);
+      });
+
+      it("counts a URL read that throws as a URL change in the dead check", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        await popout.block();
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ends a dead check without a throw, and the next click gets a check", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+        click(page.buy);
+        await popout.block();
+
+        await wait();
+        const before = events(logger, "ui.dead_click").length;
+        click(page.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toHaveLength(before + 1);
+      });
+
+      it("skips and forgets a window whose document can't be read in a dead check", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+        await popout.block();
+
+        click(page.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+    });
+
+    it.each<[string, (page: Regions, popout: Popout) => Element]>([
+      ["the page's own window", (page) => page.buy],
+      ["an observed window", (_page, popout) => popout.buy],
+    ])("keeps a throw while it handles a click in %s away from the page", (_name, pick) => {
+      const { c, page } = install(true);
+      const popout = open();
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      popout.win.addEventListener("error", pageErrors);
+      const target = pick(page, popout);
+      vi.spyOn(target, "closest").mockImplementation(() => {
+        throw new TypeError("closest failed");
+      });
+
+      click(target);
+      removeEventListener("error", pageErrors);
+
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
+    });
+
+    it.each([
+      ["has no addEventListener", { document: {} }],
+      ["has an addEventListener that isn't a function", { document: {}, addEventListener: "x" }],
+    ])(
+      "gives a stop function that does nothing for a value with a document that %s",
+      (_n, value) => {
+        const { c, page } = install(true);
+        const reported = vi.fn<(event: DiagnosticEvent) => void>();
+        c.diagnostics.setHandler(reported);
+
+        const stop = observeWindow(asWindow(value));
+
+        expect(stop).toBeTypeOf("function");
+        expect(() => {
+          stop();
+        }).not.toThrow();
+        expect(reported).not.toHaveBeenCalled();
+        click(page.buy);
+        expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      },
+    );
+
+    describe("dead clicks", () => {
       it("records a dead click for a click in the observed window with no answer", async () => {
         const { logger } = install({ deadClicks: true });
         const popout = open();

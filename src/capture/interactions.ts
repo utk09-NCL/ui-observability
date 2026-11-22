@@ -37,6 +37,91 @@ function isElement(value: unknown): value is Element {
   return (value as Partial<Node> | null)?.nodeType === ELEMENT_NODE;
 }
 
+/** The page's initial document in a window that window.open() just made. */
+const INITIAL_DOCUMENT_URL = "about:blank";
+
+/**
+ * Checks whether a node or a scroll target sits inside a live region. A removed node is detached
+ * by the time the observer runs, so for it closest() can only test the node itself.
+ * @param target The node, or the scroll's target.
+ * @param live Selector of the live regions. "" marks nothing.
+ * @returns True if the target is inside a live region.
+ * @throws SyntaxError for a selector the browser can't parse. Call it inside a diagnostics guard.
+ */
+function insideLive(target: EventTarget | null, live: string): boolean {
+  if (!live) {
+    return false;
+  }
+
+  // A text change targets a Text node, and the document and the window have no closest().
+  const element = isElement(target)
+    ? target
+    : ((target as Partial<Node> | null)?.parentElement ?? null);
+  return Boolean(element?.closest(live));
+}
+
+/**
+ * Checks whether one DOM change answers a click. A change inside a live region doesn't, and
+ * neither does a write that keeps the old value, which React does with `type` and `name` on each
+ * render. A child list change that only adds or removes live elements doesn't either, so a grid
+ * that swaps a marked cell for a new one stays quiet.
+ * @param record The change.
+ * @param live Selector of the live regions.
+ * @returns True if the change answers the click.
+ * @throws SyntaxError for a selector the browser can't parse. Call it inside a diagnostics guard.
+ */
+function changeAnswers(record: MutationRecord, live: string): boolean {
+  if (insideLive(record.target, live)) {
+    return false;
+  }
+
+  if (record.type === "attributes") {
+    // An attributes record always names its attribute.
+    const { attributeName, attributeNamespace, oldValue } = record as MutationRecord & {
+      attributeName: string;
+    };
+    return (
+      (record.target as Element).getAttributeNS(attributeNamespace, attributeName) !== oldValue
+    );
+  }
+  if (record.type === "characterData") {
+    return (record.target as CharacterData).data !== record.oldValue;
+  }
+
+  const nodes = [...record.addedNodes, ...record.removedNodes];
+  return !nodes.every((node) => isElement(node) && insideLive(node, live));
+}
+
+/**
+ * Reads a window's URL. A window that turned cross-origin throws, and that's the expected answer.
+ * The fallback is "", so the URL counts as changed.
+ * @param win The window.
+ * @returns The URL, or "" when the window can't be read.
+ */
+function urlOf(win: Window): string {
+  try {
+    return win.location.href;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Removes one listener from a window. A window that turned cross-origin throws, and that's the
+ * expected answer. It holds no listener of ours, so the fallback is to remove nothing.
+ * @param win The window.
+ * @param type The event type.
+ * @param listener The listener.
+ * @param capture True for a capture-phase listener.
+ */
+function unlisten(win: Window, type: string, listener: EventListener, capture = false): void {
+  try {
+    win.removeEventListener(type, listener, capture);
+  } catch {
+    // Nothing to remove. The listener went with the document the window left.
+  }
+}
+
 /**
  * Builds a short CSS selector for an element. Prefers the test ID, then the ID, then the
  * aria-label, then the class names.
@@ -161,19 +246,34 @@ export class InteractionCapture implements Capture {
     removeEventListener("click", this.onClick, true);
     removeEventListener("popstate", this.onNavigate);
     removeEventListener("hashchange", this.onNavigate);
-    this.unobserve?.();
-    this.unobserve = undefined;
-
+    // Restore history first. An observed window is another document, and a fault there mustn't
+    // leave this page patched.
     for (const restore of this.restores.splice(0)) {
       restore();
     }
+    this.unobserve?.();
+    this.unobserve = undefined;
 
     this.stopDeadCheck?.();
     this.burst = { target: null, times: [], reported: false };
   }
 
-  /** Rotates the trace context and records a click breadcrumb. */
+  /** Records a click. The browser calls this directly, so a throw would be a page error. */
   private readonly onClick = (event: Event): void => {
+    this.ctx.diagnostics.guard(
+      "capture.record_failed",
+      "The library could not record a click. It skips that click.",
+      () => {
+        this.recordClick(event);
+      },
+    );
+  };
+
+  /**
+   * Rotates the trace context, records a click breadcrumb and runs the rage and dead click checks.
+   * @param event The click.
+   */
+  private recordClick(event: Event): void {
     if (this.ctx.isActive?.() === false) {
       return;
     }
@@ -217,7 +317,7 @@ export class InteractionCapture implements Capture {
       // The listener sits on the window that got the click, the page's own or an observed one.
       this.watchDead(message, options, event.currentTarget as Window);
     }
-  };
+  }
 
   /**
    * Counts the clicks on one element and records `ui.rage_click` once per burst.
@@ -257,32 +357,35 @@ export class InteractionCapture implements Capture {
     }
 
     const pageUrl = location.href;
-    const viewUrl = view.location.href;
+    const viewUrl = urlOf(view);
     const live = options.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
     let responded = false;
     const observer = new MutationObserver((records) => {
-      responded ||= records.some((record) => this.answersClick(record.target, live));
+      responded ||= records.some((record) => this.answers(() => changeAnswers(record, live)));
     });
     const onScroll = (event: Event): void => {
-      responded ||= this.answersClick(event.target, live);
+      responded ||= this.answers(() => !insideLive(event.target, live));
     };
     // A click in a popout can change this page, and a click here can change a popout.
-    const views = [window, ...observedWindows()];
-    for (const each of views) {
-      // An observed window is another document, so a fault there mustn't fail the click handler.
-      this.ctx.diagnostics.guard(
-        "capture.record_failed",
-        "The library could not watch a window for a dead click. The check skips that window.",
-        () => {
-          observer.observe(each.document, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-            characterData: true,
-          });
-          each.addEventListener("scroll", onScroll, { capture: true, passive: true });
-        },
-      );
+    const views: Window[] = [];
+    for (const each of [window, ...observedWindows()]) {
+      try {
+        // The old values let a same-value write count as no change.
+        observer.observe(each.document, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeOldValue: true,
+          characterData: true,
+          characterDataOldValue: true,
+        });
+        each.addEventListener("scroll", onScroll, { capture: true, passive: true });
+        views.push(each);
+      } catch {
+        // A window that turned cross-origin throws, and that's the expected answer. The fallback
+        // skips it and forgets it, because the library can't watch it anymore.
+        forgetWindow(each);
+      }
     }
 
     const stop = (): void => {
@@ -290,13 +393,13 @@ export class InteractionCapture implements Capture {
       clearTimeout(timer);
       observer.disconnect();
       for (const each of views) {
-        each.removeEventListener("scroll", onScroll, true);
+        unlisten(each, "scroll", onScroll, true);
       }
       this.stopDeadCheck = undefined;
     };
     const timer = setTimeout(() => {
       stop();
-      const moved = location.href !== pageUrl || view.location.href !== viewUrl;
+      const moved = location.href !== pageUrl || urlOf(view) !== viewUrl;
       if (!responded && !moved && this.ctx.isActive?.() !== false) {
         this.ctx.logger.logEvent("ui.dead_click", { "click.action": action });
       }
@@ -305,29 +408,18 @@ export class InteractionCapture implements Capture {
   }
 
   /**
-   * Checks whether a DOM change or a scroll answers a click. One inside a live region, such as a
-   * ticking price cell, doesn't. A failed match counts as an answer, so a fault can't make up a
-   * dead click.
-   * @param target The changed node, or the scroll's target.
-   * @param live Selector of the live regions. "" makes every change an answer.
-   * @returns True if the change answers the click.
+   * Runs one dead click test in a guard. A failed test counts as an answer, so a fault can't make
+   * up a dead click. The browser calls the observer and the listener directly, so a throw would
+   * be a page error.
+   * @param test Returns true if a change answers the click.
+   * @returns The test's result, or true if it threw.
    */
-  private answersClick(target: EventTarget | null, live: string): boolean {
-    if (!live) {
-      return true;
-    }
-
-    // A text change targets a Text node, and the document and the window have no closest().
-    // Read the node type, because a popout's nodes fail instanceof.
-    const element = isElement(target)
-      ? target
-      : ((target as Partial<Node> | null)?.parentElement ?? null);
-    // The browser calls the observer and the listener directly, so a throw is a page error.
+  private answers(test: () => boolean): boolean {
     return (
       this.ctx.diagnostics.guard(
         "capture.record_failed",
         "The library could not check a page change for a dead click. It counts the change as a response.",
-        () => !element?.closest(live),
+        test,
       ) ?? true
     );
   }
@@ -362,13 +454,20 @@ export class InteractionCapture implements Capture {
    */
   private detachView(win: Window): void {
     this.stopDeadCheck?.();
-    win.removeEventListener("click", this.onClick, true);
-    win.removeEventListener("pagehide", this.onViewHide);
+    unlisten(win, "click", this.onClick, true);
+    unlisten(win, "pagehide", this.onViewHide);
   }
 
   /** Forgets an observed window when its page goes away, so the library doesn't hold it. */
   private readonly onViewHide = (event: Event): void => {
-    forgetWindow(event.currentTarget as Window);
+    const win = event.currentTarget as Window;
+    // window.open(url) starts on about:blank and fires pagehide there. Then it loads a page of
+    // this origin into the same window, which keeps our listeners, so forgetting it would lose it.
+    if (win.document.URL === INITIAL_DOCUMENT_URL && !win.closed) {
+      return;
+    }
+
+    forgetWindow(win);
   };
 
   /** On a URL change, rotates the trace context and records a breadcrumb and an event. */
