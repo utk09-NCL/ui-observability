@@ -17,8 +17,9 @@ function sameRecords(a: readonly TappedRecord[], b: readonly TappedRecord[]): bo
 
 /**
  * The list. It polls the tap and keeps a new list only when the shown records changed. A
- * hidden price tick then causes no render, and no DOM write. The dead-click check of the library
- * counts each DOM write in the document as the answer of the page to a click.
+ * hidden price tick then causes no render, and no DOM write. The list carries
+ * data-observability-live, so the dead-click check of the library does not take a new record for
+ * the answer of the page to a click. The filter and the switch are outside the list.
  * @param props The filter text and the switch that hides the price ticks.
  * @returns The list.
  */
@@ -43,7 +44,7 @@ function RecentList({ filter, hidePrices }: { filter: string; hidePrices: boolea
   }, [filter, hidePrices]);
 
   return (
-    <ol className="recent">
+    <ol className="recent" data-observability-live>
       {shown.map((record) => (
         <li key={record.id}>
           <time className="muted" dateTime={new Date(record.at).toISOString()}>

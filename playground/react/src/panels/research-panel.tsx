@@ -8,7 +8,7 @@ import { FramePanel, type FrameRegistration } from "./frame-panel";
 
 // journey:read lets the frame read the journey of the workspace, so its records carry it. The
 // frame asks for the journey when it starts, and a registration without the permission makes the
-// bus reject that request and count bus.rejected_message.
+// bus refuse that request and count bus.journey_denied.
 const REGISTRATION: FrameRegistration = {
   origin: location.origin,
   permissions: ["records", "journey:read"],

@@ -1,7 +1,8 @@
 // src/observability-settings/live-strip.tsx
 //
 // A strip that reads getHealth() once a second. getHealth() has no byte count, so the strip
-// shows records and batches, not bytes.
+// shows records and batches, not bytes. The strip ticks on its own and holds no control, so it
+// carries data-observability-live.
 
 import { type ReactElement, useEffect, useState } from "react";
 import {
@@ -87,7 +88,12 @@ export function LiveStrip(): ReactElement {
   const { delivery, status } = live.health;
 
   return (
-    <div className="live" role="group" aria-label="Live state of the library">
+    <div
+      className="live"
+      role="group"
+      aria-label="Live state of the library"
+      data-observability-live
+    >
       <dl className="strip">
         <div>
           <dt>Status</dt>

@@ -1,19 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCapture } from "../src/capture/errors";
 import { InteractionCapture } from "../src/capture/interactions";
+import { observedWindows } from "../src/capture/observed-windows";
 import { NetworkCapture } from "../src/capture/network";
 import { matchesAny } from "../src/capture/types";
 import type { CaptureContext, CaptureLogger } from "../src/capture/types";
 import { WebVitalsCapture } from "../src/capture/web-vitals";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
-import { ERROR_DEDUPE_MS, MAX_TRACKED_ERROR_SIGNATURES } from "../src/constants";
+import {
+  ERROR_DEDUPE_MS,
+  MAX_TRACKED_ERROR_SIGNATURES,
+  OBSERVED_WINDOWS_KEY,
+  TELEMETRY_SDK_VERSION,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { CaptureOptions, ObservabilityConfig, WebVitalsMetric } from "../src/models/config";
+import { observeWindow } from "../src/index";
 import { CustomTransport } from "../src/transport/custom-transport";
 import { runAsLibraryRequest } from "../src/utils/library-request";
 import { type SpanHooks, TraceEngine } from "../src/utils/tracing";
+import {
+  asWindow,
+  blockedDocumentWindow,
+  foreignRealm,
+  foreignWindow,
+  leftOn,
+  openBlankPopout,
+  openPopout,
+  REGIONS,
+  regions,
+  stubClosed,
+  stubMutationObserver,
+  type Popout,
+  type Regions,
+} from "./window-fakes";
 
 /** A logger with a spy for every method, so a test can read what the logger recorded. */
 interface SpyLogger {
@@ -2001,6 +2023,1584 @@ describe("InteractionCapture rage and dead clicks", () => {
 
     expect(events(logger, "ui.dead_click")).toEqual([]);
     capture.uninstall();
+  });
+
+  describe("with a live region", () => {
+    // One region the default selector marks, one it doesn't mark, and one that ".ticker" marks.
+    const REGIONS = `
+      <div id="grid" data-observability-live><span id="price">100</span></div>
+      <div id="feed"><span id="headline">Open</span></div>
+      <div class="ticker"><span id="tick">7</span></div>`;
+
+    /** The capture of the running spec, so afterEach removes its click listener. */
+    let running: InteractionCapture | undefined;
+
+    /**
+     * Builds the page of the parent suite and adds the three regions.
+     * @param interactions Interaction options.
+     * @param checked True to run the options through the config checks, as an app's options go.
+     * @returns The parent's page, plus the region elements.
+     */
+    const livePage = (interactions: CaptureOptions["interactions"], checked = false) => {
+      const view = page(interactions);
+      if (checked) {
+        view.c.config.capture.interactions = resolveConfig(
+          { capture: { interactions } },
+          view.c.diagnostics,
+        ).capture.interactions;
+      }
+      document.body.insertAdjacentHTML("beforeend", REGIONS);
+      const [grid, price, feed, headline, tick] = [
+        "#grid",
+        "#price",
+        "#feed",
+        "#headline",
+        "#tick",
+      ].map((one) => document.querySelector(one)!);
+      running = view.capture;
+      return { ...view, grid, price, feed, headline, tick };
+    };
+    type Live = ReturnType<typeof livePage>;
+
+    /** A change to the page, named for the spec title. */
+    type Change = [name: string, apply: (live: Live) => void];
+
+    const INSIDE: Change[] = [
+      ["a child added to the live region", ({ grid }) => grid.append(document.createElement("i"))],
+      ["a child removed from the live region", ({ price }) => price.remove()],
+      [
+        "the text of an element inside the live region",
+        ({ price }) => {
+          price.textContent = "101";
+        },
+      ],
+      ["an attribute of the live region", ({ grid }) => grid.setAttribute("data-flash", "up")],
+      ["an attribute of an element inside it", ({ price }) => price.setAttribute("class", "up")],
+      [
+        "the data of a text node inside it",
+        ({ price }) => {
+          (price.firstChild as Text).data = "101";
+        },
+      ],
+    ];
+
+    const OUTSIDE: Change[] = [
+      [
+        "a child added outside the live region",
+        ({ feed }) => feed.append(document.createElement("i")),
+      ],
+      ["an attribute changed outside it", ({ feed }) => feed.setAttribute("data-flash", "up")],
+      [
+        "the data of a text node outside it",
+        ({ headline }) => {
+          (headline.firstChild as Text).data = "Closed";
+        },
+      ],
+      ["a child added to the body", () => document.body.append(document.createElement("i"))],
+    ];
+
+    afterEach(() => {
+      running?.uninstall();
+      running = undefined;
+    });
+
+    it.each(INSIDE)("records a dead click when the only change is %s", async (_name, change) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      change(live);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it.each(OUTSIDE)("records no dead click when the only change is %s", async (_name, change) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      change(live);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records no dead click when the page changes in and out of the live region", async () => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      live.feed.append(document.createElement("i"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it.each<[string, (live: Live) => Element]>([
+      ["the live region itself", ({ grid }) => grid],
+      ["an element inside the live region", ({ price }) => price],
+    ])("records a dead click when %s scrolls", async (_name, scroller) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      scroller(live).dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("records no dead click when an element outside the live region scrolls", async () => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.feed.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it.each<[string, () => EventTarget]>([
+      ["document", () => document],
+      ["window", () => window],
+    ])("records no dead click when a scroll event targets the %s", async (_name, target) => {
+      // Neither one is an Element, so a selector match on the target would throw or find nothing.
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      target().dispatchEvent(new Event("scroll", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records no dead click after a navigation when only the live region changed", async () => {
+      const original = location.href;
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      history.replaceState(null, "", "/moved");
+      await vi.advanceTimersByTimeAsync(1000);
+      history.replaceState(null, "", original);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records a dead click when only a region of the custom selector changes", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+
+      click(live.buy);
+      live.tick.textContent = "8";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("treats a change in the default region as a response with a custom selector", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("treats every change as a response when the selector is empty", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("uses the default live region after the config checks", async () => {
+      const live = livePage({ deadClicks: true }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("uses the app's own selector instead of the default after the config checks", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" }, true);
+
+      click(live.buy);
+      live.tick.textContent = "8";
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(events(live.logger, "ui.dead_click")).toHaveLength(1);
+    });
+
+    it("keeps an empty selector through the config checks, so every change responds", async () => {
+      // An empty string isn't valid CSS, so a plain validity check would replace it.
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("falls back to the default region and raises no page error for a bad selector", async () => {
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+      removeEventListener("error", pageErrors);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      expect(pageErrors).not.toHaveBeenCalled();
+    });
+
+    it("counts a change as a response and reports it for a selector that can't match", async () => {
+      // This selector skips the config checks, so the match inside the observer throws.
+      const pageErrors = vi.fn();
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      addEventListener("error", pageErrors);
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" });
+      live.c.diagnostics.setHandler(reported);
+
+      click(live.buy);
+      live.grid.setAttribute("data-flash", "up");
+      await vi.advanceTimersByTimeAsync(1000);
+      removeEventListener("error", pageErrors);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        [
+          "capture.record_failed",
+          "The library could not check a page change for a dead click. " +
+            "It counts the change as a response.",
+        ],
+      ]);
+    });
+
+    it("counts a scroll as a response and reports it for a selector that can't match", async () => {
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" });
+      live.c.diagnostics.setHandler(reported);
+
+      click(live.buy);
+      live.price.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
+    });
+
+    describe("a child list change and a same-value write", () => {
+      /** Makes a cell that the default selector marks as live. */
+      const marked = (): HTMLElement => {
+        const cell = document.createElement("i");
+        cell.setAttribute("data-observability-live", "");
+        return cell;
+      };
+
+      /** Adds a row outside every live region, before the click, so the observer misses it. */
+      const rowOf = (html: string): HTMLElement => {
+        const row = document.createElement("div");
+        row.innerHTML = html;
+        document.body.append(row);
+        return row;
+      };
+
+      /** Adds an input, as React renders it: with a type and a name. */
+      const field = (): HTMLInputElement => {
+        const input = document.createElement("input");
+        input.setAttribute("type", "text");
+        input.setAttribute("name", "qty");
+        input.setAttribute("class", "box");
+        input.setAttribute("data-state", "idle");
+        document.body.append(input);
+        return input;
+      };
+
+      const CELL = "<i data-observability-live></i>";
+
+      it.each<[string, string, (row: HTMLElement) => void]>([
+        [
+          "a marked cell replaced by another marked cell",
+          CELL + CELL,
+          (row) => {
+            row.replaceChildren(marked());
+          },
+        ],
+      ])("records a dead click when the only change is %s", async (_name, html, apply) => {
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(html);
+
+        click(live.buy);
+        apply(row);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, string, (row: HTMLElement) => void]>([
+        [
+          "a marked cell added to the row",
+          CELL,
+          (row) => {
+            row.append(marked());
+          },
+        ],
+        [
+          "a marked cell removed from the row",
+          CELL + CELL,
+          (row) => {
+            row.firstElementChild?.remove();
+          },
+        ],
+        [
+          "a marked cell replaced by an unmarked node",
+          CELL,
+          (row) => {
+            row.replaceChildren(document.createElement("b"));
+          },
+        ],
+        [
+          "an unmarked node added next to a marked cell",
+          CELL,
+          (row) => {
+            row.append(document.createElement("b"));
+          },
+        ],
+        [
+          "an unmarked node removed next to a marked cell",
+          `${CELL}<b></b>`,
+          (row) => {
+            row.lastElementChild?.remove();
+          },
+        ],
+        [
+          "a text node added next to a marked cell",
+          CELL,
+          (row) => {
+            row.append(document.createTextNode("x"));
+          },
+        ],
+      ])("records no dead click when the change is %s", async (_name, html, apply) => {
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(html);
+
+        click(live.buy);
+        apply(row);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (row: HTMLElement) => Partial<MutationRecord>, string]>([
+        [
+          "records a dead click when one record replaces a marked cell with another",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [marked()] as unknown as NodeList,
+            removedNodes: [row.firstElementChild] as unknown as NodeList,
+          }),
+          "dead",
+        ],
+        [
+          "records no dead click when one record adds a marked cell and an unmarked node",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [marked(), document.createElement("b")] as unknown as NodeList,
+            removedNodes: [] as unknown as NodeList,
+          }),
+          "answered",
+        ],
+        [
+          "records no dead click when one record swaps a marked cell for an unmarked node",
+          (row) => ({
+            type: "childList",
+            target: row,
+            addedNodes: [document.createElement("b")] as unknown as NodeList,
+            removedNodes: [row.firstElementChild] as unknown as NodeList,
+          }),
+          "answered",
+        ],
+      ])("%s", async (_name, record, outcome) => {
+        // A browser reports a replaced child as one record, and happy-dom reports two.
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(CELL);
+        const observer = stubMutationObserver();
+
+        click(live.buy);
+        observer.deliver([record(row)]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual(
+          outcome === "dead" ? [{ "click.action": "buy" }] : [],
+        );
+      });
+
+      it.each<
+        [string, (row: HTMLElement, other: HTMLElement) => Partial<MutationRecord>[], string]
+      >([
+        [
+          "records a dead click when two records of one batch swap a marked cell under one parent",
+          (row) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [row.firstElementChild] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+          ],
+          "dead",
+        ],
+        [
+          "records a dead click when two records of one batch swap in the other order",
+          (row) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [row.firstElementChild] as unknown as NodeList,
+            },
+          ],
+          "dead",
+        ],
+        [
+          "records no dead click when a batch adds under one parent and removes under another",
+          (row, other) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: other,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [other.firstElementChild] as unknown as NodeList,
+            },
+          ],
+          "answered",
+        ],
+      ])("%s", async (_name, records, outcome) => {
+        // A swap is an add and a remove of marked cells under one parent in one callback batch.
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(CELL);
+        const other = rowOf(CELL);
+        const observer = stubMutationObserver();
+
+        click(live.buy);
+        observer.deliver(records(row, other));
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual(
+          outcome === "dead" ? [{ "click.action": "buy" }] : [],
+        );
+      });
+
+      it("records a dead click when the only writes keep an attribute's value", async () => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("type", input.getAttribute("type") ?? "");
+        input.setAttribute("name", input.getAttribute("name") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records a dead click for same-value writes when the selector is empty", async () => {
+        // An empty selector counts every change as a response, but a write that keeps the old
+        // value isn't a change.
+        const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("type", input.getAttribute("type") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records a dead click when the only write keeps a text node's data", async () => {
+        const live = livePage({ deadClicks: true });
+        const text = live.headline.firstChild as Text;
+        const current = text.data;
+
+        click(live.buy);
+        text.data = current;
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, (input: HTMLInputElement, text: Text) => void]>([
+        ["an attribute with a new value", (input) => input.setAttribute("type", "number")],
+        ["an added attribute", (input) => input.setAttribute("placeholder", "Qty")],
+        ["a removed attribute", (input) => input.removeAttribute("name")],
+        [
+          "an attribute set twice, and the last value differs from the first",
+          (input) => {
+            input.setAttribute("type", "number");
+            input.setAttribute("type", "email");
+          },
+        ],
+        [
+          "a class removed, read into layout and added back",
+          (input) => {
+            // The layout read restarts a CSS animation, so the user sees an answer.
+            input.classList.remove("box");
+            const _layout = input.offsetWidth;
+            input.classList.add("box");
+          },
+        ],
+        [
+          "a class set to another value and back",
+          (input) => {
+            input.setAttribute("class", "other");
+            input.setAttribute("class", "box");
+          },
+        ],
+        [
+          "a data attribute set and removed again",
+          (input) => {
+            input.setAttribute("data-flash", "1");
+            input.removeAttribute("data-flash");
+          },
+        ],
+        [
+          "a data attribute changed and restored",
+          (input) => {
+            input.setAttribute("data-state", "busy");
+            input.setAttribute("data-state", "idle");
+          },
+        ],
+        [
+          "an attribute added and removed again",
+          (input) => {
+            input.setAttribute("placeholder", "Qty");
+            input.removeAttribute("placeholder");
+          },
+        ],
+        [
+          "a text node with new data",
+          (_input, text) => {
+            text.data = "Closed";
+          },
+        ],
+        [
+          "a text node set twice, and the last data differs from the first",
+          (_input, text) => {
+            text.data = "Closed";
+            text.data = "Halted";
+          },
+        ],
+      ])("records no dead click when the change is %s", async (_name, change) => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        change(input, live.headline.firstChild as Text);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (input: HTMLInputElement, text: Text) => void]>([
+        [
+          "the type attribute set to another value and back",
+          (input) => {
+            input.setAttribute("type", "number");
+            input.setAttribute("type", "text");
+          },
+        ],
+        [
+          "the name attribute removed and put back with its old value",
+          (input) => {
+            input.removeAttribute("name");
+            input.setAttribute("name", "qty");
+          },
+        ],
+        [
+          "a text node set to other data and back",
+          (_input, text) => {
+            const original = text.data;
+            text.data = "Closed";
+            text.data = original;
+          },
+        ],
+      ])("records a dead click when one batch leaves %s as it was", async (_name, change) => {
+        // Nothing between the writes is painted, so only the net change counts.
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        change(input, live.headline.firstChild as Text);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records a dead click when the only write keeps the class attribute's value", async () => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("class", input.getAttribute("class") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records no dead click when one batch restarts an animation with style", async () => {
+        // The element ends with the style it had, but the layout read between the two writes
+        // restarts the animation, so the user sees an answer.
+        const live = livePage({ deadClicks: true });
+        const box = document.createElement("div");
+        box.setAttribute("style", "color: red;");
+        document.body.append(box);
+        const observer = stubMutationObserver();
+        const style = (oldValue: string) => ({
+          type: "attributes" as const,
+          target: box,
+          attributeName: "style",
+          attributeNamespace: null,
+          oldValue,
+        });
+
+        click(live.buy);
+        observer.deliver([style("color: red;"), style("color: red; animation: none;")]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each(["href", "type"])(
+        "records no dead click when only the xlink:%s of one element changes net",
+        async (name) => {
+          // The plain and the namespaced attribute share a name, and they are separate pairs.
+          const xlink = "http://www.w3.org/1999/xlink";
+          const live = livePage({ deadClicks: true });
+          const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+          use.setAttribute(name, "a");
+          use.setAttributeNS(xlink, `xlink:${name}`, "after");
+          document.body.append(use);
+          const observer = stubMutationObserver();
+          const write = (attributeNamespace: string | null, oldValue: string) => ({
+            type: "attributes" as const,
+            target: use,
+            attributeName: name,
+            attributeNamespace,
+            oldValue,
+          });
+
+          click(live.buy);
+          observer.deliver([write(null, "a"), write(xlink, "before")]);
+          await vi.advanceTimersByTimeAsync(1000);
+
+          expect(events(live.logger, "ui.dead_click")).toEqual([]);
+        },
+      );
+
+      it.each<[string, string | undefined]>([
+        ["the default selector", undefined],
+        ["an empty selector", ""],
+      ])("records a dead click for the React write pattern with %s", async (_name, selector) => {
+        // React sets name, then type, then removes name again, on an input that has no name. Chrome
+        // reports the old value of the last record as "", and happy-dom reports null for it, so a
+        // spec that writes the attributes can't show the fault. The records here are Chrome's.
+        const live = livePage({ deadClicks: true, deadClickIgnoreSelector: selector });
+        const input = document.createElement("input");
+        input.setAttribute("type", "number");
+        document.body.append(input);
+        const observer = stubMutationObserver();
+        const attribute = (attributeName: string, oldValue: string | null) => ({
+          type: "attributes" as const,
+          target: input,
+          attributeName,
+          attributeNamespace: null,
+          oldValue,
+        });
+
+        click(live.buy);
+        observer.deliver([
+          attribute("name", null),
+          attribute("type", "number"),
+          attribute("name", ""),
+        ]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+    });
+  });
+
+  describe("in an observed window", () => {
+    const OTHER_ORIGIN =
+      "The library cannot observe a window from another origin. It captures no clicks there.";
+
+    const stops: (() => void)[] = [];
+    const popouts: Popout[] = [];
+    const captures: InteractionCapture[] = [];
+
+    /**
+     * Opens a popout for the spec, and observes it unless told not to.
+     * @param observe False to leave the observing to the spec.
+     * @returns The popout.
+     */
+    const open = (observe = true, make: () => Popout = openPopout): Popout => {
+      const popout = make();
+      popouts.push(popout);
+      if (observe) {
+        stops.push(observeWindow(popout.win));
+      }
+      return popout;
+    };
+
+    /**
+     * Builds the capture on a page that holds the regions. It stays uninstalled. Call this
+     * before open(), because it replaces the body, and a popout's iframe lives in the body.
+     * @param interactions The interaction options.
+     * @param over More capture settings.
+     * @returns The capture, its context, the logger and the page's regions.
+     */
+    const build = (
+      interactions: CaptureOptions["interactions"],
+      over: Partial<CaptureOptions> = {},
+    ) => {
+      vi.useFakeTimers();
+      const view = ctx({ interactions, ...over });
+      document.body.innerHTML = REGIONS;
+      const capture = new InteractionCapture(view.ctx);
+      captures.push(capture);
+      return { capture, c: view.ctx, logger: view.logger, page: regions(document) };
+    };
+
+    /** Builds the capture and installs it. */
+    const install = (
+      interactions: CaptureOptions["interactions"],
+      over: Partial<CaptureOptions> = {},
+    ) => {
+      const built = build(interactions, over);
+      built.capture.install();
+      return built;
+    };
+
+    /** Lets a dead click check time out, which flushes the observer's records first. */
+    const wait = async (): Promise<void> => {
+      await vi.advanceTimersByTimeAsync(1000);
+    };
+
+    afterEach(() => {
+      for (const stop of stops.splice(0)) {
+        stop();
+      }
+      for (const capture of captures.splice(0)) {
+        capture.uninstall();
+      }
+      for (const popout of popouts.splice(0)) {
+        popout.close();
+      }
+      document.body.innerHTML = "";
+    });
+
+    it("delivers a click in the popout to a capture listener on its window", () => {
+      // A check of the stand-in window, so a red spec below can't blame the harness.
+      const popout = open(false);
+      const seen = vi.fn();
+      popout.win.addEventListener("click", seen, true);
+
+      click(popout.buy);
+
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
+
+    it("records the same click breadcrumb as a click in the page's own window", () => {
+      const { c, page } = install(true);
+      const popout = open();
+
+      click(page.buy);
+      click(popout.buy);
+
+      expect(
+        c.breadcrumbs.snapshot().map(({ category, message }) => ({ category, message })),
+      ).toEqual([
+        { category: "click", message: "buy" },
+        { category: "click", message: "buy" },
+      ]);
+    });
+
+    it("rotates the trace on a click in the observed window", () => {
+      const { c } = install(true);
+      const popout = open();
+      const before = c.tracing.resolve().traceId;
+
+      click(popout.buy);
+
+      expect(c.tracing.resolve().traceId).not.toBe(before);
+    });
+
+    it("counts rage clicks in the observed window", () => {
+      const { logger } = install({ rageClicks: true });
+      const popout = open();
+
+      click(popout.buy);
+      click(popout.buy);
+      click(popout.buy);
+
+      expect(events(logger, "ui.rage_click")).toEqual([
+        { "click.action": "buy", "click.count": 3 },
+      ]);
+    });
+
+    it("records a click on an element that another realm created", () => {
+      // happy-dom windows share one Element class, so this makes the page's own class foreign.
+      const { c } = install(true);
+      const popout = open();
+      foreignRealm();
+
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toMatchObject([{ category: "click", message: "buy" }]);
+    });
+
+    it("skips a click inside an ignore region of the observed window", () => {
+      const { c } = install(true);
+      const popout = open();
+      popout.doc.body.insertAdjacentHTML(
+        "beforeend",
+        '<div data-observability-ignore><button id="secret">Secret</button></div>',
+      );
+
+      click(popout.doc.querySelector("#secret")!);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("records a click in each observed window and in the page's own window", () => {
+      const { c, page } = install(true);
+      const first = open();
+      const second = open();
+
+      click(page.buy);
+      click(first.buy);
+      click(second.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(3);
+    });
+
+    it("adds no listener when the page's own window is observed, so a click records once", () => {
+      const { c, page } = install(true);
+      const added = vi.spyOn(window, "addEventListener");
+
+      stops.push(observeWindow(window));
+      expect(added).not.toHaveBeenCalled();
+      click(page.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("adds one listener when the same window is observed twice", () => {
+      const { c } = install(true);
+      const popout = open();
+      stops.push(observeWindow(popout.win));
+
+      click(popout.buy);
+
+      expect(leftOn(popout, "click")).toBe(1);
+      expect(leftOn(popout, "pagehide")).toBe(1);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("removes the listener when the stop function runs, and a second call is fine", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      const stop = observeWindow(popout.win);
+      click(popout.buy);
+
+      stop();
+      click(popout.buy);
+
+      expect(() => {
+        stop();
+      }).not.toThrow();
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      expect(leftOn(popout, "click")).toBe(0);
+    });
+
+    it("stops one window without touching the others", () => {
+      const { c } = install(true);
+      const first = open(false);
+      const second = open();
+      const stopFirst = observeWindow(first.win);
+
+      stopFirst();
+      click(first.buy);
+      click(second.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("removes a window at pagehide, as if the stop function ran", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      const stop = observeWindow(popout.win);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(leftOn(popout, "pagehide")).toBe(0);
+      expect(() => {
+        stop();
+      }).not.toThrow();
+    });
+
+    it("keeps a window observed at the pagehide of its initial about:blank document", () => {
+      // The browser fires pagehide on the blank document, then loads the page into the same
+      // window object. Forgetting the window here would leave the real page uncaptured.
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      expect(observedWindows().includes(popout.win)).toBe(true);
+      expect(leftOn(popout, "click")).toBe(1);
+      expect(leftOn(popout, "pagehide")).toBe(1);
+    });
+
+    it("forgets a window at the pagehide of a document that isn't the initial about:blank", () => {
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+      popout.win.history.replaceState(null, "", "#moved");
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(leftOn(popout, "pagehide")).toBe(0);
+    });
+
+    it("forgets a closed window at the pagehide of its about:blank document", () => {
+      const { c } = install(true);
+      const popout = open(true, openBlankPopout);
+      stubClosed(popout.win, true);
+
+      popout.win.dispatchEvent(new Event("pagehide"));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+      expect(leftOn(popout, "click")).toBe(0);
+    });
+
+    it("attaches a listed window again when the app observes it a second time", () => {
+      // The page behind the handle can get a new Window object, which has none of our listeners.
+      const { c } = install(true);
+      const popout = open();
+      for (const [type, listener, options] of popout.add.mock.calls) {
+        popout.win.removeEventListener(type, listener, options);
+      }
+      click(popout.buy);
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+
+      stops.push(observeWindow(popout.win));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("keeps a pagehide handler throw from the page, and forgets the window", async () => {
+      install(true);
+      const popout = open(true, openBlankPopout);
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      popout.win.addEventListener("error", pageErrors);
+      await popout.block();
+
+      try {
+        popout.win.dispatchEvent(new Event("pagehide"));
+      } finally {
+        removeEventListener("error", pageErrors);
+      }
+
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(observedWindows().includes(popout.win)).toBe(false);
+    });
+
+    it("observes a window again after its stop function ran", () => {
+      const { c } = install(true);
+      const popout = open(false);
+      observeWindow(popout.win)();
+
+      stops.push(observeWindow(popout.win));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("attaches a window that was observed before the capture installed", () => {
+      const { capture, c } = build(true);
+      const popout = open();
+
+      capture.install();
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("forgets a window that closed before the capture installed, for good", () => {
+      // Nothing hears the pagehide of a window while clicks are off, so the install prunes it.
+      const { capture, c } = build(true);
+      const popout = open();
+      const setClosed = stubClosed(popout.win, true);
+
+      capture.install();
+      click(popout.buy);
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+
+      setClosed(false);
+      capture.uninstall();
+      capture.install();
+      click(popout.buy);
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("removes the listener at uninstall and adds it again at the next install", () => {
+      const { capture, c } = install(true);
+      const popout = open();
+      click(popout.buy);
+
+      capture.uninstall();
+      click(popout.buy);
+      expect(leftOn(popout, "click")).toBe(0);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+
+      capture.install();
+      click(popout.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(2);
+    });
+
+    it("attaches the window to the capture that replaces an uninstalled one", () => {
+      const { capture, c } = install(true);
+      const popout = open();
+      capture.uninstall();
+
+      const next = new InteractionCapture(c);
+      captures.push(next);
+      next.install();
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it.each([
+      ["interactions are off", {}],
+      ["only navigation is on", { navigation: true }],
+    ])("adds nothing to the observed window when %s", (_name, over) => {
+      const { c } = install(false, over);
+      const popout = open();
+
+      click(popout.buy);
+
+      expect(popout.add).not.toHaveBeenCalled();
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+    });
+
+    it("adds no navigation capture to the observed window", () => {
+      install(true, { navigation: true });
+      const popout = open(false);
+      const { pushState, replaceState } = popout.win.history;
+
+      stops.push(observeWindow(popout.win));
+
+      expect(popout.win.history.pushState).toBe(pushState);
+      expect(popout.win.history.replaceState).toBe(replaceState);
+      const added = popout.add.mock.calls.map(([type]) => type);
+      expect(added).not.toContain("popstate");
+      expect(added).not.toContain("hashchange");
+    });
+
+    it.each([
+      ["blocks every read", foreignWindow],
+      ["blocks only the document", blockedDocumentWindow],
+    ])("reports a window from another origin once when it %s", (_name, make) => {
+      const { c, page } = install(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      let stop: (() => void) | undefined;
+
+      expect(() => {
+        stop = observeWindow(make());
+      }).not.toThrow();
+
+      expect(stop).toBeTypeOf("function");
+      expect(() => {
+        stop?.();
+      }).not.toThrow();
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        ["capture.install_failed", OTHER_ORIGIN],
+      ]);
+      click(page.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("reports a window from another origin that was observed before the install", () => {
+      const { capture, c } = build(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      stops.push(observeWindow(foreignWindow()));
+
+      capture.install();
+
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        ["capture.install_failed", OTHER_ORIGIN],
+      ]);
+    });
+
+    it.each([null, undefined, {}])("gives a stop function that does nothing for %s", (value) => {
+      const { c, page } = install(true);
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+
+      const stop = observeWindow(asWindow(value));
+
+      expect(stop).toBeTypeOf("function");
+      expect(() => {
+        stop();
+      }).not.toThrow();
+      expect(reported.mock.calls.map(([event]) => event.message)).not.toContain(OTHER_ORIGIN);
+      click(page.buy);
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    describe("when an observed window turns cross-origin", () => {
+      let originals: Pick<History, "pushState" | "replaceState"> | undefined;
+
+      beforeEach(() => {
+        originals = { pushState: history.pushState, replaceState: history.replaceState };
+      });
+
+      afterEach(() => {
+        // A failed uninstall leaves the history patches in, and the next spec mustn't inherit them.
+        if (originals) {
+          history.pushState = originals.pushState;
+          history.replaceState = originals.replaceState;
+        }
+      });
+
+      it("lets the stop function run without a throw", async () => {
+        install(true);
+        const popout = open(false);
+        const stop = observeWindow(popout.win);
+        await popout.block();
+
+        expect(() => {
+          stop();
+        }).not.toThrow();
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+
+      it("lets uninstall run without a throw, and restores the history patches", async () => {
+        const { capture, c, page } = build(true, { navigation: true });
+        const { pushState, replaceState } = history;
+        capture.install();
+        const popout = open();
+        await popout.block();
+
+        expect(() => {
+          capture.uninstall();
+        }).not.toThrow();
+
+        expect(history.pushState).toBe(pushState);
+        expect(history.replaceState).toBe(replaceState);
+        click(page.buy);
+        expect(c.breadcrumbs.snapshot()).toEqual([]);
+      });
+
+      it("detaches the other windows when one throws at uninstall", async () => {
+        const { capture } = install(true);
+        const blocked = open();
+        const healthy = open();
+        await blocked.block();
+
+        expect(() => {
+          capture.uninstall();
+        }).not.toThrow();
+
+        expect(leftOn(healthy, "click")).toBe(0);
+      });
+
+      it("counts a URL read that throws as a URL change in the dead check", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        await popout.block();
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ends a dead check without a throw, and the next click gets a check", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+        click(page.buy);
+        await popout.block();
+
+        await wait();
+        const before = events(logger, "ui.dead_click").length;
+        click(page.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toHaveLength(before + 1);
+      });
+
+      it("skips and forgets a window whose document can't be read in a dead check", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+        await popout.block();
+
+        click(page.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+    });
+
+    it.each<[string, unknown]>([
+      ["an empty object", {}],
+      ["null", null],
+      ["a registry with members of the wrong type", { windows: "x", observers: 1 }],
+    ])("replaces %s under the registry key with a fresh registry", (_name, value) => {
+      const { capture, c } = build(true);
+      const popout = open(false);
+      const key = Symbol.for(`${OBSERVED_WINDOWS_KEY}@${TELEMETRY_SDK_VERSION}`);
+      (globalThis as Record<symbol, unknown>)[key] = value;
+
+      try {
+        expect(() => {
+          stops.push(observeWindow(popout.win));
+        }).not.toThrow();
+        capture.install();
+        click(popout.buy);
+
+        expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      } finally {
+        Reflect.deleteProperty(globalThis, key);
+      }
+    });
+
+    it.each<[string, (page: Regions, popout: Popout) => Element]>([
+      ["the page's own window", (page) => page.buy],
+      ["an observed window", (_page, popout) => popout.buy],
+    ])("keeps a throw while it handles a click in %s away from the page", (_name, pick) => {
+      const { c, page } = install(true);
+      const popout = open();
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      c.diagnostics.setHandler(reported);
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      popout.win.addEventListener("error", pageErrors);
+      const target = pick(page, popout);
+      vi.spyOn(target, "closest").mockImplementation(() => {
+        throw new TypeError("closest failed");
+      });
+
+      click(target);
+      removeEventListener("error", pageErrors);
+
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
+    });
+
+    it.each([
+      ["has no addEventListener", { document: {} }],
+      ["has an addEventListener that isn't a function", { document: {}, addEventListener: "x" }],
+    ])(
+      "gives a stop function that does nothing for a value with a document that %s",
+      (_n, value) => {
+        const { c, page } = install(true);
+        const reported = vi.fn<(event: DiagnosticEvent) => void>();
+        c.diagnostics.setHandler(reported);
+
+        const stop = observeWindow(asWindow(value));
+
+        expect(stop).toBeTypeOf("function");
+        expect(() => {
+          stop();
+        }).not.toThrow();
+        expect(reported).not.toHaveBeenCalled();
+        click(page.buy);
+        expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      },
+    );
+
+    describe("dead clicks", () => {
+      it("drops a window that closed after the install at the next dead check", async () => {
+        // A user-closed about:blank popout still reads closed false at its pagehide, so the
+        // registry sees it close later.
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open(true, openBlankPopout);
+        stubClosed(popout.win, true);
+
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+        expect(popout.add.mock.calls.filter(([type]) => type === "scroll")).toEqual([]);
+      });
+
+      it("doesn't observe a dropped window again, even if it reads open", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open(true, openBlankPopout);
+        const setClosed = stubClosed(popout.win, true);
+        click(page.buy);
+        await wait();
+
+        setClosed(false);
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toHaveLength(2);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+
+      it("records a dead click for a click in the observed window with no answer", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records no dead click when the page's own document answers the click", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        page.feed.append(document.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the observed window's own document answers", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when a click in the page changes an observed window", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ignores a change in a live region of the observed window", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("ignores a live region of the page for a click in the observed window", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        page.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("ignores a live region of an observed window for a click in the page", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(page.buy);
+        popout.price.textContent = "101";
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("counts a change outside a live region in one document as a response", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.price.textContent = "101";
+        page.feed.append(document.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the observed window's document scrolls", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.doc.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when an element outside a live region scrolls there", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.feed.dispatchEvent(new Event("scroll"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("ignores a scroll inside a live region of the observed window", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.grid.dispatchEvent(new Event("scroll"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, (popout: Popout, stop: () => void) => void]>([
+        [
+          "goes away at pagehide",
+          (popout) => {
+            popout.win.dispatchEvent(new Event("pagehide"));
+          },
+        ],
+        [
+          "stops being observed",
+          (_popout, stop) => {
+            stop();
+          },
+        ],
+      ])(
+        "records no dead click and keeps no listener when the clicked window %s",
+        async (_name, leave) => {
+          const { logger } = install({ deadClicks: true });
+          const popout = open(false);
+          const stop = observeWindow(popout.win);
+          click(popout.buy);
+
+          leave(popout, stop);
+          await wait();
+
+          expect(events(logger, "ui.dead_click")).toEqual([]);
+          expect(["click", "pagehide", "scroll"].map((type) => leftOn(popout, type))).toEqual([
+            0, 0, 0,
+          ]);
+        },
+      );
+
+      it("records no dead click when the URL of the clicked window changes", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+
+        click(popout.buy);
+        popout.win.history.replaceState(null, "", "#moved");
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it("records no dead click when the URL of the page changes", async () => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+        const original = location.href;
+
+        click(popout.buy);
+        history.replaceState(null, "", "/moved");
+        await wait();
+        history.replaceState(null, "", original);
+
+        expect(events(logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (popout: Popout) => void]>([
+        [
+          "the data of a text node",
+          ({ price }) => {
+            (price.firstChild as Text).data = "101";
+          },
+        ],
+        [
+          "an attribute",
+          ({ price }) => {
+            price.setAttribute("class", "up");
+          },
+        ],
+      ])("ignores %s in a live region of another realm", async (_name, change) => {
+        const { logger } = install({ deadClicks: true });
+        const popout = open();
+        foreignRealm();
+
+        click(popout.buy);
+        change(popout);
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+    });
   });
 });
 

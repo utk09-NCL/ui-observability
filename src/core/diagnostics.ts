@@ -13,6 +13,7 @@ export type DiagnosticCode =
   | "security.context_mismatch"
   | "record.dropped_during_rotation"
   | "bus.rejected_message"
+  | "bus.journey_denied"
   | "config.invalid"
   | "config.reconfigured"
   | "record.sanitize_failed"

@@ -2,7 +2,8 @@
 //
 // The order ticket: a pair, a side, a quantity, the live bid and ask of the pair, and the fault
 // switch of the mock API. A placed order is one journey, one measure and one fetch with a
-// traceparent header, see orders/place-order.ts.
+// traceparent header, see orders/place-order.ts. The quote changes on its own, so it carries
+// data-observability-live. The form with the controls does not.
 
 import { type ReactElement, type SyntheticEvent, useState } from "react";
 import { type Pair, PAIRS, type Side } from "../api/types";
@@ -84,7 +85,7 @@ export function TicketPanel(): ReactElement {
             ))}
           </select>
         </div>
-        <p className="quote">
+        <p className="quote" data-observability-live>
           Bid <strong>{quote ? quote.bid : "-"}</strong> Ask{" "}
           <strong>{quote ? quote.ask : "-"}</strong>
         </p>

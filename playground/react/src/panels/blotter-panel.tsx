@@ -3,6 +3,9 @@
 // The blotter: the orders of the user with a status filter, a pair filter and a cancel button.
 // It also has two stress controls. They give the library something to see: a long frame, and a
 // control that does nothing, which is a dead click and, with three quick clicks, a rage click.
+// The status cell and the price cell change when the order stream pushes an update, so they carry
+// data-observability-live. The cell with the Cancel button does not, because its change is the
+// response to a click.
 
 import { type ReactElement, useMemo, useState } from "react";
 import { getLogger, profiler } from "@utk09/ui-observability";
@@ -183,8 +186,10 @@ export function BlotterPanel(): ReactElement {
                 <td>{order.pair}</td>
                 <td>{order.side}</td>
                 <td>{order.qty}</td>
-                <td data-status={order.status}>{order.status}</td>
-                <td>{order.price ?? "-"}</td>
+                <td data-status={order.status} data-observability-live>
+                  {order.status}
+                </td>
+                <td data-observability-live>{order.price ?? "-"}</td>
                 <td>
                   {order.status === "working" && (
                     <button

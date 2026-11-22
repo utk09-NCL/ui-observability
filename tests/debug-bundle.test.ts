@@ -65,7 +65,7 @@ describe("collectDebugBundle", () => {
     expect(JSON.stringify(config)).not.toContain("secret");
   });
 
-  it("cuts the query of a resolved endpoint and each scheme, and names plugins and a serializer", async () => {
+  it("cuts the query of a relative and a wss URL and names a plugin and a serializer", async () => {
     start({
       // The random security context id is hex and shows up in the summary. CI run 44957880104
       // had "abcd" in it, so the secret has non-hex letters and this pinned id keeps that tested.

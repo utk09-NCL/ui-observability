@@ -553,3 +553,56 @@ test("a panel window follows the withdrawal and the grant of consent in the work
   await child.getByRole("button", { name: "Freeze 300 ms" }).click();
   await expect.poll(windowFroze, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
 });
+
+test("captures the clicks in a popout window, and a dead click while the prices tick", async ({
+  page,
+}) => {
+  await logIn(page, "smoke-user");
+  // The panel code of a popout runs in the opener, but dockview moves its DOM into another
+  // window. The workspace gives that window to observeWindow(), so the library hears the click.
+  const popup = page.waitForEvent("popup");
+  await page
+    .getByRole("region")
+    .filter({ has: page.getByRole("tab", { name: "Blotter", exact: true }) })
+    .first()
+    .getByRole("button", { name: "Pop out group" })
+    .click();
+  const popout = await popup;
+  const exportButton = popout.getByRole("button", { name: /^Export/ });
+  await expect(exportButton).toBeVisible();
+  // dockview sizes the new window for a moment, and each size write is a page change. A click
+  // before it ends has an answer, and so it is not a dead click.
+  await popout.waitForTimeout(1500);
+
+  // One click on a control that does nothing, while the live tiles of the main window tick. They
+  // carry data-observability-live, so they are not an answer to the click. The Order ticket form
+  // is open and re-renders at each tick, but the library ignores a write with the old value.
+  await exportButton.click();
+  await expect
+    .poll(
+      async () =>
+        (await receivedRecords()).filter(
+          (record) =>
+            record.body === "ui.dead_click" &&
+            record.attributes["click.action"] === "export-orders",
+        ).length,
+      { timeout: 15_000 },
+    )
+    .toBe(1);
+
+  // Three quick clicks on the same control are a rage click, which the library also finds there.
+  for (let count = 0; count < 3; count += 1) {
+    await exportButton.click();
+  }
+  await expect
+    .poll(
+      async () =>
+        (await receivedRecords()).filter(
+          (record) =>
+            record.body === "ui.rage_click" &&
+            record.attributes["click.action"] === "export-orders",
+        ).length,
+      { timeout: 15_000 },
+    )
+    .toBe(1);
+});

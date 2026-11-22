@@ -176,6 +176,108 @@ describe("resolveIdentity", () => {
   });
 });
 
+describe("resolveIdentity in a popup", () => {
+  /**
+   * Makes this window read like a popup. The opener is a same-origin window, and its
+   * sessionStorage holds one tab id.
+   * @param tabId The tab id in the opener's sessionStorage, or null for none.
+   * @param closed Whether the opener has closed.
+   * @returns The opener's getItem, to check what the code read.
+   */
+  const openerWithTab = (tabId: string | null, closed = false) => {
+    const getItem = vi.fn((key: string) => (key === TAB_KEY ? tabId : null));
+    vi.stubGlobal("opener", { closed, sessionStorage: { getItem } });
+    return getItem;
+  };
+
+  it("makes a new tab id when its opener holds the same one, and stores it", () => {
+    const diagnostics = collect().diagnostics;
+    // window.open copies the opener's sessionStorage into the popup.
+    sessionStorage.setItem(TAB_KEY, "copied-tab");
+    openerWithTab("copied-tab");
+
+    const identity = resolveIdentity(diagnostics);
+
+    expect(identity.tabId).toBeTruthy();
+    expect(identity.tabId).not.toBe("copied-tab");
+    expect(sessionStorage.getItem(TAB_KEY)).toBe(identity.tabId);
+  });
+
+  it("keeps the popup's own tab id when it reloads", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "copied-tab");
+    openerWithTab("copied-tab");
+
+    const first = resolveIdentity(diagnostics);
+    const reloaded = resolveIdentity(diagnostics);
+
+    expect(first.tabId).not.toBe("copied-tab");
+    expect(reloaded.tabId).toBe(first.tabId);
+  });
+
+  it("keeps a stored tab id that differs from the opener's", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "popup-tab");
+    openerWithTab("opener-tab");
+
+    const identity = resolveIdentity(diagnostics);
+
+    expect(identity.tabId).toBe("popup-tab");
+    expect(sessionStorage.getItem(TAB_KEY)).toBe("popup-tab");
+  });
+
+  it("keeps the stored tab id when the opener holds none", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "popup-tab");
+    openerWithTab(null);
+
+    expect(resolveIdentity(diagnostics).tabId).toBe("popup-tab");
+  });
+
+  it("keeps the stored tab id when there is no opener", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "own-tab");
+    vi.stubGlobal("opener", null);
+
+    expect(resolveIdentity(diagnostics).tabId).toBe("own-tab");
+  });
+
+  it("keeps the stored tab id when the opener has closed", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "copied-tab");
+    openerWithTab("copied-tab", true);
+
+    expect(resolveIdentity(diagnostics).tabId).toBe("copied-tab");
+  });
+
+  it("keeps the stored tab id, without a throw, when a cross-origin opener blocks the read", () => {
+    const diagnostics = collect().diagnostics;
+    sessionStorage.setItem(TAB_KEY, "own-tab");
+    // A cross-origin window answers `closed` and throws on its sessionStorage.
+    vi.stubGlobal("opener", {
+      closed: false,
+      get sessionStorage(): never {
+        throw new DOMException("blocked a frame", "SecurityError");
+      },
+    });
+
+    expect(() => resolveIdentity(diagnostics)).not.toThrow();
+    expect(resolveIdentity(diagnostics).tabId).toBe("own-tab");
+    expect(sessionStorage.getItem(TAB_KEY)).toBe("own-tab");
+  });
+
+  it("checks no opener and writes no tab id to the browser with identity memory", () => {
+    const diagnostics = collect().diagnostics;
+    const getItem = openerWithTab("shared-tab");
+
+    const identity = resolveIdentity(diagnostics, memoryStores());
+
+    expect(identity.tabId).toBeTruthy();
+    expect(getItem).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(TAB_KEY)).toBeNull();
+  });
+});
+
 describe("SessionTouch", () => {
   it("writes the first time it is called", () => {
     const diagnostics = collect().diagnostics;

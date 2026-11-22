@@ -40,6 +40,7 @@ import type {
 } from "./models/metric";
 
 export { serveTransportWorker } from "./transport/worker-entry";
+export { observeWindow } from "./capture/observed-windows";
 export { createMemoryTransport, type MemoryTransport } from "./transport/memory-transport";
 export type { Journey, Logger, ObservabilityConfig, OneLoggerOptions };
 export type {

@@ -2,7 +2,9 @@
 //
 // The positions of the user and their P&L. A dedicated worker computes the P&L. The page
 // registers the worker with registerWorker(), so the records that the worker logs reach the page
-// over the bus. The page batches and sends them, and its redact hook runs on them.
+// over the bus. The page batches and sends them, and its redact hook runs on them. The mid price,
+// the P&L and the time of the last pass change on their own, so they carry
+// data-observability-live.
 
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { getLogger, registerWorker } from "@utk09/ui-observability";
@@ -55,7 +57,7 @@ export function PositionsPanel(): ReactElement {
   useEffect(() => {
     const instance = createWorker();
     // The worker asks for the journey of the page when its runtime starts. Without journey:read,
-    // the bus rejects that request and counts bus.rejected_message. With it, the records of the
+    // the bus refuses that request and counts bus.journey_denied. With it, the records of the
     // worker carry the active journey.
     const unregister = registerWorker(instance, { permissions: ["records", "journey:read"] });
     instance.addEventListener("message", (event: MessageEvent) => {
@@ -125,7 +127,12 @@ export function PositionsPanel(): ReactElement {
     <section className="panel" aria-label="Positions">
       <p className="muted">
         The worker computes P&amp;L from the net position and the live mid price.
-        {computeMs !== null && <> Last pass: {computeMs} ms.</>}
+        {computeMs !== null && (
+          <>
+            {" "}
+            Last pass: <span data-observability-live>{computeMs}</span> ms.
+          </>
+        )}
       </p>
       <p role="alert" className="warn">
         {error}
@@ -147,8 +154,13 @@ export function PositionsPanel(): ReactElement {
                 <td>{row.pair}</td>
                 <td>{row.netQty}</td>
                 <td>{row.avgPrice}</td>
-                <td>{row.mid ?? "-"}</td>
-                <td data-sign={row.pnl === null ? "none" : Math.sign(row.pnl)}>{row.pnl ?? "-"}</td>
+                <td data-observability-live>{row.mid ?? "-"}</td>
+                <td
+                  data-sign={row.pnl === null ? "none" : Math.sign(row.pnl)}
+                  data-observability-live
+                >
+                  {row.pnl ?? "-"}
+                </td>
               </tr>
             ))}
           </tbody>

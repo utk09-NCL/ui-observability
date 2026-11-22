@@ -9,9 +9,11 @@ import {
   HOLD_BUFFER_HEAD_RECORDS,
   METRIC_DEFAULT_BOUNDARIES,
   SESSION_ID_KEY,
+  TAB_ID_KEY,
   TELEMETRY_SDK_VERSION,
 } from "../src/constants";
 import type { WorkerLike } from "../src/bus/links";
+import type { DiagnosticEvent } from "../src/core/diagnostics";
 import { JourneyEngine } from "../src/core/journey";
 import { LibraryLogger } from "../src/core/logger";
 import { Meter } from "../src/core/meter";
@@ -19,6 +21,7 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
 import type { LogBatch } from "../src/models/batch";
+import { unwrap, type BusMessage } from "../src/models/bus";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import type { CapturePlugin, PluginContext } from "../src/models/plugin";
@@ -47,6 +50,7 @@ import {
   logEvent,
   newSession,
   newTrace,
+  observeWindow,
   registerWorker,
   removeContext,
   setContext,
@@ -55,6 +59,7 @@ import {
   trace,
   warn,
 } from "../src/index";
+import { asWindow, foreignWindow, leftOn, openPopout, type Popout } from "./window-fakes";
 
 // These tests select the old policy, which permits routing changes and source discovery by origin.
 const base = {
@@ -148,6 +153,33 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** A BroadcastChannel stand-in that keeps what the runtime's bus posts. */
+class RecordingChannel {
+  /** Every payload that any channel posted, in order. */
+  static posted: unknown[] = [];
+
+  onmessage: ((event: MessageEvent) => void) | null = null;
+
+  constructor(readonly name: string) {}
+
+  /**
+   * Reads the tab id of each tab claim that was posted.
+   * @returns The tab ids in posting order.
+   */
+  static claimedIds(): string[] {
+    return RecordingChannel.posted.flatMap((data) => {
+      const message = unwrap(data);
+      return message?.t === "ui-observability.message.tab" ? [message.tabId] : [];
+    });
+  }
+
+  postMessage(data: unknown): void {
+    RecordingChannel.posted.push(data);
+  }
+
+  close(): void {}
+}
 
 describe("runtime lifecycle", () => {
   it("does nothing at import time, so importing the package is free", async () => {
@@ -1057,6 +1089,52 @@ describe("runtime lifecycle", () => {
     );
 
     expect(runtime().identity.tabId).not.toBe(before);
+  });
+
+  it("claims the new tab id on the channel after a tab conflict", async () => {
+    vi.stubGlobal("BroadcastChannel", RecordingChannel);
+    RecordingChannel.posted = [];
+    configure(base);
+    await ready();
+    const before = runtime().identity.tabId;
+    const { receive } = bus() as unknown as {
+      receive: (message: BusMessage, source: { link: "broadcast"; origin: string }) => void;
+    };
+    const broadcast = { link: "broadcast" as const, origin: "same-origin" };
+
+    // A document that started long before this one claims the same tab id, so this one renames.
+    receive(
+      { t: "ui-observability.message.tab", from: "opener", tabId: before, since: 1 },
+      broadcast,
+    );
+    const renamed = runtime().identity.tabId;
+    // A document that started later claims the new id, and this one answers with its claim.
+    receive(
+      { t: "ui-observability.message.tab", from: "later", tabId: renamed, since: 9e15 },
+      broadcast,
+    );
+
+    expect(renamed).not.toBe(before);
+    expect(RecordingChannel.claimedIds()).toEqual([before, renamed]);
+  });
+
+  it("puts a new tab id on the records of a popup that copied its opener's tab id", async () => {
+    // window.open copies the opener's sessionStorage, so both windows start with one tab id.
+    sessionStorage.setItem(TAB_ID_KEY, "opener-tab");
+    vi.stubGlobal("opener", {
+      closed: false,
+      sessionStorage: { getItem: (key: string) => (key === TAB_ID_KEY ? "opener-tab" : null) },
+    });
+
+    configure(base);
+    await ready();
+    info("from the popup");
+
+    const stamped = buffered().at(-1)?.resource["tab.id"];
+    expect(stamped).toEqual(expect.any(String));
+    expect(stamped).not.toBe("opener-tab");
+    expect(stamped).toBe(runtime().identity.tabId);
+    expect(sessionStorage.getItem(TAB_ID_KEY)).toBe(stamped);
   });
 
   it("installs interactions, web-vitals, long-frames and console captures when enabled", async () => {
@@ -2520,6 +2598,207 @@ describe("public API", () => {
 
   it("shuts down cleanly when nothing was ever configured", async () => {
     await expect(shutdown()).resolves.toBeUndefined();
+  });
+});
+
+describe("observeWindow", () => {
+  const OTHER_ORIGIN =
+    "The library cannot observe a window from another origin. It captures no clicks there.";
+  const on = { ...base, capture: { interactions: true } };
+
+  const stops: (() => void)[] = [];
+  const popouts: Popout[] = [];
+
+  /**
+   * Opens a popout for the spec.
+   * @returns The popout, which afterEach closes.
+   */
+  const open = (): Popout => {
+    const popout = openPopout();
+    popouts.push(popout);
+    return popout;
+  };
+
+  /**
+   * Observes a popout, so afterEach can stop it.
+   * @param popout The popout to observe.
+   */
+  const watch = (popout: Popout): void => {
+    stops.push(observeWindow(popout.win));
+  };
+
+  /** Clicks an element with an event that bubbles. */
+  const click = (element: Element): void => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  };
+
+  /** Returns the click breadcrumbs of the live runtime. */
+  const clicks = () =>
+    runtime()
+      .breadcrumbs.snapshot()
+      .filter(({ category }) => category === "click");
+
+  /**
+   * Waits until the interactions capture is in the runtime's capture list, or is gone from it.
+   * @param expected True to wait for the capture, false to wait for its removal.
+   */
+  const installed = (expected = true): Promise<void> =>
+    vi.waitFor(() => {
+      const names = runtime()["captures"].map((capture: { name: string }) => capture.name);
+      expect(names.includes("interactions")).toBe(expected);
+    });
+
+  afterEach(() => {
+    for (const stop of stops.splice(0)) {
+      stop();
+    }
+    for (const popout of popouts.splice(0)) {
+      popout.close();
+    }
+  });
+
+  it("records a click in an observed window and gives a stop function", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+
+    const stop = observeWindow(popout.win);
+    stops.push(stop);
+    click(popout.buy);
+
+    expect(stop).toBeTypeOf("function");
+    expect(clicks()).toMatchObject([{ message: "buy" }]);
+  });
+
+  it("attaches a window observed before configure() when the capture installs", async () => {
+    const popout = open();
+    watch(popout);
+
+    configure(on);
+    await ready();
+    await installed();
+    click(popout.buy);
+
+    expect(clicks()).toHaveLength(1);
+  });
+
+  it("keeps a window observed across shutdown() and a later configure()", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    click(popout.buy);
+    expect(clicks()).toHaveLength(1);
+
+    await shutdown();
+    configure(on);
+    await ready();
+    await installed();
+    click(popout.buy);
+
+    expect(clicks()).toHaveLength(1);
+  });
+
+  it("removes the listener at shutdown()", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    expect(leftOn(popout, "click")).toBe(1);
+
+    await shutdown();
+
+    expect(leftOn(popout, "click")).toBe(0);
+  });
+
+  it("removes the listener when interactions turn off and adds it when they turn on", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    watch(popout);
+    click(popout.buy);
+
+    configure({ capture: { interactions: false } });
+    await installed(false);
+    click(popout.buy);
+    expect(leftOn(popout, "click")).toBe(0);
+    expect(clicks()).toHaveLength(1);
+
+    configure({ capture: { interactions: true } });
+    await installed();
+    click(popout.buy);
+    expect(clicks()).toHaveLength(2);
+  });
+
+  it("adds nothing to an observed window while interactions are off", async () => {
+    configure(base);
+    await ready();
+    // The default error capture shows that the install is complete, so the check is real.
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((capture: { name: string }) => capture.name)).toContain(
+        "errors",
+      );
+    });
+    const popout = open();
+
+    watch(popout);
+    click(popout.buy);
+
+    expect(popout.add).not.toHaveBeenCalled();
+    expect(runtime().breadcrumbs.snapshot()).toEqual([]);
+  });
+
+  it("reports a window from another origin through onDiagnostic, and never throws", async () => {
+    const onDiagnostic = vi.fn<(event: DiagnosticEvent) => void>();
+    configure({ ...on, onDiagnostic });
+    await ready();
+    await installed();
+    let stop: (() => void) | undefined;
+
+    expect(() => {
+      stop = observeWindow(foreignWindow());
+    }).not.toThrow();
+
+    expect(stop).toBeTypeOf("function");
+    expect(() => {
+      stop?.();
+    }).not.toThrow();
+    const reports = onDiagnostic.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.message === OTHER_ORIGIN);
+    expect(reports).toMatchObject([{ code: "capture.install_failed" }]);
+  });
+
+  it.each([null, undefined, {}])("gives a stop function for %s before configure()", (value) => {
+    let stop: (() => void) | undefined;
+
+    expect(() => {
+      stop = observeWindow(asWindow(value));
+    }).not.toThrow();
+
+    expect(stop).toBeTypeOf("function");
+    expect(() => {
+      stop?.();
+    }).not.toThrow();
+  });
+
+  it("gives a stop function after shutdown(), attaches nothing and starts no runtime", async () => {
+    configure(on);
+    await ready();
+    await installed();
+    const popout = open();
+    await shutdown();
+
+    const stop = observeWindow(popout.win);
+    stops.push(stop);
+
+    expect(stop).toBeTypeOf("function");
+    expect(leftOn(popout, "click")).toBe(0);
+    expect(ObservabilityRuntime.current()).toBeNull();
   });
 });
 

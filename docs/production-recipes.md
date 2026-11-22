@@ -70,7 +70,7 @@ Each function stops a different part. Select the function from this table, not f
 | --- | --- | --- | --- | --- |
 | `configure({ enabled: false })` | The library builds no new record. This includes log, action, metric and span records. Logger calls print nothing to the console. The pause first sends the open interval of the counters, histograms and probes. They then record nothing. The library removes its captures, the session replay recorder and its network patches. It adds no trace header. The sender sends nothing. It does not drain, retry or run the exit flush. The bus of a running runtime stays connected. A first `configure()` call with `enabled: false` starts no bus and no sender. It writes nothing to storage. | Records that are in the buffers stay. They go out after `enabled: true`. Context attributes and breadcrumbs stay. The replay buffer goes with the recorder. A record that a child context forwards is lost with `disabled`, also in a paused forwarder. At a `pagehide` or a `shutdown()`, `onDrop` reports the records in memory with `disabled`, one time for each record. | The pause stores no new record. A request in flight at the pause can still fail and store its batch. A delivery stack load that ends during the pause moves the emergency queue into storage. A `retain` rotation stores the waiting records under the old context. A `discard` or `flush` rotation removes the stored batches of the old context, also before consent. The stored batches go out after `enabled: true`. | `configure({ enabled: true })`. It starts a new replay recording. A locked configuration refuses both calls. |
 | `stopReplay()` | The session replay recorder and the replay request in flight. Logging and delivery continue. | The library drops the replay buffer and each replay segment that is not sent. Log records stay. | No change. | `startReplay()`. A later `configure()` does not start the recorder. |
-| `shutdown()` | Each subsystem. The library runs a normal flush, then the exit flush. It then cancels each open request, removes each capture and stops the bus. Later calls do nothing. |
+| `shutdown()` | Each subsystem. The library runs a normal flush, then the exit flush. It then cancels each open request, removes each capture and stops the bus. Later calls do nothing. The bus forgets each `registerFrame()` and `registerWorker()` registration. |
 | `shutdown({ pending: "discard" })` | Each subsystem, with no send and no exit flush. `onDrop` reports each record in memory with `discarded`. The stored batches stay. |
 | `shutdown({ pending: "discard", clearStorage })` | The same as the discard. The library also removes the stored batches, the emergency queue entries, the stored session id, the tab id and the journey. |
 | `rotateSecurityContext(update, options?)` | The sender of the old context, its retries and its open requests. The active trace and the active journey end. During the rotation, the library drops logger calls, metric values and forwarded records. | The `pending` rule decides for the old records. The library clears the context attributes, the breadcrumbs, the debug buffer and the replay buffer. It applies `update.context` and starts a new session and a new trace. | `discard` and `flush` remove the stored batches and the emergency queue of the old context. `retain` keeps them under the old ID. `carry` moves them to the new ID. | Delivery starts automatically with `update.routing`. With `routing: {}`, the runtime is console-only until a later rotation gives an endpoint. |
@@ -140,17 +140,19 @@ On a shared device, the next user must not get the stored data of the previous u
 2. Wait for the promise.
 3. Revoke the token and clear the application state.
 4. Call `configure()` again for the next user. It starts a new runtime with new ids.
+5. Register each frame and worker again. The new runtime has no registration.
 
 ```ts
 import { configure, shutdown } from "@utk09/ui-observability";
 
-await shutdown({ pending: "discard", clearStorage: "context" });
+await shutdown({ pending: "discard", clearStorage: "namespace" });
 await revokeToken();
 configure(anonymousConfig);
 ```
 
 - The discard sends nothing. `onDrop` reports each record in memory with `discarded`.
 - `"context"` removes the stored batches and the emergency queue entries of the active security context. `"namespace"` removes them for each context in `storage.namespace`, including parked batches.
+- Use `"namespace"` on a shared device. By default, each page load starts a new security context. With `"context"`, the parked batches of earlier page loads and of other windows stay for `retention.maxAgeMs`.
 - Both scopes remove the stored session id, the tab id and the journey. The next runtime starts a new session.
 - A request in flight can still reach the server. The library does not report its records.
 - In a forwarder, call `shutdown()` in the upstream owner too. A forwarder stores no batch.
@@ -267,6 +269,8 @@ An empty `routing` resets the endpoint to `null`. The runtime is then console-on
 When the parked batches of other contexts must also go, stop the runtime instead. Call `shutdown({ pending: "discard", clearStorage: "namespace" })`. It applies to the configured `storage.namespace` only. A later `configure()` starts a new runtime. That runtime starts paused only with `enabled: false` in its first call.
 
 A rotation rejects in a forwarder. Do step 4 in the upstream owner.
+
+A first `configure()` call with `enabled: false` starts no bus. A `shutdown()` and then such a call also start no bus. A frame or a worker then gets no owner. After the handshake timeout, it becomes its own sender. With its own `endpoint`, it sends records after the user withdrew consent. Give a child no `endpoint`, or send the consent state to the child and stop its runtime there. A child that is connected when the runtime pauses stays a forwarder. The paused owner drops its records with `disabled`.
 
 When the user agrees again, do these steps.
 
