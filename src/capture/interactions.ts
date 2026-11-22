@@ -61,35 +61,95 @@ function insideLive(target: EventTarget | null, live: string): boolean {
 }
 
 /**
- * Checks whether one DOM change answers a click. A change inside a live region doesn't, and
- * neither does a write that keeps the old value, which React does with `type` and `name` on each
- * render. A child list change that only adds or removes live elements doesn't either, so a grid
- * that swaps a marked cell for a new one stays quiet.
- * @param record The change.
- * @param live Selector of the live regions.
- * @returns True if the change answers the click.
- * @throws SyntaxError for a selector the browser can't parse. Call it inside a diagnostics guard.
+ * Checks whether an attribute or a text node now differs from a record's old value.
+ * @param record An attributes or characterData change.
+ * @returns True if the current value differs from the record's old value.
  */
-function changeAnswers(record: MutationRecord, live: string): boolean {
-  if (insideLive(record.target, live)) {
-    return false;
-  }
-
-  if (record.type === "attributes") {
-    // An attributes record always names its attribute.
-    const { attributeName, attributeNamespace, oldValue } = record as MutationRecord & {
-      attributeName: string;
-    };
-    return (
-      (record.target as Element).getAttributeNS(attributeNamespace, attributeName) !== oldValue
-    );
-  }
+function writeAnswers(record: MutationRecord): boolean {
   if (record.type === "characterData") {
     return (record.target as CharacterData).data !== record.oldValue;
   }
 
-  const nodes = [...record.addedNodes, ...record.removedNodes];
-  return !nodes.every((node) => isElement(node) && insideLive(node, live));
+  // An attributes record always names its attribute.
+  const { attributeName, attributeNamespace, oldValue } = record as MutationRecord & {
+    attributeName: string;
+  };
+  return (record.target as Element).getAttributeNS(attributeNamespace, attributeName) !== oldValue;
+}
+
+/** What one observer batch did to one node. */
+interface NodeChanges {
+  /** The attributes, and "" for a text node's data, whose first record the batch has checked. */
+  checked: Set<string>;
+  /** True if a live element was added under this node. */
+  added: boolean;
+  /** True if a live element was removed from under this node. */
+  removed: boolean;
+}
+
+/**
+ * Checks whether one observer batch answers a click. A change inside a live region doesn't. A
+ * batch that leaves an attribute or a text with the value it had before doesn't either, because
+ * nothing paints between the writes of one task. React writes an input's `name` and `type` that
+ * way. A grid that swaps a live element for a new one under the same parent doesn't answer. A
+ * live element that only appears or only goes away does, because a click can show or hide it.
+ * @param records The batch.
+ * @param live Selector of the live regions.
+ * @returns True if a change in the batch answers the click.
+ * @throws SyntaxError for a selector the browser can't parse. Call it inside a diagnostics guard.
+ */
+function batchAnswers(records: readonly MutationRecord[], live: string): boolean {
+  const changes = new Map<Node, NodeChanges>();
+  for (const record of records) {
+    if (insideLive(record.target, live)) {
+      continue;
+    }
+
+    let node = changes.get(record.target);
+    if (!node) {
+      node = { checked: new Set(), added: false, removed: false };
+      changes.set(record.target, node);
+    }
+
+    if (record.type === "childList") {
+      const nodes = [...record.addedNodes, ...record.removedNodes];
+      if (!nodes.every((each) => isElement(each) && insideLive(each, live))) {
+        return true;
+      }
+      // A browser can report one swap as one record or as two, so count the sides per parent.
+      node.added ||= record.addedNodes.length > 0;
+      node.removed ||= record.removedNodes.length > 0;
+      continue;
+    }
+
+    // Only the first record's old value is the value before the batch. A text node has no
+    // attributes, so "" for its data can't clash with an attribute name.
+    const key = record.attributeName ?? "";
+    if (node.checked.has(key)) {
+      continue;
+    }
+    node.checked.add(key);
+    if (writeAnswers(record)) {
+      return true;
+    }
+  }
+
+  return [...changes.values()].some((node) => node.added !== node.removed);
+}
+
+/**
+ * Checks whether an open window still shows the about:blank that window.open() starts with. A
+ * window that turned cross-origin throws, and that's the expected answer. The fallback is false,
+ * so the caller forgets the window and no throw reaches the page from its pagehide.
+ * @param win The window.
+ * @returns True for an open window on its initial about:blank.
+ */
+function onInitialBlank(win: Window): boolean {
+  try {
+    return win.document.URL === INITIAL_DOCUMENT_URL && !win.closed;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -361,7 +421,7 @@ export class InteractionCapture implements Capture {
     const live = options.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
     let responded = false;
     const observer = new MutationObserver((records) => {
-      responded ||= records.some((record) => this.answers(() => changeAnswers(record, live)));
+      responded ||= this.answers(() => batchAnswers(records, live));
     });
     const onScroll = (event: Event): void => {
       responded ||= this.answers(() => !insideLive(event.target, live));
@@ -463,7 +523,7 @@ export class InteractionCapture implements Capture {
     const win = event.currentTarget as Window;
     // window.open(url) starts on about:blank and fires pagehide there. Then it loads a page of
     // this origin into the same window, which keeps our listeners, so forgetting it would lose it.
-    if (win.document.URL === INITIAL_DOCUMENT_URL && !win.closed) {
+    if (onInitialBlank(win)) {
       return;
     }
 

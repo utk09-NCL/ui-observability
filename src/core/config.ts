@@ -1849,7 +1849,7 @@ function resolveInteractions(
       reportInvalid(
         diagnostics,
         "capture.interactions.deadClickIgnoreSelector",
-        'a valid CSS selector, or "" to count every change',
+        'a valid CSS selector, or "" to turn the live-region filter off',
         live,
         `"${deadClickIgnoreSelector}"`,
       );

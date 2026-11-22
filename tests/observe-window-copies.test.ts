@@ -7,6 +7,7 @@
 // second copy, because the click capture is a lazy chunk of the copy that was current at that
 // moment.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OBSERVED_WINDOWS_KEY, TELEMETRY_SDK_VERSION } from "../src/constants";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import type * as Library from "../src/index";
 import { leftOn, openPopout, type Popout } from "./window-fakes";
@@ -80,13 +81,12 @@ describe("observeWindow from a second copy of the library", () => {
     for (const popout of popouts.splice(0)) {
       popout.close();
     }
-    // A fix may keep the window list on the global object. The runtime keys stay, because the
-    // setup file shuts that runtime down.
-    for (const key of Object.getOwnPropertySymbols(globalThis)) {
-      if (/window/i.test(key.description ?? "")) {
-        Reflect.deleteProperty(globalThis, key);
-      }
-    }
+    // The window list sits on the global object. The runtime keys stay, because the setup file
+    // shuts that runtime down.
+    Reflect.deleteProperty(
+      globalThis,
+      Symbol.for(`${OBSERVED_WINDOWS_KEY}@${TELEMETRY_SDK_VERSION}`),
+    );
   });
 
   it("attaches the window to the capture of the shared runtime", async () => {

@@ -7,7 +7,12 @@ import { matchesAny } from "../src/capture/types";
 import type { CaptureContext, CaptureLogger } from "../src/capture/types";
 import { WebVitalsCapture } from "../src/capture/web-vitals";
 import { BreadcrumbBuffer } from "../src/core/breadcrumbs";
-import { ERROR_DEDUPE_MS, MAX_TRACKED_ERROR_SIGNATURES } from "../src/constants";
+import {
+  ERROR_DEDUPE_MS,
+  MAX_TRACKED_ERROR_SIGNATURES,
+  OBSERVED_WINDOWS_KEY,
+  TELEMETRY_SDK_VERSION,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -2331,6 +2336,18 @@ describe("InteractionCapture rage and dead clicks", () => {
             row.replaceChildren(marked());
           },
         ],
+      ])("records a dead click when the only change is %s", async (_name, html, apply) => {
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(html);
+
+        click(live.buy);
+        apply(row);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, string, (row: HTMLElement) => void]>([
         [
           "a marked cell added to the row",
           CELL,
@@ -2345,18 +2362,6 @@ describe("InteractionCapture rage and dead clicks", () => {
             row.firstElementChild?.remove();
           },
         ],
-      ])("records a dead click when the only change is %s", async (_name, html, apply) => {
-        const live = livePage({ deadClicks: true });
-        const row = rowOf(html);
-
-        click(live.buy);
-        apply(row);
-        await vi.advanceTimersByTimeAsync(1000);
-
-        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
-      });
-
-      it.each<[string, string, (row: HTMLElement) => void]>([
         [
           "a marked cell replaced by an unmarked node",
           CELL,
@@ -2442,6 +2447,79 @@ describe("InteractionCapture rage and dead clicks", () => {
         );
       });
 
+      it.each<
+        [string, (row: HTMLElement, other: HTMLElement) => Partial<MutationRecord>[], string]
+      >([
+        [
+          "records a dead click when two records of one batch swap a marked cell under one parent",
+          (row) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [row.firstElementChild] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+          ],
+          "dead",
+        ],
+        [
+          "records a dead click when two records of one batch swap in the other order",
+          (row) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [row.firstElementChild] as unknown as NodeList,
+            },
+          ],
+          "dead",
+        ],
+        [
+          "records no dead click when a batch adds under one parent and removes under another",
+          (row, other) => [
+            {
+              type: "childList",
+              target: row,
+              addedNodes: [marked()] as unknown as NodeList,
+              removedNodes: [] as unknown as NodeList,
+            },
+            {
+              type: "childList",
+              target: other,
+              addedNodes: [] as unknown as NodeList,
+              removedNodes: [other.firstElementChild] as unknown as NodeList,
+            },
+          ],
+          "answered",
+        ],
+      ])("%s", async (_name, records, outcome) => {
+        // A swap is an add and a remove of marked cells under one parent in one callback batch.
+        const live = livePage({ deadClicks: true });
+        const row = rowOf(CELL);
+        const other = rowOf(CELL);
+        const observer = stubMutationObserver();
+
+        click(live.buy);
+        observer.deliver(records(row, other));
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual(
+          outcome === "dead" ? [{ "click.action": "buy" }] : [],
+        );
+      });
+
       it("records a dead click when the only writes keep an attribute's value", async () => {
         const live = livePage({ deadClicks: true });
         const input = field();
@@ -2484,10 +2562,10 @@ describe("InteractionCapture rage and dead clicks", () => {
         ["an added attribute", (input) => input.setAttribute("placeholder", "Qty")],
         ["a removed attribute", (input) => input.removeAttribute("name")],
         [
-          "an attribute set to another value and back in one batch",
+          "an attribute set twice, and the last value differs from the first",
           (input) => {
             input.setAttribute("type", "number");
-            input.setAttribute("type", "text");
+            input.setAttribute("type", "email");
           },
         ],
         [
@@ -2497,11 +2575,10 @@ describe("InteractionCapture rage and dead clicks", () => {
           },
         ],
         [
-          "a text node set to other data and back in one batch",
+          "a text node set twice, and the last data differs from the first",
           (_input, text) => {
-            const original = text.data;
             text.data = "Closed";
-            text.data = original;
+            text.data = "Halted";
           },
         ],
       ])("records no dead click when the change is %s", async (_name, change) => {
@@ -2513,6 +2590,79 @@ describe("InteractionCapture rage and dead clicks", () => {
         await vi.advanceTimersByTimeAsync(1000);
 
         expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each<[string, (input: HTMLInputElement, text: Text) => void]>([
+        [
+          "an attribute set to another value and back",
+          (input) => {
+            input.setAttribute("type", "number");
+            input.setAttribute("type", "text");
+          },
+        ],
+        [
+          "an attribute added and removed again",
+          (input) => {
+            input.setAttribute("placeholder", "Qty");
+            input.removeAttribute("placeholder");
+          },
+        ],
+        [
+          "an attribute removed and put back with its old value",
+          (input) => {
+            input.removeAttribute("name");
+            input.setAttribute("name", "qty");
+          },
+        ],
+        [
+          "a text node set to other data and back",
+          (_input, text) => {
+            const original = text.data;
+            text.data = "Closed";
+            text.data = original;
+          },
+        ],
+      ])("records a dead click when one batch leaves %s as it was", async (_name, change) => {
+        // Nothing between the writes is painted, so only the net change counts.
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        change(input, live.headline.firstChild as Text);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it.each<[string, string | undefined]>([
+        ["the default selector", undefined],
+        ["an empty selector", ""],
+      ])("records a dead click for the React write pattern with %s", async (_name, selector) => {
+        // React sets name, then type, then removes name again, on an input that has no name. Chrome
+        // reports the old value of the last record as "", and happy-dom reports null for it, so a
+        // spec that writes the attributes can't show the fault. The records here are Chrome's.
+        const live = livePage({ deadClicks: true, deadClickIgnoreSelector: selector });
+        const input = document.createElement("input");
+        input.setAttribute("type", "number");
+        document.body.append(input);
+        const observer = stubMutationObserver();
+        const attribute = (attributeName: string, oldValue: string | null) => ({
+          type: "attributes" as const,
+          target: input,
+          attributeName,
+          attributeNamespace: null,
+          oldValue,
+        });
+
+        click(live.buy);
+        observer.deliver([
+          attribute("name", null),
+          attribute("type", "number"),
+          attribute("name", ""),
+        ]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
       });
     });
   });
@@ -2779,6 +2929,40 @@ describe("InteractionCapture rage and dead clicks", () => {
       expect(leftOn(popout, "click")).toBe(0);
     });
 
+    it("attaches a listed window again when the app observes it a second time", () => {
+      // The page behind the handle can get a new Window object, which has none of our listeners.
+      const { c } = install(true);
+      const popout = open();
+      for (const [type, listener, options] of popout.add.mock.calls) {
+        popout.win.removeEventListener(type, listener, options);
+      }
+      click(popout.buy);
+      expect(c.breadcrumbs.snapshot()).toEqual([]);
+
+      stops.push(observeWindow(popout.win));
+      click(popout.buy);
+
+      expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+    });
+
+    it("keeps a pagehide handler throw from the page, and forgets the window", async () => {
+      install(true);
+      const popout = open(true, openBlankPopout);
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      popout.win.addEventListener("error", pageErrors);
+      await popout.block();
+
+      try {
+        popout.win.dispatchEvent(new Event("pagehide"));
+      } finally {
+        removeEventListener("error", pageErrors);
+      }
+
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(observedWindows().includes(popout.win)).toBe(false);
+    });
+
     it("observes a window again after its stop function ran", () => {
       const { c } = install(true);
       const popout = open(false);
@@ -3022,6 +3206,29 @@ describe("InteractionCapture rage and dead clicks", () => {
       });
     });
 
+    it.each<[string, unknown]>([
+      ["an empty object", {}],
+      ["null", null],
+      ["a registry with members of the wrong type", { windows: "x", observers: 1 }],
+    ])("replaces %s under the registry key with a fresh registry", (_name, value) => {
+      const { capture, c } = build(true);
+      const popout = open(false);
+      const key = Symbol.for(`${OBSERVED_WINDOWS_KEY}@${TELEMETRY_SDK_VERSION}`);
+      (globalThis as Record<symbol, unknown>)[key] = value;
+
+      try {
+        expect(() => {
+          stops.push(observeWindow(popout.win));
+        }).not.toThrow();
+        capture.install();
+        click(popout.buy);
+
+        expect(c.breadcrumbs.snapshot()).toHaveLength(1);
+      } finally {
+        Reflect.deleteProperty(globalThis, key);
+      }
+    });
+
     it.each<[string, (page: Regions, popout: Popout) => Element]>([
       ["the page's own window", (page) => page.buy],
       ["an observed window", (_page, popout) => popout.buy],
@@ -3068,6 +3275,38 @@ describe("InteractionCapture rage and dead clicks", () => {
     );
 
     describe("dead clicks", () => {
+      it("drops a window that closed after the install at the next dead check", async () => {
+        // A user-closed about:blank popout still reads closed false at its pagehide, so the
+        // registry sees it close later.
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open(true, openBlankPopout);
+        stubClosed(popout.win, true);
+
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+        expect(popout.add.mock.calls.filter(([type]) => type === "scroll")).toEqual([]);
+      });
+
+      it("doesn't observe a dropped window again, even if it reads open", async () => {
+        const { logger, page } = install({ deadClicks: true });
+        const popout = open(true, openBlankPopout);
+        const setClosed = stubClosed(popout.win, true);
+        click(page.buy);
+        await wait();
+
+        setClosed(false);
+        click(page.buy);
+        popout.feed.append(popout.doc.createElement("i"));
+        await wait();
+
+        expect(events(logger, "ui.dead_click")).toHaveLength(2);
+        expect(observedWindows().includes(popout.win)).toBe(false);
+      });
+
       it("records a dead click for a click in the observed window with no answer", async () => {
         const { logger } = install({ deadClicks: true });
         const popout = open();

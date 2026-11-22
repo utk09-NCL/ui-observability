@@ -28,17 +28,26 @@ interface Registry {
   observers: Set<WindowObserver>;
 }
 
-/** The registry's global key. Its description must hold "window", because a spec clears it. */
+/** The registry's global key. The version in it keeps another version's copy apart. */
 const REGISTRY_KEY = Symbol.for(`${OBSERVED_WINDOWS_KEY}@${TELEMETRY_SDK_VERSION}`);
 
 /**
  * Returns the page's registry. Two copies of one version share one runtime, so they share this
- * too. Otherwise a copy's observeWindow() would never reach the other copy's click capture.
+ * too. Otherwise a copy's observeWindow() would never reach the other copy's click capture. Any
+ * page script can write the key, so a value of another shape gets a fresh registry instead of a
+ * throw in observeWindow() or install().
  * @returns The registry.
  */
 function registry(): Registry {
-  const scope = globalThis as Record<symbol, Registry | undefined>;
-  return (scope[REGISTRY_KEY] ??= { windows: new Set(), observers: new Set() });
+  const scope = globalThis as Record<symbol, unknown>;
+  const found = scope[REGISTRY_KEY] as Partial<Registry> | null | undefined;
+  if (found?.windows instanceof Set && found.observers instanceof Set) {
+    return found as Registry;
+  }
+
+  const fresh: Registry = { windows: new Set(), observers: new Set() };
+  scope[REGISTRY_KEY] = fresh;
+  return fresh;
 }
 
 /**
@@ -80,12 +89,14 @@ function isClosed(win: Window): boolean {
   }
 }
 
-/** Drops each closed window. While clicks are off nothing hears its pagehide, so it'd stay. */
+/**
+ * Forgets each closed window. Its pagehide can't do it while clicks are off, and a user-closed
+ * about:blank popout still reads open at its pagehide.
+ */
 function pruneClosed(): void {
-  const { windows } = registry();
-  for (const win of windows) {
+  for (const win of registry().windows) {
     if (isClosed(win)) {
-      windows.delete(win);
+      forgetWindow(win);
     }
   }
 }
@@ -118,10 +129,12 @@ export function forgetWindow(win: Window): void {
 }
 
 /**
- * Returns the windows that the app observes now.
+ * Returns the windows that the app observes now. It forgets each closed window first, so a
+ * dead click check never watches one.
  * @returns A copy of the list, so a caller can hold it while the list changes.
  */
 export function observedWindows(): Window[] {
+  pruneClosed();
   return [...registry().windows];
 }
 
@@ -152,13 +165,16 @@ export function addWindowObserver(observer: WindowObserver): () => void {
  * page. It gets no navigation capture. The window must have this page's origin. A window from
  * another origin reports `capture.install_failed` and records nothing. The result of
  * `window.open()` works at once, because the `pagehide` of its initial about:blank doesn't end
- * the capture.
+ * the capture while the window is open.
  *
  * The library listens only while `capture.interactions` is on, and it keeps the window across
- * `shutdown()` and the next `configure()`. The window leaves at the stop function, at its
- * `pagehide` and when it closes. Observe it again after it reloads. A navigation to another
- * origin ends the capture there. This page's own window and a value that isn't a window do
- * nothing. A call never throws.
+ * `shutdown()` and the next `configure()`. The window leaves at the stop function. While
+ * `capture.interactions` is on, it also leaves at its `pagehide`. A closed window, also a closed
+ * about:blank popout, leaves at the next read of the list: a dead click check, an install or an
+ * observeWindow() call. Observe the window again after it reloads, and after the app fills
+ * about:blank and then loads a page in it. A window that opens to another origin and is observed
+ * at once gets no report, and the library forgets it at its next dead click check. This page's
+ * own window and a value that isn't a window do nothing. A call never throws.
  * @param target The window to observe, for example the result of `window.open()`.
  * @returns Function that stops observing the window. A second call does nothing.
  */
@@ -169,11 +185,11 @@ export function observeWindow(target: Window): () => void {
 
   pruneClosed();
   const { windows, observers } = registry();
-  if (!windows.has(target)) {
-    windows.add(target);
-    for (const observer of observers) {
-      attachTo(observer, target);
-    }
+  // Attach a listed window again. A page that loads after the app filled about:blank can get a
+  // new Window object behind the same handle, without our listeners. A repeat add does nothing.
+  windows.add(target);
+  for (const observer of observers) {
+    attachTo(observer, target);
   }
 
   return () => {
