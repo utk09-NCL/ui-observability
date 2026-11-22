@@ -25,16 +25,17 @@ interface LockManagerLike {
 
 /**
  * Runs an async function under an origin-wide Web Locks API lock. Runs the task directly when
- * the Web Locks API isn't available.
+ * the Web Locks API isn't available, or when the lock request fails before it grants anything.
  * @param name Origin-scoped lock identifier.
  * @param diagnostics Diagnostics reporter.
  * @param fn The async task to run while holding the lock.
  * @param options Lock acquisition options.
  * @param options.skipIfBusy When true, the task doesn't run if another context holds the lock.
  * @returns A promise of the task's result. Resolves to undefined when another context holds
- * the lock. A caller that reads undefined as a task result stops rescheduling.
+ * the lock, or when the task rejects under the lock. A caller that reads undefined as a task
+ * result stops rescheduling.
  */
-export function withDrainLock<T>(
+export async function withDrainLock<T>(
   name: string,
   diagnostics: Diagnostics,
   fn: () => Promise<T>,
@@ -47,14 +48,29 @@ export function withDrainLock<T>(
     return fn();
   }
 
-  return diagnostics.guardAsync(
-    "storage.degraded",
-    `The library could not get the lock ${name}.`,
-    () =>
-      locks.request(name, { ifAvailable: skipIfBusy }, (lock) =>
-        lock ? fn() : Promise.resolve(undefined),
-      ),
-  );
+  try {
+    // The task's own failure is caught in the callback, so only the lock manager can reject
+    // here. Otherwise a failed task would run a second time without the lock.
+    return await locks.request(name, { ifAvailable: skipIfBusy }, (lock) =>
+      lock
+        ? diagnostics.guardAsync(
+            "storage.degraded",
+            `The work under the lock ${name} failed. The library skips this run.`,
+            fn,
+          )
+        : Promise.resolve(undefined),
+    );
+  } catch (error) {
+    // An opaque origin rejects every request with a SecurityError, so no other window can hold
+    // this lock. Reading that as busy would stop the drain for good.
+    diagnostics.report(
+      "storage.degraded",
+      `The library could not get the lock ${name}. It runs the work without the lock.`,
+      undefined,
+      error,
+    );
+    return fn();
+  }
 }
 
 /**

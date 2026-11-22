@@ -21,6 +21,8 @@ import type { LogBatch } from "../src/models/batch";
 import type { ObservabilityConfig } from "../src/models/config";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
+import { ContextStorage } from "../src/storage/context-storage";
+import { saveToEmergencyQueue } from "../src/storage/emergency-queue";
 import { truncate } from "../src/utils/sanitize";
 import {
   addBreadcrumb,
@@ -952,6 +954,101 @@ describe("round 2: storage during a pause", () => {
     await settle();
 
     expect((await getHealth()).delivery.stored).toBe(0);
+  });
+
+  it("reports the stored batches that a logout discard removes in a first-call pause", async () => {
+    const storage = { backend: "localstorage" as const };
+    await storedInA({ storage, securityContext: { id: "A", isolation: false } });
+    await shutdown();
+
+    const drops: DropSummary[] = [];
+    const next = createMemoryTransport();
+    configure({
+      ...quiet,
+      storage,
+      transport: next.transport,
+      enabled: false,
+      securityContext: { id: "A", isolation: false },
+      onDrop: (summary) => {
+        drops.push(summary);
+      },
+    });
+    await rotateSecurityContext(
+      { id: "B", routing: { transport: next.transport } },
+      { pending: "discard" },
+    );
+    await settle();
+
+    // No sender ran, so nothing but the rotation can tell the app about the removed batch.
+    const lost = drops.filter((summary) => summary.reason === "security_context");
+    expect(lost.map((summary) => summary.records)).toEqual([1]);
+  });
+
+  it("reports the emergency entry that a logout discard removes in a pause", async () => {
+    const drops: DropSummary[] = [];
+    const next = createMemoryTransport();
+    configure({
+      ...quiet,
+      storage: { backend: "localstorage" },
+      transport: next.transport,
+      enabled: false,
+      securityContext: { id: "A", isolation: false },
+      onDrop: (summary) => {
+        drops.push(summary);
+      },
+    });
+    // Another tab with the same stable id parked this batch while this tab was paused.
+    saveToEmergencyQueue(
+      {
+        id: "other-tab",
+        createdAt: Date.now(),
+        attempts: 0,
+        routingContextId: "A",
+        persistenceNamespace: "",
+        records: [forwardedAction("parked by another tab")],
+      },
+      new Diagnostics(vi.fn(), 0),
+    );
+
+    await rotateSecurityContext(
+      { id: "B", routing: { transport: next.transport } },
+      { pending: "discard" },
+    );
+    await settle();
+
+    const lost = drops.filter((summary) => summary.reason === "security_context");
+    expect(lost.map((summary) => summary.records)).toEqual([1]);
+  });
+
+  it("finishes the logout discard and reports no loss when the clear fails", async () => {
+    vi.spyOn(ContextStorage.prototype, "take").mockRejectedValue(new Error("the store is gone"));
+    const drops: DropSummary[] = [];
+    const messages: string[] = [];
+    const next = createMemoryTransport();
+    configure({
+      ...quiet,
+      transport: next.transport,
+      enabled: false,
+      securityContext: { id: "A", isolation: false },
+      onDrop: (summary) => {
+        drops.push(summary);
+      },
+      onDiagnostic: (event) => {
+        messages.push(event.message);
+      },
+    });
+
+    await rotateSecurityContext(
+      { id: "B", routing: { transport: next.transport } },
+      { pending: "discard" },
+    );
+    await settle();
+
+    // The app learns that the removal failed, and gets no report for records nobody read.
+    expect(messages).toContain(
+      "The library could not remove the stored batches of the old context.",
+    );
+    expect(drops.filter((summary) => summary.reason === "security_context")).toEqual([]);
   });
 
   it("stores the carried records under the previous context at a later retain in the pause", async () => {

@@ -71,6 +71,9 @@ type Send = (batch: LogBatch) => Promise<void>;
 /** What a stubbed lock manager hands back: a grant, or null for a lock another context holds. */
 type LockCallback = (lock: { name: string } | null) => Promise<unknown>;
 
+/** The engines that a test built. afterEach stops them, also when an assertion threw first. */
+const engines: RetryEngine[] = [];
+
 /** A real MemoryStorage, a stubbed transport, and an engine wired to both. */
 const makeEngine = (
   options: {
@@ -80,6 +83,8 @@ const makeEngine = (
     onLoss?: LossReporter;
     config?: ResolvedConfig;
     storage?: StorageAdapter;
+    /** Milliseconds until the throttle of a batch's endpoint ends. The default is no throttle. */
+    throttledForMs?: (batch: LogBatch) => number;
   } = {},
 ) => {
   const storage = options.storage ?? new MemoryStorage(limits);
@@ -91,17 +96,19 @@ const makeEngine = (
     : config;
   const engineConfig = options.config ?? retentionConfig;
   const send = vi.fn<Send>(options.send ?? (() => Promise.resolve()));
+  const throttledForMs = vi.fn<(batch: LogBatch) => number>(options.throttledForMs ?? (() => 0));
   const handler = vi.fn<(event: DiagnosticEvent) => void>();
   const engine = new RetryEngine(
     storage,
-    { send } as unknown as HttpTransport,
+    { send, throttledForMs } as unknown as HttpTransport,
     new Diagnostics(handler, 0),
     engineConfig,
     options.batchesPerDrain ?? 10,
     options.onLoss,
   );
+  engines.push(engine);
 
-  return { engine, storage, send, handler };
+  return { engine, storage, send, handler, throttledForMs };
 };
 
 /** A promise the test resolves, so it can hold a drain in the middle of a send. */
@@ -124,6 +131,14 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+// Registered after the reset above. Hooks run in reverse, so this stops the engines first, while
+// the fake timers still own their handles. A leaked engine keeps its `online` listener.
+afterEach(() => {
+  for (const engine of engines.splice(0)) {
+    engine.stop();
+  }
 });
 
 describe("RetryEngine delivery", () => {
@@ -479,6 +494,55 @@ describe("RetryEngine with metricsEndpoint", () => {
   });
 });
 
+describe("RetryEngine with a server throttle", () => {
+  const THROTTLE_MS = 5000;
+
+  it("sends no stored batch while its endpoint is throttled, then sends it", async () => {
+    // The transport knows the Retry-After end. A drain that doesn't ask posts through the 429.
+    const end = Date.now() + THROTTLE_MS;
+    const { engine, storage, send } = makeEngine({
+      throttledForMs: () => Math.max(0, end - Date.now()),
+    });
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(THROTTLE_MS - 1);
+    expect(send).not.toHaveBeenCalled();
+    expect(await storage.count()).toBe(1);
+
+    await tick(1 + BASE_DELAY_MS);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
+
+  it("keeps sending the other kinds while one endpoint is throttled", async () => {
+    // The logs batch comes first, so a skip that stopped the whole drain would starve the metrics.
+    const end = Date.now() + THROTTLE_MS;
+    const { engine, storage, send } = makeEngine({
+      config: metricsConfig,
+      throttledForMs: (sent) => (sent.id.startsWith("l") ? Math.max(0, end - Date.now()) : 0),
+    });
+    await storage.save(batch("l"));
+    await storage.save(metricBatch("m"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send.mock.calls.map(([sent]) => sent.id)).toEqual(["m"]);
+    expect((await storage.take(10)).map((kept) => kept.id)).toEqual(["l"]);
+
+    await tick(THROTTLE_MS);
+
+    expect(send.mock.calls.map(([sent]) => sent.id)).toEqual(["m", "l"]);
+    expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
+});
+
 describe("RetryEngine splitting", () => {
   it("splits a batch the server called too large, rather than dropping it", async () => {
     const refused = () => new TransportError("too_large", "413", 413, undefined, SERVER_MAX_BYTES);
@@ -500,6 +564,92 @@ describe("RetryEngine splitting", () => {
         detail: expect.objectContaining({ serverMaxBytes: SERVER_MAX_BYTES }),
       }),
     );
+    engine.stop();
+  });
+
+  it("sends the halves of a split batch at the base delay, not after the idle delay", async () => {
+    const { engine, storage, send } = makeEngine({
+      send: (sent) =>
+        sent.records.length > 1
+          ? Promise.reject(new TransportError("too_large", "413", 413))
+          : Promise.resolve(),
+    });
+    await storage.save(batch("big", { records: 2 }));
+
+    engine.start();
+    engine.nudge();
+    // The first drain splits the batch. Its halves are due within one more base delay.
+    await tick(BASE_DELAY_MS * 2 + 1);
+
+    expect(await storage.count()).toBe(0);
+    expect(send.mock.calls.map(([sent]) => sent.records.length)).toEqual([2, 1, 1]);
+    engine.stop();
+  });
+
+  it("splits a refused half again, down to one record, without the idle delay", async () => {
+    const { engine, storage, send } = makeEngine({
+      send: (sent) =>
+        sent.records.length > 1
+          ? Promise.reject(new TransportError("too_large", "413", 413))
+          : Promise.resolve(),
+    });
+    await storage.save(batch("big", { records: 8 }));
+
+    engine.start();
+    engine.nudge();
+    // 8 records need three levels of splits and then the send. A level waits one base delay at
+    // most, so the whole chain is far inside the idle delay.
+    await tick(BASE_DELAY_MS * 4 + 1);
+
+    expect(await storage.count()).toBe(0);
+    const singles = send.mock.calls
+      .map(([sent]) => sent)
+      .filter((sent) => sent.records.length === 1);
+    expect(singles.map((sent) => sent.records[0].body).sort()).toEqual(
+      Array.from({ length: 8 }, (_unused, index) => `big-${String(index)}`),
+    );
+    engine.stop();
+  });
+
+  it("waits the idle delay again when storage keeps neither half of a split", async () => {
+    const { engine, storage, send } = makeEngine({
+      send: () => Promise.reject(new TransportError("too_large", "413", 413)),
+    });
+    await storage.save(batch("big", { records: 4 }));
+    const save = vi.spyOn(storage, "save").mockResolvedValue(false);
+    const take = vi.spyOn(storage, "take");
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(take).toHaveBeenCalledOnce();
+
+    // Storage holds nothing now, so a drain at the base delay would only find an empty store.
+    await tick(IDLE_DELAY_MS - 1);
+    expect(take).toHaveBeenCalledOnce();
+
+    await tick(1);
+    expect(take).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("loses both halves of a split when the app runs without storage", async () => {
+    // Storage "none" keeps nothing, so the 413 split has nowhere to put its halves.
+    const onGap = vi.fn<GapReporter>();
+    const none = await createStorage("none", "db", limits, new Diagnostics(vi.fn(), 0), onGap);
+    const { engine } = makeEngine({ storage: none });
+    const refused = new TransportError("too_large", "413", 413, undefined, SERVER_MAX_BYTES);
+
+    const outcome = await engine.storeFailed(batch("big", { records: 4 }), refused);
+
+    expect(outcome).toEqual({ outcome: "not_stored", stored: 0 });
+    expect(onGap.mock.calls.map(([gap]) => gap)).toEqual([
+      { batches: 1, records: 2, reason: "not_stored" },
+      { batches: 1, records: 2, reason: "not_stored" },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
     engine.stop();
   });
 
@@ -804,5 +954,99 @@ describe("RetryEngine reentrancy", () => {
       engine.stop();
       engine.stop();
     }).not.toThrow();
+  });
+});
+
+describe("RetryEngine nudge", () => {
+  it("keeps a backoff delay when a later failed batch nudges the engine", async () => {
+    // Full jitter lands on its ceiling at 1, so the first backoff is 2 * base = 4000 ms.
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const { engine, storage, send } = makeEngine({
+      send: () => Promise.reject(new TransportError("transient", "500", 500)),
+    });
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledOnce();
+
+    // A live batch fails now and stores itself. That must not cut the backoff to the base delay.
+    engine.nudge();
+    await tick(BASE_DELAY_MS + 1);
+    expect(send).toHaveBeenCalledOnce();
+
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+    engine.stop();
+  });
+
+  it("keeps a Retry-After delay when a later stored batch nudges the engine", async () => {
+    const retryAfterMs = 10_000;
+    let throttled = true;
+    const { engine, storage, send } = makeEngine({
+      send: () => {
+        if (throttled) {
+          throttled = false;
+          return Promise.reject(new TransportError("throttled", "429", 429, retryAfterMs));
+        }
+        return Promise.resolve();
+      },
+    });
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+    expect(send).toHaveBeenCalledOnce();
+
+    // The pipeline stores each batch that arrives during the throttle, and each store nudges.
+    engine.nudge();
+    await tick(BASE_DELAY_MS + 1);
+    expect(send).toHaveBeenCalledOnce();
+
+    await tick(retryAfterMs - BASE_DELAY_MS - 1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
+
+  it("pulls the idle timer forward when new data is stored after an idle drain", async () => {
+    const { engine, storage, send } = makeEngine();
+
+    engine.start();
+    await tick(IDLE_DELAY_MS);
+    expect(send).not.toHaveBeenCalled();
+
+    // The idle drain found nothing, so this batch would wait another 30 s without the nudge.
+    await storage.save(batch("late"));
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(await storage.count()).toBe(0);
+    engine.stop();
+  });
+});
+
+describe("RetryEngine in an opaque origin", () => {
+  it("sends a stored batch when every lock request rejects with SecurityError", async () => {
+    // A frame sandboxed without allow-same-origin can't use Web Locks. No other window of that
+    // origin can drain either, so the drain has to run without the lock.
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: () => Promise.reject(new DOMException("opaque origin", "SecurityError")),
+      },
+    });
+    const { engine, storage, send } = makeEngine();
+    await storage.save(batch("a"));
+
+    engine.start();
+    engine.nudge();
+    await tick(BASE_DELAY_MS);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(await storage.count()).toBe(0);
+    engine.stop();
   });
 });

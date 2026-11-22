@@ -181,26 +181,39 @@ export async function drainEmergencyQueue(
  * @param diagnostics Diagnostics reporter.
  * @param namespace The application's storage namespace.
  * @param all True to remove the entries of every context in this namespace.
+ * @returns The context's batches that it removed, so the caller can report their records. With
+ * `all` it returns none, because it removes the entries without reading them.
  */
 export function clearEmergencyContext(
   id: string,
   diagnostics: Diagnostics,
   namespace = "",
   all = false,
-): void {
+): LogBatch[] {
   const prefix = emergencyPrefix(namespace);
+  const removed: LogBatch[] = [];
+
   diagnostics.guard(
     "storage.unavailable",
     "The library could not clear the retired emergency queue.",
     () => {
       for (const key of keysWithPrefix(prefix, diagnostics)) {
-        const raw = localStorage.getItem(key);
-        if (raw && (all || readBatch(raw, diagnostics)?.routingContextId === id)) {
+        if (all) {
           localStorage.removeItem(key);
+          continue;
+        }
+
+        // A key that another window already removed reads as null, and readBatch rejects it.
+        const batch = readBatch(String(localStorage.getItem(key)), diagnostics);
+        if (batch?.routingContextId === id) {
+          localStorage.removeItem(key);
+          removed.push(batch);
         }
       }
     },
   );
+
+  return removed;
 }
 
 /**

@@ -278,6 +278,37 @@ describe("Sender exit flush", () => {
     expect((init.headers as Headers).get("authorization")).toBe("Bearer t1");
   });
 
+  it("sends no second copy of a batch that a hidden page's keepalive request carries", async () => {
+    // That request outlives the page. An exit copy under a new id would reach the server twice.
+    let settle: (response: Response) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { sender, onLoss } = await setup();
+
+    sender.push(record("in flight"));
+    const sending = sender.flush();
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(fetchMock.mock.calls[0][1].keepalive).toBe(true);
+
+    dispatchEvent(new Event("pagehide"));
+    const requests = fetchMock.mock.calls.length;
+
+    // Settle before the assertions, or a failure leaves the teardown waiting for the request.
+    settle(new Response(null, { status: 204 }));
+    await sending;
+
+    expect(requests).toBe(1);
+    expect(beacon).not.toHaveBeenCalled();
+    expect(onLoss).not.toHaveBeenCalled();
+  });
+
   it("keeps an exit batch that doesn't fit next to a hidden send still in flight", async () => {
     // On a navigation, hidden fires just before pagehide, and both sends use one browser budget.
     // The browser rejects a fetch over it after the document closes, when nothing reports it.

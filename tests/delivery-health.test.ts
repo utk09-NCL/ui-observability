@@ -120,3 +120,64 @@ describe("getHealth().delivery", () => {
     expect(Object.values(dropped).every((count) => typeof count === "number")).toBe(true);
   });
 });
+
+describe("the retry drain under a server throttle", () => {
+  /** Waits for every chunk load and the startup, with the timers faked. */
+  async function ready(): Promise<void> {
+    await vi.dynamicImportSettled();
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+  }
+
+  it("sends no stored batch to a throttled endpoint before Retry-After ends", async () => {
+    vi.useFakeTimers();
+    const memory = createMemoryTransport();
+    configure({ ...quiet, transport: memory.transport });
+    await ready();
+
+    memory.respondWith(429, 30_000);
+    info("throttled");
+    await flush();
+    expect(memory.batches()).toHaveLength(1);
+
+    // The batch is in storage. A drain before 30 s would post it through the 429.
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(memory.batches()).toHaveLength(1);
+
+    memory.respondWith(200);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(memory.records().map((record) => record.body)).toEqual(["throttled"]);
+    expect((await getHealth()).delivery.stored).toBe(0);
+  });
+
+  it("makes no request to a throttled endpoint while log calls keep coming", async () => {
+    vi.useFakeTimers();
+    const memory = createMemoryTransport();
+    configure({
+      ...quiet,
+      transport: memory.transport,
+      batching: { logFlushIntervalMs: 100 },
+      delivery: { retryBaseDelayMs: 50 },
+    });
+    await ready();
+
+    memory.respondWith(429, 30_000);
+    info("first");
+    await flush();
+
+    // Each log call makes a batch, and the throttle sends each one to storage. That must not
+    // wake the drain, because the server asked for 30 s.
+    for (let i = 0; i < 20; i++) {
+      info(`more ${String(i)}`);
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    expect(memory.batches()).toHaveLength(1);
+
+    memory.respondWith(200);
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    expect(memory.records()).toHaveLength(21);
+    expect((await getHealth()).delivery.stored).toBe(0);
+  });
+});

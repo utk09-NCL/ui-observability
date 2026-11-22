@@ -731,6 +731,92 @@ describe("HttpTransport", () => {
     expect(t.keepaliveInFlight()).toBe(0);
   });
 
+  it("sends without keepalive when the bytes in flight would pass the shared budget", async () => {
+    // The browser rejects a keepalive fetch over its 64 KiB budget, and a hidden page can close
+    // before anything reports it. So the second 40 KB body goes out as a normal fetch.
+    const settle: ((response: Response) => void)[] = [];
+    const fetchMock = stubFetch(() => new Promise<Response>((resolve) => settle.push(resolve)));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const t = new HttpTransport(config(), diagnostics());
+    const onKeepalive = vi.fn<() => void>();
+    const forty = (id: string): LogBatch => ({
+      ...batch(1),
+      id,
+      records: [{ ...batch(1).records[0], body: "x".repeat(40_000) }],
+    });
+
+    const sends = [t.send(forty("one"), onKeepalive), t.send(forty("two"), onKeepalive)];
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    expect([initOf(fetchMock, 0).keepalive, initOf(fetchMock, 1).keepalive]).toEqual([true, false]);
+    expect(t.keepaliveInFlight()).toBeLessThanOrEqual(BEACON_LIMIT_BYTES);
+    // Only a keepalive request outlives the page, so only that one leaves the exit flush.
+    expect(onKeepalive).toHaveBeenCalledOnce();
+
+    for (const resolve of settle) {
+      resolve(new Response(null, { status: 204 }));
+    }
+    await Promise.all(sends);
+  });
+
+  it("uses keepalive for a send that fills the budget, and again after one settles", async () => {
+    const settle: ((response: Response) => void)[] = [];
+    const fetchMock = stubFetch(() => new Promise<Response>((resolve) => settle.push(resolve)));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const t = new HttpTransport(config(), diagnostics());
+    const bodyOf = (index: number): string => initOf(fetchMock, index).body as string;
+    /** Builds a batch whose record text is `length` long. The text is ASCII. */
+    const text = (id: string, length: number): LogBatch => ({
+      ...batch(1),
+      id,
+      records: [{ ...batch(1).records[0], body: "x".repeat(length) }],
+    });
+
+    // One probe send tells how many bytes the request body adds around the record text.
+    const probe = t.send(text("probe", 100));
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    const overhead = bodyOf(0).length - 100;
+    settle[0](new Response(null, { status: 204 }));
+    await probe;
+
+    // Two request bodies of half the budget each fill it exactly.
+    const half = BEACON_LIMIT_BYTES / 2 - overhead;
+    const sends = [t.send(text("one", half)), t.send(text("two", half))];
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+    expect(t.keepaliveInFlight()).toBe(BEACON_LIMIT_BYTES);
+
+    // The budget is full, so even a small body must not ask for more.
+    const over = t.send(text("three", 100));
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+    expect([1, 2, 3].map((index) => initOf(fetchMock, index).keepalive)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+
+    for (const resolve of settle.slice(1)) {
+      resolve(new Response(null, { status: 204 }));
+    }
+    await Promise.all([...sends, over]);
+
+    // Settled requests return their bytes. A count that kept them would refuse keepalive for good.
+    const later = t.send(text("four", 100));
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+    expect(initOf(fetchMock, 4).keepalive).toBe(true);
+    settle[4](new Response(null, { status: 204 }));
+    await later;
+  });
+
   it("counts no bytes for a request without keepalive", async () => {
     // The browser cancels a plain fetch at page close, so it never uses the keepalive budget.
     let settle: (response: Response) => void = () => undefined;

@@ -36,12 +36,12 @@ export interface StoreAccess {
  * memory store stays open, because it holds other contexts' records too.
  * @param access The config, the reporter and the kept memory store.
  * @param work What to do with the store.
- * @returns Promise that resolves once the work is done and the store is closed.
+ * @returns Promise that resolves to the work's result once the store is closed.
  */
-async function withStore(
+async function withStore<T>(
   access: StoreAccess,
-  work: (store: ContextStorage) => Promise<void>,
-): Promise<void> {
+  work: (store: ContextStorage) => Promise<T>,
+): Promise<T> {
   const { config, diagnostics, memory } = access;
   const { backend, namespace } = config.storage;
   const backing =
@@ -56,7 +56,7 @@ async function withStore(
     ));
   const store = new ContextStorage(backing, config.securityContext, namespace);
   try {
-    await work(store);
+    return await work(store);
   } finally {
     if (backing !== memory) {
       await store.close();
@@ -72,14 +72,15 @@ async function withStore(
  * @param scope Whose stored records to remove: the context's or the namespace's.
  * @param ids More batches to remove by id, for example the ones a carry left under an older id.
  * @param forgetIds True to also remove the stored session id, tab id and journey.
- * @returns Promise that resolves once the batches are removed.
+ * @returns Promise that resolves to the context's removed batches and emergency entries, so a
+ * discard rotation can report their records. The `ids` batches and a namespace clear add none.
  */
 export function clearStored(
   access: StoreAccess,
   scope: "context" | "namespace",
   ids: readonly string[],
   forgetIds = false,
-): Promise<void> {
+): Promise<LogBatch[]> {
   // The ids go first, so a store that won't open still leaves no session for the next user.
   if (forgetIds) {
     for (const [store, key] of STORED_IDS) {
@@ -98,19 +99,21 @@ export function clearStored(
       await store.remove(id);
     }
 
+    const { diagnostics, config } = access;
+    const contextId = config.securityContext.id;
     if (scope === "namespace") {
       await store.clearNamespace();
-    } else {
-      await store.clear();
+      clearEmergencyContext(contextId, diagnostics, store.namespace, true);
+      return [];
     }
 
-    const { diagnostics, config } = access;
-    clearEmergencyContext(
-      config.securityContext.id,
-      diagnostics,
-      store.namespace,
-      scope === "namespace",
-    );
+    // Remove only what was read, so a batch saved in between isn't removed without a report.
+    const removed = await store.take(Number.MAX_SAFE_INTEGER);
+    for (const batch of removed) {
+      await store.remove(batch.id);
+    }
+
+    return [...removed, ...clearEmergencyContext(contextId, diagnostics, store.namespace)];
   });
 }
 

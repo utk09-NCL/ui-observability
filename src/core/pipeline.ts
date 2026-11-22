@@ -215,6 +215,12 @@ export class LogPipeline {
   /** In-flight batches with no delivery confirmation yet. The exit flush sends them again. */
   private readonly unconfirmed = new Map<string, LogBatch>();
 
+  /**
+   * In-flight batches whose request went out with keepalive. The exit flush skips them, because
+   * that request outlives the page. A retire aborts the request, so it takes them back.
+   */
+  private readonly keptAlive = new Map<string, LogBatch>();
+
   /** Closed batches waiting for a free dispatch slot. */
   private readonly queue: Pending[] = [];
 
@@ -409,6 +415,18 @@ export class LogPipeline {
         ...this.streams[name].take(),
       ]),
     ).filter((batch) => batch !== null);
+  }
+
+  /**
+   * Drains like drainForExit(), and adds the batches of the open keepalive requests. A retire
+   * calls it after the transport stop aborted those requests, otherwise their records are lost.
+   * @returns The keepalive batches first, because they're older, then the exit batches.
+   */
+  drainForRetire(): LogBatch[] {
+    const keptAlive = [...this.keptAlive.values()];
+    this.keptAlive.clear();
+
+    return [...keptAlive, ...this.drainForExit()];
   }
 
   /**
@@ -758,6 +776,7 @@ export class LogPipeline {
         // again. A failed send still reaches the retry engine through this batch reference.
         const lost = await this.transport.send(batch, () => {
           this.unconfirmed.delete(batch.id);
+          this.keptAlive.set(batch.id, batch);
         });
         return { accepted: total - lost, stored: 0, dropped: lost };
       } catch (error) {
@@ -778,6 +797,7 @@ export class LogPipeline {
       }
     } finally {
       this.unconfirmed.delete(batch.id);
+      this.keptAlive.delete(batch.id);
     }
   }
 

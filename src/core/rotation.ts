@@ -350,11 +350,13 @@ export async function rotateContext(
   const { diagnostics } = runtime;
   if (!old && (rule === "discard" || rule === "flush")) {
     const ids = carried.map((batch) => batch.id);
-    await diagnostics.guardAsync(
+    const removed = await diagnostics.guardAsync(
       "storage.degraded",
       "The library could not remove the stored batches of the old context.",
       () => clearStored(host.storeAccess(), "context", ids),
     );
+    // No sender took these out of storage first, so only this report tells the app about them.
+    host.drop((removed ?? []).flatMap((batch) => batch.records));
   }
 
   // Retain keeps what waited in memory under the old context, as a sender does with its own.

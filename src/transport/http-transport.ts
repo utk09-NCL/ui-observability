@@ -357,14 +357,15 @@ export class HttpTransport extends StatusTransport {
   /**
    * Checks whether a send uses keepalive. A mobile OS can stop a hidden page without a
    * pagehide, and a keepalive request continues after that. The browser limits the keepalive
-   * bodies in flight.
+   * bodies in flight, and rejects one over that budget after the page may already be gone.
    * @param bytes Size of the request body.
-   * @returns True for a hidden document and a body of BEACON_LIMIT_BYTES or less.
+   * @returns True for a hidden document when the body fits next to the keepalive bytes in
+   * flight, within BEACON_LIMIT_BYTES.
    */
   private keepalive(bytes: number): boolean {
     const hidden = (globalThis as DocumentGlobal).document?.visibilityState === "hidden";
 
-    return hidden && bytes <= BEACON_LIMIT_BYTES;
+    return hidden && this.keepaliveBytes + bytes <= BEACON_LIMIT_BYTES;
   }
 
   /**

@@ -183,15 +183,44 @@ describe("the emergency queue", () => {
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
   });
 
-  it("recovers nothing when the lock manager itself fails", async () => {
+  it("imports each parked batch once, without a lock, when the lock manager fails", async () => {
     vi.stubGlobal("navigator", {
       locks: {
         request: () => Promise.reject(new Error("locks are unavailable in this context")),
       },
     });
     saveToEmergencyQueue(batch("b1"), quiet());
+    const storage = new MemoryStorage(limits);
 
-    expect(await drainEmergencyQueue(new MemoryStorage(limits), quiet())).toBe(0);
+    // Two runs with no lock must not both take the batch. Each run claims a key in one step.
+    const moved = await Promise.all([
+      drainEmergencyQueue(storage, quiet()),
+      drainEmergencyQueue(storage, quiet()),
+    ]);
+
+    expect(moved.reduce((sum, count) => sum + count, 0)).toBe(1);
+    expect((await storage.take(10)).map((stored) => stored.id)).toEqual(["b1"]);
+    expect(emergencyKeys()).toEqual([]);
+  });
+
+  it("imports nothing and keeps the entries when the lock request grants no lock", async () => {
+    // A request that waits never gets a null grant in a browser. A host that does it must not
+    // lose the entries, because the next start can still import them.
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: unknown) => Promise<unknown>,
+        ) => callback(null),
+      },
+    });
+    saveToEmergencyQueue(batch("b1"), quiet());
+    const storage = new MemoryStorage(limits);
+
+    expect(await drainEmergencyQueue(storage, quiet())).toBe(0);
+    expect(await storage.count()).toBe(0);
+    expect(emergencyKeys()).toHaveLength(1);
   });
 
   it("waits for the other window rather than skipping the recovery", async () => {

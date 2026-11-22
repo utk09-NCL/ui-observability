@@ -23,8 +23,11 @@ import { TransportError } from "./errors";
 import { batchKind } from "./serializers/select";
 import type { BatchTransport } from "./status-transport";
 
-/** Result of one delivery. A number is the delay before a failed batch is tried again. */
-type Outcome = "next" | "stop" | number;
+/**
+ * Result of one delivery. "split" means storage holds the halves of a refused batch. A number is
+ * the delay before a failed batch is tried again.
+ */
+type Outcome = "next" | "split" | "stop" | number;
 
 /**
  * What became of a batch whose live send failed. The pipeline picks its report from this, so
@@ -51,6 +54,9 @@ export interface StoreReport {
 export class RetryEngine {
   /** The active retry timer handle, or null when no timer is running. */
   private timer: ReturnType<typeof setTimeout> | null = null;
+
+  /** True while the armed timer is the idle poll. A nudge may bring only that one forward. */
+  private idle = false;
 
   /** Consecutive failed deliveries. Feeds the backoff calculation. */
   private attempt = 0;
@@ -97,12 +103,15 @@ export class RetryEngine {
       addEventListener("online", this.onOnline);
     }
 
-    this.schedule(RETRY_IDLE_DELAY_MS);
+    this.schedule(RETRY_IDLE_DELAY_MS, true);
   }
 
-  /** Schedules an earlier retry when storage receives a new offline batch. */
+  /**
+   * Schedules an earlier retry when storage receives a new offline batch. It never cuts a
+   * backoff or a Retry-After short, otherwise each failed live send would post to that server.
+   */
   nudge(): void {
-    if (!this.draining) {
+    if (!this.draining && (this.timer === null || this.idle)) {
       this.schedule(this.config.delivery.retryBaseDelayMs);
     }
   }
@@ -174,13 +183,15 @@ export class RetryEngine {
   /**
    * Clears the pending timer, then schedules a drain after the delay.
    * @param delayMs Delay duration in milliseconds.
+   * @param idle True for the idle poll, the one wait that a nudge may bring forward.
    */
-  private schedule(delayMs: number): void {
+  private schedule(delayMs: number, idle = false): void {
     if (this.stopped) {
       return;
     }
 
     this.clearTimer();
+    this.idle = idle;
 
     const timer = setTimeout(() => {
       void this.drain();
@@ -237,7 +248,7 @@ export class RetryEngine {
       // The value is undefined when another window holds the lock. Without this reschedule,
       // one lost lock race would stop all drains in this window.
       if (ran !== true) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(RETRY_IDLE_DELAY_MS, true);
       }
     } finally {
       this.draining = false;
@@ -252,20 +263,21 @@ export class RetryEngine {
   private async drainLocked(): Promise<true> {
     try {
       if (!isOnline()) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(RETRY_IDLE_DELAY_MS, true);
         return true;
       }
 
       const batches = await this.bounded(this.storage.take(this.batchesPerDrain));
 
       if (batches.length === 0) {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(RETRY_IDLE_DELAY_MS, true);
         return true;
       }
 
       // A failure blocks only its own batch kind. The other endpoints can still accept batches.
       const blocked = new Set<BatchKind>();
       let delayMs = 0;
+      let split = false;
 
       for (const batch of batches) {
         if (this.stopped) {
@@ -277,12 +289,16 @@ export class RetryEngine {
           continue;
         }
 
-        const outcome = await this.deliver(batch);
+        // A 429 or 503 still holds for this endpoint, so a send now would post through it.
+        const throttledMs = this.transport.throttledForMs(batch);
+        const outcome = throttledMs > 0 ? throttledMs : await this.deliver(batch);
         if (outcome === "stop") {
           return true;
         }
 
-        if (outcome !== "next") {
+        if (outcome === "split") {
+          split = true;
+        } else if (outcome !== "next") {
           blocked.add(kind);
           // Keep the longest delay. A shorter one would send before another server's
           // Retry-After.
@@ -292,8 +308,13 @@ export class RetryEngine {
 
       if (blocked.size > 0) {
         this.schedule(delayMs);
+      } else if (batches.length === this.batchesPerDrain) {
+        this.schedule(0);
+      } else if (split) {
+        // The halves are in storage now. Without this they'd wait out the idle poll.
+        this.schedule(this.config.delivery.retryBaseDelayMs);
       } else {
-        this.schedule(batches.length === this.batchesPerDrain ? 0 : RETRY_IDLE_DELAY_MS);
+        this.schedule(RETRY_IDLE_DELAY_MS, true);
       }
       return true;
     } catch (error) {
@@ -313,8 +334,9 @@ export class RetryEngine {
    * Tries to deliver one batch. Removes it on success, and on failure applies the rule for
    * the failure kind.
    * @param batch Log batch to deliver.
-   * @returns "next" to continue with the next batch, "stop" to stop the current drain, or a
-   * delay in milliseconds that blocks the batch's kind until the next drain.
+   * @returns "next" to continue with the next batch, "split" when storage holds the halves of a
+   * refused batch, "stop" to stop the current drain, or a delay in milliseconds that blocks the
+   * batch's kind until the next drain.
    */
   private async deliver(batch: LogBatch): Promise<Outcome> {
     if (batch.attempts >= this.maxAttempts) {
@@ -340,13 +362,12 @@ export class RetryEngine {
       const failure = error instanceof TransportError ? error : undefined;
 
       if (failure?.kind === "permanent" || failure?.kind === "too_large") {
-        await this.replaceStored(batch, error);
-        return "next";
+        return (await this.replaceStored(batch, error)) ? "split" : "next";
       }
 
       // Offline stops every kind, because the other endpoints aren't reachable either.
       if (failure?.kind === "offline") {
-        this.schedule(RETRY_IDLE_DELAY_MS);
+        this.schedule(RETRY_IDLE_DELAY_MS, true);
         return "stop";
       }
 
@@ -369,14 +390,20 @@ export class RetryEngine {
    * or nothing after a permanent refusal.
    * @param batch Rejected log batch, already held in storage.
    * @param error Failure thrown by the transport.
+   * @returns True when storage kept at least one half.
    */
-  private async replaceStored(batch: LogBatch, error: unknown): Promise<void> {
+  private async replaceStored(batch: LogBatch, error: unknown): Promise<boolean> {
     const parts = this.toStorable(batch, error);
     await this.bounded(this.storage.remove(batch.id));
+    let kept = false;
 
     for (const part of parts) {
-      await this.bounded(this.storage.save(part));
+      if (await this.bounded(this.storage.save(part))) {
+        kept = true;
+      }
     }
+
+    return kept;
   }
 
   /**
