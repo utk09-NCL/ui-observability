@@ -1,4 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  ATTR_APP_NAMESPACE,
+  ATTR_JOURNEY_ID,
+  ATTR_JOURNEY_NAME,
+  ATTR_JOURNEY_PARENT_ID,
+  ATTR_LOG_SEQ,
+  ATTR_LOG_TYPE,
+  ATTR_PAGE_URL,
+  RESOURCE_BROWSER_USER_AGENT,
+  RESOURCE_CONTEXT_ID,
+  RESOURCE_DEPLOYMENT_ENVIRONMENT,
+  RESOURCE_HOST_PLATFORM,
+  RESOURCE_OPENFIN_NAME,
+  RESOURCE_OPENFIN_UUID,
+  RESOURCE_SERVICE_NAME,
+  RESOURCE_SERVICE_VERSION,
+  RESOURCE_SESSION_ID,
+  RESOURCE_TAB_ID,
+  RESOURCE_TELEMETRY_SDK_LANGUAGE,
+  RESOURCE_TELEMETRY_SDK_NAME,
+  RESOURCE_TELEMETRY_SDK_VERSION,
+} from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
@@ -274,6 +296,71 @@ describe("otlpMetricsSerializer", () => {
     expect(metrics([point])[0].histogram.dataPoints[0].attributes).toEqual([
       { key: "venue", value: { stringValue: "LSE" } },
     ]);
+  });
+
+  describe("a key that the record builder writes itself", () => {
+    // The builder sets these on every record: the attributes after the payload merge, and the
+    // resource block. A session id on a point would start a new series for every session.
+    const BUILDER_KEYS = [
+      ATTR_LOG_TYPE,
+      ATTR_LOG_SEQ,
+      ATTR_APP_NAMESPACE,
+      ATTR_PAGE_URL,
+      ATTR_JOURNEY_ID,
+      ATTR_JOURNEY_NAME,
+      ATTR_JOURNEY_PARENT_ID,
+      RESOURCE_SERVICE_NAME,
+      RESOURCE_SERVICE_VERSION,
+      RESOURCE_DEPLOYMENT_ENVIRONMENT,
+      RESOURCE_TELEMETRY_SDK_NAME,
+      RESOURCE_TELEMETRY_SDK_VERSION,
+      RESOURCE_TELEMETRY_SDK_LANGUAGE,
+      RESOURCE_HOST_PLATFORM,
+      RESOURCE_SESSION_ID,
+      RESOURCE_TAB_ID,
+      RESOURCE_CONTEXT_ID,
+      RESOURCE_BROWSER_USER_AGENT,
+      RESOURCE_OPENFIN_UUID,
+      RESOURCE_OPENFIN_NAME,
+    ];
+
+    it("stays off the point of a forwarded record that names it, and the app's keys stay", () => {
+      // A frame writes its own metric.attribute_keys, so it can name any key of the record.
+      const point = record({
+        "metric.type": "gauge",
+        "metric.value": 1,
+        "metric.attribute_keys": [...BUILDER_KEYS, "route", "metric.rating"],
+        ...Object.fromEntries(BUILDER_KEYS.map((key) => [key, "x"])),
+        route: "/orders",
+        "metric.rating": "good",
+      });
+
+      expect(metrics([point])[0].gauge.dataPoints[0].attributes).toEqual([
+        { key: "route", value: { stringValue: "/orders" } },
+        { key: "metric.rating", value: { stringValue: "good" } },
+      ]);
+    });
+
+    it("stays off the point of a local record whose call used the name", () => {
+      const point = counterPoint(2, { route: "/orders", "session.id": "s9", "page.url": "/x" });
+
+      expect(metrics([point])[0].sum.dataPoints[0].attributes).toEqual([
+        { key: "route", value: { stringValue: "/orders" } },
+      ]);
+    });
+
+    it("keeps the profile keys of a profiler summary point", () => {
+      const point = histogramPoint({
+        "metric.attribute_keys": ["profile.probe", "profile.sample_every"],
+        "profile.probe": "render",
+        "profile.sample_every": 4,
+      });
+
+      expect(metrics([point])[0].histogram.dataPoints[0].attributes).toEqual([
+        { key: "profile.probe", value: { stringValue: "render" } },
+        { key: "profile.sample_every", value: { intValue: "4" } },
+      ]);
+    });
   });
 
   it("writes a point without attributes when the record names no keys", () => {

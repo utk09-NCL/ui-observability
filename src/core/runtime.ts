@@ -190,6 +190,7 @@ const FLUSH_INVALID = "flush() got invalid options. The library waits the defaul
 /** Diagnostic codes for a normal event rather than a fault. Their records are logged at INFO. */
 const NOTICE_CODES: ReadonlySet<DiagnosticCode> = new Set([
   "bus.role_resolved",
+  "bus.tab_id_changed",
   "config.reconfigured",
   "security.rotated",
   "journey.adopted",
@@ -2741,7 +2742,7 @@ export class ObservabilityRuntime {
   private regenerateTabId(): void {
     const fresh = newId(this.diagnostics);
     this.diagnostics.report(
-      "bus.role_resolved",
+      "bus.tab_id_changed",
       "Another context uses this tab id. A duplicated tab is the usual cause. The library makes a new tab id.",
       { was: this.identity.tabId, now: fresh },
     );

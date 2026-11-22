@@ -68,14 +68,42 @@ type IabCall = (...args: unknown[]) => Promise<void>;
 
 interface FakeIab {
   subscribe: ReturnType<typeof vi.fn<IabCall>>;
+  unsubscribe: ReturnType<typeof vi.fn<IabCall>>;
   publish: ReturnType<typeof vi.fn<IabCall>>;
+  send: ReturnType<typeof vi.fn<IabCall>>;
 }
 
 const fakeIab = (over: Partial<FakeIab> = {}): FakeIab => ({
   subscribe: vi.fn(() => Promise.resolve()),
+  unsubscribe: vi.fn(() => Promise.resolve()),
   publish: vi.fn(() => Promise.resolve()),
+  send: vi.fn(() => Promise.resolve()),
   ...over,
 });
+
+/** The calls of a spy on addEventListener or removeEventListener. */
+interface ListenerSpy {
+  mock: { calls: unknown[][] };
+}
+
+/**
+ * Counts the message listeners that are still added: each add, less each remove of the same
+ * function.
+ * @param add Spy on addEventListener.
+ * @param remove Spy on removeEventListener.
+ * @returns The number of listeners that nothing removed.
+ */
+function liveMessageListeners(add: ListenerSpy, remove: ListenerSpy): number {
+  const live = new Set(
+    add.mock.calls.filter(([type]) => type === "message").map(([, listener]) => listener),
+  );
+  for (const [type, listener] of remove.mock.calls) {
+    if (type === "message") {
+      live.delete(listener);
+    }
+  }
+  return live.size;
+}
 
 class FakeBroadcastChannel {
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -1317,27 +1345,65 @@ describe("createOpenFinLink", () => {
     });
   });
 
-  it("publishes on the scoped topic, and reports rather than throwing when it rejects", async () => {
-    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+  it("sends to its own application only, and never publishes to every application", async () => {
     const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), diag());
+    const hello = { t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" } as const;
+
+    link?.post(hello);
+
+    // publish() reaches every application that subscribed to the topic on the runtime.
+    await vi.waitFor(() => {
+      expect(iab.send).toHaveBeenCalledWith({ uuid: "app-1" }, "topic.app-1", envelope(hello));
+    });
+    expect(iab.publish).not.toHaveBeenCalled();
+  });
+
+  it("reports rather than throwing when the send rejects", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const iab = fakeIab({ send: vi.fn(() => Promise.reject(new Error("iab is gone"))) });
     vi.stubGlobal("fin", { InterApplicationBus: iab });
     const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), new Diagnostics(handler, 0));
 
     link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
-    await vi.waitFor(() => {
-      expect(iab.publish).toHaveBeenCalledWith(
-        "topic.app-1",
-        envelope({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" }),
-      );
-    });
 
-    iab.publish.mockImplementationOnce(() => Promise.reject(new Error("iab is gone")));
-    link?.post({ t: "ui-observability.message.hello", from: "ctx-1", tabId: "tab-1" });
     await vi.waitFor(() => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
     });
+  });
+
+  it("unsubscribes its own listener at close()", async () => {
+    const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), diag());
+    await vi.waitFor(() => {
+      expect(iab.subscribe).toHaveBeenCalledTimes(1);
+    });
+    const listener = iab.subscribe.mock.calls[0][2];
+
+    link?.close();
+
+    // Otherwise each runtime that starts after shutdown() adds a listener that holds its bus.
+    await vi.waitFor(() => {
+      expect(iab.unsubscribe).toHaveBeenCalledWith({ uuid: "app-1" }, "topic.app-1", listener);
+    });
+  });
+
+  it("reports rather than throwing when the unsubscribe rejects", async () => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const iab = fakeIab({ unsubscribe: vi.fn(() => Promise.reject(new Error("iab is gone"))) });
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const link = createOpenFinLink("topic", "app-1", vi.fn<Receive>(), new Diagnostics(handler, 0));
+    await vi.waitFor(() => {
+      expect(iab.subscribe).toHaveBeenCalledTimes(1);
+    });
 
     expect(() => link?.close()).not.toThrow();
+
+    await vi.waitFor(() => {
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "bus.send_failed" }));
+    });
   });
 });
 
@@ -1371,6 +1437,22 @@ describe("createOwnerLink", () => {
       { t: "ui-observability.message.hello", from: "owner", tabId: "t" },
       { link: "owner", origin: "same-origin" },
     );
+  });
+
+  it("removes its message listener at close(), so a later message reaches nobody", () => {
+    vi.stubGlobal("WorkerGlobalScope", {});
+    vi.stubGlobal("postMessage", vi.fn());
+    const receive = vi.fn<Receive>();
+    const link = createOwnerLink(receive, diag());
+
+    link?.close();
+    dispatchEvent(
+      new MessageEvent("message", {
+        data: envelope({ t: "ui-observability.message.hello", from: "owner", tabId: "t" }),
+      }),
+    );
+
+    expect(receive).not.toHaveBeenCalled();
   });
 
   it("tolerates a scope with no addEventListener", () => {
@@ -1924,8 +2006,8 @@ describe("Bus role resolution: auto mode", () => {
         message: expect.stringContaining("2 attempt(s)"),
       }),
     );
-    const hellos = iab.publish.mock.calls.filter(
-      ([, message]) => (message as BusEnvelope).m.t === "ui-observability.message.hello",
+    const hellos = iab.send.mock.calls.filter(
+      ([, , message]) => (message as BusEnvelope).m.t === "ui-observability.message.hello",
     );
     expect(hellos).toHaveLength(2);
     bus.destroy();
@@ -2880,6 +2962,118 @@ describe("Bus internals: openControlLinks", () => {
       "children",
       "openfin",
     ]);
+  });
+});
+
+describe("Bus links after destroy()", () => {
+  const inWorker = { isWorker: true, isTopLevelDocument: false };
+
+  it("leaves no worker scope listener after repeated shutdown and configure cycles", async () => {
+    vi.stubGlobal("WorkerGlobalScope", {});
+    vi.stubGlobal("postMessage", vi.fn());
+    const add = vi.spyOn(globalThis, "addEventListener");
+    const remove = vi.spyOn(globalThis, "removeEventListener");
+    const cycle = async (): Promise<Bus> => {
+      const { bus } = make({ mode: "forwarder", timeoutMs: 5, maxAttempts: 1 }, inWorker);
+      await bus.start();
+      return bus;
+    };
+    const first = await cycle();
+    const oneBus = liveMessageListeners(add, remove);
+    first.destroy();
+
+    // A listener that stays holds the destroyed bus, and through its handlers the whole runtime.
+    expect(liveMessageListeners(add, remove)).toBe(0);
+    for (let i = 0; i < 3; i++) {
+      (await cycle()).destroy();
+    }
+    const last = await cycle();
+
+    expect(liveMessageListeners(add, remove)).toBe(oneBus);
+    last.destroy();
+  });
+
+  it("unsubscribes the OpenFin link when the bus is destroyed", async () => {
+    const iab = fakeIab();
+    vi.stubGlobal("fin", { InterApplicationBus: iab });
+    const { bus } = make(
+      { openFinRole: "client", timeoutMs: 5, maxAttempts: 1 },
+      { platform: "openfin" },
+    );
+    await bus.start();
+    await vi.waitFor(() => {
+      expect(iab.subscribe).toHaveBeenCalledTimes(1);
+    });
+    const listener = iab.subscribe.mock.calls[0][2];
+
+    bus.destroy();
+
+    await vi.waitFor(() => {
+      expect(iab.unsubscribe).toHaveBeenCalledWith(
+        { uuid: "app-1" },
+        `${BUS_CHANNEL_NAME}.app-1`,
+        listener,
+      );
+    });
+  });
+
+  describe("during the handshake of a cross-origin frame", () => {
+    /**
+     * Starts a bus in a frame whose parent is on another origin. The parent only takes posts.
+     * @returns The bus, its start promise, the spy on the parent's postMessage and the diagnostics.
+     */
+    function startInFrame() {
+      const post = vi.fn();
+      const parent = new Proxy({} as Window, {
+        get(_target, key) {
+          if (key === "postMessage") {
+            return post;
+          }
+          throw new DOMException("blocked a frame", "SecurityError");
+        },
+      });
+      vi.spyOn(window, "parent", "get").mockReturnValue(parent);
+      vi.spyOn(document, "referrer", "get").mockReturnValue("https://parent.example/page");
+      const add = vi.spyOn(globalThis, "addEventListener");
+      const remove = vi.spyOn(globalThis, "removeEventListener");
+      const { bus, diagnostics } = make(
+        { trustedOrigins: ["https://parent.example"], timeoutMs: 20, maxAttempts: 3 },
+        { isTopLevelDocument: false },
+      );
+
+      return { bus, started: bus.start(), post, add, remove, diagnostics };
+    }
+
+    it("posts no hello and reports nothing after destroy()", async () => {
+      const { bus, started, post, diagnostics } = startInFrame();
+      await vi.waitFor(() => {
+        expect(post).toHaveBeenCalledTimes(1);
+      });
+
+      bus.destroy();
+      const before = diagnostics.snapshot();
+      await started;
+
+      // The retry loop posts again at each timeout, and the end reports on a destroyed runtime.
+      expect(post).toHaveBeenCalledTimes(1);
+      const after = diagnostics.snapshot();
+      expect(after["bus.handshake_timeout"]).toBe(before["bus.handshake_timeout"]);
+      expect(after["bus.role_resolved"]).toBe(before["bus.role_resolved"]);
+    });
+
+    it("closes the candidate link at destroy(), before the handshake ends", async () => {
+      const { bus, started, post, add, remove } = startInFrame();
+      await vi.waitFor(() => {
+        expect(post).toHaveBeenCalledTimes(1);
+      });
+      expect(liveMessageListeners(add, remove)).toBeGreaterThan(0);
+
+      bus.destroy();
+
+      // The handshake can wait 3 x 1500 ms. The listener holds the destroyed bus until then.
+      expect(liveMessageListeners(add, remove)).toBe(0);
+      await started;
+    });
   });
 });
 

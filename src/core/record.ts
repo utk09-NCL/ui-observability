@@ -482,20 +482,29 @@ export class RecordBuilder {
   }
 
   /**
-   * Runs the redact hook on a record from another context. A child context without redact
-   * forwards raw records, so the sender is the last privacy gate.
+   * Applies this context's limits and redact hook to a record from another context. A child
+   * context without redact forwards raw records, so the sender is the last privacy gate.
    * @param record Forwarded record.
    * @returns The record to deliver, or null when the hook drops it.
    */
   redactForwarded(record: LogRecord): LogRecord | null {
-    const { redact } = this.deps.config;
-    if (!redact) {
-      return record;
+    const { config, diagnostics, limits } = this.deps;
+    const fixed = fixedOf(record.attributes);
+    // A child's limits can be looser than ours. A value nested too deep makes the serializer
+    // throw, and the transport then drops the whole batch with this context's own records.
+    const resource = asAttributes(sanitizeWithSize(record.resource, limits, diagnostics).value);
+
+    // applyHooks() applies the limits to the attributes after redact.
+    if (config.redact) {
+      const stages: [RecordHook, HookStage][] = [[config.redact, "redact"]];
+      const outcome = this.applyHooks({ ...record, resource }, stages, fixed);
+      return typeof outcome === "string" ? null : outcome.record;
     }
 
-    const stages: [RecordHook, HookStage][] = [[redact, "redact"]];
-    const outcome = this.applyHooks(record, stages, fixedOf(record.attributes));
-    return typeof outcome === "string" ? null : outcome.record;
+    const attributes = asAttributes(sanitizeWithSize(record.attributes, limits, diagnostics).value);
+    // The limits must not trim the fields the library builds.
+    Object.assign(attributes, fixed);
+    return { ...record, attributes, resource };
   }
 
   /**

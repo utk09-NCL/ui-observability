@@ -21,7 +21,7 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
 import type { LogBatch } from "../src/models/batch";
-import { unwrap, type BusMessage } from "../src/models/bus";
+import { envelope, unwrap, type BusMessage } from "../src/models/bus";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import type { CapturePlugin, PluginContext } from "../src/models/plugin";
@@ -1037,6 +1037,52 @@ describe("runtime lifecycle", () => {
 
     expect(runtime().identity.tabId).not.toBe(before);
     expect(sessionStorage.getItem("ui-observability.tab")).toBe(runtime().identity.tabId);
+  });
+
+  it("reports a tab id change as bus.tab_id_changed, with the old and the new id", async () => {
+    const events: DiagnosticEvent[] = [];
+    configure({
+      ...base,
+      diagnostics: { throttleMs: 0 },
+      onDiagnostic: (event) => {
+        events.push(event);
+      },
+    });
+    await ready();
+    const before = runtime().identity.tabId;
+    events.length = 0;
+
+    runtime()["regenerateTabId"]();
+
+    // bus.role_resolved says which role the bus took, so it is the wrong code for a rename.
+    expect(events).toEqual([
+      expect.objectContaining({
+        code: "bus.tab_id_changed",
+        message:
+          "Another context uses this tab id. A duplicated tab is the usual cause. " +
+          "The library makes a new tab id.",
+        detail: { was: before, now: runtime().identity.tabId },
+      }),
+    ]);
+  });
+
+  it("logs a tab id change at INFO, like the other notice codes", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      ...base,
+      endpoint: null,
+      transport: memory.transport,
+      diagnostics: { records: true, throttleMs: 0 },
+    });
+    await ready();
+
+    runtime()["regenerateTabId"]();
+    await flush();
+
+    const notice = memory
+      .records()
+      .find((record) => record.attributes["diagnostic.code"] === "bus.tab_id_changed");
+    expect(notice?.severityText).toBe("INFO");
   });
 
   it("applies a journey update routed from the bus", async () => {
@@ -2995,6 +3041,191 @@ describe("runtime reconfigure", () => {
     info("console only");
 
     expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
+  });
+});
+
+describe("the sender's limits on a forwarded record", () => {
+  /** Counts the levels of nested one-item arrays. */
+  const levels = (value: unknown): number => {
+    let count = 0;
+    for (let next = value; Array.isArray(next); next = next[0]) {
+      count++;
+    }
+    return count;
+  };
+
+  /** One way to break a limit, and a check that the sender cut the value. */
+  const KINDS = [
+    {
+      kind: "a deep array",
+      make: (): unknown => {
+        let value: unknown = "x";
+        for (let i = 0; i < 40; i++) {
+          value = [value];
+        }
+        return value;
+      },
+      cut: (value: unknown, limits: { maxDepth: number }): boolean =>
+        levels(value) <= limits.maxDepth,
+    },
+    {
+      kind: "a long array",
+      make: (): unknown => Array.from({ length: 250 }, (_, index) => index),
+      // The sender keeps maxArrayLength items and adds one item that counts the rest.
+      cut: (value: unknown, limits: { maxArrayLength: number }): boolean =>
+        (value as unknown[]).length <= limits.maxArrayLength + 1,
+    },
+    {
+      kind: "a long string",
+      make: (): unknown => "x".repeat(20_000),
+      // The sender cuts at maxAttributeChars and adds a short note.
+      cut: (value: unknown, limits: { maxAttributeChars: number }): boolean =>
+        (value as string).length < limits.maxAttributeChars + 50,
+    },
+  ];
+
+  const CASES = KINDS.flatMap((one) =>
+    (["attributes", "resource"] as const).flatMap((target) =>
+      [false, true].map((redact) => ({ ...one, target, redact })),
+    ),
+  );
+
+  it.each(CASES)(
+    "cuts $kind in the $target of a forwarded record, with redact $redact",
+    async ({ make, cut, target, redact }) => {
+      configure({ ...base, ...(redact ? { redact: (record: LogRecord) => record } : {}) });
+      await ready();
+      const record = forwardedRecord("from a worker");
+      record[target] = { deep: make() };
+
+      runtime()["ingestForwarded"]([record]);
+
+      // Without a cut, the OTLP serializer recurses until it throws, and the transport drops the
+      // whole batch with the records of this context.
+      const [stored] = buffered();
+      expect(cut(stored[target].deep, runtime().config.limits)).toBe(true);
+    },
+  );
+
+  it("keeps the long bucket lists of a forwarded histogram whole", async () => {
+    configure(base);
+    await ready();
+    const bounds = Array.from({ length: 150 }, (_, index) => index);
+    const point = forwardedRecord("latency");
+    point.attributes = {
+      "log.type": "metric",
+      "app.namespace": "uiobs.metrics",
+      "metric.type": "histogram",
+      "metric.start_time_unix_nano": "1731770000000000000",
+      "metric.count": 3,
+      "metric.sum": 42.5,
+      "metric.min": 0.5,
+      "metric.max": 40,
+      "metric.bounds": bounds,
+      "metric.bucket_counts": [...bounds, 0],
+    };
+
+    runtime()["ingestForwarded"]([point]);
+
+    // The library built these lists with a fixed size, so the limits must not trim them.
+    const [stored] = buffered();
+    expect(stored.attributes["metric.bounds"]).toEqual(bounds);
+    expect(stored.attributes["metric.bucket_counts"]).toEqual([...bounds, 0]);
+  });
+
+  describe("from a registered worker, through the whole delivery", () => {
+    /**
+     * Builds an array nested to the given depth.
+     * @param depth Levels of nesting.
+     * @returns The array.
+     */
+    const nested = (depth: number): unknown => {
+      let value: unknown = "x";
+      for (let i = 0; i < depth; i++) {
+        value = [value];
+      }
+      return value;
+    };
+
+    it.each([
+      ["resource, with the parent's redact set", true, 2500],
+      ["attributes, without a parent redact", false, 2500],
+      ["resource, control with depth 10", true, 10],
+    ])(
+      "keeps the parent's own records when the worker forwards a deep value in %s",
+      async (_label, withRedact, depth) => {
+        const bodies: string[] = [];
+        vi.stubGlobal(
+          "fetch",
+          vi.fn((_url: unknown, init?: RequestInit) => {
+            bodies.push(typeof init?.body === "string" ? init.body : "");
+            return Promise.resolve(new Response("", { status: 204 }));
+          }),
+        );
+        const onDrop = vi.fn<(summary: DropSummary) => void>();
+        configure({
+          ...base,
+          endpoint: "https://ingest.example/v1/logs",
+          storage: { backend: "memory" },
+          identity: "memory",
+          compression: "none",
+          onDrop,
+          ...(withRedact ? { redact: (record: LogRecord) => record } : {}),
+          capture: { errors: false, rejections: false },
+        });
+        await ready();
+        let listener: ((event: MessageEvent) => void) | undefined;
+        const toWorker: BusMessage[] = [];
+        registerWorker({
+          postMessage: vi.fn((data: unknown) => {
+            const message = unwrap(data);
+            if (message) {
+              toWorker.push(message);
+            }
+          }),
+          addEventListener: vi.fn((_type: string, added: (event: MessageEvent) => void) => {
+            listener = added;
+          }),
+          removeEventListener: vi.fn(),
+        });
+        await vi.waitFor(() => {
+          expect(listener).toBeDefined();
+        });
+        // structuredClone stands in for postMessage, so the value must survive a real clone.
+        const send = (message: BusMessage): void => {
+          listener?.({ data: structuredClone(envelope(message)) } as MessageEvent);
+        };
+        send({ t: "ui-observability.message.hello", from: "worker-ctx", tabId: "tab" });
+        await vi.waitFor(() => {
+          expect(toWorker.some((message) => message.t === "ui-observability.message.welcome")).toBe(
+            true,
+          );
+        });
+        const welcome = toWorker.find(
+          (message) => message.t === "ui-observability.message.welcome",
+        );
+        const routingContextId = (welcome as { routingContextId?: string }).routingContextId;
+
+        error("payment failed");
+        const record = forwardedRecord("poison");
+        record[withRedact ? "resource" : "attributes"] = { deep: nested(depth) };
+        send({
+          t: "ui-observability.message.records",
+          from: "worker-ctx",
+          routingContextId,
+          records: [record as unknown as LogRecord],
+        });
+        await flush();
+        await vi.waitFor(() => {
+          expect(bodies.length + onDrop.mock.calls.length).toBeGreaterThan(0);
+        });
+
+        expect(bodies.join("\n")).toContain("payment failed");
+        expect(onDrop).not.toHaveBeenCalledWith(
+          expect.objectContaining({ reason: "unserializable" }),
+        );
+      },
+    );
   });
 });
 

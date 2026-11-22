@@ -7,6 +7,7 @@ import {
   CONTENT_TYPE_JSON,
   METRIC_FIELD_KEYS,
   METRIC_KEYS,
+  RECORD_FIELD_KEYS,
   SERIALIZER_NAME_OTLP,
   TELEMETRY_SDK_NAME,
   TELEMETRY_SDK_VERSION,
@@ -17,6 +18,9 @@ import { groupByResource, toKeyValues } from "./otlp";
 
 /** OTLP AggregationTemporality DELTA. Each point holds the change since the previous point. */
 const DELTA = 1;
+
+/** Keys that hold the library's own value, so a point never takes them as attributes. */
+const LIBRARY_KEYS: ReadonlySet<string> = new Set([...METRIC_FIELD_KEYS, ...RECORD_FIELD_KEYS]);
 
 /** The OTLP field for each metric type. Anything that isn't a counter or a histogram is a gauge. */
 type MetricField = "sum" | "histogram" | "gauge";
@@ -74,10 +78,10 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
   }
 
   for (const key of keys as unknown[]) {
-    // A key from the app's call can have the same name as a metric field, and that field
-    // holds the library's value. Any other metric. key, such as the web-vitals rating, is the
-    // caller's own.
-    const named = typeof key === "string" && !METRIC_FIELD_KEYS.includes(key);
+    // A key from the app's call, or from a frame's own key list, can name a metric field or a
+    // record field, and the record holds the library's value there. Any other key, such as the
+    // web-vitals rating, is the caller's own.
+    const named = typeof key === "string" && !LIBRARY_KEYS.has(key);
     const value: unknown = named ? record.attributes[key] : undefined;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       out[key as string] = value;
