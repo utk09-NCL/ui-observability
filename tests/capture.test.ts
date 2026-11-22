@@ -2002,6 +2002,283 @@ describe("InteractionCapture rage and dead clicks", () => {
     expect(events(logger, "ui.dead_click")).toEqual([]);
     capture.uninstall();
   });
+
+  describe("with a live region", () => {
+    // One region the default selector marks, one it doesn't mark, and one that ".ticker" marks.
+    const REGIONS = `
+      <div id="grid" data-observability-live><span id="price">100</span></div>
+      <div id="feed"><span id="headline">Open</span></div>
+      <div class="ticker"><span id="tick">7</span></div>`;
+
+    /** The capture of the running spec, so afterEach removes its click listener. */
+    let running: InteractionCapture | undefined;
+
+    /**
+     * Builds the page of the parent suite and adds the three regions.
+     * @param interactions Interaction options.
+     * @param checked True to run the options through the config checks, as an app's options go.
+     * @returns The parent's page, plus the region elements.
+     */
+    const livePage = (interactions: CaptureOptions["interactions"], checked = false) => {
+      const view = page(interactions);
+      if (checked) {
+        view.c.config.capture.interactions = resolveConfig(
+          { capture: { interactions } },
+          view.c.diagnostics,
+        ).capture.interactions;
+      }
+      document.body.insertAdjacentHTML("beforeend", REGIONS);
+      const [grid, price, feed, headline, tick] = [
+        "#grid",
+        "#price",
+        "#feed",
+        "#headline",
+        "#tick",
+      ].map((one) => document.querySelector(one)!);
+      running = view.capture;
+      return { ...view, grid, price, feed, headline, tick };
+    };
+    type Live = ReturnType<typeof livePage>;
+
+    /** A change to the page, named for the spec title. */
+    type Change = [name: string, apply: (live: Live) => void];
+
+    const INSIDE: Change[] = [
+      ["a child added to the live region", ({ grid }) => grid.append(document.createElement("i"))],
+      ["a child removed from the live region", ({ price }) => price.remove()],
+      [
+        "the text of an element inside the live region",
+        ({ price }) => {
+          price.textContent = "101";
+        },
+      ],
+      ["an attribute of the live region", ({ grid }) => grid.setAttribute("data-flash", "up")],
+      ["an attribute of an element inside it", ({ price }) => price.setAttribute("class", "up")],
+      [
+        "the data of a text node inside it",
+        ({ price }) => {
+          (price.firstChild as Text).data = "101";
+        },
+      ],
+    ];
+
+    const OUTSIDE: Change[] = [
+      [
+        "a child added outside the live region",
+        ({ feed }) => feed.append(document.createElement("i")),
+      ],
+      ["an attribute changed outside it", ({ feed }) => feed.setAttribute("data-flash", "up")],
+      [
+        "the data of a text node outside it",
+        ({ headline }) => {
+          (headline.firstChild as Text).data = "Closed";
+        },
+      ],
+      ["a child added to the body", () => document.body.append(document.createElement("i"))],
+    ];
+
+    afterEach(() => {
+      running?.uninstall();
+      running = undefined;
+    });
+
+    it.each(INSIDE)("records a dead click when the only change is %s", async (_name, change) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      change(live);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it.each(OUTSIDE)("records no dead click when the only change is %s", async (_name, change) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      change(live);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records no dead click when the page changes in and out of the live region", async () => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      live.feed.append(document.createElement("i"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it.each<[string, (live: Live) => Element]>([
+      ["the live region itself", ({ grid }) => grid],
+      ["an element inside the live region", ({ price }) => price],
+    ])("records a dead click when %s scrolls", async (_name, scroller) => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      scroller(live).dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("records no dead click when an element outside the live region scrolls", async () => {
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.feed.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it.each<[string, () => EventTarget]>([
+      ["document", () => document],
+      ["window", () => window],
+    ])("records no dead click when a scroll event targets the %s", async (_name, target) => {
+      // Neither one is an Element, so a selector match on the target would throw or find nothing.
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      target().dispatchEvent(new Event("scroll", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records no dead click after a navigation when only the live region changed", async () => {
+      const original = location.href;
+      const live = livePage({ deadClicks: true });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      history.replaceState(null, "", "/moved");
+      await vi.advanceTimersByTimeAsync(1000);
+      history.replaceState(null, "", original);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("records a dead click when only a region of the custom selector changes", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+
+      click(live.buy);
+      live.tick.textContent = "8";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("treats a change in the default region as a response with a custom selector", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("treats every change as a response when the selector is empty", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" });
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("uses the default live region after the config checks", async () => {
+      const live = livePage({ deadClicks: true }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+    });
+
+    it("uses the app's own selector instead of the default after the config checks", async () => {
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: ".ticker" }, true);
+
+      click(live.buy);
+      live.tick.textContent = "8";
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(events(live.logger, "ui.dead_click")).toHaveLength(1);
+    });
+
+    it("keeps an empty selector through the config checks, so every change responds", async () => {
+      // An empty string isn't valid CSS, so a plain validity check would replace it.
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "" }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+    });
+
+    it("falls back to the default region and raises no page error for a bad selector", async () => {
+      const pageErrors = vi.fn();
+      addEventListener("error", pageErrors);
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" }, true);
+
+      click(live.buy);
+      live.price.textContent = "101";
+      await vi.advanceTimersByTimeAsync(1000);
+      removeEventListener("error", pageErrors);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      expect(pageErrors).not.toHaveBeenCalled();
+    });
+
+    it("counts a change as a response and reports it for a selector that can't match", async () => {
+      // This selector skips the config checks, so the match inside the observer throws.
+      const pageErrors = vi.fn();
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      addEventListener("error", pageErrors);
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" });
+      live.c.diagnostics.setHandler(reported);
+
+      click(live.buy);
+      live.grid.setAttribute("data-flash", "up");
+      await vi.advanceTimersByTimeAsync(1000);
+      removeEventListener("error", pageErrors);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      expect(pageErrors).not.toHaveBeenCalled();
+      expect(reported.mock.calls.map(([event]) => [event.code, event.message])).toEqual([
+        [
+          "capture.record_failed",
+          "The library could not check a page change for a dead click. " +
+            "It counts the change as a response.",
+        ],
+      ]);
+    });
+
+    it("counts a scroll as a response and reports it for a selector that can't match", async () => {
+      const reported = vi.fn<(event: DiagnosticEvent) => void>();
+      const live = livePage({ deadClicks: true, deadClickIgnoreSelector: "[" });
+      live.c.diagnostics.setHandler(reported);
+
+      click(live.buy);
+      live.price.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      expect(reported.mock.calls.map(([event]) => event.code)).toEqual(["capture.record_failed"]);
+    });
+  });
 });
 
 describe("WebVitalsCapture", () => {

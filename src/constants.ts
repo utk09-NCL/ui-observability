@@ -693,6 +693,12 @@ export const ACTION_ATTRIBUTE_DEFAULT = "data-observability-action";
  */
 export const IGNORE_SELECTOR = "[data-observability-ignore]";
 
+/**
+ * Selector for the regions that change on their own, such as a live price grid. A change or a
+ * scroll inside one isn't the page answering a click, so it doesn't stop a dead click.
+ */
+export const DEAD_CLICK_IGNORE_SELECTOR = "[data-observability-live]";
+
 /** How many clicks on one element make a rage click, by default. */
 export const RAGE_CLICK_COUNT = 3;
 

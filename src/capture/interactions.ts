@@ -8,6 +8,7 @@ import {
   ARIA_LABEL_MAX_CHARS,
   CLICK_TEXT_MAX_CHARS,
   DEAD_CLICK_CONTROLS,
+  DEAD_CLICK_IGNORE_SELECTOR,
   DEAD_CLICK_MS,
   IGNORE_SELECTOR,
   RAGE_CLICK_COUNT,
@@ -226,24 +227,27 @@ export class InteractionCapture implements Capture {
     }
 
     const href = location.href;
+    const live = options.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
     let responded = false;
-    const respond = (): void => {
-      responded = true;
-    };
-    const observer = new MutationObserver(respond);
+    const observer = new MutationObserver((records) => {
+      responded ||= records.some((record) => this.answersClick(record.target, live));
+    });
     observer.observe(document, {
       subtree: true,
       childList: true,
       attributes: true,
       characterData: true,
     });
-    addEventListener("scroll", respond, { capture: true, passive: true });
+    const onScroll = (event: Event): void => {
+      responded ||= this.answersClick(event.target, live);
+    };
+    addEventListener("scroll", onScroll, { capture: true, passive: true });
 
     const stop = (): void => {
       // timer is declared after stop, but stop can only run once that line has executed.
       clearTimeout(timer);
       observer.disconnect();
-      removeEventListener("scroll", respond, true);
+      removeEventListener("scroll", onScroll, true);
       this.stopDeadCheck = undefined;
     };
     const timer = setTimeout(() => {
@@ -253,6 +257,32 @@ export class InteractionCapture implements Capture {
       }
     }, options.deadClickMs ?? DEAD_CLICK_MS);
     this.stopDeadCheck = stop;
+  }
+
+  /**
+   * Checks whether a DOM change or a scroll answers a click. One inside a live region, such as a
+   * ticking price cell, doesn't. A failed match counts as an answer, so a fault can't make up a
+   * dead click.
+   * @param target The changed node, or the scroll's target.
+   * @param live Selector of the live regions. "" makes every change an answer.
+   * @returns True if the change answers the click.
+   */
+  private answersClick(target: EventTarget | null, live: string): boolean {
+    if (!live) {
+      return true;
+    }
+
+    // A text change targets a Text node, and the document and the window have no closest().
+    const element =
+      target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+    // The browser calls the observer and the listener directly, so a throw is a page error.
+    return (
+      this.ctx.diagnostics.guard(
+        "capture.record_failed",
+        "The library could not check a page change for a dead click. It counts the change as a response.",
+        () => !element?.closest(live),
+      ) ?? true
+    );
   }
 
   /** On a URL change, rotates the trace context and records a breadcrumb and an event. */

@@ -460,6 +460,14 @@ export interface InteractionOptions {
    * @default 1000
    */
   deadClickMs?: number;
+  /**
+   * CSS selector for regions that change on their own, for example a live price cell. A DOM
+   * change or a scroll inside a matching element isn't a response, so it doesn't stop a dead
+   * click. Mark the element that changes, not a panel that also holds the controls. Set "" to
+   * count every change.
+   * @default "[data-observability-live]"
+   */
+  deadClickIgnoreSelector?: string;
 }
 
 /** Cache settings. A logger the app still holds keeps working after it leaves the cache. */

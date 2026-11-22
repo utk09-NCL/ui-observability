@@ -16,6 +16,7 @@ import {
   CONFIG_SECTIONS,
   CONSOLE_DEFAULT_LEVEL,
   CONSOLE_DEFAULT_STYLES,
+  DEAD_CLICK_IGNORE_SELECTOR,
   DEAD_CLICK_MS,
   DEFAULT_CONFIG,
   HOLD_BUFFER_HEAD_RECORDS,
@@ -1779,6 +1780,29 @@ function resolveCapture(
 }
 
 /**
+ * Checks a dead click ignore selector. "" turns the filter off, and matches("") throws, so ""
+ * skips the probe. Without a document there's nothing to parse with, so any string passes.
+ * @param value The value the consumer passed.
+ * @returns True for "" or a selector the browser parses.
+ */
+function isLiveSelector(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  if (value === "" || typeof document === "undefined") {
+    return true;
+  }
+
+  try {
+    document.createElement("div").matches(value);
+    return true;
+  } catch {
+    // A selector the browser can't parse throws, and that's the answer. The fallback is false.
+    return false;
+  }
+}
+
+/**
  * Checks the click settings. An invalid value never turns on text or selector capture.
  * @param value The settings the app supplied.
  * @param previous The current settings, or {} when the capture was a boolean.
@@ -1821,6 +1845,21 @@ function resolveInteractions(
         "an attribute name of letters, digits, hyphens and underscores",
         value.actionAttribute,
         `"${actionAttribute}"`,
+      );
+    }
+  }
+  // Use ?? here, because "" is a real setting that turns the filter off.
+  let deadClickIgnoreSelector = previous.deadClickIgnoreSelector ?? DEAD_CLICK_IGNORE_SELECTOR;
+  if (value.deadClickIgnoreSelector !== undefined) {
+    if (isLiveSelector(value.deadClickIgnoreSelector)) {
+      deadClickIgnoreSelector = value.deadClickIgnoreSelector;
+    } else {
+      reportInvalid(
+        diagnostics,
+        "capture.interactions.deadClickIgnoreSelector",
+        'a valid CSS selector, or "" to count every change',
+        value.deadClickIgnoreSelector,
+        `"${deadClickIgnoreSelector}"`,
       );
     }
   }
@@ -1880,6 +1919,7 @@ function resolveInteractions(
       previous.deadClickMs ?? DEAD_CLICK_MS,
       diagnostics,
     ),
+    deadClickIgnoreSelector,
   };
 }
 

@@ -34,7 +34,7 @@ import {
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { resolveConfig } from "../src/core/config";
 import { applyRemote } from "../src/core/remote-rules";
-import { Diagnostics } from "../src/core/diagnostics";
+import { Diagnostics, type DiagnosticEvent } from "../src/core/diagnostics";
 import { NetworkCapture } from "../src/capture/network";
 import { Bus } from "../src/bus/bus";
 import type { BusMessage, MessageSource } from "../src/models/bus";
@@ -264,6 +264,100 @@ describe("policy validation", () => {
       ignoreSelector: ".private",
     });
     expect(b.loggerCache.maxEntries).toBeNull();
+  });
+});
+
+describe("dead click ignore selector", () => {
+  /**
+   * Resolves the interaction options the way an app's config does.
+   * @param value The `capture.interactions` value.
+   * @param previous The active config, for a later configure call.
+   * @returns The resolved config, its interaction options and each config.invalid message.
+   */
+  const resolve = (value: unknown, previous?: ResolvedConfig) => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const config = resolveConfig(
+      { ...base, capture: { interactions: value } } as never,
+      new Diagnostics(handler, 0),
+      previous,
+    );
+    const invalid = handler.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.code === "config.invalid")
+      .map((event) => event.message);
+    return { config, options: config.capture.interactions, invalid };
+  };
+
+  it("defaults to the live attribute selector and reports nothing", () => {
+    const { options, invalid } = resolve({ deadClicks: true });
+
+    expect(options).toMatchObject({ deadClickIgnoreSelector: "[data-observability-live]" });
+    expect(invalid).toEqual([]);
+  });
+
+  it.each([".ticker", ".ticker, [data-quote]"])("keeps the valid selector %j", (selector) => {
+    const { options, invalid } = resolve({ deadClicks: true, deadClickIgnoreSelector: selector });
+
+    expect(options).toMatchObject({ deadClickIgnoreSelector: selector });
+    expect(invalid).toEqual([]);
+  });
+
+  it("keeps an empty selector, which turns the filter off", () => {
+    // An empty string isn't valid CSS, so a plain validity check would reject it.
+    const { options, invalid } = resolve({ deadClicks: true, deadClickIgnoreSelector: "" });
+
+    expect(options).toMatchObject({ deadClickIgnoreSelector: "" });
+    expect(invalid).toEqual([]);
+  });
+
+  it.each([1, true, {}, null, [".ticker"]])(
+    "reports a selector of %j that isn't a string and keeps the default",
+    (selector) => {
+      const { options, invalid } = resolve({ deadClicks: true, deadClickIgnoreSelector: selector });
+
+      expect(options).toMatchObject({ deadClickIgnoreSelector: "[data-observability-live]" });
+      expect(invalid).toHaveLength(1);
+      expect(invalid[0]).toContain("capture.interactions.deadClickIgnoreSelector");
+    },
+  );
+
+  it.each(["[", "div >", "#", ":not("])(
+    "reports the selector %j that isn't valid CSS and keeps the default",
+    (selector) => {
+      const { options, invalid } = resolve({ deadClicks: true, deadClickIgnoreSelector: selector });
+
+      expect(options).toMatchObject({ deadClickIgnoreSelector: "[data-observability-live]" });
+      expect(invalid).toHaveLength(1);
+      expect(invalid[0]).toContain("capture.interactions.deadClickIgnoreSelector");
+    },
+  );
+
+  it.each(["[", 1])("keeps the current selector when a later call passes %j", (selector) => {
+    const first = resolve({ deadClicks: true, deadClickIgnoreSelector: ".ticker" }).config;
+
+    const { options, invalid } = resolve({ deadClickIgnoreSelector: selector }, first);
+
+    expect(options).toMatchObject({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]).toContain("capture.interactions.deadClickIgnoreSelector");
+  });
+
+  it("keeps the current selector, even an empty one, when a later call leaves it out", () => {
+    const first = resolve({ deadClicks: true, deadClickIgnoreSelector: "" }).config;
+
+    const { options, invalid } = resolve({ text: true }, first);
+
+    expect(options).toMatchObject({ text: true, deadClickIgnoreSelector: "" });
+    expect(invalid).toEqual([]);
+  });
+
+  it("keeps a selector string in a realm that has no document to check it", () => {
+    vi.stubGlobal("document", undefined);
+
+    const { options, invalid } = resolve({ deadClicks: true, deadClickIgnoreSelector: ".ticker" });
+
+    expect(options).toMatchObject({ deadClickIgnoreSelector: ".ticker" });
+    expect(invalid).toEqual([]);
   });
 });
 
