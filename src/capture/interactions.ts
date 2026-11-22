@@ -358,7 +358,9 @@ export class InteractionCapture implements Capture {
     }
     const settings = this.ctx.config.capture.interactions;
     const options = typeof settings === "object" ? settings : {};
-    const ignore = options.ignoreSelector === undefined ? IGNORE_SELECTOR : options.ignoreSelector;
+    // "" means the default, because undefined in a later configure() keeps a custom selector.
+    const custom = options.ignoreSelector;
+    const ignore = custom === undefined || custom === "" ? IGNORE_SELECTOR : custom;
     if (ignore && target.closest(ignore)) {
       return;
     }

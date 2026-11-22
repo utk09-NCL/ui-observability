@@ -50,9 +50,9 @@ With `debugBuffer`, a kept record has only the hooks of its log call. A change o
 
 Browser reports contain only fixed fields. The capture omits message text and code samples. It removes credentials, queries and fragments from report URLs. Server-Timing descriptions are server data. The ordinary processors and `redact` apply to them before delivery.
 
-### 3. Patched Globals on the Page
+### 3. Patched Globals and Listeners on the Page
 
-The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history`.
+The captures wrap `fetch`, `XMLHttpRequest`, `console`, `WebSocket` and `history`. Click capture also adds listeners to each window that the app passes to `observeWindow()`.
 
 | Threat | Control |
 | --- | --- |

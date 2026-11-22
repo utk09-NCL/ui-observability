@@ -230,7 +230,10 @@ function planRotation(
     securityContext: { id: nextId },
   });
   // The base has no old routing values, so an invalid new value can't fall back to an old one.
-  const next = resolveConfig(input, runtime.diagnostics, { ...runtime.config, ...ROUTING_RESET });
+  // The live config still holds the current endpoints, otherwise an unchanged relative one is
+  // reported again on each rotation.
+  const reset = { ...runtime.config, ...ROUTING_RESET };
+  const next = resolveConfig(input, runtime.diagnostics, reset, runtime.config);
 
   if (unapplied(input, next, host.quiet).length > 0) {
     throw new Error("Invalid routing settings for the next security context.");

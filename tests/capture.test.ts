@@ -1843,6 +1843,100 @@ describe("InteractionCapture", () => {
   });
 });
 
+describe("InteractionCapture ignoreSelector", () => {
+  // Each button names its action, so a breadcrumb shows which click was recorded.
+  const REGIONS = `
+    <button id="private" class="private" data-observability-action="private">Private</button>
+    <div data-observability-ignore>
+      <button id="blocked" data-observability-action="blocked">Blocked</button>
+    </div>
+    <button id="open" data-observability-action="open">Open</button>`;
+
+  /** The capture of the running spec, so afterEach removes its click listener. */
+  let running: InteractionCapture | undefined;
+
+  /**
+   * Installs the capture on a page with a custom region, a built-in region and a plain button.
+   * @param ignoreSelector The first `capture.interactions.ignoreSelector`, checked as an app's is.
+   * @returns The capture context and a click helper that reads each button by its id.
+   */
+  const start = (ignoreSelector: string | null) => {
+    const { ctx: c } = ctx({ interactions: { ignoreSelector } });
+    running = new InteractionCapture(c);
+    running.install();
+    document.body.innerHTML = REGIONS;
+    return {
+      c,
+      click: (id: string): void => {
+        document.getElementById(id)!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      },
+    };
+  };
+
+  /**
+   * Applies a later configure() call's click settings on top of the current config.
+   * @param c The capture context.
+   * @param interactions The later `capture.interactions` value.
+   */
+  const reconfigure = (c: CaptureContext, interactions: CaptureOptions["interactions"]): void => {
+    c.config.capture.interactions = resolveConfig(
+      { capture: { interactions } },
+      c.diagnostics,
+      c.config,
+    ).capture.interactions;
+  };
+
+  /** Lists the message of each click breadcrumb. */
+  const crumbs = (c: CaptureContext): string[] =>
+    c.breadcrumbs.snapshot().map((one) => one.message);
+
+  afterEach(() => {
+    running?.uninstall();
+    running = undefined;
+  });
+
+  it("skips a click inside the custom selector", () => {
+    const { c, click } = start(".private");
+
+    click("private");
+    click("open");
+
+    expect(crumbs(c)).toEqual(["open"]);
+  });
+
+  it("records a click again after a later empty selector turns the custom filter off", () => {
+    const { c, click } = start(".private");
+    click("private");
+    expect(crumbs(c)).toEqual([]);
+
+    reconfigure(c, { ignoreSelector: "" });
+    click("private");
+
+    expect(crumbs(c)).toEqual(["private"]);
+  });
+
+  it("still skips a click inside the built-in region after a later empty selector", () => {
+    const { c, click } = start(".private");
+
+    reconfigure(c, { ignoreSelector: "" });
+    click("blocked");
+    click("open");
+
+    // Only the plain button records, so the built-in block still applies.
+    expect(crumbs(c)).toEqual(["open"]);
+  });
+
+  it("skips a click inside the built-in region when the first selector is empty", () => {
+    const { c, click } = start("");
+
+    click("blocked");
+    click("private");
+
+    // The custom button records, because "" leaves no custom filter. The blocked one doesn't.
+    expect(crumbs(c)).toEqual(["private"]);
+  });
+});
+
 describe("InteractionCapture rage and dead clicks", () => {
   /** Clicks an element with an event that bubbles. */
   const click = (element: Element): void => {

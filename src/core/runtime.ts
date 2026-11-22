@@ -1420,6 +1420,15 @@ export class ObservabilityRuntime {
       );
       next.profiler.maxProbes = maxProbes;
     }
+
+    // The trace engine loads OTel once, at the start, so a later loader would never run.
+    if (next.otelLoader !== this.config.otelLoader) {
+      this.diagnostics.report(
+        "config.invalid",
+        "otelLoader cannot change after startup. The library keeps the current loader.",
+      );
+      next.otelLoader = this.config.otelLoader;
+    }
   }
 
   /**

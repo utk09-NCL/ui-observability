@@ -226,6 +226,112 @@ describe("bus settings fixed at startup", () => {
   });
 });
 
+describe("otelLoader fixed at startup", () => {
+  /** The same form as the other startup keys, but a function has no text to print. */
+  const FIXED = "otelLoader cannot change after startup. The library keeps the current loader.";
+
+  /** A loader that resolves to a minimal OTel API, so the tracing start has nothing to report. */
+  const apiLoader = () =>
+    vi.fn(() => Promise.resolve({ trace: { getActiveSpan: () => undefined } }));
+
+  /**
+   * Starts the runtime with a diagnostics handler that keeps every event.
+   * @param extra Settings on top of the console-only startup config.
+   * @returns The events that the handler received.
+   */
+  const start = (extra: Partial<ObservabilityConfig> = {}): DiagnosticEvent[] => {
+    const events: DiagnosticEvent[] = [];
+    configure({
+      ...base,
+      endpoint: null,
+      onDiagnostic: (event) => {
+        events.push(event);
+      },
+      ...extra,
+    });
+    return events;
+  };
+
+  /** Lists the config.invalid messages that name otelLoader. */
+  const otelReports = (events: DiagnosticEvent[]): string[] =>
+    events
+      .filter((event) => event.code === "config.invalid" && event.message.includes("otelLoader"))
+      .map((event) => event.message);
+
+  it("reports a later call that passes a different loader, once", () => {
+    const events = start({ otelLoader: apiLoader() as never });
+
+    configure({ otelLoader: apiLoader() as never });
+
+    expect(otelReports(events)).toEqual([FIXED]);
+  });
+
+  it("keeps the first loader in force and never calls the later one", () => {
+    const first = apiLoader();
+    const later = apiLoader();
+    start({ otelLoader: first as never });
+
+    configure({ otelLoader: later as never });
+
+    expect(runtime().config.otelLoader).toBe(first);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it("reports a later null, which would remove the loader", () => {
+    const first = apiLoader();
+    const events = start({ otelLoader: first as never });
+
+    configure({ otelLoader: null });
+
+    expect(otelReports(events)).toEqual([FIXED]);
+    expect(runtime().config.otelLoader).toBe(first);
+  });
+
+  it("reports a later loader when the startup call had none", () => {
+    const later = apiLoader();
+    const events = start();
+
+    configure({ otelLoader: later as never });
+
+    expect(otelReports(events)).toEqual([FIXED]);
+    expect(runtime().config.otelLoader).toBeUndefined();
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing when the later call passes the same loader again", () => {
+    const first = apiLoader();
+    const events = start({ otelLoader: first as never });
+
+    configure({ otelLoader: first as never });
+
+    expect(otelReports(events)).toEqual([]);
+    expect(runtime().config.otelLoader).toBe(first);
+  });
+
+  it("reports nothing when the later call leaves otelLoader out", () => {
+    const first = apiLoader();
+    const events = start({ otelLoader: first as never });
+
+    configure({ serviceVersion: "2.0.0" });
+
+    expect(otelReports(events)).toEqual([]);
+    expect(runtime().config.otelLoader).toBe(first);
+  });
+
+  it("reports a later value that isn't a function as a bad type, not as a startup change", () => {
+    const first = apiLoader();
+    const events = start({ otelLoader: first as never });
+
+    configure({ otelLoader: "loader" as never });
+
+    const reports = otelReports(events);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).not.toBe(FIXED);
+    expect(runtime().config.otelLoader).toBe(first);
+  });
+});
+
 describe("the rotation chunk", () => {
   it("rejects the rotation, closes delivery and reports it when the chunk fails to load", async () => {
     vi.doMock("../src/core/rotation", () => {

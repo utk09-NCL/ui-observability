@@ -416,8 +416,9 @@ export interface InteractionOptions {
    */
   selector?: boolean;
   /**
-   * CSS selector for regions to exclude. Set null to include all regions. Session replay always
-   * blocks `[data-observability-ignore]`, whatever this value is.
+   * CSS selector for regions to exclude. A custom selector replaces the default. Set "" to go back
+   * to the default, or null to include all regions. Session replay always blocks
+   * `[data-observability-ignore]`, whatever this value is.
    * @default "[data-observability-ignore]"
    */
   ignoreSelector?: string | null;
@@ -1471,7 +1472,7 @@ export interface ObservabilityConfig {
 
   /**
    * Loads the `@opentelemetry/api` module. Example: `() => import("@opentelemetry/api")`.
-   * OTel stays off unless you set it. Set null to remove it.
+   * OTel stays off unless you set it. Can't be changed after startup.
    * @see {@link OtelLoader}
    */
   otelLoader?: OtelLoader | null;

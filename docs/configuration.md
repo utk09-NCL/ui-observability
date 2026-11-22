@@ -152,7 +152,7 @@ capture: {
   httpMetrics: true,     // http.client.request.duration histogram of fetch and xhr requests, in seconds.
                          // Attributes: http.request.method, http.response.status_code, server.address, error.type
   interactions: false,   // Click action names. The object form sets actionAttribute, text, selector,
-                         // rageClicks and deadClicks
+                         // ignoreSelector, maxTextChars and the rage and dead click options below
   navigation: false,     // Single-page navigation URL changes
   webVitals: false,      // Core Web Vitals (LCP, CLS, INP, FCP, TTFB). Object: { loader }
   longFrames: false,     // Frames that freeze the page, as ui.long_frame.duration.
