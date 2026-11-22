@@ -22,8 +22,9 @@ export interface PopoutSource {
 
 /**
  * Observes each popout window that is open now and each one that opens later. A window is observed
- * as a whole, so a second group in the same popout needs no second call. The library also forgets
- * a window at its pagehide, so a window that closes without the event still leaves.
+ * as a whole, so a second group in the same popout needs no second call. dockview fires the close
+ * event for each close, and that stops the window and drops it from the map. The library's own
+ * pagehide forget is only a backstop, and it leaves a stale entry here until the cleanup.
  * @param dock The dockview API.
  * @returns Function that stops the observation of each window and removes the listeners. The
  * effect cleanup calls it, so StrictMode can run the effect, clean up and run it again.

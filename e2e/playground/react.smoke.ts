@@ -558,11 +558,6 @@ test("captures the clicks in a popout window, and a dead click while the prices 
   page,
 }) => {
   await logIn(page, "smoke-user");
-  // The Order ticket form re-renders on each price tick and writes its input attributes again.
-  // The library counts each such write as a page change, so the dead click needs the form closed.
-  await page.getByRole("tab", { name: "Order ticket" }).getByRole("button").click();
-  await expect(page.getByRole("tab", { name: "Order ticket" })).toHaveCount(0);
-
   // The panel code of a popout runs in the opener, but dockview moves its DOM into another
   // window. The workspace gives that window to observeWindow(), so the library hears the click.
   const popup = page.waitForEvent("popup");
@@ -579,8 +574,9 @@ test("captures the clicks in a popout window, and a dead click while the prices 
   // before it ends has an answer, and so it is not a dead click.
   await popout.waitForTimeout(1500);
 
-  // One click on a control that does nothing, while the live tiles of the main window tick.
-  // They carry data-observability-live, so they are not an answer to the click.
+  // One click on a control that does nothing, while the live tiles of the main window tick. They
+  // carry data-observability-live, so they are not an answer to the click. The Order ticket form
+  // is open and re-renders at each tick, but the library ignores a write with the old value.
   await exportButton.click();
   await expect
     .poll(
