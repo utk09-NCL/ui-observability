@@ -8,6 +8,7 @@ import {
   CONSOLE_DEFAULT_STYLES as STYLES,
   HOLD_BUFFER_HEAD_RECORDS,
   METRIC_DEFAULT_BOUNDARIES,
+  QUERY_PARAM_EXIT_REASON,
   SESSION_ID_KEY,
   TAB_ID_KEY,
   TELEMETRY_SDK_VERSION,
@@ -3471,6 +3472,67 @@ describe("spans", () => {
     await shutdown();
 
     expect(spansOf(emit).map((record) => record.body)).toEqual(["ui.start"]);
+  });
+});
+
+describe("records logged after pagehide", () => {
+  /** The bodies of the requests that name an exit reason, so only the exit path counts. */
+  const exitBodies = (): string[] =>
+    vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(
+        ([url]) =>
+          typeof url === "string" && new URL(url).searchParams.has(QUERY_PARAM_EXIT_REASON),
+      )
+      .map(([, init]) => (typeof init?.body === "string" ? init.body : ""));
+
+  it("sends a record that info() logs right after pagehide with an exit send", async () => {
+    configure(base);
+    await ready();
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await Promise.resolve();
+
+    // The document is closing, so the batch timer would never fire. No timer has advanced here.
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late record");
+  });
+
+  it("sends a record that a listener logs after the library's own visibilitychange", async () => {
+    // The web-vitals package listens after the library does, and its reports come after pagehide.
+    configure(base);
+    await ready();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const report = (): void => {
+      info("late vital");
+    };
+    document.addEventListener("visibilitychange", report);
+    onTestFinished(() => {
+      document.removeEventListener("visibilitychange", report);
+    });
+
+    dispatchEvent(new Event("pagehide"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late vital");
+  });
+
+  it("keeps a forwarder sending its late records upstream, with no exit request", async () => {
+    configure({ ...base, bus: { mode: "forwarder" } });
+    await ready();
+    const send = vi.spyOn(bus(), "sendRecords");
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await Promise.resolve();
+
+    const sent = send.mock.calls.flatMap(([records]) => records);
+    expect(sent.map((record) => record.body)).toContain("late record");
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    expect(vi.mocked(navigator.sendBeacon)).not.toHaveBeenCalled();
   });
 });
 

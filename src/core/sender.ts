@@ -295,11 +295,13 @@ export class Sender {
   }
 
   /**
-   * Adds a record to the pipeline.
+   * Adds a record to the pipeline. After a pagehide the exit flush sends it, because the batch
+   * timer won't fire in a closing document.
    * @param record Record to deliver.
    */
   push(record: LogRecord): void {
     this.pipeline.push(record);
+    this.exitFlush.flushLate();
   }
 
   /**
