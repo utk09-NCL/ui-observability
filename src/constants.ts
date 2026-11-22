@@ -705,6 +705,9 @@ export const IGNORE_SELECTOR = "[data-observability-ignore]";
  */
 export const DEAD_CLICK_IGNORE_SELECTOR = "[data-observability-live]";
 
+/** Attributes that React rewrites in one batch with no net change, so only that change counts. */
+export const NET_CHANGE_ATTRIBUTES: readonly string[] = ["name", "type"];
+
 /** How many clicks on one element make a rage click, by default. */
 export const RAGE_CLICK_COUNT = 3;
 

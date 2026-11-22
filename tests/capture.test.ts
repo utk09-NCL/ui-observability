@@ -2322,6 +2322,8 @@ describe("InteractionCapture rage and dead clicks", () => {
         const input = document.createElement("input");
         input.setAttribute("type", "text");
         input.setAttribute("name", "qty");
+        input.setAttribute("class", "box");
+        input.setAttribute("data-state", "idle");
         document.body.append(input);
         return input;
       };
@@ -2569,6 +2571,43 @@ describe("InteractionCapture rage and dead clicks", () => {
           },
         ],
         [
+          "a class removed, read into layout and added back",
+          (input) => {
+            // The layout read restarts a CSS animation, so the user sees an answer.
+            input.classList.remove("box");
+            const _layout = input.offsetWidth;
+            input.classList.add("box");
+          },
+        ],
+        [
+          "a class set to another value and back",
+          (input) => {
+            input.setAttribute("class", "other");
+            input.setAttribute("class", "box");
+          },
+        ],
+        [
+          "a data attribute set and removed again",
+          (input) => {
+            input.setAttribute("data-flash", "1");
+            input.removeAttribute("data-flash");
+          },
+        ],
+        [
+          "a data attribute changed and restored",
+          (input) => {
+            input.setAttribute("data-state", "busy");
+            input.setAttribute("data-state", "idle");
+          },
+        ],
+        [
+          "an attribute added and removed again",
+          (input) => {
+            input.setAttribute("placeholder", "Qty");
+            input.removeAttribute("placeholder");
+          },
+        ],
+        [
           "a text node with new data",
           (_input, text) => {
             text.data = "Closed";
@@ -2594,21 +2633,14 @@ describe("InteractionCapture rage and dead clicks", () => {
 
       it.each<[string, (input: HTMLInputElement, text: Text) => void]>([
         [
-          "an attribute set to another value and back",
+          "the type attribute set to another value and back",
           (input) => {
             input.setAttribute("type", "number");
             input.setAttribute("type", "text");
           },
         ],
         [
-          "an attribute added and removed again",
-          (input) => {
-            input.setAttribute("placeholder", "Qty");
-            input.removeAttribute("placeholder");
-          },
-        ],
-        [
-          "an attribute removed and put back with its old value",
+          "the name attribute removed and put back with its old value",
           (input) => {
             input.removeAttribute("name");
             input.setAttribute("name", "qty");
@@ -2633,6 +2665,67 @@ describe("InteractionCapture rage and dead clicks", () => {
 
         expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
       });
+
+      it("records a dead click when the only write keeps the class attribute's value", async () => {
+        const live = livePage({ deadClicks: true });
+        const input = field();
+
+        click(live.buy);
+        input.setAttribute("class", input.getAttribute("class") ?? "");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([{ "click.action": "buy" }]);
+      });
+
+      it("records no dead click when one batch restarts an animation with style", async () => {
+        // The element ends with the style it had, but the layout read between the two writes
+        // restarts the animation, so the user sees an answer.
+        const live = livePage({ deadClicks: true });
+        const box = document.createElement("div");
+        box.setAttribute("style", "color: red;");
+        document.body.append(box);
+        const observer = stubMutationObserver();
+        const style = (oldValue: string) => ({
+          type: "attributes" as const,
+          target: box,
+          attributeName: "style",
+          attributeNamespace: null,
+          oldValue,
+        });
+
+        click(live.buy);
+        observer.deliver([style("color: red;"), style("color: red; animation: none;")]);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(events(live.logger, "ui.dead_click")).toEqual([]);
+      });
+
+      it.each(["href", "type"])(
+        "records no dead click when only the xlink:%s of one element changes net",
+        async (name) => {
+          // The plain and the namespaced attribute share a name, and they are separate pairs.
+          const xlink = "http://www.w3.org/1999/xlink";
+          const live = livePage({ deadClicks: true });
+          const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+          use.setAttribute(name, "a");
+          use.setAttributeNS(xlink, `xlink:${name}`, "after");
+          document.body.append(use);
+          const observer = stubMutationObserver();
+          const write = (attributeNamespace: string | null, oldValue: string) => ({
+            type: "attributes" as const,
+            target: use,
+            attributeName: name,
+            attributeNamespace,
+            oldValue,
+          });
+
+          click(live.buy);
+          observer.deliver([write(null, "a"), write(xlink, "before")]);
+          await vi.advanceTimersByTimeAsync(1000);
+
+          expect(events(live.logger, "ui.dead_click")).toEqual([]);
+        },
+      );
 
       it.each<[string, string | undefined]>([
         ["the default selector", undefined],

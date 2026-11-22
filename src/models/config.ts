@@ -464,8 +464,10 @@ export interface InteractionOptions {
    * CSS selector for regions that change on their own, for example a live price cell. A DOM
    * change or a scroll inside a matching element isn't a response, so it doesn't stop a dead
    * click. Mark the element that changes, not a panel that also holds the controls. Set "" to
-   * turn the live-region filter off. A batch of writes that leaves an attribute or a text with
-   * the value it had before is never a response, whatever this value is.
+   * turn the live-region filter off. Whatever this value is, a write that keeps the same value
+   * isn't a response, and neither is a batch that sets `name` or `type` and then puts the old
+   * value back. For any other attribute, each write with a new value is a response, because a
+   * class or style change can restart an animation.
    * @default "[data-observability-live]"
    */
   deadClickIgnoreSelector?: string;

@@ -11,6 +11,7 @@ import {
   DEAD_CLICK_IGNORE_SELECTOR,
   DEAD_CLICK_MS,
   IGNORE_SELECTOR,
+  NET_CHANGE_ATTRIBUTES,
   RAGE_CLICK_COUNT,
   RAGE_CLICK_WINDOW_MS,
   SELECTOR_MAX_CLASSES,
@@ -79,7 +80,7 @@ function writeAnswers(record: MutationRecord): boolean {
 
 /** What one observer batch did to one node. */
 interface NodeChanges {
-  /** The attributes, and "" for a text node's data, whose first record the batch has checked. */
+  /** The net-change attributes and the text data whose first record the batch has checked. */
   checked: Set<string>;
   /** True if a live element was added under this node. */
   added: boolean;
@@ -88,11 +89,14 @@ interface NodeChanges {
 }
 
 /**
- * Checks whether one observer batch answers a click. A change inside a live region doesn't. A
- * batch that leaves an attribute or a text with the value it had before doesn't either, because
- * nothing paints between the writes of one task. React writes an input's `name` and `type` that
- * way. A grid that swaps a live element for a new one under the same parent doesn't answer. A
- * live element that only appears or only goes away does, because a click can show or hide it.
+ * Checks whether one observer batch answers a click. A change inside a live region doesn't, and
+ * neither does a write that keeps the old value. A batch that sets `name` or `type`, or a text's
+ * data, and then puts the old value back doesn't either, because React rewrites an input that
+ * way. Any other attribute answers at each write with a new value, even if a later write puts
+ * the old one back, because a class or style change around a forced layout restarts an
+ * animation, which the user sees. A grid that swaps a live element for a new one under the same
+ * parent doesn't answer. A live element that only appears or only goes away does, because a
+ * click can show or hide it.
  * @param records The batch.
  * @param live Selector of the live regions.
  * @returns True if a change in the batch answers the click.
@@ -122,9 +126,20 @@ function batchAnswers(records: readonly MutationRecord[], live: string): boolean
       continue;
     }
 
-    // Only the first record's old value is the value before the batch. A text node has no
-    // attributes, so "" for its data can't clash with an attribute name.
-    const key = record.attributeName ?? "";
+    if (record.type === "attributes") {
+      // An attributes record always names its attribute.
+      const { attributeName } = record as MutationRecord & { attributeName: string };
+      if (!NET_CHANGE_ATTRIBUTES.includes(attributeName)) {
+        if (writeAnswers(record)) {
+          return true;
+        }
+        continue;
+      }
+    }
+
+    // Only the first record's old value is the value before the batch. The namespace keeps an
+    // SVG type apart from xlink:type, and a text's data has a null name, unlike any attribute.
+    const key = JSON.stringify([record.attributeNamespace, record.attributeName]);
     if (node.checked.has(key)) {
       continue;
     }
