@@ -30,6 +30,8 @@ export class WebVitalsCapture implements Capture {
       return;
     }
     this.installed = true;
+    // An earlier install's reporters may already be subscribed, and this turns them on again.
+    this.ctx.once.webVitalsOn = true;
 
     this.reportNavigationTiming();
 
@@ -57,9 +59,11 @@ export class WebVitalsCapture implements Capture {
   /**
    * Marks the module as uninstalled. The web-vitals reporters stay subscribed
    * because the package has no unsubscribe, and `ctx.once` prevents a second set.
+   * They record nothing until the next install sets `ctx.once.webVitalsOn` again.
    */
   uninstall(): void {
     this.installed = false;
+    this.ctx.once.webVitalsOn = false;
   }
 
   /**
@@ -91,6 +95,11 @@ export class WebVitalsCapture implements Capture {
     const send =
       (name: string, unit: string): WebVitalsReporter =>
       (metric: WebVitalsMetric): void => {
+        // INP and CLS report at the page hide, often after the app switched the capture off.
+        if (!this.ctx.once.webVitalsOn) {
+          return;
+        }
+
         this.ctx.logger.logMetric(
           `web_vitals.${name}`,
           // Keep three decimals. CLS is a small fraction, and rounding it to an integer

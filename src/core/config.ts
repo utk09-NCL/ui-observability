@@ -55,6 +55,7 @@ import type { LogLevel, LogType } from "../models/log-record";
 import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
 import { hasOwn, isObject } from "../utils/guards";
+import { pageBase } from "../utils/platform";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -221,19 +222,6 @@ function keepKind(
     reportInvalid(diagnostics, key, expected, value, "the current value", describe);
     return fallback;
   };
-}
-
-/**
- * Returns the URL that a relative destination resolves against. A worker has no document, so
- * it uses its own location.
- * @returns The base URL, or undefined when the scope has neither.
- */
-function pageBase(): string | undefined {
-  if (typeof document !== "undefined") {
-    return document.baseURI;
-  }
-
-  return typeof location === "undefined" ? undefined : location.href;
 }
 
 /**

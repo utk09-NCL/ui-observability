@@ -5,8 +5,9 @@ import { Diagnostics } from "../src/core/diagnostics";
 import { applyRemote, parseRemoteRules } from "../src/core/remote-rules";
 import { RemoteSampling } from "../src/core/remote-sampling";
 import { ObservabilityRuntime } from "../src/core/runtime";
-import { configure, flush, shutdown } from "../src/index";
+import { configure, createMemoryTransport, flush, shutdown } from "../src/index";
 import type { CaptureOptions } from "../src/models/config";
+import { fakeVitals } from "./web-vitals-fakes";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -164,6 +165,88 @@ describe("Remote captures in the runtime", () => {
     expect(runtime["remoteCaptureTimer"]).toBeUndefined();
     configure({ sampling: { remote: true } });
     expect(runtime["effectiveCapture"]().fetch).toBe(false);
+  });
+
+  /**
+   * Starts a runtime that lets a remote rule switch webVitals, with the fake web-vitals loaded.
+   * @returns The runtime, the fake, a reader for the web_vitals records and a remote-rule helper.
+   */
+  async function startVitals() {
+    const memory = createMemoryTransport();
+    const fake = fakeVitals();
+    configure({
+      endpoint: null,
+      serviceName: "svc",
+      bus: { mode: "off" },
+      transport: memory.transport,
+      sampling: { remote: true },
+      capture: {
+        errors: false,
+        rejections: false,
+        remoteToggles: ["webVitals"],
+        webVitals: { loader: fake.loader },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(fake.subscriptions()).toBe(5);
+    });
+    const runtime = ObservabilityRuntime.current()!;
+
+    return {
+      fake,
+      /** Waits until the capture list has, or has not, the web-vitals capture. */
+      captured: async (on: boolean): Promise<void> => {
+        await vi.waitFor(() => {
+          const names = runtime["captures"].map((item) => item.name);
+          expect(names.includes("web-vitals")).toBe(on);
+        });
+      },
+      /** Applies a remote rule for the web-vitals switch, or ends the rule with null. */
+      rule: (webVitals: boolean | null): void => {
+        applyRemote(
+          runtime["remote"],
+          runtime.config,
+          webVitals === null
+            ? null
+            : { ttlMs: 60_000, rules: { rates: {}, capture: { webVitals } } },
+        );
+      },
+      /** Flushes, then lists the web_vitals records in the order they were sent. */
+      sent: async (): Promise<string[]> => {
+        await flush();
+        const bodies = memory.records().map((record) => record.body);
+        memory.clear();
+        return bodies.filter((body) => body.startsWith("web_vitals."));
+      },
+    };
+  }
+
+  it("sends no web vital while a remote rule turns webVitals off", async () => {
+    const { fake, captured, rule, sent } = await startVitals();
+    fake.fire("cls", 0.1);
+    expect(await sent()).toEqual(["web_vitals.cls"]);
+
+    rule(false);
+    await captured(false);
+    // INP and CLS report late, at the page hide, so a report can come after the switch-off.
+    fake.fire("cls", 0.3);
+
+    expect(await sent()).toEqual([]);
+  });
+
+  it("sends one record per report after the remote rule ends, with one subscription", async () => {
+    const { fake, captured, rule, sent } = await startVitals();
+    rule(false);
+    await captured(false);
+
+    // The rule ends, and the local setting turns the capture on again.
+    rule(null);
+    await captured(true);
+    fake.fire("cls", 0.4);
+
+    // A second set of reporters would send the same metric twice.
+    expect(await sent()).toEqual(["web_vitals.cls"]);
+    expect(fake.subscriptions()).toBe(5);
   });
 
   it("clears the remote timer at shutdown", async () => {

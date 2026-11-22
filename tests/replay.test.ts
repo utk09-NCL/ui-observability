@@ -484,6 +484,74 @@ describe("start of the recorder", () => {
     expect(events[0].cause).toBeInstanceOf(Error);
   });
 
+  describe("a selector list that parses entry by entry but not as one list", () => {
+    /** One method of the selector parser, which each spec wraps. */
+    type Parse = (this: unknown, selector: string) => unknown;
+
+    /**
+     * Makes the selector parser close a "[" that is still open at the end of its input, as
+     * Chromium does. "[data-private" then parses alone. happy-dom rejects it, so without this a
+     * list of entries that parse alone and fail together can't be built.
+     */
+    const parseLikeChromium = (): void => {
+      const closed = (selector: string): string =>
+        selector.lastIndexOf("[") > selector.lastIndexOf("]") ? `${selector}]` : selector;
+      const methods: [object, string][] = [
+        [DocumentFragment.prototype, "querySelector"],
+        [Element.prototype, "querySelector"],
+        [Element.prototype, "matches"],
+        [Element.prototype, "closest"],
+      ];
+
+      for (const [owner, name] of methods) {
+        const real = (owner as Record<string, Parse>)[name];
+        vi.spyOn(owner as Record<string, Parse>, name).mockImplementation(function (
+          this: unknown,
+          selector: string,
+        ) {
+          return real.call(this, closed(selector));
+        });
+      }
+    };
+
+    it.each<[string, Partial<ReplayOptions>]>([
+      ["mask", { maskText: false, maskSelectors: ["[data-private", ".card"] }],
+      ["mask, with maskText on", { maskSelectors: ["[data-private", ".card"] }],
+      ["block", { blockSelectors: ["[data-private", ".card"] }],
+    ])("stays off for a %s list", async (_label, replay) => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup(replay);
+
+      await run();
+
+      // The joined list throws in the recorder, which then blocks and masks nothing. So the
+      // capture checks the joined list, and reports it as it reports an invalid entry.
+      expect(recorder.record).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0].code).toBe("config.invalid");
+      expect(events[0].message).toMatch(
+        /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+      );
+      expect(events[0].cause).toBeInstanceOf(Error);
+    });
+
+    it("starts when the joined lists parse, also with an unclosed last bracket", async () => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: [".card", "[data-private"],
+        blockSelectors: [".card", "[data-private"],
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe(".card,[data-private");
+      expect(options.blockSelector).toBe("[data-observability-ignore],.card,[data-private");
+      expect(reports(events)).toEqual([]);
+    });
+  });
+
   it("reports a loader that rejects, once", async () => {
     const error = new Error("chunk not found");
     const { run, recorder, events } = setup({ loader: () => Promise.reject(error) });
@@ -621,6 +689,35 @@ describe("plugins", () => {
     expect(
       transform({ name: "https://api.example/orders?token=secret#top", method: "GET" }),
     ).toEqual({ name: "https://api.example/orders", method: "GET" });
+  });
+
+  it.each([
+    [false, "https://api.example/orders"],
+    [true, "https://api.example/orders?page=2"],
+  ])("removes the user info of a request URL with fullUrls %j", async (fullUrls, name) => {
+    const { transform } = await requestTool({}, { capture: { fullUrls } });
+
+    expect(
+      transform({ name: "https://ursula:pw@api.example/orders?page=2", method: "GET" }),
+    ).toEqual({ name, method: "GET" });
+  });
+
+  it.each([
+    ["a scheme-relative URL", "//ursula:s3cret@api.example.com/data"],
+    ["a URL with backslashes", "https:\\\\ursula:s3cret@api.example.com/data"],
+    ["a URL with a leading space", " https://ursula:s3cret@api.example.com/data"],
+  ])("removes the user info from %s, also with fullUrls", async (_label, name) => {
+    // A browser reads each of these as https://ursula:s3cret@api.example.com/data.
+    expect(new URL(name, "https://app.example.com/").password).toBe("s3cret");
+    const plain = await requestTool();
+    const full = await requestTool({}, { capture: { fullUrls: true } });
+
+    for (const { transform } of [plain, full]) {
+      const recorded = JSON.stringify(transform({ name }));
+      expect(recorded).toContain("api.example.com/data");
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("ursula");
+    }
   });
 
   it("keeps the full URL with capture.fullUrls", async () => {

@@ -9,6 +9,7 @@ import type { LogRecord } from "../models/log-record";
 import type { ReplayEvent, ReplayPluginTools, ReplayRecord } from "../models/replay";
 import { newId } from "../utils/identity";
 import { isLibraryRequest } from "../utils/library-request";
+import { recordedUrl } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
 import { ReplayBuffer } from "./replay-buffer";
 import { ReplayUploader } from "./replay-upload";
@@ -311,8 +312,19 @@ export class ReplayCapture implements Capture {
    */
   private selectors(): { mask: string | undefined; block: string } | undefined {
     const { maskText, maskSelectors, blockSelectors } = this.ctx.config.replay;
+    const mask = maskSelectors.length > 0 ? maskSelectors.join(",") : undefined;
+    // Click capture skips the ignored regions, so a replay must not show them either. The app
+    // can't turn this off.
+    const block = [IGNORE_SELECTOR, ...blockSelectors].join(",");
 
-    for (const selector of [...maskSelectors, ...blockSelectors]) {
+    // An entry can parse alone and still break the joined list, for example an unclosed "[" that
+    // Chromium closes at the end. The recorder gets the lists, so a bad one would mask nothing.
+    const checks = [...maskSelectors, ...blockSelectors, block];
+    if (mask !== undefined) {
+      checks.push(mask);
+    }
+
+    for (const selector of checks) {
       try {
         document.createDocumentFragment().querySelector(selector);
       } catch (error) {
@@ -326,15 +338,7 @@ export class ReplayCapture implements Capture {
       }
     }
 
-    const join = (list: string[]): string | undefined =>
-      list.length > 0 ? list.join(",") : undefined;
-
-    // Click capture skips the ignored regions, so a replay must not show them either. The app
-    // can't turn this off.
-    return {
-      mask: maskText ? "*" : join(maskSelectors),
-      block: [IGNORE_SELECTOR, ...blockSelectors].join(","),
-    };
+    return { mask: maskText ? "*" : mask, block };
   }
 
   /**
@@ -448,8 +452,9 @@ export class ReplayCapture implements Capture {
         return undefined;
       }
 
-      // A signed URL is a credential. Only keep the query when fullUrls is on.
-      return capture.fullUrls ? request : { ...request, name: url.split(/[?#]/)[0] };
+      // User info is a credential, and so is a signed URL's query unless fullUrls keeps it.
+      const name = recordedUrl(url, capture.fullUrls);
+      return name === url ? request : { ...request, name };
     } catch (error) {
       this.onFault(error);
       return undefined;

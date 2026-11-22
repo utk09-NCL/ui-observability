@@ -72,6 +72,11 @@ export interface CaptureLogger {
 export interface CaptureOnce {
   /** True once the web-vitals reporters are subscribed. */
   webVitals: boolean;
+  /**
+   * True while a web-vitals capture is installed. The reporters check it when a metric fires,
+   * because they can't unsubscribe and a switched-off capture must record nothing.
+   */
+  webVitalsOn?: boolean;
   /** True once navigation timing has been reported. */
   navigationTiming: boolean;
   /** True after the first long frame install. Only that install reads buffered frames. */

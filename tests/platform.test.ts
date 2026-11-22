@@ -220,6 +220,34 @@ describe("recordedUrl", () => {
     expect(recordedUrl("/api/orders?x=1", false)).toBe("/api/orders");
     expect(recordedUrl("https://app.test/a@b", true)).toBe("https://app.test/a@b");
   });
+
+  it.each([
+    ["a scheme-relative URL", "//ursula:s3cret@api.example.com/data?id=7"],
+    ["a URL with backslashes", "https:\\\\ursula:s3cret@api.example.com/data?id=7"],
+    ["a URL with a leading space", " https://ursula:s3cret@api.example.com/data?id=7"],
+  ])("removes the user info from %s", (_label, url) => {
+    // A browser reads each of these as https://ursula:s3cret@api.example.com/data.
+    expect(new URL(url, "https://app.example.com/").password).toBe("s3cret");
+
+    const plain = recordedUrl(url, false);
+    const full = recordedUrl(url, true);
+
+    for (const recorded of [plain, full]) {
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("ursula");
+      expect(recorded).toContain("api.example.com/data");
+    }
+    expect(plain).not.toContain("?");
+    expect(full).toContain("?id=7");
+  });
+
+  it("keeps the pattern rule for a URL that the URL parser rejects", () => {
+    // The IPv6 host has no closing bracket, so there is nothing to parse.
+    expect(() => new URL("https://ursula:s3cret@[::1/x")).toThrow();
+
+    expect(recordedUrl("https://ursula:s3cret@[::1/x?id=7", false)).toBe("https://[::1/x");
+    expect(recordedUrl("https://ursula:s3cret@[::1/x?id=7", true)).toBe("https://[::1/x?id=7");
+  });
 });
 
 describe("stripUrlQuery", () => {

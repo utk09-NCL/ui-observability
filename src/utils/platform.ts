@@ -172,6 +172,48 @@ export function currentUrl(diagnostics: Diagnostics): string {
 const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
 
 /**
+ * Returns the URL that a relative URL resolves against. A worker has no document, so it uses
+ * its own location.
+ * @returns The base URL, or undefined when the scope has neither.
+ */
+export function pageBase(): string | undefined {
+  if (typeof document !== "undefined") {
+    return document.baseURI;
+  }
+
+  return typeof location === "undefined" ? undefined : location.href;
+}
+
+/**
+ * Removes the user name and the password from a URL. A browser also finds them in a URL with
+ * no scheme, with backslashes or with a leading space, so the URL parser reads them.
+ * @param url Absolute or relative URL.
+ * @returns The URL without user info, or the URL as given when it has none.
+ */
+function withoutUserInfo(url: string): string {
+  // User info always ends in "@", so most URLs skip the parse, which runs on the log path.
+  if (!url.includes("@")) {
+    return url;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url, pageBase());
+  } catch {
+    // The parser rejects the URL, so the fallback is the pattern for an absolute URL.
+    return url.replace(USER_INFO_PATTERN, "$1");
+  }
+
+  if (parsed.username === "" && parsed.password === "") {
+    return url;
+  }
+
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.href;
+}
+
+/**
  * Returns the form of a URL that the library records. A transform's result is recorded as is,
  * or "" if it throws or returns no string. Without a transform, the user info is always
  * removed, because it is a credential, and without fullUrls the query and the fragment go too.
@@ -202,7 +244,7 @@ export function recordedUrl(
       return "";
     }
   }
-  const bare = url.replace(USER_INFO_PATTERN, "$1");
+  const bare = withoutUserInfo(url);
   return fullUrls ? bare : stripUrlQuery(bare);
 }
 

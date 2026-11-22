@@ -86,46 +86,66 @@ export class ErrorCapture implements Capture {
 
   /** Routes resource load failures and uncaught script errors. */
   private readonly onError = (event: ErrorEvent | Event): void => {
-    const target = event.target as (HTMLElement & { src?: string; href?: string }) | null;
-    const resourceUrl = target?.src ?? target?.href ?? "";
+    // The browser calls this listener, so a throw here would be a new uncaught error on the page.
+    this.ctx.diagnostics.guard(
+      "capture.record_failed",
+      "The library could not record an error event.",
+      () => {
+        // A failed load fires a plain Event at its element. Only a script error carries the
+        // ErrorEvent fields, so a plain Event at the window is neither.
+        if ("message" in event) {
+          this.scriptError(event);
+        } else {
+          this.failedResource(event.target);
+        }
+      },
+    );
+  };
 
-    // An event from an element with a URL is a failed resource load, not a script error.
-    if (
-      target !== null &&
-      target !== (globalThis as unknown as EventTarget) &&
-      resourceUrl !== ""
-    ) {
-      if (!this.ctx.config.capture.resourceErrors) {
-        return;
-      }
+  /**
+   * Records a failed resource load.
+   * @param target The event's target. The window and the document aren't resources.
+   */
+  private failedResource(target: EventTarget | null): void {
+    const element = target as (Element & { src?: unknown; href?: unknown }) | null;
+    if (typeof element?.tagName !== "string" || !this.ctx.config.capture.resourceErrors) {
+      return;
+    }
 
-      // A cache buster is noise and a signed URL is a credential, so the record keeps neither
-      // unless you set fullUrls.
-      const url = recordedUrl(
-        resourceUrl,
+    const tag = element.tagName.toLowerCase();
+    const attributes: Record<string, unknown> = { "error.type": "resource", "resource.tag": tag };
+    // Without a URL, the breadcrumb names the tag.
+    let label = tag;
+    // An SVG href is an object and an object element has no src, so only a string URL goes in.
+    // A cache buster is noise and a signed URL is a credential, so fullUrls decides on both.
+    const source = element.src ?? element.href;
+    if (typeof source === "string" && source !== "") {
+      label = recordedUrl(
+        source,
         this.ctx.config.capture.fullUrls,
         this.ctx.config.capture.urlTransform,
         this.ctx.diagnostics,
       );
-
-      this.ctx.breadcrumbs.push({
-        t: Date.now(),
-        category: "http",
-        message: `resource failed: ${url}`,
-      });
-      this.ctx.logger.warn("resource failed to load", {
-        "error.type": "resource",
-        "resource.url": url,
-        "resource.tag": target.tagName.toLowerCase(),
-      });
-      return;
+      attributes["resource.url"] = label;
     }
 
+    this.ctx.breadcrumbs.push({
+      t: Date.now(),
+      category: "http",
+      message: `resource failed: ${label}`,
+    });
+    this.ctx.logger.warn("resource failed to load", attributes);
+  }
+
+  /**
+   * Records an uncaught script error.
+   * @param errorEvent The window's error event.
+   */
+  private scriptError(errorEvent: ErrorEvent): void {
     if (!this.ctx.config.capture.errors) {
       return;
     }
 
-    const errorEvent = event as ErrorEvent;
     const fallback = errorEvent.message === "" ? "unknown error" : errorEvent.message;
     const thrown: unknown = errorEvent.error;
     const error = thrown ?? new Error(fallback);
@@ -141,7 +161,7 @@ export class ErrorCapture implements Capture {
       "error.line": errorEvent.lineno,
       "error.column": errorEvent.colno,
     });
-  };
+  }
 
   /** Captures unhandled promise rejections. */
   private readonly onRejection = (event: PromiseRejectionEvent): void => {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCapture } from "../src/capture/errors";
 import { InteractionCapture } from "../src/capture/interactions";
 import { observedWindows } from "../src/capture/observed-windows";
@@ -36,6 +36,7 @@ import {
   type Popout,
   type Regions,
 } from "./window-fakes";
+import { fakeVitals } from "./web-vitals-fakes";
 
 /** A logger with a spy for every method, so a test can read what the logger recorded. */
 interface SpyLogger {
@@ -326,6 +327,96 @@ describe("ErrorCapture", () => {
     capture.uninstall();
   });
 
+  it.each([
+    [
+      "an img that has srcset only",
+      () => {
+        const img = document.createElement("img");
+        img.setAttribute("srcset", "a.png 2x");
+        document.body.append(img);
+        img.dispatchEvent(new Event("error"));
+      },
+    ],
+    [
+      "an object element",
+      () => {
+        const object = document.createElement("object");
+        document.body.append(object);
+        object.dispatchEvent(new Event("error"));
+      },
+    ],
+    [
+      "an image in a shadow root",
+      () => {
+        // A browser retargets to the host, which has no src. happy-dom keeps the img, src "".
+        const host = document.createElement("my-widget");
+        const root = host.attachShadow({ mode: "open" });
+        const img = document.createElement("img");
+        root.append(img);
+        document.body.append(host);
+        img.dispatchEvent(new Event("error", { composed: true }));
+      },
+    ],
+    [
+      "the window",
+      () => {
+        dispatchEvent(new Event("error"));
+      },
+    ],
+  ])("records no error and throws nothing for a plain event from %s", (_label, fire) => {
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+    onTestFinished(() => {
+      capture.uninstall();
+    });
+
+    // A plain Event has no message, no filename and no error, so it isn't a script error.
+    expect(fire).not.toThrow();
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(c.diagnostics.snapshot()["capture.record_failed"]).toBeUndefined();
+  });
+
+  it("still records a script error from an event that has the error fields", () => {
+    const { ctx: c, logger } = ctx();
+    const capture = new ErrorCapture(c);
+    capture.install();
+    onTestFinished(() => {
+      capture.uninstall();
+    });
+
+    dispatchEvent(
+      new ErrorEvent("error", { error: new Error("boom"), message: "boom", filename: "" }),
+    );
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a failed resource with no URL when the element's URL is not a string", () => {
+    // An SVG <image> has an href that is an SVGAnimatedString object, not a string.
+    const { ctx: c, logger } = ctx({ resourceErrors: true });
+    const capture = new ErrorCapture(c);
+    capture.install();
+    onTestFinished(() => {
+      capture.uninstall();
+    });
+    const image = document.createElementNS("http://www.w3.org/2000/svg", "image");
+    image.setAttribute("href", "/logo.png");
+    document.body.append(image);
+
+    expect(() => {
+      image.dispatchEvent(new Event("error"));
+    }).not.toThrow();
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [message, attributes] = logger.warn.mock.calls[0];
+    expect(message).toBe("resource failed to load");
+    expect(attributes).toMatchObject({ "error.type": "resource", "resource.tag": "image" });
+    expect(attributes).not.toHaveProperty("resource.url");
+  });
+
   it("stays quiet when errors are switched off", () => {
     const { ctx: c, logger } = ctx({ errors: false });
     const capture = new ErrorCapture(c);
@@ -519,6 +610,45 @@ describe("NetworkCapture: fetch", () => {
       expect.objectContaining({ "url.full": "https://api.internal/orders?id=7" }),
     );
     capture.uninstall();
+  });
+
+  it.each([
+    "//ursula:s3cret@api.internal/orders",
+    "https:\\\\ursula:s3cret@api.internal/orders",
+    " https://ursula:s3cret@api.internal/orders",
+  ])("keeps the user info of the URL %j out of each record of the request", async (url) => {
+    // A browser reads each of these as https://ursula:s3cret@api.internal/orders.
+    expect(new URL(url, "https://app.internal/").password).toBe("s3cret");
+    globalThis.fetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(new Response("", { status: 500 }))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const { ctx: c, logger } = ctx({ fetch: true });
+    const capture = new NetworkCapture(c);
+    capture.install();
+    onTestFinished(() => {
+      capture.uninstall();
+    });
+
+    await fetch(url);
+    await fetch(url);
+    await expect(fetch(url)).rejects.toThrow("Failed to fetch");
+
+    // The three requests end as a debug, a warning and an error record, each with a breadcrumb.
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(c.breadcrumbs.snapshot()).toHaveLength(3);
+    const recorded = JSON.stringify([
+      logger.debug.mock.calls,
+      logger.warn.mock.calls,
+      logger.error.mock.calls.map(([message, , attributes]) => [message, attributes]),
+      c.breadcrumbs.snapshot(),
+    ]);
+    expect(recorded).toContain("api.internal/orders");
+    expect(recorded).not.toContain("s3cret");
+    expect(recorded).not.toContain("ursula");
   });
 
   it("never logs a request to the ingest endpoint, or logging feeds itself", async () => {
@@ -1698,6 +1828,57 @@ describe("InteractionCapture", () => {
 
     capture.uninstall();
     expect(history.pushState).toBe(original);
+  });
+
+  describe("the history restore", () => {
+    /** Removes an own method that an earlier test left on history, so the methods are inherited. */
+    const clearOwnMethods = (): void => {
+      Reflect.deleteProperty(history, "pushState");
+      Reflect.deleteProperty(history, "replaceState");
+    };
+
+    beforeEach(() => {
+      clearOwnMethods();
+    });
+
+    afterEach(() => {
+      clearOwnMethods();
+    });
+
+    it("leaves no own pushState or replaceState on history after uninstall", () => {
+      expect(Object.hasOwn(history, "pushState")).toBe(false);
+      const { ctx: c } = ctx({ navigation: true });
+      const capture = new InteractionCapture(c);
+      capture.install();
+      expect(Object.hasOwn(history, "pushState")).toBe(true);
+
+      capture.uninstall();
+
+      expect(Object.hasOwn(history, "pushState")).toBe(false);
+      expect(Object.hasOwn(history, "replaceState")).toBe(false);
+    });
+
+    it("lets a later History.prototype patch run after uninstall", () => {
+      const { ctx: c } = ctx({ navigation: true });
+      const capture = new InteractionCapture(c);
+      capture.install();
+      capture.uninstall();
+
+      // Another SDK patches the prototype after us, as some RUM tools do.
+      const proto = Object.getPrototypeOf(history) as History;
+      const native = proto.pushState;
+      const seen = vi.fn();
+      proto.pushState = function (this: History, ...args: Parameters<History["pushState"]>) {
+        seen();
+        native.apply(this, args);
+      };
+      onTestFinished(() => {
+        proto.pushState = native;
+      });
+      history.pushState({}, "", "#later");
+
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("leaves later history wrappers in place on uninstall and stops recording", async () => {
@@ -4229,5 +4410,58 @@ describe("WebVitalsCapture", () => {
 
     expect(subscriptions).toBe(5);
     second.uninstall();
+  });
+
+  describe("after the capture is switched off", () => {
+    /** Lists the names of the web_vitals metrics that the logger received. */
+    const sentVitals = (logger: SpyLogger): unknown[] =>
+      logger.logMetric.mock.calls
+        .map((call) => call[0])
+        .filter((name) => name.startsWith("web_vitals."));
+
+    it("records no vital after uninstall", async () => {
+      const fake = fakeVitals();
+      const { ctx: c, logger } = ctx({ webVitals: { loader: fake.loader } });
+      const capture = new WebVitalsCapture(c);
+      capture.install();
+      onTestFinished(() => {
+        capture.uninstall();
+      });
+      await vi.waitFor(() => {
+        expect(fake.subscriptions()).toBe(5);
+      });
+      fake.fire("inp", 100);
+      expect(sentVitals(logger)).toEqual(["web_vitals.inp"]);
+
+      // INP and CLS report late, at the page hide, so a report can arrive after the switch-off.
+      capture.uninstall();
+      fake.fire("inp", 250);
+
+      expect(sentVitals(logger)).toEqual(["web_vitals.inp"]);
+    });
+
+    it("records one metric per report after a later install, with one subscription", async () => {
+      const fake = fakeVitals();
+      const { ctx: c, logger } = ctx({ webVitals: { loader: fake.loader } });
+      const first = new WebVitalsCapture(c);
+      first.install();
+      await vi.waitFor(() => {
+        expect(fake.subscriptions()).toBe(5);
+      });
+      first.uninstall();
+
+      const second = new WebVitalsCapture(c);
+      second.install();
+      onTestFinished(() => {
+        second.uninstall();
+      });
+      await Promise.resolve();
+      logger.logMetric.mockClear();
+      fake.fire("inp", 300);
+
+      // A second set of reporters would send the same metric twice.
+      expect(sentVitals(logger)).toEqual(["web_vitals.inp"]);
+      expect(fake.subscriptions()).toBe(5);
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
 import { WebSocketCapture } from "../src/capture/web-socket";
@@ -34,6 +34,7 @@ import {
   adoptJourney,
   configure,
   counter,
+  createMemoryTransport,
   currentJourney,
   debug,
   endJourney,
@@ -60,6 +61,7 @@ import {
   warn,
 } from "../src/index";
 import { asWindow, foreignWindow, leftOn, openPopout, type Popout } from "./window-fakes";
+import { fakeVitals } from "./web-vitals-fakes";
 
 // These tests select the old policy, which permits routing changes and source discovery by origin.
 const base = {
@@ -2955,6 +2957,37 @@ describe("runtime reconfigure", () => {
     expect(runtime()).toBe(fresh);
   });
 
+  it.each(["shutdown()", "enabled: false"] as const)(
+    "leaves no own history method after %s",
+    async (how) => {
+      const clearOwnMethods = (): void => {
+        Reflect.deleteProperty(history, "pushState");
+        Reflect.deleteProperty(history, "replaceState");
+      };
+      // An earlier test can leave an own method on history, and the inherited one is the case here.
+      clearOwnMethods();
+      onTestFinished(clearOwnMethods);
+      configure({
+        ...base,
+        endpoint: null,
+        capture: { errors: false, rejections: false, navigation: true },
+      });
+      await vi.waitFor(() => {
+        expect(runtime()["captures"].map((item) => item.name)).toContain("interactions");
+      });
+      expect(Object.hasOwn(history, "pushState")).toBe(true);
+
+      if (how === "shutdown()") {
+        await shutdown();
+      } else {
+        configure({ enabled: false });
+      }
+
+      expect(Object.hasOwn(history, "pushState")).toBe(false);
+      expect(Object.hasOwn(history, "replaceState")).toBe(false);
+    },
+  );
+
   it("counts a record that has no destination", async () => {
     configure({ ...base, endpoint: null });
     await ready();
@@ -2962,6 +2995,72 @@ describe("runtime reconfigure", () => {
     info("console only");
 
     expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
+  });
+});
+
+describe("web vitals switch", () => {
+  /**
+   * Starts a runtime that subscribes the fake web-vitals and keeps each record in memory.
+   * @returns The fake, and a reader for the web_vitals records that reached the transport.
+   */
+  async function start() {
+    const memory = createMemoryTransport();
+    const fake = fakeVitals();
+    configure({
+      ...base,
+      endpoint: null,
+      transport: memory.transport,
+      capture: { errors: false, rejections: false, webVitals: { loader: fake.loader } },
+    });
+    await vi.waitFor(() => {
+      expect(fake.subscriptions()).toBe(5);
+    });
+    /** Flushes, then lists the web_vitals records in the order they were sent. */
+    const sent = async (): Promise<string[]> => {
+      await flush();
+      return memory
+        .records()
+        .map((record) => record.body)
+        .filter((body) => body.startsWith("web_vitals."));
+    };
+
+    return { fake, sent, memory };
+  }
+
+  it("sends no web vital after configure() turns capture.webVitals off", async () => {
+    const { fake, sent, memory } = await start();
+    fake.fire("inp", 100);
+    expect(await sent()).toEqual(["web_vitals.inp"]);
+    memory.clear();
+
+    configure({ capture: { webVitals: false } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).not.toContain("web-vitals");
+    });
+    // INP and CLS report late, at the page hide, so a report can come after the switch-off.
+    fake.fire("inp", 250);
+    fake.fire("cls", 0.3);
+
+    expect(await sent()).toEqual([]);
+  });
+
+  it("sends one record per report when configure() turns capture.webVitals on again", async () => {
+    const { fake, sent, memory } = await start();
+    configure({ capture: { webVitals: false } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).not.toContain("web-vitals");
+    });
+    memory.clear();
+
+    configure({ capture: { webVitals: { loader: fake.loader } } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).toContain("web-vitals");
+    });
+    fake.fire("inp", 300);
+
+    // A second set of reporters would send the same metric twice.
+    expect(await sent()).toEqual(["web_vitals.inp"]);
+    expect(fake.subscriptions()).toBe(5);
   });
 });
 
