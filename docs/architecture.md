@@ -128,7 +128,7 @@ A forwarder builds its records with its own hooks. The sender context then appli
 - `fixedOf()` in `src/core/record.ts` restores a field group after `redact` only when each value has the shape that the library writes.
 - `groupsOf()` selects a group only for a metric record of `uiobs.metrics` or a span record of `uiobs.traces`.
 - `metric.name`, `metric.unit` and `metric.attribute_keys` are not in a group. The `redact` of the sender controls them.
-- With no `redact` in the sender, `redactForwarded()` returns the record with no change.
+- With no `redact` in the sender, `redactForwarded()` applies only the limits of the sender. It applies `limits.maxAttributeCount` to the attributes. A resource keeps at least 128 keys. It does not apply `limits.maxBodyChars` or `limits.maxRecordBytes`.
 
 The residual risks of this path are in [Threat Model](threat-model.md), section "Other Documents (the Bus)".
 
