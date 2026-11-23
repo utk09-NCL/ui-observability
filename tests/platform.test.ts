@@ -250,6 +250,65 @@ describe("recordedUrl", () => {
   });
 });
 
+describe("recordedUrl with a base URL that can't resolve a relative URL", () => {
+  // A blob:, data: or about:blank base makes the URL parser throw for a URL with no scheme, so
+  // the pattern fallback is the only rule left.
+  const BASES = ["blob:https://app.example/1234", "data:text/html,x", "about:blank"];
+  const SPELLINGS = [
+    ["no scheme", "//alice:s3cret@cdn.example/a.png?id=7"],
+    ["backslashes", "\\\\alice:s3cret@cdn.example/a.png?id=7"],
+    ["a leading space", " //alice:s3cret@cdn.example/a.png?id=7"],
+  ];
+  const CASES = BASES.flatMap((base) => SPELLINGS.map(([label, url]) => ({ base, label, url })));
+
+  /**
+   * Checks that a recorded URL has no user info, with and without fullUrls.
+   * @param url The URL as the caller wrote it.
+   */
+  const expectNoUserInfo = (url: string): void => {
+    const plain = recordedUrl(url, false);
+    const full = recordedUrl(url, true);
+
+    for (const recorded of [plain, full]) {
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("alice");
+      expect(recorded).toContain("cdn.example/a.png");
+    }
+    expect(plain).not.toContain("?");
+    expect(full).toContain("?id=7");
+  };
+
+  it.each(CASES)("removes the user info from a URL with $label, with the base $base", (one) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue(one.base);
+    expect(() => new URL(one.url, one.base)).toThrow();
+
+    expectNoUserInfo(one.url);
+  });
+
+  it("removes the user info in a worker whose location is a blob URL", () => {
+    vi.stubGlobal("document", undefined);
+    vi.stubGlobal("location", { href: "blob:https://app.example/1234" });
+
+    expectNoUserInfo("//alice:s3cret@cdn.example/a.png?id=7");
+  });
+
+  it("still removes the user info of a URL that has a scheme", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("https://alice:s3cret@cdn.example/a.png", false)).toBe(
+      "https://cdn.example/a.png",
+    );
+  });
+
+  it("keeps an @ in the query of a URL with no scheme and no user info", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("//cdn.example/a.png?mail=a@b.example", true)).toBe(
+      "//cdn.example/a.png?mail=a@b.example",
+    );
+  });
+});
+
 describe("stripUrlQuery", () => {
   it("drops the query string, which is where tokens and user input travel", () => {
     expect(stripUrlQuery("https://app.test/checkout?token=secret&q=me")).toBe(

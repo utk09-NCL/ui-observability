@@ -489,13 +489,31 @@ describe("start of the recorder", () => {
     type Parse = (this: unknown, selector: string) => unknown;
 
     /**
-     * Makes the selector parser close a "[" that is still open at the end of its input, as
-     * Chromium does. "[data-private" then parses alone. happy-dom rejects it, so without this a
-     * list of entries that parse alone and fail together can't be built.
+     * Makes the selector parser close a quote and a "[" that are still open at the end of its
+     * input, as Chromium does. "[data-private" and '[data-x="a' then parse alone. happy-dom
+     * rejects both, so without this a list of entries that parse alone and fail together, or
+     * swallow each other, can't be built.
      */
     const parseLikeChromium = (): void => {
-      const closed = (selector: string): string =>
-        selector.lastIndexOf("[") > selector.lastIndexOf("]") ? `${selector}]` : selector;
+      const closed = (selector: string): string => {
+        let quote = "";
+        let open = 0;
+        for (let index = 0; index < selector.length; index++) {
+          const char = selector[index];
+          if (char === "\\") {
+            index++;
+          } else if (quote !== "") {
+            quote = char === quote ? "" : quote;
+          } else if (char === '"' || char === "'") {
+            quote = char;
+          } else if (char === "[") {
+            open++;
+          } else if (char === "]") {
+            open = Math.max(open - 1, 0);
+          }
+        }
+        return `${selector}${quote}${"]".repeat(open)}`;
+      };
       const methods: [object, string][] = [
         [DocumentFragment.prototype, "querySelector"],
         [Element.prototype, "querySelector"],
@@ -548,6 +566,42 @@ describe("start of the recorder", () => {
       expect(recorder.record).toHaveBeenCalledTimes(1);
       expect(options.maskTextSelector).toBe(".card,[data-private");
       expect(options.blockSelector).toBe("[data-observability-ignore],.card,[data-private");
+      expect(reports(events)).toEqual([]);
+    });
+
+    it.each<[string, Partial<ReplayOptions>]>([
+      ["mask", { maskText: false, maskSelectors: ['[title="x', ".ssn"] }],
+      ["mask, with maskText on", { maskSelectors: ['[title="x', ".ssn"] }],
+      ["block", { blockSelectors: ['[data-x="a', ".ssn"] }],
+    ])("stays off for a %s entry that swallows the entries after it", async (_label, replay) => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup(replay);
+
+      await run();
+
+      // The open quote runs to the end of the list. The list parses, but the recorder never gets
+      // .ssn as an entry, so it would neither block nor mask that region.
+      expect(recorder.record).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0].code).toBe("config.invalid");
+      expect(events[0].message).toMatch(
+        /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+      );
+    });
+
+    it("starts when each quote in an entry is closed", async () => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: ['[title="a,b"]', ".ssn"],
+        blockSelectors: ["[data-x='a']", ".ssn"],
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe('[title="a,b"],.ssn');
+      expect(options.blockSelector).toBe("[data-observability-ignore],[data-x='a'],.ssn");
       expect(reports(events)).toEqual([]);
     });
   });
@@ -822,6 +876,27 @@ describe("events that the recorder mask does not cover", () => {
       { type: 4, data: { href: "https://app.example/orders", width: 800 } },
     ]);
   });
+
+  it.each([
+    [false, "https://app.example/orders"],
+    [true, "https://app.example/orders?t=1"],
+  ])(
+    "removes the user info of the page URL in a meta event, with fullUrls %j",
+    async (fullUrls, href) => {
+      const { run, fail, segments } = setup(
+        { afterErrorMs: 0 },
+        { config: { capture: { fullUrls } } },
+      );
+      const { emit } = await run();
+
+      // A browser keeps the user info in location.href, and the recorder reads it from there.
+      emit({ type: 4, data: { href: "https://alice:s3cret@app.example/orders?t=1", width: 800 } });
+      fail();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sent(segments)[0]).toEqual([{ type: 4, data: { href, width: 800 } }]);
+    },
+  );
 
   it("keeps the full page URL with capture.fullUrls", async () => {
     const { run, fail, segments } = setup(

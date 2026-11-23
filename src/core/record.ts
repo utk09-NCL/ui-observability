@@ -490,21 +490,17 @@ export class RecordBuilder {
   redactForwarded(record: LogRecord): LogRecord | null {
     const { config, diagnostics, limits } = this.deps;
     const fixed = fixedOf(record.attributes);
-    // A child's limits can be looser than ours. A value nested too deep makes the serializer
-    // throw, and the transport then drops the whole batch with this context's own records.
-    const resource = asAttributes(sanitizeWithSize(record.resource, limits, diagnostics).value);
+    // A child's limits can be looser than ours, and a value nested too deep loses this context's
+    // whole batch. The key count stays open, because the resource holds the child's ids.
+    const resourceLimits = { ...limits, maxAttributeCount: Infinity };
+    const resource = asAttributes(
+      sanitizeWithSize(record.resource, resourceLimits, diagnostics).value,
+    );
 
-    // applyHooks() applies the limits to the attributes after redact.
-    if (config.redact) {
-      const stages: [RecordHook, HookStage][] = [[config.redact, "redact"]];
-      const outcome = this.applyHooks({ ...record, resource }, stages, fixed);
-      return typeof outcome === "string" ? null : outcome.record;
-    }
-
-    const attributes = asAttributes(sanitizeWithSize(record.attributes, limits, diagnostics).value);
-    // The limits must not trim the fields the library builds.
-    Object.assign(attributes, fixed);
-    return { ...record, attributes, resource };
+    // applyHooks() applies the limits to the attributes, after redact if there is one.
+    const stages: [RecordHook, HookStage][] = config.redact ? [[config.redact, "redact"]] : [];
+    const outcome = this.applyHooks({ ...record, resource }, stages, fixed);
+    return typeof outcome === "string" ? null : outcome.record;
   }
 
   /**

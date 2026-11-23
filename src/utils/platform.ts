@@ -168,8 +168,11 @@ export function currentUrl(diagnostics: Diagnostics): string {
   }
 }
 
-/** Matches the user info of an absolute URL, for example "user:pass@". */
-const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
+/**
+ * Matches the user info after "//", for example "user:pass@". A browser also reads it with no
+ * scheme, with backslashes and after leading spaces, so the pattern allows all three.
+ */
+const USER_INFO_PATTERN = /^(\s*(?:[a-z][a-z\d+.-]*:)?[/\\]{2})[^/\\?#]*@/i;
 
 /**
  * Returns the URL that a relative URL resolves against. A worker has no document, so it uses
@@ -200,7 +203,8 @@ function withoutUserInfo(url: string): string {
   try {
     parsed = new URL(url, pageBase());
   } catch {
-    // The parser rejects the URL, so the fallback is the pattern for an absolute URL.
+    // The parser rejects the URL, or a blob: or about:blank base can't resolve it, so the
+    // fallback is the pattern.
     return url.replace(USER_INFO_PATTERN, "$1");
   }
 

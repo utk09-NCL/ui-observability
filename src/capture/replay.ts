@@ -50,6 +50,34 @@ const MASK_EACH_INPUT = { input: true, textarea: true, select: true };
 /** What every masked input value turns into. Fixed length, so it doesn't give away a PIN's. */
 const MASKED_INPUT = "********";
 
+/** Class of the detached element that shows whether a selector entry swallows the next one. */
+const SELECTOR_PROBE = "uiobs-selector-probe";
+
+/**
+ * Checks one selector the way the recorder will use it.
+ * @param selector A selector entry or a joined list.
+ * @param followed True when another entry comes after it in a list.
+ * @returns The fault to report, or undefined for a usable selector.
+ */
+function selectorFault(selector: string, followed: boolean): unknown {
+  try {
+    document.createDocumentFragment().querySelector(selector);
+
+    // Chromium closes an open quote or "[" at the end, so '[x="a' parses alone and in a list,
+    // but swallows the entries after it. With a probe entry after it, the probe can't match.
+    const probe = document.createElement("i");
+    probe.className = SELECTOR_PROBE;
+    if (followed && !probe.matches(`${selector},.${SELECTOR_PROBE}`)) {
+      return new SyntaxError("The selector swallows the entries after it.");
+    }
+
+    return undefined;
+  } catch (error) {
+    // The parser's error goes back to the caller as the report's cause.
+    return error;
+  }
+}
+
 /** Event type of the meta event, which carries the page URL. */
 const META_EVENT = 4;
 
@@ -323,16 +351,17 @@ export class ReplayCapture implements Capture {
     if (mask !== undefined) {
       checks.push(mask);
     }
+    // The last entry of each list has nothing after it to swallow.
+    const followed = [...maskSelectors.slice(0, -1), ...blockSelectors.slice(0, -1)];
 
     for (const selector of checks) {
-      try {
-        document.createDocumentFragment().querySelector(selector);
-      } catch (error) {
+      const fault = selectorFault(selector, followed.includes(selector));
+      if (fault !== undefined) {
         this.ctx.diagnostics.report(
           "config.invalid",
           `The replay selector ${selector} is not a valid CSS selector. The session replay is off.`,
           undefined,
-          error,
+          fault,
         );
         return undefined;
       }
@@ -368,7 +397,7 @@ export class ReplayCapture implements Capture {
   private readonly maskInput = (text: string): string => (text === "" ? "" : MASKED_INPUT);
 
   /**
-   * Strips what the recorder's own masking misses: the query string of the page URL, and text
+   * Strips what the recorder's own masking misses: the page URL's user info and query, and text
    * sitting directly in a shadow root that changed after the snapshot.
    * @param event Recorder event.
    */
@@ -380,9 +409,9 @@ export class ReplayCapture implements Capture {
     }
 
     if (event.type === META_EVENT) {
-      // A signed URL is a credential. Only keep the query when fullUrls is on.
-      if (typeof data.href === "string" && !this.ctx.config.capture.fullUrls) {
-        data.href = data.href.split(/[?#]/)[0];
+      // User info is a credential, and so is a signed URL's query unless fullUrls keeps it.
+      if (typeof data.href === "string") {
+        data.href = recordedUrl(data.href, this.ctx.config.capture.fullUrls);
       }
       return;
     }

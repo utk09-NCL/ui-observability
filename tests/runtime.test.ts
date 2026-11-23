@@ -3134,6 +3134,72 @@ describe("the sender's limits on a forwarded record", () => {
     expect(stored.attributes["metric.bucket_counts"]).toEqual([...bounds, 0]);
   });
 
+  describe("with a low maxAttributeCount", () => {
+    // The ids that a child of the same build puts in its resource, and more keys after them.
+    const resource = (): Record<string, unknown> => ({
+      "service.name": "child",
+      "session.id": "s-1",
+      "tab.id": "t-1",
+      "context.id": "child-context",
+      "host.platform": "browser",
+      "telemetry.sdk.name": "@utk09/ui-observability",
+      "telemetry.sdk.version": "1.1.0",
+    });
+
+    it.each([false, true])(
+      "keeps every key of a forwarded resource, with redact %j",
+      async (withRedact) => {
+        configure({
+          ...base,
+          limits: { maxAttributeCount: 4 },
+          ...(withRedact ? { redact: (record: LogRecord) => record } : {}),
+        });
+        await ready();
+        const record = forwardedRecord("from a child");
+        record.resource = resource();
+
+        runtime()["ingestForwarded"]([record]);
+
+        // The count limit is for the app's own keys. A local record keeps its whole resource, and
+        // the bus's maxMessageBytes already bounds what a child can send.
+        expect(buffered()[0].resource).toEqual(resource());
+      },
+    );
+
+    it("still cuts the values of a forwarded resource, whatever the key count", async () => {
+      configure({ ...base, limits: { maxAttributeCount: 4 } });
+      await ready();
+      const record = forwardedRecord("from a child");
+      let deep: unknown = "x";
+      for (let i = 0; i < 40; i++) {
+        deep = [deep];
+      }
+      record.resource = { ...resource(), deep, long: "y".repeat(20_000) };
+
+      runtime()["ingestForwarded"]([record]);
+
+      const [stored] = buffered();
+      expect(Object.keys(stored.resource)).toHaveLength(Object.keys(resource()).length + 2);
+      expect(levels(stored.resource.deep)).toBeLessThanOrEqual(runtime().config.limits.maxDepth);
+      expect(String(stored.resource.long).length).toBeLessThan(
+        runtime().config.limits.maxAttributeChars + 50,
+      );
+    });
+
+    it("still cuts the attributes of a forwarded record at the count", async () => {
+      configure({ ...base, limits: { maxAttributeCount: 4 } });
+      await ready();
+      const record = forwardedRecord("from a child");
+      record.attributes = Object.fromEntries(
+        Array.from({ length: 12 }, (_, index) => [`key${String(index)}`, "v"]),
+      );
+
+      runtime()["ingestForwarded"]([record]);
+
+      expect(Object.keys(buffered()[0].attributes)).toHaveLength(5);
+    });
+  });
+
   describe("from a registered worker, through the whole delivery", () => {
     /**
      * Builds an array nested to the given depth.

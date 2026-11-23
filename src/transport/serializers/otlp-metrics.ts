@@ -78,9 +78,8 @@ function pointAttributes(record: LogRecord): Record<string, unknown> {
   }
 
   for (const key of keys as unknown[]) {
-    // A key from the app's call, or from a frame's own key list, can name a metric field or a
-    // record field, and the record holds the library's value there. Any other key, such as the
-    // web-vitals rating, is the caller's own.
+    // A caller's key, or a frame's key list, can name a field that holds the library's value.
+    // Any other key, such as the web-vitals rating, is the caller's own.
     const named = typeof key === "string" && !LIBRARY_KEYS.has(key);
     const value: unknown = named ? record.attributes[key] : undefined;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
