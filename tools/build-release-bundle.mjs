@@ -35,6 +35,14 @@ const STAMP_FILE = ".commit";
 const TAG_PATTERN = /^v\d+\.\d+\.\d+$/;
 
 /**
+ * The commit of each release that the tests build. A push can move a tag, and the build runs the
+ * tag's own vite.config.ts, so the tool builds only a commit it knows.
+ */
+const RELEASE_COMMITS = {
+  "v1.0.0": "f87cfd08018aba7921c8291dbdae9538777825d8",
+};
+
+/**
  * Runs git in the repository and returns its trimmed output.
  * @param {string[]} args The git arguments.
  * @returns {Promise<string>} The standard output.
@@ -46,8 +54,8 @@ async function git(args) {
 }
 
 /**
- * Returns the commit of a tag. A shallow clone, as in CI, has no tags, so a missing tag is
- * fetched from origin with no history.
+ * Returns the commit of a tag. A clone without the tag fetches it from origin. Only a shallow
+ * clone fetches it with no history, because --depth on a full clone makes that clone shallow.
  * @param {string} tag The release tag.
  * @returns {Promise<string>} The commit hash.
  */
@@ -60,7 +68,8 @@ async function resolveTag(tag) {
     // A missing tag is the expected answer here. The fetch below is the fallback.
   }
 
-  await git(["fetch", "--depth=1", "origin", "tag", tag]);
+  const shallow = (await git(["rev-parse", "--is-shallow-repository"])) === "true";
+  await git(["fetch", ...(shallow ? ["--depth=1"] : []), "origin", "tag", tag]);
 
   return find();
 }
@@ -119,7 +128,16 @@ export async function buildReleaseBundle(tag) {
     throw new Error(`The release tag ${tag} is not of the form v1.2.3.`);
   }
 
+  const expected = RELEASE_COMMITS[tag];
+  if (expected === undefined) {
+    throw new Error(`The release tag ${tag} has no known commit. Add it to RELEASE_COMMITS.`);
+  }
+
   const commit = await resolveTag(tag);
+  if (commit !== expected) {
+    throw new Error(`The tag ${tag} points to ${commit}, not to the release commit ${expected}.`);
+  }
+
   const folder = path.join(CACHE_DIR, tag);
   if (await isCurrent(folder, commit)) {
     return folder;
