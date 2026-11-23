@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-23
+
+A minor release. It stops losses of records, throws into the host page and gaps in the privacy rules. It sends the records that a page logs after `pagehide`. One event has a new diagnostic code. See "Changed".
+
+### Added - v1.2.0
+
+- The diagnostic code `bus.tab_id_changed`. The library logs it at INFO. It reports a document that makes a new tab id, because another document uses the same one.
+- **Development:** new browser tests check the close of a tab, a cross-origin `srcdoc` frame and cross-site credentials. They also check the final web-vitals and a bus with the 1.0.0 bundle.
+- **Development:** `tools/build-release-bundle.mjs` builds release 1.0.0 from its pinned commit for the browser tests. CI gets the full git history for the browser tests.
+
+### Changed - v1.2.0
+
+- A changed tab id reports `bus.tab_id_changed`. Before, it reported `bus.role_resolved`. A handler that filters on `bus.role_resolved` for this event must use the new code.
+- `capture.interactions.ignoreSelector: ""` goes back to the default, `[data-observability-ignore]`. Before, the library refused `""` with `config.invalid`.
+- A relative `endpoint`, `metricsEndpoint` or `tracesEndpoint` reports `config.invalid` only when its destination changes. Before, it reported at each `configure()` and at each rotation. `replay.endpoint` still reports each time.
+- A change to `otelLoader` after startup reports `config.invalid`. The library keeps the first loader. Before, the change had no report.
+- The OpenFin link uses `InterApplicationBus.send` to the UUID of its own application. Before, it used `publish`, which reaches each application on the runtime. Only `fin` stubs test this change. No real OpenFin runtime ran it.
+- The sender applies its own limits to each record from a frame or a worker. These are the limits on depth, array length, string length and node count. They apply to the attributes and the resource. A resource keeps the larger of `limits.maxAttributeCount` and 128 keys.
+- A metric point does not copy a record-level key, such as `page.url` or `session.id`. This is also true when `metric.attribute_keys` names the key.
+- With `resourceErrors`, a failed resource with no URL string is recorded with no `resource.url`.
+- A URL with user info is recorded in its parsed form. On an https page, `//u:p@host/p` becomes `https://host/p`.
+- A send from a hidden page uses keepalive only when its body and the keepalive bytes in flight stay within 60,000 bytes.
+
+### Fixed - v1.2.0
+
+- The error capture does not throw into the host page for an `error` event with no URL. An example is an image with `srcset` only. Before, the page got an uncaught `TypeError`.
+- `capture.webVitals: false` and a remote rule that turns `webVitals` off stop all web-vitals records. Before, the late reports of INP and CLS continued.
+- A stop removes the `history.pushState` and the `history.replaceState` that the library added. Before, they hid a later change of `History.prototype`.
+- The replay does not start when a selector list is not valid as one list, or when one entry hides the entries after it. Before, the recorder blocked nothing and masked nothing.
+- A recorded URL keeps no user name and no password. This includes a URL with no scheme, with backslashes or with a leading space. It includes record bodies, breadcrumbs, replay request names and the page URL of a replay.
+- The links of a worker and of OpenFin remove their listeners at `shutdown()`. Before, each `configure()` after a `shutdown()` added one more.
+- A bus that stops during its message-link handshake posts no more `hello` messages. It reports nothing after the stop.
+- A child frame or worker cannot make the sender lose a batch with a deeply nested value.
+- A rotation does not lose a keepalive request that is open on a hidden page. `retain` stores its records. `carry` sends them with the new context. `discard` reports them to `onDrop` with `security_context`. Before, the library lost them with no report.
+- The retry drain and the emergency import run without a lock when Web Locks rejects the request. An example is a frame with an opaque origin. Before, the drain did not run.
+- The retry drain sends no stored batch to an endpoint that a `429` or `503` throttles. A new stored batch does not shorten a backoff or a `Retry-After` wait.
+- The halves of a batch that a `413` splits go out after `delivery.retryBaseDelayMs`. Before, they waited about 30 seconds.
+- A `discard` or `flush` rotation reports the records that another tab parked in the emergency queue. A logout `discard` with no sender reports the stored batches that it removes. Before, the library removed them with no report.
+- A record that the page logs after `pagehide` goes out in an exit flush. An example is the final LCP, CLS or INP. One page leave has at most 8 late exit flushes, and they share one byte budget. Before, the library lost these records on a real page leave.
+- A key of the emergency queue that another window removed gives no diagnostic about a bad entry.
+- `docs/delivery-guarantees.md` states two known limits. Firefox can lose the exit batch of a closed tab. The `web-vitals` package has no final INP when the page goes away before its idle callback runs.
+
 ## [1.1.0] - 2026-11-22
 
 A minor release. It has no breaking change. It captures clicks in popout windows, and it finds dead clicks on pages with live data. It gives each popup its own tab id. It also closes gaps in the loss reports of `shutdown()`, and it removes a limit on the signal endpoints.
