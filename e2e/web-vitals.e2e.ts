@@ -257,6 +257,20 @@ test("delivers the final INP and CLS when the page goes away", async ({ page }) 
     await page.waitForFunction(
       () => "inp" in (window as unknown as { reported: Record<string, number> }).reported,
     );
+    // The library's own INP observer runs on a later idle callback than the page's, and a leave
+    // before it has run gives no final INP. Callbacks queue in order, so one more runs after both.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          const idle =
+            "requestIdleCallback" in globalThis
+              ? requestIdleCallback
+              : (run: () => void) => setTimeout(run, 0);
+          idle(() => {
+            resolve();
+          });
+        }),
+    );
   }
   const supported = await page.evaluate(() => PerformanceObserver.supportedEntryTypes);
   await page.goto("about:blank");
