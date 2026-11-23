@@ -24,6 +24,12 @@ import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
+/**
+ * Late flushes allowed in one page leave. An onDrop hook that logs would otherwise start a new one
+ * for each loss it reports, a microtask loop that never lets the closing page yield.
+ */
+const LATE_FLUSH_LIMIT = 8;
+
 /** The lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
@@ -76,10 +82,31 @@ export class ExitFlush {
   private installed = false;
 
   /**
+   * True after a pagehide with no later pageshow. The batch timers won't fire in a closing
+   * document, so a record that arrives now has to take the exit path.
+   */
+  private left = false;
+
+  /** True while a late exit flush waits on its microtask, so one task's records go together. */
+  private lateQueued = false;
+
+  /** Late flushes in this page leave, up to LATE_FLUSH_LIMIT. */
+  private lateFlushes = 0;
+
+  /** True while beforeExit pushes the open metric points, which the running flush then takes. */
+  private collecting = false;
+
+  /**
    * Bytes in flight against the browser's one budget for beacons and keepalive fetches. It
    * starts at the transport's keepalive sends, and each batch of the current exit flush adds to it.
    */
   private keepaliveBytes = 0;
+
+  /**
+   * Bytes that the exit sends of this page leave put in flight. A late flush adds them, because
+   * nothing tracks an exit send's completion and the browser rejects a send over its budget.
+   */
+  private leaveBytes = 0;
 
   /** Flushes on visibilitychange when the document becomes hidden. */
   private readonly onVisibility = (): void => {
@@ -90,7 +117,16 @@ export class ExitFlush {
 
   /** Flushes on the window's pagehide event. */
   private readonly onPageHide = (): void => {
+    this.left = true;
+    this.leaveBytes = 0;
+    this.lateFlushes = 0;
     this.flush("pagehide");
+  };
+
+  /** Returns to the normal path when the back/forward cache restores the page. */
+  private readonly onPageShow = (): void => {
+    this.left = false;
+    this.leaveBytes = 0;
   };
 
   /** Flushes on the document's freeze event. */
@@ -122,6 +158,7 @@ export class ExitFlush {
     }
 
     addEventListener("pagehide", this.onPageHide);
+    addEventListener("pageshow", this.onPageShow);
 
     const me = getFin()?.me;
     this.deps.diagnostics.guard(
@@ -139,6 +176,10 @@ export class ExitFlush {
       return;
     }
     this.installed = false;
+    // Without the pageshow listener the flag can't clear, and a paused or stopped sender sends
+    // nothing through this path.
+    this.left = false;
+    this.leaveBytes = 0;
 
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", this.onVisibility);
@@ -146,6 +187,7 @@ export class ExitFlush {
     }
 
     removeEventListener("pagehide", this.onPageHide);
+    removeEventListener("pageshow", this.onPageShow);
 
     const me = getFin()?.me;
     this.deps.diagnostics.guard(
@@ -158,6 +200,31 @@ export class ExitFlush {
   }
 
   /**
+   * Sends a record that reached the sender after pagehide with an exit send on a microtask, so
+   * all records of one task go in one send. A web-vitals report arrives this late on a page leave.
+   */
+  flushLate(): void {
+    if (!this.left || this.collecting || this.lateQueued) {
+      return;
+    }
+
+    if (this.lateFlushes >= LATE_FLUSH_LIMIT) {
+      return;
+    }
+
+    this.lateQueued = true;
+    this.lateFlushes++;
+    queueMicrotask(() => {
+      this.lateQueued = false;
+
+      // A pageshow or an uninstall in between means the page stays or the sender stopped.
+      if (this.left) {
+        this.flush("pagehide");
+      }
+    });
+  }
+
+  /**
    * Drains pending records synchronously and sends them with a beacon, a keepalive fetch or
    * emergency storage. A hidden document gets a normal flush. Never awaits and never throws,
    * because the caller is an unload listener.
@@ -167,9 +234,12 @@ export class ExitFlush {
     const { config, diagnostics } = this.deps;
 
     // Runs first, so that the drain below also takes the open metric interval's points.
+    // The points it pushes go out with this flush, so they mustn't use up a late flush.
+    this.collecting = true;
     diagnostics.guard("pipeline.crashed", "The metric points before the exit flush failed.", () => {
       this.deps.beforeExit?.();
     });
+    this.collecting = false;
 
     // hidden fires on every tab switch, and the document keeps running. A normal flush keeps
     // the headers, gzip and the retry, none of which a beacon has. The in-flight batches
@@ -190,8 +260,9 @@ export class ExitFlush {
     }
 
     // A hidden flush's keepalive sends can still be in flight, so start from the transport's count.
-    // An earlier exit flush's sends aren't in it, because nothing tracks an exit send's completion.
-    this.keepaliveBytes = this.deps.keepaliveInFlight() ?? 0;
+    // An earlier exit flush's sends aren't in it, so a late flush adds this leave's own sends.
+    const inFlight = this.deps.keepaliveInFlight() ?? 0;
+    this.keepaliveBytes = inFlight + (this.left ? this.leaveBytes : 0);
 
     for (const batch of this.deps.drainForExit()) {
       // resolveConfig keeps only a valid absolute metricsEndpoint and tracesEndpoint. A traces
@@ -203,6 +274,10 @@ export class ExitFlush {
       } else {
         diagnostics.count("record.dropped_no_destination");
       }
+    }
+
+    if (this.left) {
+      this.leaveBytes = this.keepaliveBytes - inFlight;
     }
   }
 

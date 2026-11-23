@@ -55,6 +55,7 @@ import type { LogLevel, LogType } from "../models/log-record";
 import type { CapturePlugin } from "../models/plugin";
 import type { LogSerializer } from "../models/serializer";
 import { hasOwn, isObject } from "../utils/guards";
+import { pageBase } from "../utils/platform";
 import type { Diagnostics } from "./diagnostics";
 
 /** Level names in severity order. */
@@ -224,19 +225,6 @@ function keepKind(
 }
 
 /**
- * Returns the URL that a relative destination resolves against. A worker has no document, so
- * it uses its own location.
- * @returns The base URL, or undefined when the scope has neither.
- */
-function pageBase(): string | undefined {
-  if (typeof document !== "undefined") {
-    return document.baseURI;
-  }
-
-  return typeof location === "undefined" ? undefined : location.href;
-}
-
-/**
  * Checks a destination URL and returns the form the library sends to. A relative URL resolves
  * against the page, so the records go where the app's own requests go, and the report names
  * that origin. A URL with a user name or a password is refused, because each request would
@@ -245,6 +233,7 @@ function pageBase(): string | undefined {
  * @param value The URL the consumer passed.
  * @param fallback The current destination.
  * @param diagnostics Diagnostics reporter.
+ * @param current The URL the runtime sends to now, if any.
  * @returns The URL, its absolute form for a relative URL, or the fallback for a refused URL.
  */
 function absoluteUrl(
@@ -252,6 +241,7 @@ function absoluteUrl(
   value: string,
   fallback: unknown,
   diagnostics: Diagnostics,
+  current: unknown,
 ): unknown {
   let url: URL;
   try {
@@ -279,7 +269,12 @@ function absoluteUrl(
     return value;
   }
 
-  diagnostics.report("config.invalid", `${key} is relative. The library sends to ${url.origin}.`);
+  // A later call or a rotation often repeats the same relative URL, so only a new destination
+  // reports. Otherwise every call warns again about a URL the app already saw reported.
+  if (url.href !== current) {
+    diagnostics.report("config.invalid", `${key} is relative. The library sends to ${url.origin}.`);
+  }
+
   return url.href;
 }
 
@@ -291,6 +286,8 @@ function absoluteUrl(
  * @param value The value the consumer passed.
  * @param fallback The current destination.
  * @param diagnostics Diagnostics reporter.
+ * @param current The URL the runtime sends to now. A relative URL that resolves to it isn't
+ * reported again.
  * @returns The URL, null when it's off, or the fallback for a refused value.
  */
 export function resolveDestination(
@@ -298,6 +295,7 @@ export function resolveDestination(
   value: unknown,
   fallback: unknown,
   diagnostics: Diagnostics,
+  current?: unknown,
 ): unknown {
   if (typeof value !== "string") {
     return keepKind(isNull, URL_EXPECTED, describeKind)(key, value, fallback, diagnostics);
@@ -312,7 +310,7 @@ export function resolveDestination(
   }
 
   // The current value passed the check already, so it gets no second report.
-  return value === fallback ? value : absoluteUrl(key, value, fallback, diagnostics);
+  return value === fallback ? value : absoluteUrl(key, value, fallback, diagnostics, current);
 }
 
 /**
@@ -322,12 +320,15 @@ export function resolveDestination(
  * @param value The value the consumer passed.
  * @param fallback The current endpoint.
  * @param diagnostics Diagnostics reporter.
+ * @param current The URL the runtime sends to now. A relative URL that resolves to it isn't
+ * reported again.
  * @returns The endpoint, null for console-only mode, or the fallback for a refused value.
  */
 export function resolveEndpoint(
   value: unknown,
   fallback: unknown,
   diagnostics: Diagnostics,
+  current?: unknown,
 ): unknown {
   if (typeof value !== "string") {
     return keepKind(isNull, URL_EXPECTED, describeKind)("endpoint", value, fallback, diagnostics);
@@ -342,7 +343,7 @@ export function resolveEndpoint(
     return fallback;
   }
 
-  return absoluteUrl("endpoint", value, fallback, diagnostics);
+  return absoluteUrl("endpoint", value, fallback, diagnostics, current);
 }
 
 /** Rules for one policy section. Every number key must have a range. */
@@ -1813,11 +1814,12 @@ function resolveInteractions(
 ): InteractionOptions {
   const ignore = value.ignoreSelector;
   let ignoreSelector = ignore === undefined ? previous.ignoreSelector : ignore;
-  if (ignoreSelector !== undefined && ignoreSelector !== null) {
+  // "" restores the built-in region, and matches("") throws, so "" skips the parse check.
+  if (ignoreSelector !== undefined && ignoreSelector !== null && ignoreSelector !== "") {
     if (typeof ignoreSelector !== "string" || !parsesSelector(ignoreSelector)) {
       diagnostics.report(
         "config.invalid",
-        "capture.interactions.ignoreSelector must be a valid CSS selector or null.",
+        'capture.interactions.ignoreSelector must be a valid CSS selector, "" or null.',
       );
       ignoreSelector = previous.ignoreSelector;
     }
@@ -2056,12 +2058,15 @@ function reportIneffective(
  * @param input Partial consumer configuration options.
  * @param diagnostics Diagnostics reporter.
  * @param previous The active configuration, for an incremental reconfigure.
+ * @param live The config the runtime sends with now. A rotation passes it, because its previous
+ * has no routing values, and each relative endpoint would be reported again.
  * @returns Complete, validated configuration object.
  */
 export function resolveConfig(
   input: Partial<ObservabilityConfig>,
   diagnostics: Diagnostics,
   previous?: ResolvedConfig,
+  live: ResolvedConfig | undefined = previous,
 ): ResolvedConfig {
   const base = previous ?? DEFAULT_CONFIG;
   const given = checkSections(input, diagnostics);
@@ -2111,7 +2116,8 @@ export function resolveConfig(
       ),
     },
     // An unset environment variable arrives as undefined, so keep the current endpoint.
-    endpoint: resolveEndpoint(given.endpoint, base.endpoint, diagnostics) as string | null,
+    endpoint: resolveEndpoint(given.endpoint, base.endpoint, diagnostics, live?.endpoint) as
+      string | null,
     serviceName: resolveString("serviceName", given.serviceName, base.serviceName, diagnostics),
     serviceVersion: resolveString(
       "serviceVersion",
@@ -2201,7 +2207,8 @@ export function resolveConfig(
   // Metric and span batches always go out as OTLP, whatever the log serializer is, so a
   // custom or ECS log format doesn't turn these endpoints off.
   for (const key of ["metricsEndpoint", "tracesEndpoint"] as const) {
-    merged[key] = resolveDestination(key, given[key], base[key], diagnostics) as string | null;
+    merged[key] = resolveDestination(key, given[key], base[key], diagnostics, live?.[key]) as
+      string | null;
   }
 
   // null selects console-only mode. "" is the default when no call has set an endpoint.

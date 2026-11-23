@@ -111,6 +111,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The cross-version spec builds the v1.0.0 bundle from its git tag. A shallow clone has
+          # no tags, and persist-credentials: false leaves the build step no way to fetch one.
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 

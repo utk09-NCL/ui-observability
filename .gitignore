@@ -16,6 +16,8 @@ storybook-static
 coverage
 test-results
 playwright-report
+# Older releases that the browser tests build from a git tag, by tools/build-release-bundle.mjs.
+e2e/.cache
 .otelcol
 bench-results
 *.lcov

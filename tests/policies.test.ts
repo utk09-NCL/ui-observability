@@ -361,6 +361,74 @@ describe("dead click ignore selector", () => {
   });
 });
 
+describe("click ignore selector", () => {
+  /**
+   * Resolves the click settings the way an app's config does.
+   * @param value The `capture.interactions` value.
+   * @param previous The active config, for a later configure call.
+   * @returns The resolved config, its click settings and each config.invalid message.
+   */
+  const resolve = (value: unknown, previous?: ResolvedConfig) => {
+    const handler = vi.fn<(event: DiagnosticEvent) => void>();
+    const config = resolveConfig(
+      { ...base, capture: { interactions: value } } as never,
+      new Diagnostics(handler, 0),
+      previous,
+    );
+    const invalid = handler.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.code === "config.invalid")
+      .map((event) => event.message);
+    return { config, options: config.capture.interactions, invalid };
+  };
+
+  it("keeps an empty selector, which turns the custom filter off", () => {
+    // An empty string isn't valid CSS, so a plain validity check would reject it.
+    const { options, invalid } = resolve({ ignoreSelector: "" });
+
+    expect(options).toMatchObject({ ignoreSelector: "" });
+    expect(invalid).toEqual([]);
+  });
+
+  it("replaces an earlier custom selector with an empty one, with no report", () => {
+    const first = resolve({ ignoreSelector: ".private" }).config;
+
+    const { options, invalid } = resolve({ ignoreSelector: "" }, first);
+
+    expect(options).toMatchObject({ ignoreSelector: "" });
+    expect(invalid).toEqual([]);
+  });
+
+  it("keeps the empty selector when a later call leaves it out", () => {
+    const first = resolve({ ignoreSelector: "" }).config;
+
+    const { options, invalid } = resolve({ text: true }, first);
+
+    expect(options).toMatchObject({ text: true, ignoreSelector: "" });
+    expect(invalid).toEqual([]);
+  });
+
+  it.each([["["], ["div >"], ["#"], [":not("], [1], [true], [{}], [[".private"]]])(
+    "still reports the selector %j that isn't valid and keeps the current one",
+    (selector) => {
+      const first = resolve({ ignoreSelector: ".private" }).config;
+
+      const { options, invalid } = resolve({ ignoreSelector: selector }, first);
+
+      expect(options).toMatchObject({ ignoreSelector: ".private" });
+      expect(invalid).toHaveLength(1);
+      expect(invalid[0]).toContain("capture.interactions.ignoreSelector");
+    },
+  );
+
+  it("keeps null, which includes every region", () => {
+    const { options, invalid } = resolve({ ignoreSelector: null });
+
+    expect(options).toMatchObject({ ignoreSelector: null });
+    expect(invalid).toEqual([]);
+  });
+});
+
 describe("health and transition lifecycle", () => {
   it("reports version conflict as a machine-readable health failure", async () => {
     const key = Symbol.for("ui-observability.runtime");

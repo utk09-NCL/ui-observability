@@ -16,7 +16,7 @@ import { Diagnostics } from "../src/core/diagnostics";
 import { IdbDriver } from "../src/storage/idb-driver";
 import { recordedUrl } from "../src/utils/platform";
 import type { LogBatch } from "../src/models/batch";
-import type { ObservabilityConfig } from "../src/models/config";
+import type { ExitTransport, ObservabilityConfig } from "../src/models/config";
 
 const base = {
   endpoint: null,
@@ -113,6 +113,41 @@ it("limits metric instruments and series while preserving an overflow series", a
   expect(m.records().some((r) => r.attributes["metric.name"] === "two")).toBe(false);
   expect(m.records().some((r) => r.attributes["otel.metric.overflow"] === true)).toBe(true);
 });
+
+it.each([
+  ["no metric", false],
+  ["a counter open at pagehide and an add in each late task", true],
+])(
+  "sends the late records of six separate tasks, each in its own exit send, with %s",
+  async (_name, withMetric) => {
+    // The exit flush collects the open points first and pushes them like any record. Those
+    // pushes must not use up the budget of late flushes, or the later tasks lose their records.
+    const exit = vi.fn<ExitTransport>(() => true);
+    configure({ ...base, transport: createMemoryTransport().transport, transportOnExit: exit });
+    await vi.dynamicImportSettled();
+    await flush();
+    const orders = counter("orders");
+    if (withMetric) {
+      orders.add(1);
+    }
+
+    dispatchEvent(new Event("pagehide"));
+    for (let task = 1; task <= 6; task++) {
+      getLogger("late").info(`late task ${String(task)}`);
+      if (withMetric) {
+        orders.add(1);
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+
+    const lateSends = exit.mock.calls
+      .map(([request]) => request.records.map((one) => one.body))
+      .filter((bodies) => bodies.some((body) => body.startsWith("late task")));
+    expect(lateSends).toEqual([1, 2, 3, 4, 5, 6].map((task) => [`late task ${String(task)}`]));
+  },
+);
 
 it("disables and resizes breadcrumbs at runtime and excludes selected resource metadata", async () => {
   const m = createMemoryTransport();

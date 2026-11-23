@@ -801,6 +801,40 @@ export const METRIC_FIELD_KEYS: readonly string[] = [
   ...Object.values(METRIC_KEYS),
 ];
 
+/**
+ * Minimum key limit for a forwarded resource. A child can send keys that its message text doesn't
+ * show, because JSON drops an undefined value and structured clone keeps the key.
+ */
+export const RESOURCE_KEY_LIMIT = 128;
+
+/**
+ * Every key the record builder writes itself: the attributes it sets after the payload merge,
+ * and the resource block. The OTLP metrics serializer keeps them off a point's attributes,
+ * otherwise a session id would start a new series for every session.
+ */
+export const RECORD_FIELD_KEYS: readonly string[] = [
+  ATTR_LOG_TYPE,
+  ATTR_LOG_SEQ,
+  ATTR_APP_NAMESPACE,
+  ATTR_PAGE_URL,
+  ATTR_JOURNEY_ID,
+  ATTR_JOURNEY_NAME,
+  ATTR_JOURNEY_PARENT_ID,
+  RESOURCE_SERVICE_NAME,
+  RESOURCE_SERVICE_VERSION,
+  RESOURCE_DEPLOYMENT_ENVIRONMENT,
+  RESOURCE_TELEMETRY_SDK_NAME,
+  RESOURCE_TELEMETRY_SDK_VERSION,
+  RESOURCE_TELEMETRY_SDK_LANGUAGE,
+  RESOURCE_HOST_PLATFORM,
+  RESOURCE_SESSION_ID,
+  RESOURCE_TAB_ID,
+  RESOURCE_CONTEXT_ID,
+  RESOURCE_BROWSER_USER_AGENT,
+  RESOURCE_OPENFIN_UUID,
+  RESOURCE_OPENFIN_NAME,
+];
+
 /** Precision of the profiler histogram: 2^4 = 16 sub-buckets per power of two. */
 export const PROFILE_SUB_BITS = 4;
 

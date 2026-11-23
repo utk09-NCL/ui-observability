@@ -4,11 +4,14 @@
 // record leaves with the old context's settings after the app asked to leave it, also when a
 // rotation fails, overlaps another one or races the delivery stack load.
 
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { Diagnostics } from "../src/core/diagnostics";
 import { ObservabilityRuntime } from "../src/core/runtime";
 import { Sender } from "../src/core/sender";
+import type { LogBatch } from "../src/models/batch";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
+import { saveToEmergencyQueue } from "../src/storage/emergency-queue";
 import {
   configure,
   createMemoryTransport,
@@ -549,4 +552,174 @@ describe("a rotation to an endpoint that isn't a plain absolute URL", () => {
       expect((await getHealth()).issues).toEqual(["security.rotation_failed"]);
     },
   );
+});
+
+describe("a hidden page's keepalive request when a rotation retires the sender", () => {
+  const endpoint = "https://ingest.example/v1/logs";
+
+  /** Ends the requests that a test left open, so the teardown flush doesn't wait for them. */
+  const open: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const end of open.splice(0)) {
+      end();
+    }
+  });
+
+  /** Holds the first request until its signal aborts. Every later request gets a 204. */
+  function holdFirstRequest(): ReturnType<typeof vi.fn<typeof fetch>> {
+    let calls = 0;
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => {
+      calls++;
+      if (calls > 1) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+
+      return new Promise<Response>((resolve, reject) => {
+        open.push(() => {
+          resolve(new Response(null, { status: 204 }));
+        });
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    return fetchMock;
+  }
+
+  /**
+   * Leaves one request open. A hidden page sends it with keepalive, a visible one without.
+   * @param hidden True for a hidden page.
+   * @returns The onDrop spy of the runtime.
+   */
+  async function openRequest(hidden: boolean): Promise<ReturnType<typeof vi.fn>> {
+    const fetchMock = holdFirstRequest();
+    if (hidden) {
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    }
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({
+      ...base,
+      endpoint,
+      storage: { backend: "localstorage" },
+      securityContext: { id: "A", isolation: true },
+      onDrop,
+    });
+    await vi.dynamicImportSettled();
+    await flush();
+
+    getLogger("pay").info("user A secret");
+    const sent = await flush({ timeoutMs: 50 });
+
+    // The setup is right only if the request is open, and only a hidden page used keepalive.
+    expect(sent.pending).toBe(1);
+    expect(fetchMock.mock.calls[0][1]?.keepalive).toBe(hidden);
+
+    return onDrop;
+  }
+
+  const pages = [
+    ["visible", false],
+    ["hidden", true],
+  ] as const;
+
+  it.each(pages)(
+    "keeps the record in storage under the old context with retain (%s page)",
+    async (_page, hidden) => {
+      const onDrop = await openRequest(hidden);
+
+      await rotateSecurityContext({ id: "B", routing: { endpoint } }, { pending: "retain" });
+      await flush();
+
+      expect(secretAtRest()).toBe(true);
+      expect(lost(onDrop, "security_context")).toBe(0);
+    },
+  );
+
+  it.each(pages)(
+    "sends the record to the new context with carry (%s page)",
+    async (_page, hidden) => {
+      await openRequest(hidden);
+      const next = createMemoryTransport();
+
+      await rotateSecurityContext(
+        { id: "B", routing: { transport: next.transport } },
+        { pending: "carry" },
+      );
+      await flush();
+
+      expect(next.records().map((record) => record.body)).toContain("user A secret");
+    },
+  );
+
+  it.each(pages)(
+    "reports the record with security_context at a discard rotation (%s page)",
+    async (_page, hidden) => {
+      const onDrop = await openRequest(hidden);
+
+      await rotateSecurityContext({ id: "B", routing: { endpoint } }, { pending: "discard" });
+      await flush();
+
+      expect(lost(onDrop, "security_context")).toBe(1);
+      expect(secretAtRest()).toBe(false);
+    },
+  );
+
+  it.each(pages)(
+    "keeps the record in storage when the rotation fails (%s page)",
+    async (_page, hidden) => {
+      const onDrop = await openRequest(hidden);
+
+      await expect(
+        rotateSecurityContext({ id: "B", routing: { credentials: "bogus" as never } }),
+      ).rejects.toThrow("Invalid routing settings");
+      await flush();
+
+      expect(secretAtRest()).toBe(true);
+      expect(lost(onDrop, "security_context")).toBe(0);
+    },
+  );
+});
+
+describe("the emergency entries of the old context at a discard rotation", () => {
+  /** Lists the keys of the emergency queue in localStorage. */
+  const emergencyKeys = (): string[] =>
+    Object.keys(localStorage).filter((key) => key.startsWith("ui-observability.emergency."));
+
+  it("reports the records of an entry that another tab parked, and removes the entry", async () => {
+    const onDrop = vi.fn<(summary: DropSummary) => void>();
+    configure({
+      ...base,
+      storage: { backend: "localstorage" },
+      transport: createMemoryTransport().transport,
+      securityContext: { id: "A", isolation: true },
+      onDrop,
+    });
+    await vi.dynamicImportSettled();
+    await flush();
+    await wait(0);
+
+    // A second tab with the same stable id parks its exit batch after this tab's startup import.
+    const parked: LogBatch = {
+      id: "other-tab",
+      createdAt: Date.now(),
+      attempts: 0,
+      routingContextId: "A",
+      persistenceNamespace: "",
+      records: [built("parked by another tab")],
+    };
+    saveToEmergencyQueue(parked, new Diagnostics(vi.fn(), 0));
+    expect(emergencyKeys()).toHaveLength(1);
+
+    await rotateSecurityContext(
+      { id: "B", routing: { transport: createMemoryTransport().transport } },
+      { pending: "discard" },
+    );
+    await flush();
+
+    expect(emergencyKeys()).toEqual([]);
+    expect(lost(onDrop, "security_context")).toBe(1);
+  });
 });

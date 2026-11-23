@@ -295,11 +295,13 @@ export class Sender {
   }
 
   /**
-   * Adds a record to the pipeline.
+   * Adds a record to the pipeline. After a pagehide the exit flush sends it, because the batch
+   * timer won't fire in a closing document.
    * @param record Record to deliver.
    */
   push(record: LogRecord): void {
     this.pipeline.push(record);
+    this.exitFlush.flushLate();
   }
 
   /**
@@ -426,7 +428,7 @@ export class Sender {
     this.exitFlush.uninstall();
     this.retry.stop();
     this.transport.stop();
-    const drained = this.pipeline.drainForExit();
+    const drained = this.pipeline.drainForRetire();
     this.pipeline.destroy();
     await this.emergencyImport;
     await this.keep(drained, contextId);
@@ -455,7 +457,7 @@ export class Sender {
    * @param timeoutMs Maximum wait for a flush, in milliseconds.
    * @param contextId Identity of the old delivery context.
    * @returns The records that were in memory and the batches that were stored, after the
-   * delivery attempt.
+   * delivery attempt. A discard or a flush adds the context's emergency entries it removed.
    */
   async retire(
     policy: "discard" | "flush" | "retain" | "carry",
@@ -481,7 +483,7 @@ export class Sender {
     }
     this.retry.stop();
     this.transport.stop();
-    const drained = this.pipeline.drainForExit();
+    const drained = this.pipeline.drainForRetire();
     const buffered = drained.flatMap((batch) => batch.records);
     this.pipeline.destroy();
     await this.emergencyImport;
@@ -493,8 +495,10 @@ export class Sender {
     // If the tab closes during the carry, the rest are parked, not lost.
     const discard = policy === "discard" || policy === "flush";
     await this.storage.retire(discard);
+    // Another tab can park an exit batch of this context after this tab's startup import. It goes
+    // with the stored batches, so the rotation reports its records instead of losing them silently.
     if (discard) {
-      clearEmergencyContext(contextId, this.diagnostics, this.storage.namespace);
+      stored.push(...clearEmergencyContext(contextId, this.diagnostics, this.storage.namespace));
     }
     return { buffered, stored };
   }

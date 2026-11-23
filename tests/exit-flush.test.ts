@@ -231,7 +231,8 @@ describe("ExitFlush install", () => {
     flush.install();
     flush.install();
 
-    expect(add).toHaveBeenCalledOnce();
+    // pageshow tells the exit flush that a page back from the cache has come back.
+    expect(add.mock.calls.map(([type]) => type)).toEqual(["pagehide", "pageshow"]);
     flush.uninstall();
   });
 
@@ -1157,6 +1158,80 @@ describe("ExitFlush to a same-origin endpoint", () => {
       expect(events.some((event) => event.message.includes("exit flush failed"))).toBe(true);
     });
     expect(emergencyKeys()).toHaveLength(1);
+  });
+});
+
+describe("ExitFlush after a pagehide", () => {
+  /** A pageshow event. The page cache restores the page when `persisted` is true. */
+  const pageshow = (): Event => Object.assign(new Event("pageshow"), { persisted: true });
+
+  it.each([
+    ["a pageshow", () => dispatchEvent(pageshow())],
+    ["an uninstall", (flush: ExitFlush) => flush.uninstall()],
+  ])("sends no late record when %s comes in the same task", async (_name, undo) => {
+    // The page stays, or the sender stopped, so the batch timer or nobody else owns the record.
+    const fetchMock = stubFetch();
+    const { flush, pending, drainForExit } = setup();
+    flush.install();
+    dispatchEvent(new Event("pagehide"));
+    pending.push(record("late record"));
+
+    flush.flushLate();
+    undo(flush);
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(drainForExit).toHaveBeenCalledOnce();
+    expect(pending).toHaveLength(1);
+  });
+
+  it("parks a late batch that doesn't fit next to the bytes the pagehide flush sent", async () => {
+    // Nothing tracks an exit send's end. The browser rejects an over-budget keepalive fetch
+    // after the page is gone, when nothing can park the batch.
+    const fetchMock = stubFetch();
+    const { flush, pending } = setup({ records: [record("x".repeat(40_000))] });
+    flush.install();
+
+    dispatchEvent(new Event("pagehide"));
+    pending.push(record("y".repeat(40_000)));
+    flush.flushLate();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("counts the bytes of an earlier late send in the same leave", async () => {
+    const fetchMock = stubFetch();
+    const { flush, pending } = setup({ records: [record("x".repeat(25_000))] });
+    flush.install();
+
+    dispatchEvent(new Event("pagehide"));
+    for (const filler of ["y", "z"]) {
+      pending.push(record(filler.repeat(25_000)));
+      flush.flushLate();
+      await Promise.resolve();
+    }
+
+    // 3 x 25 KB is over the 60,000 bytes. The third send is the one that doesn't fit.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("starts the byte count again at the next leave after a pageshow", async () => {
+    const fetchMock = stubFetch();
+    const { flush, pending } = setup({ records: [record("x".repeat(40_000))] });
+    flush.install();
+
+    dispatchEvent(new Event("pagehide"));
+    dispatchEvent(pageshow());
+    pending.push(record("y".repeat(40_000)));
+    dispatchEvent(new Event("pagehide"));
+    await Promise.resolve();
+
+    // The first leave's 40 KB is not in the budget of the second leave.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(emergencyKeys()).toHaveLength(0);
   });
 });
 

@@ -484,6 +484,188 @@ describe("start of the recorder", () => {
     expect(events[0].cause).toBeInstanceOf(Error);
   });
 
+  describe("a selector list that parses entry by entry but not as one list", () => {
+    /** One method of the selector parser, which each spec wraps. */
+    type Parse = (this: unknown, selector: string) => unknown;
+
+    /**
+     * Makes the selector parser close what is still open at the end of its input, as Chromium
+     * does: a comment, a quote, a "[" and a "(". '[x="a' and ":is(.a,.b" then parse alone, and a
+     * ")" after them is taken into the open part. happy-dom rejects all of these, so without this
+     * a list of entries that parse alone and swallow each other can't be built.
+     */
+    const parseLikeChromium = (): void => {
+      const closed = (selector: string): string => {
+        // An open comment runs to the end, so it takes the rest of the text away.
+        const text = selector.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+        const open: string[] = [];
+        let quote = "";
+        for (let index = 0; index < text.length; index++) {
+          const char = text[index];
+          if (char === "\\") {
+            index++;
+          } else if (quote !== "") {
+            quote = char === quote ? "" : quote;
+          } else if (char === '"' || char === "'") {
+            quote = char;
+          } else if (char === "[" || char === "(") {
+            open.push(char === "[" ? "]" : ")");
+          } else if (char === open.at(-1)) {
+            open.pop();
+          }
+        }
+        return `${text}${quote}${open.reverse().join("")}`;
+      };
+      const methods: [object, string][] = [
+        [DocumentFragment.prototype, "querySelector"],
+        [Element.prototype, "querySelector"],
+        [Element.prototype, "matches"],
+        [Element.prototype, "closest"],
+      ];
+
+      for (const [owner, name] of methods) {
+        const real = (owner as Record<string, Parse>)[name];
+        vi.spyOn(owner as Record<string, Parse>, name).mockImplementation(function (
+          this: unknown,
+          selector: string,
+        ) {
+          return real.call(this, closed(selector));
+        });
+      }
+    };
+
+    it.each<[string, Partial<ReplayOptions>]>([
+      ["mask", { maskText: false, maskSelectors: ["[data-private", ".card"] }],
+      ["mask, with maskText on", { maskSelectors: ["[data-private", ".card"] }],
+      ["block", { blockSelectors: ["[data-private", ".card"] }],
+    ])("stays off for a %s list", async (_label, replay) => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup(replay);
+
+      await run();
+
+      // The joined list throws in the recorder, which then blocks and masks nothing. So the
+      // capture checks the joined list, and reports it as it reports an invalid entry.
+      expect(recorder.record).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0].code).toBe("config.invalid");
+      expect(events[0].message).toMatch(
+        /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+      );
+      expect(events[0].cause).toBeInstanceOf(Error);
+    });
+
+    it("starts when the joined lists parse, also with an unclosed last bracket", async () => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: [".card", "[data-private"],
+        blockSelectors: [".card", "[data-private"],
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe(".card,[data-private");
+      expect(options.blockSelector).toBe("[data-observability-ignore],.card,[data-private");
+      expect(reports(events)).toEqual([]);
+    });
+
+    it.each<[string, Partial<ReplayOptions>]>([
+      ["mask", { maskText: false, maskSelectors: ['[title="x', ".ssn"] }],
+      ["mask, with maskText on", { maskSelectors: ['[title="x', ".ssn"] }],
+      ["block", { blockSelectors: ['[data-x="a', ".ssn"] }],
+    ])("stays off for a %s entry that swallows the entries after it", async (_label, replay) => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup(replay);
+
+      await run();
+
+      // The open quote runs to the end of the list. The list parses, but the recorder never gets
+      // .ssn as an entry, so it would neither block nor mask that region.
+      expect(recorder.record).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0].code).toBe("config.invalid");
+      expect(events[0].message).toMatch(
+        /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+      );
+    });
+
+    it.each<[string, string, Partial<ReplayOptions>]>(
+      [
+        'i,[x="a',
+        ":scope,[x='a",
+        ':empty,[x="a',
+        ":not(.x):is(.card,.price",
+        ":nth-child(1 of .a",
+        ":not(div)/*",
+        "[title='x",
+      ].flatMap((entry) => [
+        [entry, "mask", { maskText: false, maskSelectors: [entry, ".secret"] }],
+        [entry, "block", { blockSelectors: [entry, ".secret"] }],
+      ]),
+    )(
+      "stays off when the entry %j before .secret leaves something open, in the %s list",
+      async (_entry, _label, replay) => {
+        parseLikeChromium();
+        const { run, recorder, events } = setup(replay);
+
+        await run();
+
+        // The open quote, parenthesis or comment takes in the next entry, so .secret never reaches
+        // the recorder as a selector of its own.
+        expect(recorder.record).not.toHaveBeenCalled();
+        expect(events).toHaveLength(1);
+        expect(events[0].code).toBe("config.invalid");
+        expect(events[0].message).toMatch(
+          /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+        );
+      },
+    );
+
+    it("starts when every entry before .secret is closed", async () => {
+      parseLikeChromium();
+      const entries = [
+        ".card",
+        '[title="a,b"]',
+        ":is(.a,.b)",
+        ":not(.x)",
+        "[data-x='a']",
+        "*",
+        ".price::before",
+        ".secret",
+      ];
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: entries,
+        blockSelectors: entries,
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe(entries.join(","));
+      expect(options.blockSelector).toBe(`[data-observability-ignore],${entries.join(",")}`);
+      expect(reports(events)).toEqual([]);
+    });
+
+    it("starts when each quote in an entry is closed", async () => {
+      parseLikeChromium();
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: ['[title="a,b"]', ".ssn"],
+        blockSelectors: ["[data-x='a']", ".ssn"],
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe('[title="a,b"],.ssn');
+      expect(options.blockSelector).toBe("[data-observability-ignore],[data-x='a'],.ssn");
+      expect(reports(events)).toEqual([]);
+    });
+  });
+
   it("reports a loader that rejects, once", async () => {
     const error = new Error("chunk not found");
     const { run, recorder, events } = setup({ loader: () => Promise.reject(error) });
@@ -623,6 +805,35 @@ describe("plugins", () => {
     ).toEqual({ name: "https://api.example/orders", method: "GET" });
   });
 
+  it.each([
+    [false, "https://api.example/orders"],
+    [true, "https://api.example/orders?page=2"],
+  ])("removes the user info of a request URL with fullUrls %j", async (fullUrls, name) => {
+    const { transform } = await requestTool({}, { capture: { fullUrls } });
+
+    expect(
+      transform({ name: "https://ursula:pw@api.example/orders?page=2", method: "GET" }),
+    ).toEqual({ name, method: "GET" });
+  });
+
+  it.each([
+    ["a scheme-relative URL", "//ursula:s3cret@api.example.com/data"],
+    ["a URL with backslashes", "https:\\\\ursula:s3cret@api.example.com/data"],
+    ["a URL with a leading space", " https://ursula:s3cret@api.example.com/data"],
+  ])("removes the user info from %s, also with fullUrls", async (_label, name) => {
+    // A browser reads each of these as https://ursula:s3cret@api.example.com/data.
+    expect(new URL(name, "https://app.example.com/").password).toBe("s3cret");
+    const plain = await requestTool();
+    const full = await requestTool({}, { capture: { fullUrls: true } });
+
+    for (const { transform } of [plain, full]) {
+      const recorded = JSON.stringify(transform({ name }));
+      expect(recorded).toContain("api.example.com/data");
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("ursula");
+    }
+  });
+
   it("keeps the full URL with capture.fullUrls", async () => {
     const { transform } = await requestTool({}, { capture: { fullUrls: true } });
     const request = { name: "https://api.example/orders?page=2" };
@@ -725,6 +936,27 @@ describe("events that the recorder mask does not cover", () => {
       { type: 4, data: { href: "https://app.example/orders", width: 800 } },
     ]);
   });
+
+  it.each([
+    [false, "https://app.example/orders"],
+    [true, "https://app.example/orders?t=1"],
+  ])(
+    "removes the user info of the page URL in a meta event, with fullUrls %j",
+    async (fullUrls, href) => {
+      const { run, fail, segments } = setup(
+        { afterErrorMs: 0 },
+        { config: { capture: { fullUrls } } },
+      );
+      const { emit } = await run();
+
+      // A browser keeps the user info in location.href, and the recorder reads it from there.
+      emit({ type: 4, data: { href: "https://alice:s3cret@app.example/orders?t=1", width: 800 } });
+      fail();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sent(segments)[0]).toEqual([{ type: 4, data: { href, width: 800 } }]);
+    },
+  );
 
   it("keeps the full page URL with capture.fullUrls", async () => {
     const { run, fail, segments } = setup(

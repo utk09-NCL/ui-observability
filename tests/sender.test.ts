@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { EMERGENCY_STORAGE_KEY_PREFIX, QUERY_PARAM_EXIT_REASON } from "../src/constants";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { Sender } from "../src/core/sender";
-import type { ObservabilityConfig } from "../src/models/config";
+import type { ExitTransport, ObservabilityConfig } from "../src/models/config";
 import type { LossReporter } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import { drainEmergencyQueue, saveToEmergencyQueue } from "../src/storage/emergency-queue";
@@ -278,6 +279,37 @@ describe("Sender exit flush", () => {
     expect((init.headers as Headers).get("authorization")).toBe("Bearer t1");
   });
 
+  it("sends no second copy of a batch that a hidden page's keepalive request carries", async () => {
+    // That request outlives the page. An exit copy under a new id would reach the server twice.
+    let settle: (response: Response) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { sender, onLoss } = await setup();
+
+    sender.push(record("in flight"));
+    const sending = sender.flush();
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    expect(fetchMock.mock.calls[0][1].keepalive).toBe(true);
+
+    dispatchEvent(new Event("pagehide"));
+    const requests = fetchMock.mock.calls.length;
+
+    // Settle before the assertions, or a failure leaves the teardown waiting for the request.
+    settle(new Response(null, { status: 204 }));
+    await sending;
+
+    expect(requests).toBe(1);
+    expect(beacon).not.toHaveBeenCalled();
+    expect(onLoss).not.toHaveBeenCalled();
+  });
+
   it("keeps an exit batch that doesn't fit next to a hidden send still in flight", async () => {
     // On a navigation, hidden fires just before pagehide, and both sends use one browser budget.
     // The browser rejects a fetch over it after the document closes, when nothing reports it.
@@ -309,5 +341,166 @@ describe("Sender exit flush", () => {
     // Memory storage keeps nothing on the device, so the parked batch reaches onLoss.
     expect(exitRequests).toBe(0);
     expect(onLoss.mock.calls.map(([reason]) => reason)).toEqual(["not_stored"]);
+  });
+});
+
+describe("Sender after a pagehide", () => {
+  /** A pagehide or a pageshow event with its `persisted` flag. */
+  const transition = (type: string, persisted: boolean): Event =>
+    Object.assign(new Event(type), { persisted });
+
+  /** Reads a request body. The exit path and the normal path both send text. */
+  const textOf = (init: RequestInit): string => (typeof init.body === "string" ? init.body : "");
+
+  /** The bodies of the requests that name an exit reason, so only the exit path counts. */
+  const exitBodies = (): string[] =>
+    fetchMock.mock.calls
+      .filter(([url]) => new URL(url).searchParams.has(QUERY_PARAM_EXIT_REASON))
+      .map(([, init]) => textOf(init));
+
+  /** Lists the emergency queue keys. happy-dom's Storage is a Proxy, so read it by index. */
+  const emergencyKeys = (): string[] => {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(EMERGENCY_STORAGE_KEY_PREFIX)) {
+        keys.push(key);
+      }
+    }
+    return keys;
+  };
+
+  it("sends a record that is logged right after pagehide with an exit send", async () => {
+    const { sender } = await setup();
+
+    dispatchEvent(new Event("pagehide"));
+    sender.push(record("late record"));
+    await Promise.resolve();
+
+    // The document is closing, so a timer would never fire. No timer has advanced here.
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late record");
+  });
+
+  it("sends a record that a later visibilitychange listener logs with an exit send", async () => {
+    // A real page leave fires pagehide, then the web-vitals reports, then visibilitychange.
+    // The package listens after the library does, so its report comes after the library's flush.
+    const { sender } = await setup();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const report = (): void => {
+      sender.push(record("late vital"));
+    };
+    document.addEventListener("visibilitychange", report);
+    onTestFinished(() => {
+      document.removeEventListener("visibilitychange", report);
+    });
+
+    dispatchEvent(new Event("pagehide"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late vital");
+  });
+
+  it("sends several late records of one task in one exit send", async () => {
+    const { sender } = await setup();
+
+    dispatchEvent(new Event("pagehide"));
+    for (const body of ["late one", "late two", "late three"]) {
+      sender.push(record(body));
+    }
+    await Promise.resolve();
+
+    const sends = exitBodies();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toContain("late one");
+    expect(sends[0]).toContain("late two");
+    expect(sends[0]).toContain("late three");
+  });
+
+  it("doesn't send a record again that the pagehide exit flush already sent", async () => {
+    const { sender } = await setup();
+    sender.push(record("early record"));
+
+    dispatchEvent(new Event("pagehide"));
+    sender.push(record("late record"));
+    await Promise.resolve();
+    // A normal flush after the exit send must find nothing left to send.
+    await sender.flush();
+
+    const sends = exitBodies();
+    expect(sends).toHaveLength(2);
+    expect(sends[0]).toContain("early record");
+    expect(sends[0]).not.toContain("late record");
+    expect(sends[1]).toContain("late record");
+    expect(sends[1]).not.toContain("early record");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("parks a late record that doesn't fit the exit budget in the emergency queue", async () => {
+    const { sender } = await setup({ storage: { backend: "localstorage" } });
+
+    dispatchEvent(new Event("pagehide"));
+    sender.push(record("x".repeat(61_000)));
+    await Promise.resolve();
+
+    expect(emergencyKeys()).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns to the normal path when the page comes back from the cache", async () => {
+    const { sender } = await setup({ batching: { logFlushIntervalMs: 100 } });
+
+    dispatchEvent(transition("pagehide", true));
+    dispatchEvent(transition("pageshow", true));
+    sender.push(record("restored record"));
+    await Promise.resolve();
+
+    // The page is alive again, so the record waits for its batch timer like any other.
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(new URL(url).searchParams.has(QUERY_PARAM_EXIT_REASON)).toBe(false);
+    expect(textOf(init)).toContain("restored record");
+  });
+
+  it("sends the late records of separate tasks, each in its own exit send", async () => {
+    // LCP, CLS and INP reports reach a leaving page in two or three tasks. Whatever limit the
+    // library puts on late flushes must leave room for them.
+    const { sender } = await setup();
+
+    dispatchEvent(new Event("pagehide"));
+    for (const body of ["late lcp", "late cls", "late inp"]) {
+      sender.push(record(body));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+
+    const sends = exitBodies();
+    expect(sends).toHaveLength(3);
+    expect(sends[0]).toContain("late lcp");
+    expect(sends[1]).toContain("late cls");
+    expect(sends[2]).toContain("late inp");
+  });
+
+  it("hands a late record to transportOnExit, and not to the transport", async () => {
+    const transport = vi.fn(() => Promise.resolve({ status: 200 }));
+    const transportOnExit = vi.fn<ExitTransport>(() => true);
+    const { sender } = await setup({ transport, transportOnExit });
+
+    dispatchEvent(new Event("pagehide"));
+    sender.push(record("late record"));
+    await Promise.resolve();
+
+    expect(transportOnExit).toHaveBeenCalledOnce();
+    expect(transportOnExit.mock.calls[0][0].records.map((one) => one.body)).toEqual([
+      "late record",
+    ]);
+    expect(transport).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

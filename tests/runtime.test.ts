@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { serialize } from "node:v8";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
 import { WebSocketCapture } from "../src/capture/web-socket";
@@ -8,6 +9,7 @@ import {
   CONSOLE_DEFAULT_STYLES as STYLES,
   HOLD_BUFFER_HEAD_RECORDS,
   METRIC_DEFAULT_BOUNDARIES,
+  QUERY_PARAM_EXIT_REASON,
   SESSION_ID_KEY,
   TAB_ID_KEY,
   TELEMETRY_SDK_VERSION,
@@ -21,7 +23,7 @@ import { ObservabilityRuntime } from "../src/core/runtime";
 import { applyRemote } from "../src/core/remote-rules";
 import { Sender } from "../src/core/sender";
 import type { LogBatch } from "../src/models/batch";
-import { unwrap, type BusMessage } from "../src/models/bus";
+import { envelope, unwrap, type BusMessage } from "../src/models/bus";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
 import type { CapturePlugin, PluginContext } from "../src/models/plugin";
@@ -34,6 +36,7 @@ import {
   adoptJourney,
   configure,
   counter,
+  createMemoryTransport,
   currentJourney,
   debug,
   endJourney,
@@ -60,6 +63,7 @@ import {
   warn,
 } from "../src/index";
 import { asWindow, foreignWindow, leftOn, openPopout, type Popout } from "./window-fakes";
+import { fakeVitals } from "./web-vitals-fakes";
 
 // These tests select the old policy, which permits routing changes and source discovery by origin.
 const base = {
@@ -1035,6 +1039,52 @@ describe("runtime lifecycle", () => {
 
     expect(runtime().identity.tabId).not.toBe(before);
     expect(sessionStorage.getItem("ui-observability.tab")).toBe(runtime().identity.tabId);
+  });
+
+  it("reports a tab id change as bus.tab_id_changed, with the old and the new id", async () => {
+    const events: DiagnosticEvent[] = [];
+    configure({
+      ...base,
+      diagnostics: { throttleMs: 0 },
+      onDiagnostic: (event) => {
+        events.push(event);
+      },
+    });
+    await ready();
+    const before = runtime().identity.tabId;
+    events.length = 0;
+
+    runtime()["regenerateTabId"]();
+
+    // bus.role_resolved says which role the bus took, so it is the wrong code for a rename.
+    expect(events).toEqual([
+      expect.objectContaining({
+        code: "bus.tab_id_changed",
+        message:
+          "Another context uses this tab id. A duplicated tab is the usual cause. " +
+          "The library makes a new tab id.",
+        detail: { was: before, now: runtime().identity.tabId },
+      }),
+    ]);
+  });
+
+  it("logs a tab id change at INFO, like the other notice codes", async () => {
+    const memory = createMemoryTransport();
+    configure({
+      ...base,
+      endpoint: null,
+      transport: memory.transport,
+      diagnostics: { records: true, throttleMs: 0 },
+    });
+    await ready();
+
+    runtime()["regenerateTabId"]();
+    await flush();
+
+    const notice = memory
+      .records()
+      .find((record) => record.attributes["diagnostic.code"] === "bus.tab_id_changed");
+    expect(notice?.severityText).toBe("INFO");
   });
 
   it("applies a journey update routed from the bus", async () => {
@@ -2955,6 +3005,37 @@ describe("runtime reconfigure", () => {
     expect(runtime()).toBe(fresh);
   });
 
+  it.each(["shutdown()", "enabled: false"] as const)(
+    "leaves no own history method after %s",
+    async (how) => {
+      const clearOwnMethods = (): void => {
+        Reflect.deleteProperty(history, "pushState");
+        Reflect.deleteProperty(history, "replaceState");
+      };
+      // An earlier test can leave an own method on history, and the inherited one is the case here.
+      clearOwnMethods();
+      onTestFinished(clearOwnMethods);
+      configure({
+        ...base,
+        endpoint: null,
+        capture: { errors: false, rejections: false, navigation: true },
+      });
+      await vi.waitFor(() => {
+        expect(runtime()["captures"].map((item) => item.name)).toContain("interactions");
+      });
+      expect(Object.hasOwn(history, "pushState")).toBe(true);
+
+      if (how === "shutdown()") {
+        await shutdown();
+      } else {
+        configure({ enabled: false });
+      }
+
+      expect(Object.hasOwn(history, "pushState")).toBe(false);
+      expect(Object.hasOwn(history, "replaceState")).toBe(false);
+    },
+  );
+
   it("counts a record that has no destination", async () => {
     configure({ ...base, endpoint: null });
     await ready();
@@ -2962,6 +3043,420 @@ describe("runtime reconfigure", () => {
     info("console only");
 
     expect(getDiagnosticCounters()["record.dropped_no_destination"]).toBe(1);
+  });
+});
+
+describe("the sender's limits on a forwarded record", () => {
+  /** Counts the levels of nested one-item arrays. */
+  const levels = (value: unknown): number => {
+    let count = 0;
+    for (let next = value; Array.isArray(next); next = next[0]) {
+      count++;
+    }
+    return count;
+  };
+
+  /** One way to break a limit, and a check that the sender cut the value. */
+  const KINDS = [
+    {
+      kind: "a deep array",
+      make: (): unknown => {
+        let value: unknown = "x";
+        for (let i = 0; i < 40; i++) {
+          value = [value];
+        }
+        return value;
+      },
+      cut: (value: unknown, limits: { maxDepth: number }): boolean =>
+        levels(value) <= limits.maxDepth,
+    },
+    {
+      kind: "a long array",
+      make: (): unknown => Array.from({ length: 250 }, (_, index) => index),
+      // The sender keeps maxArrayLength items and adds one item that counts the rest.
+      cut: (value: unknown, limits: { maxArrayLength: number }): boolean =>
+        (value as unknown[]).length <= limits.maxArrayLength + 1,
+    },
+    {
+      kind: "a long string",
+      make: (): unknown => "x".repeat(20_000),
+      // The sender cuts at maxAttributeChars and adds a short note.
+      cut: (value: unknown, limits: { maxAttributeChars: number }): boolean =>
+        (value as string).length < limits.maxAttributeChars + 50,
+    },
+  ];
+
+  const CASES = KINDS.flatMap((one) =>
+    (["attributes", "resource"] as const).flatMap((target) =>
+      [false, true].map((redact) => ({ ...one, target, redact })),
+    ),
+  );
+
+  it.each(CASES)(
+    "cuts $kind in the $target of a forwarded record, with redact $redact",
+    async ({ make, cut, target, redact }) => {
+      configure({ ...base, ...(redact ? { redact: (record: LogRecord) => record } : {}) });
+      await ready();
+      const record = forwardedRecord("from a worker");
+      record[target] = { deep: make() };
+
+      runtime()["ingestForwarded"]([record]);
+
+      // Without a cut, the OTLP serializer recurses until it throws, and the transport drops the
+      // whole batch with the records of this context.
+      const [stored] = buffered();
+      expect(cut(stored[target].deep, runtime().config.limits)).toBe(true);
+    },
+  );
+
+  it("keeps the long bucket lists of a forwarded histogram whole", async () => {
+    configure(base);
+    await ready();
+    const bounds = Array.from({ length: 150 }, (_, index) => index);
+    const point = forwardedRecord("latency");
+    point.attributes = {
+      "log.type": "metric",
+      "app.namespace": "uiobs.metrics",
+      "metric.type": "histogram",
+      "metric.start_time_unix_nano": "1731770000000000000",
+      "metric.count": 3,
+      "metric.sum": 42.5,
+      "metric.min": 0.5,
+      "metric.max": 40,
+      "metric.bounds": bounds,
+      "metric.bucket_counts": [...bounds, 0],
+    };
+
+    runtime()["ingestForwarded"]([point]);
+
+    // The library built these lists with a fixed size, so the limits must not trim them.
+    const [stored] = buffered();
+    expect(stored.attributes["metric.bounds"]).toEqual(bounds);
+    expect(stored.attributes["metric.bucket_counts"]).toEqual([...bounds, 0]);
+  });
+
+  describe("with a low maxAttributeCount", () => {
+    // The ids that a child of the same build puts in its resource, and more keys after them.
+    const resource = (): Record<string, unknown> => ({
+      "service.name": "child",
+      "session.id": "s-1",
+      "tab.id": "t-1",
+      "context.id": "child-context",
+      "host.platform": "browser",
+      "telemetry.sdk.name": "@utk09/ui-observability",
+      "telemetry.sdk.version": "1.1.0",
+    });
+
+    it.each([false, true])(
+      "keeps every key of a forwarded resource, with redact %j",
+      async (withRedact) => {
+        configure({
+          ...base,
+          limits: { maxAttributeCount: 4 },
+          ...(withRedact ? { redact: (record: LogRecord) => record } : {}),
+        });
+        await ready();
+        const record = forwardedRecord("from a child");
+        record.resource = resource();
+
+        runtime()["ingestForwarded"]([record]);
+
+        // The count limit is for the app's own keys. A local record keeps its whole resource, and
+        // the bus's maxMessageBytes already bounds what a child can send.
+        expect(buffered()[0].resource).toEqual(resource());
+      },
+    );
+
+    it("still cuts the values of a forwarded resource, whatever the key count", async () => {
+      configure({ ...base, limits: { maxAttributeCount: 4 } });
+      await ready();
+      const record = forwardedRecord("from a child");
+      let deep: unknown = "x";
+      for (let i = 0; i < 40; i++) {
+        deep = [deep];
+      }
+      record.resource = { ...resource(), deep, long: "y".repeat(20_000) };
+
+      runtime()["ingestForwarded"]([record]);
+
+      const [stored] = buffered();
+      expect(Object.keys(stored.resource)).toHaveLength(Object.keys(resource()).length + 2);
+      expect(levels(stored.resource.deep)).toBeLessThanOrEqual(runtime().config.limits.maxDepth);
+      expect(String(stored.resource.long).length).toBeLessThan(
+        runtime().config.limits.maxAttributeChars + 50,
+      );
+    });
+
+    it("still cuts the attributes of a forwarded record at the count", async () => {
+      configure({ ...base, limits: { maxAttributeCount: 4 } });
+      await ready();
+      const record = forwardedRecord("from a child");
+      record.attributes = Object.fromEntries(
+        Array.from({ length: 12 }, (_, index) => [`key${String(index)}`, "v"]),
+      );
+
+      runtime()["ingestForwarded"]([record]);
+
+      expect(Object.keys(buffered()[0].attributes)).toHaveLength(5);
+    });
+  });
+
+  describe("with more resource keys than the limit", () => {
+    // A resource holds the child's ids, so it keeps at least this many keys of its own.
+    const FLOOR = 128;
+    const ids = { "session.id": "s-1", "tab.id": "t-1", "context.id": "child-context" };
+
+    /**
+     * Builds a resource with the child's ids first and then many more keys.
+     * @param count How many keys follow the ids.
+     * @param value The value of each key. JSON leaves out a key with an undefined value.
+     * @returns The resource.
+     */
+    const flooded = (count: number, value: unknown): Record<string, unknown> => ({
+      ...ids,
+      ...Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [`k${String(index)}`, value]),
+      ),
+    });
+
+    it.each([
+      { label: "200,000 keys with no value", count: 200_000, value: undefined, limit: FLOOR },
+      { label: "5,000 keys with a value", count: 5000, value: "v", limit: FLOOR },
+      {
+        label: "5,000 keys, with maxAttributeCount above the floor",
+        count: 5000,
+        value: "v",
+        limit: 300,
+        max: 300,
+      },
+    ])("cuts a forwarded resource of $label to the key limit", async (one) => {
+      configure({ ...base, ...(one.max ? { limits: { maxAttributeCount: one.max } } : {}) });
+      await ready();
+      const record = forwardedRecord("from a child");
+      record.resource = flooded(one.count, one.value);
+
+      runtime()["ingestForwarded"]([record]);
+
+      // The stored record is a structured clone away from the next context. One marker key can
+      // show the cut.
+      const [stored] = buffered();
+      const keys = Object.keys(stored.resource);
+      expect(keys.length).toBeLessThanOrEqual(one.limit + 1);
+      expect(keys.length).toBeGreaterThan(one.limit === FLOOR ? 100 : FLOOR);
+      expect(stored.resource).toMatchObject(ids);
+      expect(serialize(stored).byteLength).toBeLessThan(100_000);
+    });
+
+    it("cuts the resource that a registered worker floods in a small message", async () => {
+      configure(base);
+      await ready();
+      let listener: ((event: MessageEvent) => void) | undefined;
+      const toWorker: BusMessage[] = [];
+      registerWorker({
+        postMessage: vi.fn((data: unknown) => {
+          const message = unwrap(data);
+          if (message) {
+            toWorker.push(message);
+          }
+        }),
+        addEventListener: vi.fn((_type: string, added: (event: MessageEvent) => void) => {
+          listener = added;
+        }),
+        removeEventListener: vi.fn(),
+      });
+      await vi.waitFor(() => {
+        expect(listener).toBeDefined();
+      });
+      const send = (message: BusMessage): void => {
+        listener?.({ data: structuredClone(envelope(message)) } as MessageEvent);
+      };
+      send({ t: "ui-observability.message.hello", from: "worker-ctx", tabId: "tab" });
+      await vi.waitFor(() => {
+        expect(toWorker.some((message) => message.t === "ui-observability.message.welcome")).toBe(
+          true,
+        );
+      });
+      const welcome = toWorker.find((message) => message.t === "ui-observability.message.welcome");
+      const record = forwardedRecord("flood");
+      record.resource = flooded(200_000, undefined);
+      const message: BusMessage = {
+        t: "ui-observability.message.records",
+        from: "worker-ctx",
+        routingContextId: (welcome as { routingContextId?: string }).routingContextId,
+        records: [record as unknown as LogRecord],
+      };
+
+      send(message);
+      await settle();
+
+      // JSON leaves out each key with an undefined value, so the bus's size check sees a small
+      // message. A structured clone keeps every key.
+      expect(JSON.stringify(envelope(message)).length).toBeLessThan(2000);
+      const stored = buffered().find((one) => one.body === "flood");
+      expect(stored).toBeDefined();
+      expect(serialize(stored).byteLength).toBeLessThan(100_000);
+    });
+  });
+
+  describe("from a registered worker, through the whole delivery", () => {
+    /**
+     * Builds an array nested to the given depth.
+     * @param depth Levels of nesting.
+     * @returns The array.
+     */
+    const nested = (depth: number): unknown => {
+      let value: unknown = "x";
+      for (let i = 0; i < depth; i++) {
+        value = [value];
+      }
+      return value;
+    };
+
+    it.each([
+      ["resource, with the parent's redact set", true, 2500],
+      ["attributes, without a parent redact", false, 2500],
+      ["resource, control with depth 10", true, 10],
+    ])(
+      "keeps the parent's own records when the worker forwards a deep value in %s",
+      async (_label, withRedact, depth) => {
+        const bodies: string[] = [];
+        vi.stubGlobal(
+          "fetch",
+          vi.fn((_url: unknown, init?: RequestInit) => {
+            bodies.push(typeof init?.body === "string" ? init.body : "");
+            return Promise.resolve(new Response("", { status: 204 }));
+          }),
+        );
+        const onDrop = vi.fn<(summary: DropSummary) => void>();
+        configure({
+          ...base,
+          endpoint: "https://ingest.example/v1/logs",
+          storage: { backend: "memory" },
+          identity: "memory",
+          compression: "none",
+          onDrop,
+          ...(withRedact ? { redact: (record: LogRecord) => record } : {}),
+          capture: { errors: false, rejections: false },
+        });
+        await ready();
+        let listener: ((event: MessageEvent) => void) | undefined;
+        const toWorker: BusMessage[] = [];
+        registerWorker({
+          postMessage: vi.fn((data: unknown) => {
+            const message = unwrap(data);
+            if (message) {
+              toWorker.push(message);
+            }
+          }),
+          addEventListener: vi.fn((_type: string, added: (event: MessageEvent) => void) => {
+            listener = added;
+          }),
+          removeEventListener: vi.fn(),
+        });
+        await vi.waitFor(() => {
+          expect(listener).toBeDefined();
+        });
+        // structuredClone stands in for postMessage, so the value must survive a real clone.
+        const send = (message: BusMessage): void => {
+          listener?.({ data: structuredClone(envelope(message)) } as MessageEvent);
+        };
+        send({ t: "ui-observability.message.hello", from: "worker-ctx", tabId: "tab" });
+        await vi.waitFor(() => {
+          expect(toWorker.some((message) => message.t === "ui-observability.message.welcome")).toBe(
+            true,
+          );
+        });
+        const welcome = toWorker.find(
+          (message) => message.t === "ui-observability.message.welcome",
+        );
+        const routingContextId = (welcome as { routingContextId?: string }).routingContextId;
+
+        error("payment failed");
+        const record = forwardedRecord("poison");
+        record[withRedact ? "resource" : "attributes"] = { deep: nested(depth) };
+        send({
+          t: "ui-observability.message.records",
+          from: "worker-ctx",
+          routingContextId,
+          records: [record as unknown as LogRecord],
+        });
+        await flush();
+        await vi.waitFor(() => {
+          expect(bodies.length + onDrop.mock.calls.length).toBeGreaterThan(0);
+        });
+
+        expect(bodies.join("\n")).toContain("payment failed");
+        expect(onDrop).not.toHaveBeenCalledWith(
+          expect.objectContaining({ reason: "unserializable" }),
+        );
+      },
+    );
+  });
+});
+
+describe("web vitals switch", () => {
+  /**
+   * Starts a runtime that subscribes the fake web-vitals and keeps each record in memory.
+   * @returns The fake, and a reader for the web_vitals records that reached the transport.
+   */
+  async function start() {
+    const memory = createMemoryTransport();
+    const fake = fakeVitals();
+    configure({
+      ...base,
+      endpoint: null,
+      transport: memory.transport,
+      capture: { errors: false, rejections: false, webVitals: { loader: fake.loader } },
+    });
+    await vi.waitFor(() => {
+      expect(fake.subscriptions()).toBe(5);
+    });
+    /** Flushes, then lists the web_vitals records in the order they were sent. */
+    const sent = async (): Promise<string[]> => {
+      await flush();
+      return memory
+        .records()
+        .map((record) => record.body)
+        .filter((body) => body.startsWith("web_vitals."));
+    };
+
+    return { fake, sent, memory };
+  }
+
+  it("sends no web vital after configure() turns capture.webVitals off", async () => {
+    const { fake, sent, memory } = await start();
+    fake.fire("inp", 100);
+    expect(await sent()).toEqual(["web_vitals.inp"]);
+    memory.clear();
+
+    configure({ capture: { webVitals: false } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).not.toContain("web-vitals");
+    });
+    // INP and CLS report late, at the page hide, so a report can come after the switch-off.
+    fake.fire("inp", 250);
+    fake.fire("cls", 0.3);
+
+    expect(await sent()).toEqual([]);
+  });
+
+  it("sends one record per report when configure() turns capture.webVitals on again", async () => {
+    const { fake, sent, memory } = await start();
+    configure({ capture: { webVitals: false } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).not.toContain("web-vitals");
+    });
+    memory.clear();
+
+    configure({ capture: { webVitals: { loader: fake.loader } } });
+    await vi.waitFor(() => {
+      expect(runtime()["captures"].map((item) => item.name)).toContain("web-vitals");
+    });
+    fake.fire("inp", 300);
+
+    // A second set of reporters would send the same metric twice.
+    expect(await sent()).toEqual(["web_vitals.inp"]);
+    expect(fake.subscriptions()).toBe(5);
   });
 });
 
@@ -3141,6 +3636,67 @@ describe("spans", () => {
     await shutdown();
 
     expect(spansOf(emit).map((record) => record.body)).toEqual(["ui.start"]);
+  });
+});
+
+describe("records logged after pagehide", () => {
+  /** The bodies of the requests that name an exit reason, so only the exit path counts. */
+  const exitBodies = (): string[] =>
+    vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(
+        ([url]) =>
+          typeof url === "string" && new URL(url).searchParams.has(QUERY_PARAM_EXIT_REASON),
+      )
+      .map(([, init]) => (typeof init?.body === "string" ? init.body : ""));
+
+  it("sends a record that info() logs right after pagehide with an exit send", async () => {
+    configure(base);
+    await ready();
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await Promise.resolve();
+
+    // The document is closing, so the batch timer would never fire. No timer has advanced here.
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late record");
+  });
+
+  it("sends a record that a listener logs after the library's own visibilitychange", async () => {
+    // The web-vitals package listens after the library does, and its reports come after pagehide.
+    configure(base);
+    await ready();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const report = (): void => {
+      info("late vital");
+    };
+    document.addEventListener("visibilitychange", report);
+    onTestFinished(() => {
+      document.removeEventListener("visibilitychange", report);
+    });
+
+    dispatchEvent(new Event("pagehide"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+
+    expect(exitBodies()).toHaveLength(1);
+    expect(exitBodies()[0]).toContain("late vital");
+  });
+
+  it("keeps a forwarder sending its late records upstream, with no exit request", async () => {
+    configure({ ...base, bus: { mode: "forwarder" } });
+    await ready();
+    const send = vi.spyOn(bus(), "sendRecords");
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await Promise.resolve();
+
+    const sent = send.mock.calls.flatMap(([records]) => records);
+    expect(sent.map((record) => record.body)).toContain("late record");
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    expect(vi.mocked(navigator.sendBeacon)).not.toHaveBeenCalled();
   });
 });
 

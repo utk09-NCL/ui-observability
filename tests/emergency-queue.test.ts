@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { LossReporter } from "../src/models/drop";
-import { drainEmergencyQueue, saveToEmergencyQueue } from "../src/storage/emergency-queue";
+import {
+  clearEmergencyContext,
+  drainEmergencyQueue,
+  saveToEmergencyQueue,
+} from "../src/storage/emergency-queue";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { useFakeLocalStorage } from "./fake-storage";
 
@@ -97,6 +101,27 @@ describe("the emergency queue", () => {
     expect(onLoss).toHaveBeenCalledWith("exit_queue_full", [{ body: "b0" }], ["b0"]);
   });
 
+  it("skips an old entry that another window removed during the eviction, with no report", () => {
+    // The other window imports the oldest entry between the key listing and the read. The entry
+    // is gone, so nothing is lost here, and a "not a batch" report would be false.
+    useFakeLocalStorage();
+    const { handler, diagnostics } = listening();
+    const onLoss = vi.fn<LossReporter>();
+    for (let i = 0; i < MAX_ENTRIES; i++) {
+      saveToEmergencyQueue(batch(`b${String(i)}`, 1000 + i), quiet());
+    }
+    const read = localStorage.getItem.bind(localStorage);
+    vi.spyOn(localStorage, "getItem").mockImplementation((key) =>
+      key.endsWith(".b0") ? null : read(key),
+    );
+
+    saveToEmergencyQueue(batch("new", 2000), diagnostics, onLoss);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(emergencyKeys().some((key) => key.endsWith(".new"))).toBe(true);
+  });
+
   it("passes a batch the store refuses to onLoss", () => {
     const blocked = useFakeLocalStorage();
     const onLoss = vi.fn<LossReporter>();
@@ -183,15 +208,62 @@ describe("the emergency queue", () => {
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
   });
 
-  it("recovers nothing when the lock manager itself fails", async () => {
+  it("imports each parked batch once, without a lock, when the lock manager fails", async () => {
     vi.stubGlobal("navigator", {
       locks: {
         request: () => Promise.reject(new Error("locks are unavailable in this context")),
       },
     });
     saveToEmergencyQueue(batch("b1"), quiet());
+    const storage = new MemoryStorage(limits);
 
-    expect(await drainEmergencyQueue(new MemoryStorage(limits), quiet())).toBe(0);
+    // Two runs with no lock must not both take the batch. Each run claims a key in one step.
+    const moved = await Promise.all([
+      drainEmergencyQueue(storage, quiet()),
+      drainEmergencyQueue(storage, quiet()),
+    ]);
+
+    expect(moved.reduce((sum, count) => sum + count, 0)).toBe(1);
+    expect((await storage.take(10)).map((stored) => stored.id)).toEqual(["b1"]);
+    expect(emergencyKeys()).toEqual([]);
+  });
+
+  it("imports nothing and keeps the entries when the lock request grants no lock", async () => {
+    // A request that waits never gets a null grant in a browser. A host that does it must not
+    // lose the entries, because the next start can still import them.
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: unknown) => Promise<unknown>,
+        ) => callback(null),
+      },
+    });
+    saveToEmergencyQueue(batch("b1"), quiet());
+    const storage = new MemoryStorage(limits);
+
+    expect(await drainEmergencyQueue(storage, quiet())).toBe(0);
+    expect(await storage.count()).toBe(0);
+    expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("skips an entry that another window removed during the clear, with no report", () => {
+    // The other window imports the entry between the key listing and the read. The entry is
+    // gone, so the clear has nothing to drop, and a "not a batch" report would be false.
+    useFakeLocalStorage();
+    const { handler, diagnostics } = listening();
+    saveToEmergencyQueue({ ...batch("gone"), routingContextId: "A" }, quiet());
+    saveToEmergencyQueue({ ...batch("kept"), routingContextId: "A" }, quiet());
+    const read = localStorage.getItem.bind(localStorage);
+    vi.spyOn(localStorage, "getItem").mockImplementation((key) =>
+      key.endsWith(".gone") ? null : read(key),
+    );
+
+    const removed = clearEmergencyContext("A", diagnostics);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(removed.map((one) => one.id)).toEqual(["kept"]);
   });
 
   it("waits for the other window rather than skipping the recovery", async () => {

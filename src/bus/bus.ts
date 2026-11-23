@@ -279,6 +279,11 @@ export class Bus {
   private ownerId: string | null = null;
   /** The owner's transport identity, taken from the handshake. */
   private ownerPeer?: object | string;
+  /**
+   * The candidate upstream while its handshake runs. It isn't one of the bus's links yet, so
+   * destroy() closes it here, otherwise its listener holds the bus until the last attempt ends.
+   */
+  private handshakeLink: Link | null = null;
   /** Active handshake state awaiting welcome response. */
   private awaitingWelcome: {
     link: LinkKind;
@@ -391,9 +396,17 @@ export class Bus {
 
     const attempts = this.orphanPolicy() === "retry" ? this.handshakeOptions.maxAttempts : 1;
 
+    this.handshakeLink = candidate;
     let welcomed = false;
-    for (let attempt = 0; attempt < attempts && !welcomed; attempt++) {
+    // A destroyed bus posts no more hellos.
+    for (let attempt = 0; attempt < attempts && !welcomed && !this.destroyed; attempt++) {
       welcomed = await this.handshake(candidate);
+    }
+    this.handshakeLink = null;
+
+    // destroy() closed the candidate, and a stopped runtime must get no more reports.
+    if (this.destroyed) {
+      return this.role;
     }
 
     this.role = welcomed ? "forwarder" : "sender";
@@ -603,6 +616,14 @@ export class Bus {
     for (const link of this.allLinks()) {
       link.close();
     }
+
+    // The loop above already closed the OpenFin link, which is also a control link.
+    if (this.handshakeLink && this.handshakeLink !== this.openFinLink) {
+      this.handshakeLink.close();
+    }
+    // Ends the wait now, not at the attempt's timeout.
+    this.awaitingWelcome?.settle(false);
+
     this.links.length = 0;
     this.upstream = null;
     this.ownerId = null;

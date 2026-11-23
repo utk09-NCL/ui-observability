@@ -27,6 +27,7 @@ import {
   RESOURCE_CONTEXT_ID,
   RESOURCE_DEPLOYMENT_ENVIRONMENT,
   RESOURCE_HOST_PLATFORM,
+  RESOURCE_KEY_LIMIT,
   RESOURCE_OPENFIN_NAME,
   RESOURCE_OPENFIN_UUID,
   RESOURCE_SERVICE_NAME,
@@ -482,19 +483,25 @@ export class RecordBuilder {
   }
 
   /**
-   * Runs the redact hook on a record from another context. A child context without redact
-   * forwards raw records, so the sender is the last privacy gate.
+   * Applies this context's limits and redact hook to a record from another context. A child
+   * context without redact forwards raw records, so the sender is the last privacy gate.
    * @param record Forwarded record.
    * @returns The record to deliver, or null when the hook drops it.
    */
   redactForwarded(record: LogRecord): LogRecord | null {
-    const { redact } = this.deps.config;
-    if (!redact) {
-      return record;
-    }
+    const { config, diagnostics, limits } = this.deps;
+    const fixed = fixedOf(record.attributes);
+    // A child's limits can be looser than ours, and a value nested too deep loses this context's
+    // whole batch. The key floor keeps the child's ids when the app sets a low attribute count.
+    const maxAttributeCount = Math.max(limits.maxAttributeCount, RESOURCE_KEY_LIMIT);
+    const resourceLimits = { ...limits, maxAttributeCount };
+    const resource = asAttributes(
+      sanitizeWithSize(record.resource, resourceLimits, diagnostics).value,
+    );
 
-    const stages: [RecordHook, HookStage][] = [[redact, "redact"]];
-    const outcome = this.applyHooks(record, stages, fixedOf(record.attributes));
+    // applyHooks() applies the limits to the attributes, after redact if there is one.
+    const stages: [RecordHook, HookStage][] = config.redact ? [[config.redact, "redact"]] : [];
+    const outcome = this.applyHooks({ ...record, resource }, stages, fixed);
     return typeof outcome === "string" ? null : outcome.record;
   }
 

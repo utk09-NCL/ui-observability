@@ -32,6 +32,7 @@ export type DiagnosticCode =
   | "journey.token_too_large"
   | "trace.otel_failed"
   | "bus.role_resolved"
+  | "bus.tab_id_changed"
   | "bus.no_owner"
   | "bus.handshake_timeout"
   | "bus.untrusted_origin"

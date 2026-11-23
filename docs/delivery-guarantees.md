@@ -29,8 +29,8 @@ The ingest server must deduplicate on the `X-UiObs-Batch-Id` header and the `uio
 A `413` answer makes the library split the batch. Each half gets a new batch ID. The server did not accept the first batch. No duplicate occurs.
 
 - The library always splits the batch into two halves. It does not use a size limit from the `413` body.
-- The halves wait in storage until the retry drain sends them. After a failed live send, the next drain starts after `delivery.retryBaseDelayMs`, 2 seconds by default.
-- A half that gets a `413` again waits for the next drain. That drain starts about 30 seconds later. It can start later when another stored batch waits for a throttle or a backoff.
+- The halves wait in storage until the retry drain sends them. A new stored batch brings the idle poll of the drain forward. The next drain then starts after `delivery.retryBaseDelayMs`, 2 seconds by default. A new stored batch does not cut a backoff or a `Retry-After` wait short.
+- A half that gets a `413` again waits for the next drain. That drain starts after `delivery.retryBaseDelayMs`. It can start later when another stored batch waits for a throttle or a backoff.
 - The exit flush does not read the answer to its own request. A `413` to that request does not split the batch. See [Page Exit](#page-exit).
 - With `storage.backend: "none"`, the library cannot keep the halves. It loses the batch, and `onDrop` reports `not_stored`.
 - A single record that gets a `413` cannot split. The library drops it, and `onDrop` reports `rejected`.
@@ -80,7 +80,7 @@ A pause keeps the other records. The records in memory and the stored batches go
   - A request in flight at the pause fails. The library stores its batch.
   - A delivery stack load ends during the pause. It moves the emergency queue into storage. It also stores the batches that a carry left.
   - A rotation with `pending: "retain"` stores the waiting records under the old context.
-  - A rotation with `pending: "discard"` or `"flush"` removes the stored batches of the old context. This is also true before consent, when the first `configure()` call has `enabled: false`.
+  - A rotation with `pending: "discard"` or `"flush"` removes the stored batches of the old context. This is also true before consent, when the first `configure()` call has `enabled: false`. `onDrop` reports their records with `security_context`.
 - A rotation with `pending: "flush"` during a pause sends nothing. It acts as `discard`.
 - A rotation with `pending: "carry"` during a pause keeps the records in memory and the stored batches. The delivery stack of the new context takes them after `enabled: true`. A later rotation in the same pause applies its own rule to them. `discard` removes them. `retain` stores them under the context that the carry made.
 
@@ -112,19 +112,20 @@ A batch that did not send goes to storage. The default store is IndexedDB. Witho
 - With `storage.backend: "memory"`, stored batches stay only until the page closes. With `storage.backend: "none"`, a batch that did not send is lost.
 - After a failed send, the `transport.http_error` diagnostic tells the result for the batch. The library stores the batch, stores it in two parts, or drops it.
 - A store call can throw or pass `STORAGE_DEADLINE_MS`. The library then reports `storage.degraded`. A late save can still keep the batch. Thus `onDrop` reports nothing.
-- While the server throttles, the library stores a new batch and does not send it. The `transport.throttled` diagnostic tells if storage kept the batch.
+- While the server throttles, the library stores a new batch and does not send it. The `transport.throttled` diagnostic tells if storage kept the batch. The retry drain also sends no stored batch to that endpoint until the throttle ends. The stored batches of the other endpoints still go out.
 - Under storage pressure, a browser can delete the store. `storage.requestPersistent` asks the browser to keep it.
 
 ## Page Exit
 
 The exit flush is best effort.
 
-- When the page becomes hidden, the library sends the buffered records with a normal request. A send of 60 KB or less uses `keepalive`.
+- When the page becomes hidden, the library sends the buffered records with a normal request. A send uses `keepalive` only when its body fits next to the keepalive bytes already in flight, within 60,000 bytes.
 - On `pagehide` and `freeze`, the library sends payloads up to about 60 KB. To an endpoint on another origin, the request has the content type `text/plain`, which needs no CORS preflight. The batch id and the exit reason are in the query.
 - With `credentials: "omit"` or `"same-origin"`, that request is a keepalive fetch with no custom header. It obeys `credentials`. Thus it sends no cookie to another origin.
 - With `credentials: "include"`, that request is a beacon. `sendBeacon` always sends the cookies, whatever `credentials` is. Thus the library uses it only when the app asks for cookies.
 - The answer to the `text/plain` keepalive fetch must permit the origin. If it does not, the fetch fails. A page that is still open then puts the batch in the emergency queue. The server gets that batch again at the next page load.
-- It is possible that a keepalive fetch is less reliable than a beacon at page exit in some browsers. This is a hypothesis. `e2e/exit-flush.e2e.ts` shows that the `text/plain` keepalive fetch arrives after a navigation in Chromium, Firefox and WebKit. No test checks a tab close, a browser close or a slow network.
+- It is possible that a keepalive fetch is less reliable than a beacon at page exit in some browsers. This is a hypothesis. `e2e/exit-flush.e2e.ts` shows that the `text/plain` keepalive fetch arrives after a navigation in Chromium, Firefox and WebKit. `e2e/exit-close.e2e.ts` shows that the exit batch of a tab close arrives in Chromium.
+- Firefox loses the exit batch of a closed tab in some runs of `e2e/exit-close.e2e.ts`. The cause is not measured yet. Playwright's WebKit fires no `pagehide` on a tab close. Chromium fires none when the whole browser context closes. The library then has no event to start the exit flush. No test checks a slow network.
 - With `headers`, it uses a keepalive fetch. Before the first call of a `headers` function, the exit flush has no header values. It then puts the batch in the emergency queue. It also uses a keepalive fetch for an endpoint on the origin of the page. That request has the content type of the serializer. For OTLP, that is `application/json`. The endpoint origin must be the same as `location.origin` and the `origin` global of the page. A sandboxed frame, a `srcdoc` frame and an `about:blank` frame send the `text/plain` request.
 - A stock OpenTelemetry Collector on another origin refuses the `text/plain` batch with `415`. The exit flush does not read that answer. `onDrop` does not report that loss.
 - To prevent that loss, set `headers` or put a same-origin proxy in front of the collector.
@@ -132,6 +133,8 @@ The exit flush is best effort.
 - A server that answers `413` to an exit request loses that batch. The exit flush does not read the answer, so it does not split the batch. `onDrop` does not report that loss. Accept a body of 60,000 bytes or more at the ingest server.
 - With `headers`, the keepalive fetch to another origin needs a CORS preflight. It is possible that a browser cancels that request during page exit. No test in this repository checks this risk.
 - A batch that does not fit goes to the emergency queue in `localStorage`. The next page load sends it. After the browser refuses a beacon, the exit flush starts no keepalive fetch in that flush. A batch that needs that fetch goes to the emergency queue. The exit flush also counts the keepalive requests of the hidden-page flush that are still in flight.
+- A record that reaches the sender after `pagehide` goes out at once in an exit flush. Its exit reason is `pagehide`. Examples are the final LCP, INP and CLS of the `web-vitals` package. The records of one task go in one exit flush. The library does at most 8 of these late exit flushes in one page leave. A metric point that the flush itself collects does not count. Without this limit, an `onDrop` hook that logs could start another one for each loss. A later record stays in the buffer. The page can close before that record goes out. The exit sends of one page leave share one byte budget. A batch that does not fit goes to the emergency queue. A `pageshow` from the back/forward cache ends this rule.
+- The `web-vitals` package processes the last interactions on an idle callback of the page. The page can go away before that callback runs. The package then has no final INP. The library sends no INP for that page.
 - The browser can stop a page before the flush ends. A mobile OS can stop a hidden page with no `pagehide`.
 - `shutdown()` runs a normal flush, then the exit flush. It then cancels a request that is still open. A stored batch of that request stays in storage. During a pause, `shutdown()` sends nothing.
 - `shutdown()` before the delivery stack loads sends nothing. `onDrop` reports the records that wait for the bus role or the delivery stack with `load_failed`.
@@ -204,10 +207,12 @@ In a forwarder, the call gives the forward buffer to the sender. Then it sends a
 
 `rotateSecurityContext()` changes the delivery identity. Its `pending` rule decides what happens to the records of the old identity:
 
-- `discard`, the default, removes them. `onDrop` reports them with `security_context`.
+- `discard`, the default, removes them. `onDrop` reports them with `security_context`. This includes the exit batches of the old identity that another tab put in the emergency queue.
 - `flush` tries one send with the old settings.
 - `retain` keeps them in storage under the old identity.
 - `carry` moves them to the new identity.
+
+On a hidden page, a batch can be in an open `keepalive` request. A rotation or a failed rotation stops that request. The `pending` rule then also applies to that batch. A failed rotation stores it under the old identity. The exit flush never sends that batch two times.
 
 During a rotation, the library drops logger calls, metric measurements and forwarded records. `onDrop` reports the forwarded records and the records that the library built during the rotation with `security_context`. The library does not hold such a record for the next identity. The one exception is the diagnostic record of the rotation's check of the next settings. The library writes that record after the rotation, to the new identity. A forwarder clears its buffered records when its owner changes identity. Rotations run in call order. Each call waits for the earlier call.
 

@@ -167,6 +167,21 @@ describe("UserTimingCapture", () => {
     sut.uninstall();
   });
 
+  it("keeps the text of a name that only looks like a URL with an @", () => {
+    support(USER_TIMING_TYPES);
+    const { sut, ctx } = setup();
+    sut.install();
+
+    // A scheme-less "//" followed by a space is not user info.
+    active().emit(measure("// step @ 3", 1), mark("// step @ 3"));
+
+    expect(ctx.recordMetric).toHaveBeenCalledWith(expect.anything(), 1, {
+      "user_timing.name": "// step @ 3",
+    });
+    expect(ctx.breadcrumbs.snapshot()).toMatchObject([{ message: "// step @ 3" }]);
+    sut.uninstall();
+  });
+
   it("records only the names that userTiming.include selects", () => {
     support(USER_TIMING_TYPES);
     const { sut, ctx } = setup({ userTiming: { include: [/^app\./, "checkout"] } });

@@ -67,8 +67,7 @@ configure({
 - `configure()` never throws. A value of the wrong type or outside its range reports `config.invalid`, and the current value stays. An unknown key also reports `config.invalid`.
 - Set `endpoint` and `serviceName` in the first call. Set `endpoint: null` for console-only mode.
 - A later call merges into the current settings. An omitted key or `undefined` keeps the current value. `null` removes a hook or turns off an endpoint. On a limit key, `null` means no limit and `0` means zero.
-- These keys are fixed by the first call that works: `identity`, `correlation`, `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `storage`, `bus.mode` and `bus.openFinRole`. `batching` and `retention` are fixed when the delivery stack loads. A later change reports `config.invalid`.
-- `otelLoader` is also fixed by the first call that works. A later change has no effect and reports nothing.
+- These keys are fixed by the first call that works: `identity`, `correlation`, `limits`, `journey.maxAgeMs`, `profiler.maxProbes`, `storage`, `bus.mode`, `bus.openFinRole` and `otelLoader`. `batching` and `retention` are fixed when the delivery stack loads. A later change reports `config.invalid`.
 - With `securityContext.isolation: true` (the default), `configure()` refuses a change of `endpoint`, `metricsEndpoint`, `tracesEndpoint`, `headers`, `credentials`, `transport`, `transportOnExit`, `transportWorker` and `securityContext.id`. Use `rotateSecurityContext()` for these changes.
 - `enabled: false` is a pause, not a stop. Log calls do nothing. The captures, the replay and the sender stop. The records in memory and in storage stay, and they go out after `enabled: true`. `getHealth().status` is `"disabled"`.
 - `shutdown()` stops the runtime. After it, each call does nothing until the next `configure()`, which builds a new runtime. `rotateSecurityContext()` rejects until then.

@@ -136,14 +136,14 @@ These checks are missing or partial. A release cannot show this evidence yet.
 
 - No browser test covers session replay with `stopReplay()`, `newSession()` or a full buffer.
 - The browser tests do not cover offline recovery, an IndexedDB reload, or metrics and spans. They cover a rotation only when the rotation code fails to load. [Browser tests](../e2e/README.md) lists each gap.
-- The browser tests send the exit flush on a navigation only. They do not cover the exit flush on a tab close, a browser close or `freeze`.
+- The browser tests check the exit flush on a navigation, and on a tab close in Chromium. A tab close in Firefox or WebKit, a close of the browser context and `freeze` have no passing test.
 - The collector check runs on macOS arm64 only. It does not send an exit flush.
 - The benchmark runs in Chromium only.
 - No smoke check runs on a real OpenFin runtime. OpenFin support is not validated.
 
 Record each gap in the release notes. Do not record it as a pass.
 
-The repository has no CI workflow. A person runs each command on a local machine.
+`.github/workflows/ci.yml` runs each check of `pnpm run verify` on each pull request and each push to `main`. It also runs the browser tests and the playground smoke tests. A person runs `pnpm run test:collector` and `pnpm run bench:release` on a local machine.
 
 ## Version Skew
 

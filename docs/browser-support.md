@@ -22,7 +22,7 @@ The library tests each optional browser API before it uses it. Without the API, 
 | `localStorage` | Session id, emergency queue, storage fallback. | The session id changes at each load. The emergency queue cannot keep a batch. It reports `storage.unavailable`. |
 | `sessionStorage` | Tab id, journey and the marker of `capture.uncleanExit`. | The tab id and the journey stay in memory for this document. |
 | `navigator.locks` (Web Locks) | One tab at a time sends the stored batches of one storage namespace. | Each tab drains the stored batches. The server deduplicates the copies by batch id. |
-| `BroadcastChannel` | Control messages between the tabs of an origin. The bus finds a duplicated tab id. | The tabs do not share a journey and do not find a duplicated tab id. A popup still gets its own tab id at once, if its opener is live and has the same origin at the start of the popup. |
+| `BroadcastChannel` | Control messages between the tabs of an origin. The bus finds a duplicated tab id. The document that makes a new tab id reports `bus.tab_id_changed`. | The tabs do not share a journey and do not find a duplicated tab id. A popup still gets its own tab id at once, if its opener is live and has the same origin at the start of the popup. |
 | `crypto.randomUUID` | Ids. | The library uses `crypto.getRandomValues`, then `Math.random`. |
 | `PerformanceObserver` `long-animation-frame` | `capture.longFrames`. | The library observes `longtask`. Without it, the capture is off and reports `capture.install_failed`. |
 | `PerformanceObserver` `long-animation-frame` | `profiler.framePhases`. | The capture is off and reports `capture.install_failed` one time. Firefox and Safari have no long animation frames. |

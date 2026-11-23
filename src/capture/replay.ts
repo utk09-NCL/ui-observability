@@ -9,6 +9,7 @@ import type { LogRecord } from "../models/log-record";
 import type { ReplayEvent, ReplayPluginTools, ReplayRecord } from "../models/replay";
 import { newId } from "../utils/identity";
 import { isLibraryRequest } from "../utils/library-request";
+import { recordedUrl } from "../utils/platform";
 import { unrefTimer } from "../utils/unref";
 import { ReplayBuffer } from "./replay-buffer";
 import { ReplayUploader } from "./replay-upload";
@@ -48,6 +49,38 @@ const MASK_EACH_INPUT = { input: true, textarea: true, select: true };
 
 /** What every masked input value turns into. Fixed length, so it doesn't give away a PIN's. */
 const MASKED_INPUT = "********";
+
+/**
+ * Checks one selector the way the recorder will use it.
+ * @param selector A selector entry or a joined list.
+ * @param followed True when another entry comes after it in a list.
+ * @returns The fault to report, or undefined for a usable selector.
+ */
+function selectorFault(selector: string, followed: boolean): unknown {
+  const root = document.createDocumentFragment();
+
+  try {
+    root.querySelector(selector);
+  } catch (error) {
+    // The parser's error goes back to the caller as the report's cause.
+    return error;
+  }
+
+  if (!followed) {
+    return undefined;
+  }
+
+  try {
+    // Chromium closes an open quote, bracket or comment at the end, so '[x="a' parses alone and in
+    // a list, but swallows the entries after it. It swallows an added ")" too and still parses.
+    root.querySelector(`${selector})`);
+  } catch {
+    // A complete selector rejects the extra ")", so the fallback is a usable selector.
+    return undefined;
+  }
+
+  return new SyntaxError("The selector swallows the entries after it.");
+}
 
 /** Event type of the meta event, which carries the page URL. */
 const META_EVENT = 4;
@@ -311,30 +344,34 @@ export class ReplayCapture implements Capture {
    */
   private selectors(): { mask: string | undefined; block: string } | undefined {
     const { maskText, maskSelectors, blockSelectors } = this.ctx.config.replay;
+    const mask = maskSelectors.length > 0 ? maskSelectors.join(",") : undefined;
+    // Click capture skips the ignored regions, so a replay must not show them either. The app
+    // can't turn this off.
+    const block = [IGNORE_SELECTOR, ...blockSelectors].join(",");
 
-    for (const selector of [...maskSelectors, ...blockSelectors]) {
-      try {
-        document.createDocumentFragment().querySelector(selector);
-      } catch (error) {
+    // An entry can parse alone and still break the joined list, for example an unclosed "[" that
+    // Chromium closes at the end. The recorder gets the lists, so a bad one would mask nothing.
+    const checks = [...maskSelectors, ...blockSelectors, block];
+    if (mask !== undefined) {
+      checks.push(mask);
+    }
+    // The last entry of each list has nothing after it to swallow.
+    const followed = [...maskSelectors.slice(0, -1), ...blockSelectors.slice(0, -1)];
+
+    for (const selector of checks) {
+      const fault = selectorFault(selector, followed.includes(selector));
+      if (fault !== undefined) {
         this.ctx.diagnostics.report(
           "config.invalid",
           `The replay selector ${selector} is not a valid CSS selector. The session replay is off.`,
           undefined,
-          error,
+          fault,
         );
         return undefined;
       }
     }
 
-    const join = (list: string[]): string | undefined =>
-      list.length > 0 ? list.join(",") : undefined;
-
-    // Click capture skips the ignored regions, so a replay must not show them either. The app
-    // can't turn this off.
-    return {
-      mask: maskText ? "*" : join(maskSelectors),
-      block: [IGNORE_SELECTOR, ...blockSelectors].join(","),
-    };
+    return { mask: maskText ? "*" : mask, block };
   }
 
   /**
@@ -364,7 +401,7 @@ export class ReplayCapture implements Capture {
   private readonly maskInput = (text: string): string => (text === "" ? "" : MASKED_INPUT);
 
   /**
-   * Strips what the recorder's own masking misses: the query string of the page URL, and text
+   * Strips what the recorder's own masking misses: the page URL's user info and query, and text
    * sitting directly in a shadow root that changed after the snapshot.
    * @param event Recorder event.
    */
@@ -376,9 +413,9 @@ export class ReplayCapture implements Capture {
     }
 
     if (event.type === META_EVENT) {
-      // A signed URL is a credential. Only keep the query when fullUrls is on.
-      if (typeof data.href === "string" && !this.ctx.config.capture.fullUrls) {
-        data.href = data.href.split(/[?#]/)[0];
+      // User info is a credential, and so is a signed URL's query unless fullUrls keeps it.
+      if (typeof data.href === "string") {
+        data.href = recordedUrl(data.href, this.ctx.config.capture.fullUrls);
       }
       return;
     }
@@ -448,8 +485,9 @@ export class ReplayCapture implements Capture {
         return undefined;
       }
 
-      // A signed URL is a credential. Only keep the query when fullUrls is on.
-      return capture.fullUrls ? request : { ...request, name: url.split(/[?#]/)[0] };
+      // User info is a credential, and so is a signed URL's query unless fullUrls keeps it.
+      const name = recordedUrl(url, capture.fullUrls);
+      return name === url ? request : { ...request, name };
     } catch (error) {
       this.onFault(error);
       return undefined;

@@ -21,6 +21,7 @@ import {
   getLogger,
   histogram,
   rotateSecurityContext,
+  shutdown,
 } from "../src/index";
 
 const ENDPOINT = "https://ingest.example/v1/logs";
@@ -919,6 +920,160 @@ describe("a security-context rotation", () => {
 
     expect(after.records().map((record) => record.body)).toEqual(["new context"]);
     expect((await getHealth()).issues).toEqual([]);
+  });
+});
+
+describe("a relative endpoint in a running runtime", () => {
+  const RELATIVE = {
+    endpoint: "/uilogs",
+    metricsEndpoint: "/telemetry/v1/metrics",
+    tracesEndpoint: "/telemetry/v1/traces",
+  } as const;
+
+  /** Returns the absolute form that the page gives a relative path. */
+  const absolute = (path: string): string => new URL(path, document.baseURI).href;
+
+  /** Returns the text of the report for a relative key, as the page resolves it. */
+  const relativeText = (key: string): string =>
+    `${key} is relative. The library sends to ${new URL(document.baseURI).origin}.`;
+
+  /** Counts the config.invalid reports of the runtime. The count ignores the rate limit. */
+  const invalid = (): number => getDiagnosticCounters()["config.invalid"] ?? 0;
+
+  /**
+   * Starts a runtime with three relative endpoints and no throttle on later reports.
+   * @param extra Settings on top of the startup config.
+   * @returns The config.invalid texts that reach onDiagnostic. The first call can lose some to
+   *   the default throttle, so a test counts the startup reports with invalid().
+   */
+  const start = (extra: Partial<ObservabilityConfig> = {}): string[] => {
+    const texts: string[] = [];
+    configure({
+      ...quiet,
+      ...RELATIVE,
+      transport: createMemoryTransport().transport,
+      securityContext: { id: "A" },
+      diagnostics: { throttleMs: 0 },
+      onDiagnostic: (event) => {
+        if (event.code === "config.invalid") {
+          texts.push(event.message);
+        }
+      },
+      ...extra,
+    });
+    return texts;
+  };
+
+  /** Checks that the runtime sends to the absolute form of each relative endpoint. */
+  const expectAbsolute = (endpoint = "/uilogs"): void => {
+    expect(rt().config).toMatchObject({
+      endpoint: absolute(endpoint),
+      metricsEndpoint: absolute(RELATIVE.metricsEndpoint),
+      tracesEndpoint: absolute(RELATIVE.tracesEndpoint),
+    });
+  };
+
+  it("reports each relative endpoint once at startup", async () => {
+    start();
+    await flush();
+
+    expect(invalid()).toBe(3);
+    expectAbsolute();
+  });
+
+  it("reports nothing when a later configure() repeats the same relative endpoints", async () => {
+    const texts = start();
+    await flush();
+    const before = invalid();
+    texts.length = 0;
+
+    configure({ ...RELATIVE });
+
+    expect(invalid()).toBe(before);
+    expect(texts).toEqual([]);
+    expectAbsolute();
+  });
+
+  it("reports nothing when a rotation repeats the same relative endpoints", async () => {
+    const texts = start();
+    await flush();
+    const before = invalid();
+    texts.length = 0;
+
+    await rotateSecurityContext({
+      id: "B",
+      routing: { transport: createMemoryTransport().transport, ...RELATIVE },
+    });
+
+    expect(invalid()).toBe(before);
+    expect(texts).toEqual([]);
+    expectAbsolute();
+  });
+
+  it("reports only the endpoint that a rotation changes to another relative value", async () => {
+    const texts = start();
+    await flush();
+    const before = invalid();
+    texts.length = 0;
+
+    await rotateSecurityContext({
+      id: "B",
+      routing: {
+        transport: createMemoryTransport().transport,
+        ...RELATIVE,
+        endpoint: "/other",
+      },
+    });
+
+    expect(invalid()).toBe(before + 1);
+    expect(texts).toEqual([relativeText("endpoint")]);
+    expectAbsolute("/other");
+  });
+
+  it("reports only the key that a configure() call changes to another relative value", async () => {
+    // Isolation is off, because it refuses a routing change in a later configure() call.
+    const texts = start({ securityContext: { id: "A", isolation: false } });
+    await flush();
+    const before = invalid();
+    texts.length = 0;
+
+    configure({ ...RELATIVE, tracesEndpoint: "/other/v1/traces" });
+
+    expect(invalid()).toBe(before + 1);
+    expect(texts).toEqual([relativeText("tracesEndpoint")]);
+    expect(rt().config.tracesEndpoint).toBe(absolute("/other/v1/traces"));
+    expect(rt().config.endpoint).toBe(absolute("/uilogs"));
+  });
+
+  it("reports a relative endpoint that a later call sets on a key that had no value", async () => {
+    const texts = start({
+      endpoint: null,
+      metricsEndpoint: null,
+      tracesEndpoint: null,
+      securityContext: { id: "A", isolation: false },
+    });
+    await flush();
+    expect(invalid()).toBe(0);
+
+    configure({ metricsEndpoint: RELATIVE.metricsEndpoint });
+
+    expect(invalid()).toBe(1);
+    expect(texts).toEqual([relativeText("metricsEndpoint")]);
+    expect(rt().config.metricsEndpoint).toBe(absolute(RELATIVE.metricsEndpoint));
+  });
+
+  it("reports again in a new runtime that starts after shutdown()", async () => {
+    start();
+    await flush();
+    expect(invalid()).toBe(3);
+
+    await shutdown();
+    start();
+    await flush();
+
+    // The new runtime has its own counters, so a count of 3 means it reported each key again.
+    expect(invalid()).toBe(3);
+    expectAbsolute();
   });
 });
 

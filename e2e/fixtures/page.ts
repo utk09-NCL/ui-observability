@@ -25,6 +25,8 @@ interface E2eHandle {
   startSilentWorker: () => Worker;
   /** Pass this as replay.loader. It loads the real recorder, the optional peer. */
   loadRecorder: uiobs.ReplayLoader;
+  /** Pass this as capture.webVitals.loader. It loads the real web-vitals, the optional peer. */
+  loadWebVitals: NonNullable<uiobs.WebVitalsOptions["loader"]>;
 }
 
 declare global {
@@ -58,4 +60,6 @@ window.e2e = {
     new Worker(new URL("./silent-worker.ts", import.meta.url), { type: "module" }),
   // A test can't import the peer by name inside page.evaluate(), so the page owns the import.
   loadRecorder: () => import("@rrweb/record"),
+  // The same reason as the recorder: page.evaluate() can't import the peer by name.
+  loadWebVitals: () => import("web-vitals"),
 };

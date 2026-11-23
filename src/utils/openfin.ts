@@ -7,19 +7,32 @@
 /** The InterApplicationBus operations that the bus link uses. */
 export interface FinIab {
   /**
-   * Publishes a message to all topic subscribers.
-   * @param topic Topic name.
-   * @param message Message payload.
-   */
-  publish(topic: string, message: unknown): Promise<void>;
-
-  /**
    * Subscribes a listener to a topic for matching application identities.
    * @param identity Target application identity.
    * @param topic Topic name.
    * @param listener Message callback.
    */
   subscribe(
+    identity: { uuid: string },
+    topic: string,
+    listener: (message: unknown, uuid?: string, name?: string) => void,
+  ): Promise<void>;
+
+  /**
+   * Sends a message to the topic subscribers of one application.
+   * @param destination Target application identity.
+   * @param topic Topic name.
+   * @param message Message payload.
+   */
+  send(destination: { uuid: string }, topic: string, message: unknown): Promise<void>;
+
+  /**
+   * Removes a listener that subscribe() added. An older runtime may not have it.
+   * @param identity The identity that subscribe() got.
+   * @param topic The topic that subscribe() got.
+   * @param listener The listener that subscribe() got.
+   */
+  unsubscribe?(
     identity: { uuid: string },
     topic: string,
     listener: (message: unknown, uuid?: string, name?: string) => void,

@@ -546,8 +546,8 @@ export function createOpenFinLink(
     return null;
   }
   if (!appUuid) {
-    // publish() sends to every subscriber on the runtime. Without a uuid scope,
-    // this link would share this app's bus with every other app.
+    // Without a uuid, neither send() nor subscribe() can be scoped to this app, and the link
+    // would share this app's bus with every other app.
     diagnostics.report(
       "openfin.unavailable",
       "OpenFin gives no application uuid. The InterApplicationBus link stays closed.",
@@ -555,24 +555,25 @@ export function createOpenFinLink(
     return null;
   }
 
-  // The uuid goes into both the topic and the subscriber identity. The topic keeps this app's
-  // messages away from other apps, and the identity rejects messages that come from them.
+  // The uuid scopes the topic, the subscriber identity and the send target. The identity drops
+  // messages from other apps, and send() reaches this app only. publish() would reach every app.
   const scoped = `${topic}.${appUuid}`;
+  const app = { uuid: appUuid };
+  const listener = (raw: unknown, uuid?: string, name?: string): void => {
+    const message = unwrap(raw);
+    if (message) {
+      receive(message, {
+        link: "openfin",
+        origin: "openfin",
+        peer: uuid && name ? `${uuid}:${name}` : undefined,
+      });
+    }
+  };
 
   void diagnostics.guardAsync(
     "bus.send_failed",
     "The InterApplicationBus.subscribe call failed.",
-    () =>
-      iab.subscribe({ uuid: appUuid }, scoped, (raw, uuid, name) => {
-        const message = unwrap(raw);
-        if (message) {
-          receive(message, {
-            link: "openfin",
-            origin: "openfin",
-            peer: uuid && name ? `${uuid}:${name}` : undefined,
-          });
-        }
-      }),
+    () => iab.subscribe(app, scoped, listener),
   );
 
   return {
@@ -580,12 +581,20 @@ export function createOpenFinLink(
     post(message) {
       void diagnostics.guardAsync(
         "bus.send_failed",
-        "The InterApplicationBus.publish call failed.",
-        () => iab.publish(scoped, envelope(message)),
+        "The InterApplicationBus.send call failed.",
+        () => iab.send(app, scoped, envelope(message)),
       );
     },
     close() {
-      // OpenFin removes the subscriptions when the context closes.
+      // The listener holds this bus, so a runtime that starts after shutdown() would add one more.
+      // An older runtime has no unsubscribe, and it removes the listener when the context closes.
+      void diagnostics.guardAsync(
+        "bus.send_failed",
+        "The InterApplicationBus.unsubscribe call failed.",
+        async () => {
+          await iab.unsubscribe?.(app, scoped, listener);
+        },
+      );
     },
   };
 }
@@ -601,6 +610,7 @@ export function createOwnerLink(receive: Receive, diagnostics: Diagnostics): Lin
   const scope = globalThis as unknown as {
     postMessage?: (message: unknown) => void;
     addEventListener?: (type: string, listener: (event: MessageEvent) => void) => void;
+    removeEventListener?: (type: string, listener: (event: MessageEvent) => void) => void;
     WorkerGlobalScope?: unknown;
   };
   const send = scope.postMessage;
@@ -624,7 +634,9 @@ export function createOwnerLink(receive: Receive, diagnostics: Diagnostics): Lin
       });
     },
     close() {
-      // Worker scope listeners stop when the worker stops.
+      // The listener holds this bus. A worker that calls shutdown() and configure() again would
+      // otherwise keep every old bus, and each one would still receive messages.
+      scope.removeEventListener?.("message", onMessage);
     },
   };
 }

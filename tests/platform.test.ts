@@ -220,6 +220,155 @@ describe("recordedUrl", () => {
     expect(recordedUrl("/api/orders?x=1", false)).toBe("/api/orders");
     expect(recordedUrl("https://app.test/a@b", true)).toBe("https://app.test/a@b");
   });
+
+  it.each([
+    ["a scheme-relative URL", "//ursula:s3cret@api.example.com/data?id=7"],
+    ["a URL with backslashes", "https:\\\\ursula:s3cret@api.example.com/data?id=7"],
+    ["a URL with a leading space", " https://ursula:s3cret@api.example.com/data?id=7"],
+  ])("removes the user info from %s", (_label, url) => {
+    // A browser reads each of these as https://ursula:s3cret@api.example.com/data.
+    expect(new URL(url, "https://app.example.com/").password).toBe("s3cret");
+
+    const plain = recordedUrl(url, false);
+    const full = recordedUrl(url, true);
+
+    for (const recorded of [plain, full]) {
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("ursula");
+      expect(recorded).toContain("api.example.com/data");
+    }
+    expect(plain).not.toContain("?");
+    expect(full).toContain("?id=7");
+  });
+
+  it("keeps the pattern rule for a URL that the URL parser rejects", () => {
+    // The IPv6 host has no closing bracket, so there is nothing to parse.
+    expect(() => new URL("https://ursula:s3cret@[::1/x")).toThrow();
+
+    expect(recordedUrl("https://ursula:s3cret@[::1/x?id=7", false)).toBe("https://[::1/x");
+    expect(recordedUrl("https://ursula:s3cret@[::1/x?id=7", true)).toBe("https://[::1/x?id=7");
+  });
+});
+
+describe("recordedUrl with a base URL that can't resolve a relative URL", () => {
+  // A blob:, data: or about:blank base makes the URL parser throw for a URL with no scheme, so
+  // the pattern fallback is the only rule left.
+  const BASES = ["blob:https://app.example/1234", "data:text/html,x", "about:blank"];
+  const SPELLINGS = [
+    ["no scheme", "//alice:s3cret@cdn.example/a.png?id=7"],
+    ["backslashes", "\\\\alice:s3cret@cdn.example/a.png?id=7"],
+    ["a leading space", " //alice:s3cret@cdn.example/a.png?id=7"],
+  ];
+  const CASES = BASES.flatMap((base) => SPELLINGS.map(([label, url]) => ({ base, label, url })));
+
+  /**
+   * Checks that a recorded URL has no user info, with and without fullUrls.
+   * @param url The URL as the caller wrote it.
+   */
+  const expectNoUserInfo = (url: string): void => {
+    const plain = recordedUrl(url, false);
+    const full = recordedUrl(url, true);
+
+    for (const recorded of [plain, full]) {
+      expect(recorded).not.toContain("s3cret");
+      expect(recorded).not.toContain("alice");
+      expect(recorded).toContain("cdn.example/a.png");
+    }
+    expect(plain).not.toContain("?");
+    expect(full).toContain("?id=7");
+  };
+
+  it.each(CASES)("removes the user info from a URL with $label, with the base $base", (one) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue(one.base);
+    expect(() => new URL(one.url, one.base)).toThrow();
+
+    expectNoUserInfo(one.url);
+  });
+
+  it("removes the user info in a worker whose location is a blob URL", () => {
+    vi.stubGlobal("document", undefined);
+    vi.stubGlobal("location", { href: "blob:https://app.example/1234" });
+
+    expectNoUserInfo("//alice:s3cret@cdn.example/a.png?id=7");
+  });
+
+  it("still removes the user info of a URL that has a scheme", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("https://alice:s3cret@cdn.example/a.png", false)).toBe(
+      "https://cdn.example/a.png",
+    );
+  });
+
+  it("keeps an @ in the query of a URL with no scheme and no user info", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("//cdn.example/a.png?mail=a@b.example", true)).toBe(
+      "//cdn.example/a.png?mail=a@b.example",
+    );
+  });
+});
+
+describe("recordedUrl, when the URL parser throws", () => {
+  // A blob:, data: or about:blank base makes the parser throw for a URL with no scheme. A bad
+  // port or a backslash in the password makes it throw for a URL with a scheme too. The pattern is
+  // the only rule left for each of them.
+  const CASES = [
+    ["a backslash in the password", "https://alice:s3cret\\x@host/p"],
+    ["three slashes", "///alice:s3cret@host/p"],
+    ["one slash after the scheme and a bad port", "https:/alice:s3cret@host:99999/p"],
+    ["a tab after the slashes", "//\talice:s3cret@host/p"],
+    ["a newline after the slashes", "//\nalice:s3cret@host/p"],
+    ["a tab between the slashes", "/\t/alice:s3cret@host/p"],
+    ["a newline between the slashes", "/\n/alice:s3cret@host/p"],
+  ].map(([label, url]) => ({ label, url }));
+
+  it.each(CASES)("removes the user info from a URL with $label", ({ url }) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+    expect(() => new URL(url, "about:blank")).toThrow();
+
+    const recorded = recordedUrl(url, true);
+
+    expect(recorded).not.toContain("s3cret");
+    expect(recorded).not.toContain("alice");
+    expect(recorded).toContain("host");
+  });
+
+  it.each(["http://localhost:3000/", "about:blank"])(
+    "keeps the text of a name that only looks like a URL, with the base %s",
+    (base) => {
+      vi.spyOn(document, "baseURI", "get").mockReturnValue(base);
+
+      // A user timing name can read like this. A "//" followed by a space is not user info.
+      expect(recordedUrl("// step @ 3", true)).toBe("// step @ 3");
+      expect(recordedUrl("// step @ 3", false)).toBe("// step @ 3");
+    },
+  );
+
+  it("keeps a URL with an IPv6 host that the parser rejects, as it is", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("https://[::1/x", true)).toBe("https://[::1/x");
+  });
+
+  it.each([
+    ["backslashes with no @", "\\".repeat(100_000)],
+    ["backslashes before an @", `${"\\".repeat(100_000)}@`],
+    ["spaces before an @", `${" ".repeat(100_000)}@`],
+    ["slashes and tabs before an @", `${"/\t".repeat(50_000)}@`],
+  ])("takes linear time for a long run of %s", (_label, url) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    // The fastest of three runs, so a pause of the collector doesn't fail the spec.
+    let fastest = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const start = performance.now();
+      recordedUrl(url, true);
+      fastest = Math.min(fastest, performance.now() - start);
+    }
+
+    expect(fastest).toBeLessThan(50);
+  });
 });
 
 describe("stripUrlQuery", () => {

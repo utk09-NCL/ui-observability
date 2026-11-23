@@ -124,8 +124,9 @@ export function saveToEmergencyQueue(
 
     // Remove the oldest entries to keep the queue within its capacity.
     for (const old of keys.slice(0, Math.max(0, keys.length - EMERGENCY_MAX_ENTRIES + 1))) {
-      // A key that another window already removed reads as null, and readBatch rejects it.
-      const dropped = readBatch(String(localStorage.getItem(old)), diagnostics);
+      // Another window can remove the key after the list was read, and null isn't a bad entry.
+      const raw = localStorage.getItem(old);
+      const dropped = raw === null ? null : readBatch(raw, diagnostics);
       if (dropped !== null) {
         evicted.push(dropped);
       }
@@ -181,26 +182,44 @@ export async function drainEmergencyQueue(
  * @param diagnostics Diagnostics reporter.
  * @param namespace The application's storage namespace.
  * @param all True to remove the entries of every context in this namespace.
+ * @returns The context's batches that it removed, so the caller can report their records. With
+ * `all` it returns none, because it removes the entries without reading them.
  */
 export function clearEmergencyContext(
   id: string,
   diagnostics: Diagnostics,
   namespace = "",
   all = false,
-): void {
+): LogBatch[] {
   const prefix = emergencyPrefix(namespace);
+  const removed: LogBatch[] = [];
+
   diagnostics.guard(
     "storage.unavailable",
     "The library could not clear the retired emergency queue.",
     () => {
       for (const key of keysWithPrefix(prefix, diagnostics)) {
-        const raw = localStorage.getItem(key);
-        if (raw && (all || readBatch(raw, diagnostics)?.routingContextId === id)) {
+        if (all) {
           localStorage.removeItem(key);
+          continue;
+        }
+
+        // Another window can remove the key after the list was read, and null isn't a bad entry.
+        const raw = localStorage.getItem(key);
+        if (raw === null) {
+          continue;
+        }
+
+        const batch = readBatch(raw, diagnostics);
+        if (batch?.routingContextId === id) {
+          localStorage.removeItem(key);
+          removed.push(batch);
         }
       }
     },
   );
+
+  return removed;
 }
 
 /**

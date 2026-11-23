@@ -62,7 +62,31 @@ describe("withDrainLock", () => {
     expect(request.mock.calls[1][1]).toEqual({ ifAvailable: false });
   });
 
-  it("reports rather than throws when the lock manager itself fails", async () => {
+  it.each([
+    ["a SecurityError, as in an opaque origin", new DOMException("opaque origin", "SecurityError")],
+    ["any other error", new Error("locks are unavailable in this context")],
+  ])("runs the task without a lock when the request rejects with %s", async (_name, failure) => {
+    // No lock was granted, so no other window can hold one either. A busy lock gives a null
+    // grant and never rejects, so a rejection must not read as "busy".
+    vi.stubGlobal("navigator", { locks: { request: () => Promise.reject(failure) } });
+    const fn = vi.fn(() => Promise.resolve("ran"));
+
+    await expect(withDrainLock("drain", diagnostics(), fn)).resolves.toBe("ran");
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it("runs the task only once when the task itself rejects under a granted lock", async () => {
+    // The lock manager passes the task's rejection on. That isn't a refused request, and a
+    // second run without the lock would send the stored batches twice.
+    stubLocks({ name: "drain" });
+    const fn = vi.fn(() => Promise.reject(new Error("the drain threw")));
+
+    await withDrainLock("drain", diagnostics(), fn);
+
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it("reports a failed lock request, and still runs the task without the lock", async () => {
     const handler = vi.fn();
     vi.stubGlobal("navigator", {
       locks: {
@@ -72,7 +96,30 @@ describe("withDrainLock", () => {
 
     await expect(
       withDrainLock("drain", new Diagnostics(handler, 0), () => Promise.resolve(1)),
+    ).resolves.toBe(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "storage.degraded",
+        message: "The library could not get the lock drain. It runs the work without the lock.",
+      }),
+    );
+  });
+
+  it("reports a task that fails under the lock, and skips that run", async () => {
+    // The caller reads undefined as "skipped", so the next timer still comes.
+    const handler = vi.fn();
+    stubLocks({ name: "drain" });
+    const cause = new Error("the drain threw");
+
+    await expect(
+      withDrainLock("drain", new Diagnostics(handler, 0), () => Promise.reject(cause)),
     ).resolves.toBeUndefined();
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ code: "storage.degraded" }));
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "storage.degraded",
+        message: "The work under the lock drain failed. The library skips this run.",
+        cause,
+      }),
+    );
   });
 });

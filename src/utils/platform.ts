@@ -168,8 +168,57 @@ export function currentUrl(diagnostics: Diagnostics): string {
   }
 }
 
-/** Matches the user info of an absolute URL, for example "user:pass@". */
-const USER_INFO_PATTERN = /^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/i;
+/**
+ * Matches the user info after a URL's slashes or backslashes, with or without a scheme. A space
+ * ends it ("// step @ 3" isn't a URL), and the lookahead keeps the match linear.
+ */
+const USER_INFO_PATTERN = /^(\s*(?:[a-z][a-z\d+.-]*:[/\\]+|[/\\]{2,}))(?![/\\])[^/?#\s]*@/i;
+
+/** A browser drops these characters from a URL before it reads it. */
+const URL_DROPPED = /[\t\n\r]/g;
+
+/**
+ * Returns the URL that a relative URL resolves against. A worker has no document, so it uses
+ * its own location.
+ * @returns The base URL, or undefined when the scope has neither.
+ */
+export function pageBase(): string | undefined {
+  if (typeof document !== "undefined") {
+    return document.baseURI;
+  }
+
+  return typeof location === "undefined" ? undefined : location.href;
+}
+
+/**
+ * Removes the user name and the password from a URL. A browser also finds them in a URL with
+ * no scheme, with backslashes or with a leading space, so the URL parser reads them.
+ * @param url Absolute or relative URL.
+ * @returns The URL without user info, or the URL as given when it has none.
+ */
+function withoutUserInfo(url: string): string {
+  // User info always ends in "@", so most URLs skip the parse, which runs on the log path.
+  if (!url.includes("@")) {
+    return url;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url, pageBase());
+  } catch {
+    // The parser rejects the URL, or a blob: or about:blank base can't resolve it, so the
+    // fallback is the pattern.
+    return url.replace(URL_DROPPED, "").replace(USER_INFO_PATTERN, "$1");
+  }
+
+  if (parsed.username === "" && parsed.password === "") {
+    return url;
+  }
+
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.href;
+}
 
 /**
  * Returns the form of a URL that the library records. A transform's result is recorded as is,
@@ -202,7 +251,7 @@ export function recordedUrl(
       return "";
     }
   }
-  const bare = url.replace(USER_INFO_PATTERN, "$1");
+  const bare = withoutUserInfo(url);
   return fullUrls ? bare : stripUrlQuery(bare);
 }
 
