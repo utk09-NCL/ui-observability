@@ -203,8 +203,13 @@ export function clearEmergencyContext(
           continue;
         }
 
-        // A key that another window already removed reads as null, and readBatch rejects it.
-        const batch = readBatch(String(localStorage.getItem(key)), diagnostics);
+        // Another window can remove the key after the list was read, and null isn't a bad entry.
+        const raw = localStorage.getItem(key);
+        if (raw === null) {
+          continue;
+        }
+
+        const batch = readBatch(raw, diagnostics);
         if (batch?.routingContextId === id) {
           localStorage.removeItem(key);
           removed.push(batch);

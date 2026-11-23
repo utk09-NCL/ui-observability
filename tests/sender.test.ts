@@ -467,6 +467,26 @@ describe("Sender after a pagehide", () => {
     expect(textOf(init)).toContain("restored record");
   });
 
+  it("sends the late records of separate tasks, each in its own exit send", async () => {
+    // LCP, CLS and INP reports reach a leaving page in two or three tasks. Whatever limit the
+    // library puts on late flushes must leave room for them.
+    const { sender } = await setup();
+
+    dispatchEvent(new Event("pagehide"));
+    for (const body of ["late lcp", "late cls", "late inp"]) {
+      sender.push(record(body));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+
+    const sends = exitBodies();
+    expect(sends).toHaveLength(3);
+    expect(sends[0]).toContain("late lcp");
+    expect(sends[1]).toContain("late cls");
+    expect(sends[2]).toContain("late inp");
+  });
+
   it("hands a late record to transportOnExit, and not to the transport", async () => {
     const transport = vi.fn(() => Promise.resolve({ status: 200 }));
     const transportOnExit = vi.fn<ExitTransport>(() => true);

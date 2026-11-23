@@ -24,6 +24,12 @@ import { estimateBytes } from "../utils/sanitize";
 import { toTransportRequest } from "./custom-transport";
 import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
 
+/**
+ * Late flushes allowed in one page leave. An onDrop hook that logs would otherwise start a new one
+ * for each loss it reports, a microtask loop that never lets the closing page yield.
+ */
+const LATE_FLUSH_LIMIT = 5;
+
 /** The lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
 
@@ -84,6 +90,9 @@ export class ExitFlush {
   /** True while a late exit flush waits on its microtask, so one task's records go together. */
   private lateQueued = false;
 
+  /** Late flushes in this page leave, up to LATE_FLUSH_LIMIT. */
+  private lateFlushes = 0;
+
   /**
    * Bytes in flight against the browser's one budget for beacons and keepalive fetches. It
    * starts at the transport's keepalive sends, and each batch of the current exit flush adds to it.
@@ -107,6 +116,7 @@ export class ExitFlush {
   private readonly onPageHide = (): void => {
     this.left = true;
     this.leaveBytes = 0;
+    this.lateFlushes = 0;
     this.flush("pagehide");
   };
 
@@ -191,11 +201,12 @@ export class ExitFlush {
    * all records of one task go in one send. A web-vitals report arrives this late on a page leave.
    */
   flushLate(): void {
-    if (!this.left || this.lateQueued) {
+    if (!this.left || this.lateQueued || this.lateFlushes >= LATE_FLUSH_LIMIT) {
       return;
     }
 
     this.lateQueued = true;
+    this.lateFlushes++;
     queueMicrotask(() => {
       this.lateQueued = false;
 

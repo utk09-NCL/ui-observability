@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "../src/core/config";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import { DropReporter } from "../src/core/drops";
+import { EMERGENCY_MAX_ENTRIES } from "../src/constants";
 import { isActionRecord } from "../src/models/batch";
 import type { DropSummary } from "../src/models/drop";
 import type { LogRecord } from "../src/models/log-record";
+import { configure, createMemoryTransport, info, warn } from "../src/index";
+import { saveToEmergencyQueue } from "../src/storage/emergency-queue";
 import { isLibraryConsole } from "../src/utils/library-console";
 import { isLibraryRequest } from "../src/utils/library-request";
 
@@ -219,5 +222,129 @@ describe("DropReporter", () => {
 describe("isActionRecord", () => {
   it("reads a null record as a record that is not an action", () => {
     expect(isActionRecord(null as never)).toBe(false);
+  });
+});
+
+describe("an onDrop hook that logs while the page leaves", () => {
+  /** Turns of the microtask queue. A closing document runs no timer, so nothing else runs. */
+  const TURNS = 400;
+
+  /** The hook stops logging after this many calls, so a cycle that never ends still ends here. */
+  const CAP = 50;
+
+  /** A correct fix lets a cycle run a few turns at most. */
+  const BOUND = 10;
+
+  /** Waits for the chunk loads and the startup, with the real timers. */
+  async function ready(): Promise<void> {
+    await vi.dynamicImportSettled();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+
+  /** Gives the microtask queue its turns, and no timer. */
+  async function turns(): Promise<void> {
+    for (let i = 0; i < TURNS; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  /** Leaves an emergency queue that is full, so each park drops the oldest entry. */
+  // Runs after startup, because the startup import empties the queue. A current createdAt keeps
+  // each entry from expiring, otherwise the queue isn't full at pagehide.
+  function fillEmergencyQueue(): void {
+    for (let i = 0; i < EMERGENCY_MAX_ENTRIES; i++) {
+      saveToEmergencyQueue(
+        {
+          id: `old-${String(i)}`,
+          createdAt: Date.now() + i,
+          attempts: 0,
+          records: [log("parked")],
+        },
+        new Diagnostics(vi.fn(), 0),
+      );
+    }
+  }
+
+  const base = {
+    serviceName: "svc",
+    endpoint: "https://x/v1/logs",
+    securityContext: { isolation: false },
+    bus: { mode: "off" as const },
+    capture: { errors: false, rejections: false },
+  };
+
+  it.each([
+    [
+      "a custom transport without transportOnExit on memory storage",
+      () => ({ transport: createMemoryTransport().transport }),
+      (): void => undefined,
+    ],
+    [
+      "a headers function with no result yet on memory storage",
+      () => ({ headers: () => ({ authorization: "Bearer t1" }) }),
+      (): void => undefined,
+    ],
+    [
+      "a full emergency queue",
+      // With credentials include the exit send is a beacon, and the refused beacon parks the batch.
+      () => ({ storage: { backend: "localstorage" as const }, credentials: "include" as const }),
+      fillEmergencyQueue,
+    ],
+  ])("ends the cycle after a few late flushes with %s", async (_name, extra, afterStart) => {
+    vi.stubGlobal("navigator", { sendBeacon: vi.fn(() => false) });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response("", { status: 204 }))),
+    );
+    let calls = 0;
+    configure({
+      ...base,
+      storage: { backend: "memory" },
+      ...extra(),
+      onDrop: (summary) => {
+        calls++;
+        if (calls < CAP) {
+          warn("records lost", { reason: summary.reason });
+        }
+      },
+    });
+    await ready();
+    afterStart();
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await turns();
+
+    // Each late flush loses a batch, the hook logs, and the next late flush loses that record.
+    // The page is closing, so the cycle never reaches a task boundary to stop.
+    expect(calls).toBeLessThanOrEqual(BOUND);
+  });
+
+  it("ends the cycle after a few late flushes when each exit send reports", async () => {
+    // With diagnostics.records and no throttle, the report of a failed exit send is a record.
+    let calls = 0;
+    const transportOnExit = vi.fn(() => {
+      calls++;
+      if (calls < CAP) {
+        throw new Error("the exit hook failed");
+      }
+      return true;
+    });
+    configure({
+      ...base,
+      transport: createMemoryTransport().transport,
+      transportOnExit,
+      storage: { backend: "memory" },
+      diagnostics: { records: true, throttleMs: 0 },
+    });
+    await ready();
+
+    dispatchEvent(new Event("pagehide"));
+    info("late record");
+    await turns();
+
+    expect(calls).toBeLessThanOrEqual(BOUND);
   });
 });

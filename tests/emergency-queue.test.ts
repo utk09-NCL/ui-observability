@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, Diagnostics } from "../src/core/diagnostics";
 import type { LogBatch } from "../src/models/batch";
 import type { LossReporter } from "../src/models/drop";
-import { drainEmergencyQueue, saveToEmergencyQueue } from "../src/storage/emergency-queue";
+import {
+  clearEmergencyContext,
+  drainEmergencyQueue,
+  saveToEmergencyQueue,
+} from "../src/storage/emergency-queue";
 import { MemoryStorage } from "../src/storage/memory-storage";
 import { useFakeLocalStorage } from "./fake-storage";
 
@@ -221,6 +225,24 @@ describe("the emergency queue", () => {
     expect(await drainEmergencyQueue(storage, quiet())).toBe(0);
     expect(await storage.count()).toBe(0);
     expect(emergencyKeys()).toHaveLength(1);
+  });
+
+  it("skips an entry that another window removed during the clear, with no report", () => {
+    // The other window imports the entry between the key listing and the read. The entry is
+    // gone, so the clear has nothing to drop, and a "not a batch" report would be false.
+    useFakeLocalStorage();
+    const { handler, diagnostics } = listening();
+    saveToEmergencyQueue({ ...batch("gone"), routingContextId: "A" }, quiet());
+    saveToEmergencyQueue({ ...batch("kept"), routingContextId: "A" }, quiet());
+    const read = localStorage.getItem.bind(localStorage);
+    vi.spyOn(localStorage, "getItem").mockImplementation((key) =>
+      key.endsWith(".gone") ? null : read(key),
+    );
+
+    const removed = clearEmergencyContext("A", diagnostics);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(removed.map((one) => one.id)).toEqual(["kept"]);
   });
 
   it("waits for the other window rather than skipping the recovery", async () => {
