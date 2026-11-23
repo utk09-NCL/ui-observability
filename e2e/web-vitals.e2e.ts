@@ -133,6 +133,19 @@ async function startCapture(page: Page): Promise<void> {
       vitals.onTTFB((metric) => {
         reported.ttfb = metric.value;
       });
+      // The package reports an INP change only after the browser has presented the frame of the
+      // interaction. A page that leaves before that has no INP to report.
+      // The library's type names only the reporter, but the real package also takes options.
+      const onInp = vitals.onINP as (
+        report: (metric: { value: number }) => void,
+        options: { reportAllChanges: boolean },
+      ) => void;
+      onInp(
+        (metric) => {
+          reported.inp = metric.value;
+        },
+        { reportAllChanges: true },
+      );
 
       window.e2e.uiobs.configure({
         endpoint,
@@ -234,12 +247,23 @@ test("delivers the final INP and CLS when the page goes away", async ({ page }) 
   await page.waitForFunction(
     () => "lcpCandidate" in (window as unknown as { reported: Record<string, number> }).reported,
   );
+  // The package measures INP only with interactionId on its event entries.
+  const measuresInp = await page.evaluate(
+    () =>
+      typeof PerformanceEventTiming !== "undefined" &&
+      "interactionId" in PerformanceEventTiming.prototype,
+  );
+  if (measuresInp) {
+    await page.waitForFunction(
+      () => "inp" in (window as unknown as { reported: Record<string, number> }).reported,
+    );
+  }
   const supported = await page.evaluate(() => PerformanceObserver.supportedEntryTypes);
   await page.goto("about:blank");
 
   // INP and CLS only exist when the engine has the entry type behind them.
   const expected = [
-    ...(supported.includes("event") ? ["web_vitals.inp"] : []),
+    ...(measuresInp ? ["web_vitals.inp"] : []),
     ...(supported.includes("layout-shift") ? ["web_vitals.cls"] : []),
   ];
   await expect
