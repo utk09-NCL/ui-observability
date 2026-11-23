@@ -27,6 +27,7 @@ import {
   RESOURCE_CONTEXT_ID,
   RESOURCE_DEPLOYMENT_ENVIRONMENT,
   RESOURCE_HOST_PLATFORM,
+  RESOURCE_KEY_LIMIT,
   RESOURCE_OPENFIN_NAME,
   RESOURCE_OPENFIN_UUID,
   RESOURCE_SERVICE_NAME,
@@ -491,8 +492,9 @@ export class RecordBuilder {
     const { config, diagnostics, limits } = this.deps;
     const fixed = fixedOf(record.attributes);
     // A child's limits can be looser than ours, and a value nested too deep loses this context's
-    // whole batch. The key count stays open, because the resource holds the child's ids.
-    const resourceLimits = { ...limits, maxAttributeCount: Infinity };
+    // whole batch. The key floor keeps the child's ids when the app sets a low attribute count.
+    const maxAttributeCount = Math.max(limits.maxAttributeCount, RESOURCE_KEY_LIMIT);
+    const resourceLimits = { ...limits, maxAttributeCount };
     const resource = asAttributes(
       sanitizeWithSize(record.resource, resourceLimits, diagnostics).value,
     );

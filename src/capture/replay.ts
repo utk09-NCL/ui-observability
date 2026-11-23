@@ -50,9 +50,6 @@ const MASK_EACH_INPUT = { input: true, textarea: true, select: true };
 /** What every masked input value turns into. Fixed length, so it doesn't give away a PIN's. */
 const MASKED_INPUT = "********";
 
-/** Class of the detached element that shows whether a selector entry swallows the next one. */
-const SELECTOR_PROBE = "uiobs-selector-probe";
-
 /**
  * Checks one selector the way the recorder will use it.
  * @param selector A selector entry or a joined list.
@@ -60,22 +57,29 @@ const SELECTOR_PROBE = "uiobs-selector-probe";
  * @returns The fault to report, or undefined for a usable selector.
  */
 function selectorFault(selector: string, followed: boolean): unknown {
+  const root = document.createDocumentFragment();
+
   try {
-    document.createDocumentFragment().querySelector(selector);
-
-    // Chromium closes an open quote or "[" at the end, so '[x="a' parses alone and in a list,
-    // but swallows the entries after it. With a probe entry after it, the probe can't match.
-    const probe = document.createElement("i");
-    probe.className = SELECTOR_PROBE;
-    if (followed && !probe.matches(`${selector},.${SELECTOR_PROBE}`)) {
-      return new SyntaxError("The selector swallows the entries after it.");
-    }
-
-    return undefined;
+    root.querySelector(selector);
   } catch (error) {
     // The parser's error goes back to the caller as the report's cause.
     return error;
   }
+
+  if (!followed) {
+    return undefined;
+  }
+
+  try {
+    // Chromium closes an open quote, bracket or comment at the end, so '[x="a' parses alone and in
+    // a list, but swallows the entries after it. It swallows an added ")" too and still parses.
+    root.querySelector(`${selector})`);
+  } catch {
+    // A complete selector rejects the extra ")", so the fallback is a usable selector.
+    return undefined;
+  }
+
+  return new SyntaxError("The selector swallows the entries after it.");
 }
 
 /** Event type of the meta event, which carries the page URL. */

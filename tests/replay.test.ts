@@ -489,30 +489,32 @@ describe("start of the recorder", () => {
     type Parse = (this: unknown, selector: string) => unknown;
 
     /**
-     * Makes the selector parser close a quote and a "[" that are still open at the end of its
-     * input, as Chromium does. "[data-private" and '[data-x="a' then parse alone. happy-dom
-     * rejects both, so without this a list of entries that parse alone and fail together, or
-     * swallow each other, can't be built.
+     * Makes the selector parser close what is still open at the end of its input, as Chromium
+     * does: a comment, a quote, a "[" and a "(". '[x="a' and ":is(.a,.b" then parse alone, and a
+     * ")" after them is taken into the open part. happy-dom rejects all of these, so without this
+     * a list of entries that parse alone and swallow each other can't be built.
      */
     const parseLikeChromium = (): void => {
       const closed = (selector: string): string => {
+        // An open comment runs to the end, so it takes the rest of the text away.
+        const text = selector.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+        const open: string[] = [];
         let quote = "";
-        let open = 0;
-        for (let index = 0; index < selector.length; index++) {
-          const char = selector[index];
+        for (let index = 0; index < text.length; index++) {
+          const char = text[index];
           if (char === "\\") {
             index++;
           } else if (quote !== "") {
             quote = char === quote ? "" : quote;
           } else if (char === '"' || char === "'") {
             quote = char;
-          } else if (char === "[") {
-            open++;
-          } else if (char === "]") {
-            open = Math.max(open - 1, 0);
+          } else if (char === "[" || char === "(") {
+            open.push(char === "[" ? "]" : ")");
+          } else if (char === open.at(-1)) {
+            open.pop();
           }
         }
-        return `${selector}${quote}${"]".repeat(open)}`;
+        return `${text}${quote}${open.reverse().join("")}`;
       };
       const methods: [object, string][] = [
         [DocumentFragment.prototype, "querySelector"],
@@ -587,6 +589,64 @@ describe("start of the recorder", () => {
       expect(events[0].message).toMatch(
         /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
       );
+    });
+
+    it.each<[string, string, Partial<ReplayOptions>]>(
+      [
+        'i,[x="a',
+        ":scope,[x='a",
+        ':empty,[x="a',
+        ":not(.x):is(.card,.price",
+        ":nth-child(1 of .a",
+        ":not(div)/*",
+        "[title='x",
+      ].flatMap((entry) => [
+        [entry, "mask", { maskText: false, maskSelectors: [entry, ".secret"] }],
+        [entry, "block", { blockSelectors: [entry, ".secret"] }],
+      ]),
+    )(
+      "stays off when the entry %j before .secret leaves something open, in the %s list",
+      async (_entry, _label, replay) => {
+        parseLikeChromium();
+        const { run, recorder, events } = setup(replay);
+
+        await run();
+
+        // The open quote, parenthesis or comment takes in the next entry, so .secret never reaches
+        // the recorder as a selector of its own.
+        expect(recorder.record).not.toHaveBeenCalled();
+        expect(events).toHaveLength(1);
+        expect(events[0].code).toBe("config.invalid");
+        expect(events[0].message).toMatch(
+          /^The replay selector .+ is not a valid CSS selector\. The session replay is off\.$/,
+        );
+      },
+    );
+
+    it("starts when every entry before .secret is closed", async () => {
+      parseLikeChromium();
+      const entries = [
+        ".card",
+        '[title="a,b"]',
+        ":is(.a,.b)",
+        ":not(.x)",
+        "[data-x='a']",
+        "*",
+        ".price::before",
+        ".secret",
+      ];
+      const { run, recorder, events } = setup({
+        maskText: false,
+        maskSelectors: entries,
+        blockSelectors: entries,
+      });
+
+      const options = await run();
+
+      expect(recorder.record).toHaveBeenCalledTimes(1);
+      expect(options.maskTextSelector).toBe(entries.join(","));
+      expect(options.blockSelector).toBe(`[data-observability-ignore],${entries.join(",")}`);
+      expect(reports(events)).toEqual([]);
     });
 
     it("starts when each quote in an entry is closed", async () => {

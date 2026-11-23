@@ -124,8 +124,9 @@ export function saveToEmergencyQueue(
 
     // Remove the oldest entries to keep the queue within its capacity.
     for (const old of keys.slice(0, Math.max(0, keys.length - EMERGENCY_MAX_ENTRIES + 1))) {
-      // A key that another window already removed reads as null, and readBatch rejects it.
-      const dropped = readBatch(String(localStorage.getItem(old)), diagnostics);
+      // Another window can remove the key after the list was read, and null isn't a bad entry.
+      const raw = localStorage.getItem(old);
+      const dropped = raw === null ? null : readBatch(raw, diagnostics);
       if (dropped !== null) {
         evicted.push(dropped);
       }

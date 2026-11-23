@@ -169,10 +169,13 @@ export function currentUrl(diagnostics: Diagnostics): string {
 }
 
 /**
- * Matches the user info after "//", for example "user:pass@". A browser also reads it with no
- * scheme, with backslashes and after leading spaces, so the pattern allows all three.
+ * Matches the user info after a URL's slashes or backslashes, with or without a scheme. A space
+ * ends it ("// step @ 3" isn't a URL), and the lookahead keeps the match linear.
  */
-const USER_INFO_PATTERN = /^(\s*(?:[a-z][a-z\d+.-]*:)?[/\\]{2})[^/\\?#]*@/i;
+const USER_INFO_PATTERN = /^(\s*(?:[a-z][a-z\d+.-]*:[/\\]+|[/\\]{2,}))(?![/\\])[^/?#\s]*@/i;
+
+/** A browser drops these characters from a URL before it reads it. */
+const URL_DROPPED = /[\t\n\r]/g;
 
 /**
  * Returns the URL that a relative URL resolves against. A worker has no document, so it uses
@@ -205,7 +208,7 @@ function withoutUserInfo(url: string): string {
   } catch {
     // The parser rejects the URL, or a blob: or about:blank base can't resolve it, so the
     // fallback is the pattern.
-    return url.replace(USER_INFO_PATTERN, "$1");
+    return url.replace(URL_DROPPED, "").replace(USER_INFO_PATTERN, "$1");
   }
 
   if (parsed.username === "" && parsed.password === "") {

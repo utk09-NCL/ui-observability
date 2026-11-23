@@ -802,6 +802,12 @@ export const METRIC_FIELD_KEYS: readonly string[] = [
 ];
 
 /**
+ * Minimum key limit for a forwarded resource. A child can send keys that its message text doesn't
+ * show, because JSON drops an undefined value and structured clone keeps the key.
+ */
+export const RESOURCE_KEY_LIMIT = 128;
+
+/**
  * Every key the record builder writes itself: the attributes it sets after the payload merge,
  * and the resource block. The OTLP metrics serializer keeps them off a point's attributes,
  * otherwise a session id would start a new series for every session.

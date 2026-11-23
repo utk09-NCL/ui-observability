@@ -1,3 +1,4 @@
+import { serialize } from "node:v8";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Bus } from "../src/bus/bus";
 import { ErrorCapture } from "../src/capture/errors";
@@ -3197,6 +3198,103 @@ describe("the sender's limits on a forwarded record", () => {
       runtime()["ingestForwarded"]([record]);
 
       expect(Object.keys(buffered()[0].attributes)).toHaveLength(5);
+    });
+  });
+
+  describe("with more resource keys than the limit", () => {
+    // A resource holds the child's ids, so it keeps at least this many keys of its own.
+    const FLOOR = 128;
+    const ids = { "session.id": "s-1", "tab.id": "t-1", "context.id": "child-context" };
+
+    /**
+     * Builds a resource with the child's ids first and then many more keys.
+     * @param count How many keys follow the ids.
+     * @param value The value of each key. JSON leaves out a key with an undefined value.
+     * @returns The resource.
+     */
+    const flooded = (count: number, value: unknown): Record<string, unknown> => ({
+      ...ids,
+      ...Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [`k${String(index)}`, value]),
+      ),
+    });
+
+    it.each([
+      { label: "200,000 keys with no value", count: 200_000, value: undefined, limit: FLOOR },
+      { label: "5,000 keys with a value", count: 5000, value: "v", limit: FLOOR },
+      {
+        label: "5,000 keys, with maxAttributeCount above the floor",
+        count: 5000,
+        value: "v",
+        limit: 300,
+        max: 300,
+      },
+    ])("cuts a forwarded resource of $label to the key limit", async (one) => {
+      configure({ ...base, ...(one.max ? { limits: { maxAttributeCount: one.max } } : {}) });
+      await ready();
+      const record = forwardedRecord("from a child");
+      record.resource = flooded(one.count, one.value);
+
+      runtime()["ingestForwarded"]([record]);
+
+      // The stored record is a structured clone away from the next context. One marker key can
+      // show the cut.
+      const [stored] = buffered();
+      const keys = Object.keys(stored.resource);
+      expect(keys.length).toBeLessThanOrEqual(one.limit + 1);
+      expect(keys.length).toBeGreaterThan(one.limit === FLOOR ? 100 : FLOOR);
+      expect(stored.resource).toMatchObject(ids);
+      expect(serialize(stored).byteLength).toBeLessThan(100_000);
+    });
+
+    it("cuts the resource that a registered worker floods in a small message", async () => {
+      configure(base);
+      await ready();
+      let listener: ((event: MessageEvent) => void) | undefined;
+      const toWorker: BusMessage[] = [];
+      registerWorker({
+        postMessage: vi.fn((data: unknown) => {
+          const message = unwrap(data);
+          if (message) {
+            toWorker.push(message);
+          }
+        }),
+        addEventListener: vi.fn((_type: string, added: (event: MessageEvent) => void) => {
+          listener = added;
+        }),
+        removeEventListener: vi.fn(),
+      });
+      await vi.waitFor(() => {
+        expect(listener).toBeDefined();
+      });
+      const send = (message: BusMessage): void => {
+        listener?.({ data: structuredClone(envelope(message)) } as MessageEvent);
+      };
+      send({ t: "ui-observability.message.hello", from: "worker-ctx", tabId: "tab" });
+      await vi.waitFor(() => {
+        expect(toWorker.some((message) => message.t === "ui-observability.message.welcome")).toBe(
+          true,
+        );
+      });
+      const welcome = toWorker.find((message) => message.t === "ui-observability.message.welcome");
+      const record = forwardedRecord("flood");
+      record.resource = flooded(200_000, undefined);
+      const message: BusMessage = {
+        t: "ui-observability.message.records",
+        from: "worker-ctx",
+        routingContextId: (welcome as { routingContextId?: string }).routingContextId,
+        records: [record as unknown as LogRecord],
+      };
+
+      send(message);
+      await settle();
+
+      // JSON leaves out each key with an undefined value, so the bus's size check sees a small
+      // message. A structured clone keeps every key.
+      expect(JSON.stringify(envelope(message)).length).toBeLessThan(2000);
+      const stored = buffered().find((one) => one.body === "flood");
+      expect(stored).toBeDefined();
+      expect(serialize(stored).byteLength).toBeLessThan(100_000);
     });
   });
 

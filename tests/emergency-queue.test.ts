@@ -101,6 +101,27 @@ describe("the emergency queue", () => {
     expect(onLoss).toHaveBeenCalledWith("exit_queue_full", [{ body: "b0" }], ["b0"]);
   });
 
+  it("skips an old entry that another window removed during the eviction, with no report", () => {
+    // The other window imports the oldest entry between the key listing and the read. The entry
+    // is gone, so nothing is lost here, and a "not a batch" report would be false.
+    useFakeLocalStorage();
+    const { handler, diagnostics } = listening();
+    const onLoss = vi.fn<LossReporter>();
+    for (let i = 0; i < MAX_ENTRIES; i++) {
+      saveToEmergencyQueue(batch(`b${String(i)}`, 1000 + i), quiet());
+    }
+    const read = localStorage.getItem.bind(localStorage);
+    vi.spyOn(localStorage, "getItem").mockImplementation((key) =>
+      key.endsWith(".b0") ? null : read(key),
+    );
+
+    saveToEmergencyQueue(batch("new", 2000), diagnostics, onLoss);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(onLoss).not.toHaveBeenCalled();
+    expect(emergencyKeys().some((key) => key.endsWith(".new"))).toBe(true);
+  });
+
   it("passes a batch the store refuses to onLoss", () => {
     const blocked = useFakeLocalStorage();
     const onLoss = vi.fn<LossReporter>();

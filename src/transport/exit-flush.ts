@@ -28,7 +28,7 @@ import { batchKind, endpointFor, serializeBatch } from "./serializers/select";
  * Late flushes allowed in one page leave. An onDrop hook that logs would otherwise start a new one
  * for each loss it reports, a microtask loop that never lets the closing page yield.
  */
-const LATE_FLUSH_LIMIT = 5;
+const LATE_FLUSH_LIMIT = 8;
 
 /** The lifecycle event or manual action that starts an exit flush. */
 export type ExitReason = "hidden" | "pagehide" | "freeze" | "openfin-close" | "shutdown";
@@ -92,6 +92,9 @@ export class ExitFlush {
 
   /** Late flushes in this page leave, up to LATE_FLUSH_LIMIT. */
   private lateFlushes = 0;
+
+  /** True while beforeExit pushes the open metric points, which the running flush then takes. */
+  private collecting = false;
 
   /**
    * Bytes in flight against the browser's one budget for beacons and keepalive fetches. It
@@ -201,7 +204,11 @@ export class ExitFlush {
    * all records of one task go in one send. A web-vitals report arrives this late on a page leave.
    */
   flushLate(): void {
-    if (!this.left || this.lateQueued || this.lateFlushes >= LATE_FLUSH_LIMIT) {
+    if (!this.left || this.collecting || this.lateQueued) {
+      return;
+    }
+
+    if (this.lateFlushes >= LATE_FLUSH_LIMIT) {
       return;
     }
 
@@ -227,9 +234,12 @@ export class ExitFlush {
     const { config, diagnostics } = this.deps;
 
     // Runs first, so that the drain below also takes the open metric interval's points.
+    // The points it pushes go out with this flush, so they mustn't use up a late flush.
+    this.collecting = true;
     diagnostics.guard("pipeline.crashed", "The metric points before the exit flush failed.", () => {
       this.deps.beforeExit?.();
     });
+    this.collecting = false;
 
     // hidden fires on every tab switch, and the document keeps running. A normal flush keeps
     // the headers, gzip and the retry, none of which a beacon has. The in-flight batches

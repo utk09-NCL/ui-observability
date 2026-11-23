@@ -309,6 +309,68 @@ describe("recordedUrl with a base URL that can't resolve a relative URL", () => 
   });
 });
 
+describe("recordedUrl, when the URL parser throws", () => {
+  // A blob:, data: or about:blank base makes the parser throw for a URL with no scheme. A bad
+  // port or a backslash in the password makes it throw for a URL with a scheme too. The pattern is
+  // the only rule left for each of them.
+  const CASES = [
+    ["a backslash in the password", "https://alice:s3cret\\x@host/p"],
+    ["three slashes", "///alice:s3cret@host/p"],
+    ["one slash after the scheme and a bad port", "https:/alice:s3cret@host:99999/p"],
+    ["a tab after the slashes", "//\talice:s3cret@host/p"],
+    ["a newline after the slashes", "//\nalice:s3cret@host/p"],
+    ["a tab between the slashes", "/\t/alice:s3cret@host/p"],
+    ["a newline between the slashes", "/\n/alice:s3cret@host/p"],
+  ].map(([label, url]) => ({ label, url }));
+
+  it.each(CASES)("removes the user info from a URL with $label", ({ url }) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+    expect(() => new URL(url, "about:blank")).toThrow();
+
+    const recorded = recordedUrl(url, true);
+
+    expect(recorded).not.toContain("s3cret");
+    expect(recorded).not.toContain("alice");
+    expect(recorded).toContain("host");
+  });
+
+  it.each(["http://localhost:3000/", "about:blank"])(
+    "keeps the text of a name that only looks like a URL, with the base %s",
+    (base) => {
+      vi.spyOn(document, "baseURI", "get").mockReturnValue(base);
+
+      // A user timing name can read like this. A "//" followed by a space is not user info.
+      expect(recordedUrl("// step @ 3", true)).toBe("// step @ 3");
+      expect(recordedUrl("// step @ 3", false)).toBe("// step @ 3");
+    },
+  );
+
+  it("keeps a URL with an IPv6 host that the parser rejects, as it is", () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    expect(recordedUrl("https://[::1/x", true)).toBe("https://[::1/x");
+  });
+
+  it.each([
+    ["backslashes with no @", "\\".repeat(100_000)],
+    ["backslashes before an @", `${"\\".repeat(100_000)}@`],
+    ["spaces before an @", `${" ".repeat(100_000)}@`],
+    ["slashes and tabs before an @", `${"/\t".repeat(50_000)}@`],
+  ])("takes linear time for a long run of %s", (_label, url) => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("about:blank");
+
+    // The fastest of three runs, so a pause of the collector doesn't fail the spec.
+    let fastest = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const start = performance.now();
+      recordedUrl(url, true);
+      fastest = Math.min(fastest, performance.now() - start);
+    }
+
+    expect(fastest).toBeLessThan(50);
+  });
+});
+
 describe("stripUrlQuery", () => {
   it("drops the query string, which is where tokens and user input travel", () => {
     expect(stripUrlQuery("https://app.test/checkout?token=secret&q=me")).toBe(
